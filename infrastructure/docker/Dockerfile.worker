@@ -1,0 +1,33 @@
+# GlobalTalk AI — background worker image (documents / inference / cleanup / metering)
+# WORKER_KIND selects the entrypoint: documents | inference | cleanup | metering
+FROM python:3.11-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+COPY ai/ ./ai/
+COPY services/api/ ./services/api/
+RUN pip install "./services/api[docs,s3]" ./ai
+
+# GPU workers: build with --build-arg AI_EXTRAS="[whisper,mt,tts]" on a CUDA base
+ARG AI_EXTRAS=""
+RUN if [ -n "$AI_EXTRAS" ]; then pip install "./ai$AI_EXTRAS"; fi
+
+COPY workers/ ./workers/
+
+RUN useradd -m -u 10001 globaltalk && mkdir -p /data /models && chown -R globaltalk /data /models /app
+USER globaltalk
+
+ENV LOCAL_STORAGE_PATH=/data/storage \
+    MODEL_CACHE_PATH=/models \
+    WORKER_KIND=documents
+
+CMD ["sh", "-c", "case \"$WORKER_KIND\" in \
+  documents) exec python workers/document-worker/main.py ;; \
+  inference) exec python workers/inference-worker/main.py ;; \
+  cleanup)   exec python workers/cleanup-worker/main.py ;; \
+  metering)  exec python workers/metering-worker/main.py ;; \
+  *) echo \"unknown WORKER_KIND=$WORKER_KIND\" >&2; exit 1 ;; esac"]

@@ -1,0 +1,109 @@
+"""Application configuration (pydantic-settings). No secrets hardcoded; all from env/.env."""
+from __future__ import annotations
+
+import os
+from functools import lru_cache
+from pathlib import Path
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+REPO_ROOT = Path(__file__).resolve().parents[4]
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=(REPO_ROOT / ".env",), extra="ignore")
+
+    app_env: str = "development"
+    api_host: str = "0.0.0.0"
+    api_port: int = 8000
+    api_base_url: str = "http://localhost:8000"
+    web_origin: str = "http://localhost:5173"
+    secret_key: str = "dev-only-insecure-secret-key-change-me"
+    jwt_secret: str = "dev-only-insecure-jwt-secret-change-me"
+    jwt_algorithm: str = "HS256"
+    access_token_ttl_minutes: int = 30
+    refresh_token_ttl_days: int = 30
+    log_level: str = "INFO"
+
+    database_url: str = "sqlite:///./data/globaltalk.db"
+    db_autocreate: bool = True
+    redis_url: str = "redis://localhost:6379/0"
+
+    storage_backend: str = "local"
+    storage_local_path: str = "./data/storage"
+    s3_endpoint: str = ""
+    s3_bucket: str = "globaltalk"
+    s3_access_key: str = ""
+    s3_secret_key: str = ""
+    s3_region: str = "us-east-1"
+
+    livekit_url: str = ""
+    livekit_public_url: str = ""
+    livekit_api_key: str = ""
+    livekit_api_secret: str = ""
+
+    model_cache_path: str = "./data/models"
+    stt_model: str = "Systran/faster-whisper-small"
+    stt_device: str = "cpu"
+    stt_compute_type: str = "int8"
+    translation_provider: str = "auto"
+    tts_provider: str = "auto"
+    kokoro_model_path: str = ""
+    kokoro_voices_path: str = ""
+    llm_provider: str = "none"
+    vllm_base_url: str = ""
+    vllm_model: str = ""
+    embedding_provider: str = "hash"
+    feature_seamless_research: bool = False
+
+    realtime_latency_mode: str = "balanced"
+    vad_provider: str = "energy"
+    audio_sample_rate: int = 16000
+
+    otel_endpoint: str = ""
+    sentry_dsn: str = ""
+    prometheus_enabled: bool = True
+
+    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+    rate_limit_translate: str = "60/minute"
+    rate_limit_auth: str = "10/minute"
+    upload_max_mb: int = 50
+    malware_scan_enabled: bool = False
+    clamav_host: str = ""
+
+    # retention defaults (days); 0 = keep forever
+    retention_audio_days: int = 7
+    retention_transcript_days: int = 90
+    retention_document_days: int = 90
+
+    def resolve(self, p: str) -> Path:
+        path = Path(p)
+        return path if path.is_absolute() else (REPO_ROOT / path)
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def livekit_configured(self) -> bool:
+        return bool(self.livekit_url and self.livekit_api_key and self.livekit_api_secret)
+
+    @property
+    def is_sqlite(self) -> bool:
+        return self.database_url.startswith("sqlite")
+
+
+@lru_cache
+def get_settings() -> Settings:
+    s = Settings()
+    for d in (s.resolve(s.storage_local_path), s.resolve(s.model_cache_path),
+              s.resolve("data")):
+        d.mkdir(parents=True, exist_ok=True)
+    if s.is_sqlite:
+        db_path = s.database_url.replace("sqlite:///", "")
+        Path(db_path if os.path.isabs(db_path) else REPO_ROOT / db_path).parent.mkdir(
+            parents=True, exist_ok=True)
+    return s
+
+
+settings = get_settings()

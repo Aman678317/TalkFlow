@@ -1,0 +1,143 @@
+# Third-Party Component Manifest (sections 77–82, 116)
+# Machine-readable source of truth for every external component. Human-readable
+# review notes: docs/THIRD_PARTY_COMPONENTS.md. Policy: pinned versions only,
+# license review BEFORE production use, weights downloaded at bootstrap (never committed).
+
+meta:
+  reviewed_by: GlobalTalk engineering
+  review_policy: "inspect LICENSE + model card + dataset terms; record revision; re-review on upgrade"
+  last_review: "2026-09-26"
+
+components:
+  - name: livekit-server
+    repository: https://github.com/livekit/livekit
+    purpose: realtime media SFU (production voice/video transport)
+    version: v1.7.2
+    install_method: official docker image
+    runtime: go binary
+    gpu_required: false
+    license: Apache-2.0
+    license_review: APPROVED_COMMERCIAL
+    status_in_sandbox: NOT_CONFIGURED (WebSocket PCM transport used instead)
+
+  - name: livekit-agents
+    repository: https://github.com/livekit/agents
+    purpose: realtime agent runtime (Speech/Translation/Voice/Timing agents)
+    version: 0.11.x (pinned in GPU image requirements)
+    install_method: pip (optional extra)
+    license: Apache-2.0
+    license_review: APPROVED_COMMERCIAL
+    status_in_sandbox: OPTIONAL
+
+  - name: faster-whisper
+    repository: https://github.com/SYSTRAN/faster-whisper
+    purpose: primary self-hosted STT + audio language ID
+    version: 1.2.1 (package) / model Systran/faster-whisper-tiny (sandbox), -small/-large-v3 (prod)
+    install_method: pip + HuggingFace weights into MODEL_CACHE_PATH
+    gpu_required: false (cpu int8 supported; fp16 on GPU)
+    license: MIT (code); model weights MIT
+    license_review: APPROVED_COMMERCIAL
+    supported_languages: ~99 (registry-gated per deployment)
+    limitations: tiny/base models trade accuracy; Indic accents need evaluation before PRODUCTION
+
+  - name: indic-conformer-asr
+    repository: https://github.com/AI4Bharat/IndicConformerASR
+    purpose: specialized Indic STT route (Phase 2)
+    version: pinned release per deployment
+    install_method: isolated service + internal adapter (services/speech/providers/indicconformer)
+    gpu_required: true (recommended)
+    license: check per model release (AI4Bharat models often CC-BY-SA / custom)
+    license_review: PENDING
+    status_in_sandbox: NOT_CONFIGURED
+
+  - name: argos-translate
+    repository: https://github.com/argosopentech/argos-translate
+    purpose: offline open NMT (primary MT in CPU deployments; fallback route everywhere)
+    version: 1.9.6 + per-language packages from official index
+    install_method: pip + argos packages into MODEL_CACHE_PATH/argos
+    gpu_required: false
+    license: MIT (code); package models vary (NLLB-derived: CC-BY-NC for some!) —
+      per-package review REQUIRED before commercial routing
+    license_review: CODE_APPROVED / PER_PACKAGE_REVIEW_REQUIRED
+    limitations: may pivot via English when no direct pair — flagged pivoted_via_intermediate
+
+  - name: seamless-communication
+    repository: https://github.com/facebookresearch/seamless_communication
+    purpose: experimental S2ST research & benchmarking ONLY
+    version: research pin
+    install_method: optional extra behind FEATURE_SEAMLESS_RESEARCH
+    gpu_required: true
+    license: CC-BY-NC 4.0 (NON-COMMERCIAL)
+    license_review: BLOCKED_FOR_COMMERCIAL
+    status_in_sandbox: DISABLED
+
+  - name: kokoro-tts
+    repository: https://github.com/hexgrad/kokoro (+ kokoro-onnx runtime)
+    purpose: open-weight TTS (en/ja/zh/es/fr)
+    version: kokoro-onnx 0.9.x, kokoro-v1.0.onnx + voices-v1.0.onnx
+    install_method: pip + weights (HF repo currently gated → OPTIONAL)
+    gpu_required: false
+    license: Apache-2.0 (code); model weights Apache-2.0 — voices list per model card
+    license_review: APPROVED_COMMERCIAL (weights access pending)
+    status_in_sandbox: OPTIONAL (Piper is primary)
+
+  - name: piper-tts
+    repository: https://github.com/rhasspy/piper
+    purpose: lightweight neural TTS (primary CPU voice: en/hi/zh/es; ja needs pyopenjtalk)
+    version: 1.8.0 + voices from rhasspy/piper-voices (medium quality tier)
+    install_method: pip + voice onnx files into MODEL_CACHE_PATH/piper
+    gpu_required: false
+    license: MIT (code); voices: per-voice licenses (lessac/pratham/huayan/davefx: open)
+    license_review: APPROVED_COMMERCIAL (per-voice check recorded)
+    limitations: no Marathi voice; Japanese requires pyopenjtalk (source build)
+
+  - name: indic-parler-tts
+    repository: https://huggingface.co/ai4bharat/indic-parler-tts
+    purpose: India-first TTS (Phase 5)
+    install_method: GPU inference service + adapter
+    gpu_required: true
+    license: check model card (AI4Bharat)
+    license_review: PENDING
+    status_in_sandbox: NOT_CONFIGURED
+
+  - name: docling
+    repository: https://github.com/docling-project/docling
+    purpose: document understanding/parsing upgrade path
+    version: 2.67.x
+    install_method: pip optional extra; built-in parsers (pypdf/python-docx/pptx/openpyxl) otherwise
+    gpu_required: false (faster with)
+    license: MIT
+    license_review: APPROVED_COMMERCIAL
+    status_in_sandbox: OPTIONAL
+
+  - name: pgvector
+    repository: https://github.com/pgvector/pgvector
+    purpose: vector search (TM semantic match, memory retrieval, RAG)
+    version: pg16 image (pgvector/pgvector:pg16)
+    install_method: postgres extension; JSON-column fallback on SQLite dev
+    license: PostgreSQL License
+    license_review: APPROVED_COMMERCIAL
+    status_in_sandbox: NOT_CONFIGURED (fallback active)
+
+  - name: vllm
+    repository: https://github.com/vllm-project/vllm
+    purpose: local LLM serving (summaries, Q&A, action items, memory extraction)
+    version: pinned per GPU image
+    install_method: isolated service; LLMProvider adapter (OpenAI-compatible API)
+    gpu_required: true
+    license: Apache-2.0 (engine); model weights per-model review
+    license_review: ENGINE_APPROVED / MODEL_PER_DEPLOYMENT
+    status_in_sandbox: NOT_CONFIGURED (extractive assistant fallback active)
+
+  - name: silero-vad
+    repository: https://github.com/snakers4/silero-vad
+    purpose: high-quality VAD (upgrade over built-in energy VAD)
+    license: MIT code; MODEL weights CC-BY-NC — commercial review required!
+    license_review: PENDING (energy VAD default until resolved)
+    status_in_sandbox: OPTIONAL
+
+  - name: deepfilternet / asteroid / pyannote / nemo / speechbrain / funasr / sherpa-onnx / whisper.cpp
+    purpose: advanced audio pipeline (denoise, separation, diarization, alt STT) — Phase 3/4
+    install_method: isolated services behind SpeechEnhancement/Separation/Diarization adapters
+    license_review: PER_COMPONENT_PENDING
+    status_in_sandbox: NOT_CONFIGURED (architecture adapters reserved)

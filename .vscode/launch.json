@@ -1,0 +1,13 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "GlobalTalk AI: Backend (Port 8088)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/run_api.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}"
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+data/
+.env
+/.env.*
+!/.env.example
+!/.env.*.example
+.venv/
+*.db
+*.tsbuildinfo
+node_modules/
+dist/
+.vite/
+*.egg-info/
+.pytest_cache/
+.coverage
+coverage/

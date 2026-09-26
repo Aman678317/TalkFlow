@@ -1,0 +1,48 @@
+{
+  "title": "GlobalTalk AI — Platform Overview",
+  "uid": "globaltalk-overview",
+  "schemaVersion": 39,
+  "panels": [
+    {
+      "id": 1, "type": "timeseries", "title": "HTTP requests/s by route",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [{ "expr": "sum by (route) (rate(http_requests_total[1m]))", "legendFormat": "{{route}}" }]
+    },
+    {
+      "id": 2, "type": "timeseries", "title": "Error rate (5xx)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [{ "expr": "sum(rate(http_requests_total{status=~\"5..\"}[5m])) / sum(rate(http_requests_total[5m]))", "legendFormat": "5xx ratio" }]
+    },
+    {
+      "id": 3, "type": "timeseries", "title": "Translation latency p50/p95/p99 (per pair)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        { "expr": "translation_latency_ms{quantile=\"0.5\"}", "legendFormat": "p50 {{pair}}" },
+        { "expr": "translation_latency_ms{quantile=\"0.95\"}", "legendFormat": "p95 {{pair}}" },
+        { "expr": "translation_latency_ms{quantile=\"0.99\"}", "legendFormat": "p99 {{pair}}" }
+      ]
+    },
+    {
+      "id": 4, "type": "timeseries", "title": "Realtime E2E latency (speech start → translated audio)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        { "expr": "realtime_e2e_latency_ms{quantile=\"0.5\"}", "legendFormat": "p50 {{pair}}" },
+        { "expr": "realtime_e2e_latency_ms{quantile=\"0.95\"}", "legendFormat": "p95 {{pair}}" }
+      ]
+    },
+    {
+      "id": 5, "type": "timeseries", "title": "STT latency", "gridPos": { "h": 8, "w": 8, "x": 0, "y": 16 },
+      "targets": [{ "expr": "stt_latency_ms{quantile=\"0.95\"}", "legendFormat": "p95 {{provider}}/{{lang}}" }]
+    },
+    {
+      "id": 6, "type": "timeseries", "title": "TTS latency", "gridPos": { "h": 8, "w": 8, "x": 8, "y": 16 },
+      "targets": [{ "expr": "tts_latency_ms{quantile=\"0.95\"}", "legendFormat": "p95 {{provider}}/{{lang}}" }]
+    },
+    {
+      "id": 7, "type": "timeseries", "title": "Translations/s per provider", "gridPos": { "h": 8, "w": 8, "x": 16, "y": 16 },
+      "targets": [{ "expr": "sum by (provider) (rate(translations_total[5m]))", "legendFormat": "{{provider}}" }]
+    }
+  ],
+  "time": { "from": "now-3h", "to": "now" },
+  "refresh": "30s"
+}

@@ -1,0 +1,14 @@
+[project]
+name = "globaltalk-api"
+version = "0.1.0"
+description = "GlobalTalk AI - multilingual AI communication platform (control plane + data plane API)"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["../../tests"]
+pythonpath = ["."]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"

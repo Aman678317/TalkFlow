@@ -1,0 +1,29 @@
+# GlobalTalk AI — API image (control plane + data plane + WS realtime)
+FROM python:3.11-slim AS base
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PIP_NO_CACHE_DIR=1 MALLOC_ARENA_MAX=2
+
+WORKDIR /app
+
+# system deps: ffmpeg for audio handling in production media paths
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY apps/api/requirements.txt apps/api/requirements.txt
+RUN pip install -r apps/api/requirements.txt
+
+COPY ai/ ai/
+COPY services/ services/
+COPY apps/api/ apps/api/
+
+ENV PYTHONPATH=/app/apps/api:/app \
+    MODEL_CACHE_PATH=/models \
+    STORAGE_LOCAL_PATH=/data/storage
+
+VOLUME ["/models", "/data"]
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s \
+  CMD curl -fsS http://localhost:8000/health || exit 1
+
+WORKDIR /app/apps/api
+CMD ["python", "-m", "uvicorn", "globaltalk.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]

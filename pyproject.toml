@@ -1,0 +1,10 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["apps/api", "."]
+filterwarnings = ["ignore::DeprecationWarning"]
+asyncio_mode = "auto"
+markers = ["model: tests that require downloaded AI model weights", "realtime: end-to-end realtime golden call test"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"

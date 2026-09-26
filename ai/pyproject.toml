@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gt-ai"
+version = "0.1.0"
+description = "GlobalTalk AI provider-agnostic AI layer: STT / MT / TTS / detection / summarization adapters + model router"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "langdetect>=1.0.9",
+]
+
+[project.optional-dependencies]
+whisper = ["faster-whisper>=1.0.3"]
+mt = ["transformers>=4.44", "torch>=2.3", "sentencepiece"]
+ct2 = ["ctranslate2>=4.3", "transformers>=4.44"]
+argos = ["argostranslate>=1.9"]
+tts = ["kokoro-onnx>=0.4", "onnxruntime>=1.18"]
+embeddings = ["sentence-transformers>=3.0"]
+dev = ["pytest", "pytest-asyncio", "httpx"]
+
+[tool.setuptools.packages.find]
+include = ["gt_ai*"]
+
+[tool.setuptools.package-data]
+"gt_ai" = ["evaluation/datasets/*.jsonl"]

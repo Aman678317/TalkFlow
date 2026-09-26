@@ -1,0 +1,185 @@
+"""Translation API (PDD §14): /translate (single + batch), /detect-language,
+/history, /languages capability registry.
+"""
+from __future__ import annotations
+
+import logging
+import uuid
+from datetime import timedelta
+
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db import models as M
+from app.db.base import utcnow
+from app.db.session import get_db
+from app.deps import Principal, require_scope, rl_translate
+from app.errors import NotFoundError, ValidationError
+from app.schemas import (
+    DetectRequest, DetectResponse, LanguageOut, TranslateRequest,
+    TranslateResponse, TranslationOut,
+)
+from app.services import audit_service
+from app.services.translation_service import TranslateContext, translate_text
+
+log = logging.getLogger("app.routers.translate")
+
+router = APIRouter(prefix="/api/v1", tags=["translation"])
+
+
+def _ctx(principal: Principal, body: TranslateRequest, product: str = "text") -> TranslateContext:
+    return TranslateContext(
+        org_id=principal.org_id, user_id=principal.user_id,
+        api_key_id=principal.api_key.id if principal.api_key else None,
+        glossary_id=body.glossary_id, style_profile_id=body.style_profile_id,
+        tm_id=body.translation_memory_id, domain=body.domain,
+        intent=body.intent, product=product)
+
+
+@router.post("/translate", response_model=TranslateResponse)
+async def translate(body: TranslateRequest,
+                    principal: Principal = Depends(rl_translate),
+                    _scope=Depends(require_scope("translate")),
+                    db: AsyncSession = Depends(get_db)):
+    principal.require("use_translate")
+    texts = body.text if isinstance(body.text, list) else [body.text]
+    if len(texts) > 1 and not body.batch:
+        raise ValidationError("Multiple texts require batch=true.")
+    # quota pre-check on characters
+    from app.services import usage_service
+    if principal.org_id:
+        await usage_service.check_quota(
+            db, principal.org_id, "characters", sum(len(t) for t in texts))
+    ctx = _ctx(principal, body)
+    outputs = []
+    for text in texts:
+        out = await translate_text(db, text, body.source_language,
+                                   body.target_language, ctx)
+        outputs.append(TranslationOut(
+            translation_id=out.translation_id,
+            source_language=out.result.source_lang,
+            target_language=out.result.target_lang,
+            source_text=text,
+            translated_text=out.result.text,
+            model=out.result.model,
+            provider=out.result.provider,
+            latency_ms=round(out.result.latency_ms, 1),
+            quality_flags=out.result.quality_flags,
+            tm_match=out.tm_match,
+            domain=body.domain,
+        ))
+    from app import context
+    return TranslateResponse(translations=outputs,
+                             request_id=context.current().request_id)
+
+
+@router.post("/detect-language", response_model=DetectResponse)
+async def detect_language(body: DetectRequest,
+                          principal: Principal = Depends(rl_translate),
+                          _scope=Depends(require_scope("detect")),
+                          db: AsyncSession = Depends(get_db)):
+    from app.ai import ai
+    from app.services import usage_service
+    det = await ai.detect_language(body.text)
+    if principal.org_id:
+        await usage_service.record_usage(
+            db, org_id=principal.org_id, product="text",
+            unit_type="api_requests", units=1, user_id=principal.user_id,
+            api_key_id=principal.api_key.id if principal.api_key else None,
+            metadata={"endpoint": "detect-language", "detected": det.language})
+        await db.commit()
+    return DetectResponse(language=det.language, confidence=round(det.confidence, 4),
+                          alternatives=[(l, round(c, 4)) for l, c in det.alternatives],
+                          provider=det.provider)
+
+
+@router.get("/languages", response_model=list[LanguageOut])
+async def languages(db: AsyncSession = Depends(get_db),
+                    capability: str = Query(default="",
+                                            description="filter: translation|speech_input|speech_output|realtime|document")):
+    """Capability registry — the ONLY source for frontend language dropdowns.
+
+    A language is exposed as supported only per its measured capability status
+    (EXPERIMENTAL < BETA < SUPPORTED < PRODUCTION), never from model metadata.
+    """
+    res = await db.execute(select(M.LanguageCapability).order_by(
+        M.LanguageCapability.name))
+    rows = res.scalars().all()
+    out = []
+    for r in rows:
+        item = LanguageOut(
+            code=r.code, name=r.name, native_name=r.native_name, script=r.script,
+            rtl=r.rtl,
+            translation_supported=r.translation_status in ("SUPPORTED", "PRODUCTION"),
+            speech_input_supported=r.speech_input_status in ("BETA", "SUPPORTED", "PRODUCTION"),
+            speech_output_supported=r.speech_output_status in ("BETA", "SUPPORTED", "PRODUCTION"),
+            realtime_supported=r.realtime_status in ("BETA", "SUPPORTED", "PRODUCTION"),
+            document_supported=r.document_status in ("SUPPORTED", "PRODUCTION"),
+            translation_status=r.translation_status,
+            speech_input_status=r.speech_input_status,
+            speech_output_status=r.speech_output_status,
+            realtime_status=r.realtime_status,
+            document_status=r.document_status,
+            tts_voices=r.tts_voices or [],
+        )
+        if capability:
+            keep = {
+                "translation": item.translation_supported,
+                "speech_input": item.speech_input_supported,
+                "speech_output": item.speech_output_supported,
+                "realtime": item.realtime_supported,
+                "document": item.document_supported,
+            }.get(capability, True)
+            if not keep:
+                continue
+        out.append(item)
+    return out
+
+
+@router.get("/history", response_model=dict)
+async def history(principal: Principal = Depends(rl_translate),
+                  db: AsyncSession = Depends(get_db),
+                  limit: int = Query(default=50, le=200),
+                  offset: int = Query(default=0, ge=0),
+                  product: str = Query(default=""),
+                  target_lang: str = Query(default="")):
+    q = select(M.TranslationSegment).where(
+        M.TranslationSegment.org_id == principal.org_id,
+        M.TranslationSegment.product.in_(["text", "chat"] if not product else [product]))
+    if principal.kind == "user":
+        q = q.where(M.TranslationSegment.created_by == principal.user_id)
+    if target_lang:
+        q = q.where(M.TranslationSegment.target_lang == target_lang)
+    res = await db.execute(q.order_by(M.TranslationSegment.created_at.desc())
+                           .limit(limit).offset(offset))
+    rows = res.scalars().all()
+    return {
+        "items": [{
+            "id": str(r.id), "product": r.product,
+            "source_lang": r.source_lang, "target_lang": r.target_lang,
+            "source_text": r.source_text[:1000], "target_text": r.target_text[:1000],
+            "model": r.model, "provider": r.provider,
+            "latency_ms": round(r.latency_ms, 1),
+            "quality_flags": r.quality_flags_json,
+            "tm_match": r.tm_match_type,
+            "created_at": r.created_at.isoformat(),
+        } for r in rows],
+        "limit": limit, "offset": offset,
+    }
+
+
+@router.delete("/history", status_code=204)
+async def clear_history(principal: Principal = Depends(rl_translate),
+                        db: AsyncSession = Depends(get_db)):
+    from sqlalchemy import delete as sa_delete
+    q = sa_delete(M.TranslationSegment).where(
+        M.TranslationSegment.org_id == principal.org_id,
+        M.TranslationSegment.product.in_(["text", "chat"]),
+        M.TranslationSegment.segment_id.is_(None))
+    if principal.kind == "user":
+        q = q.where(M.TranslationSegment.created_by == principal.user_id)
+    await db.execute(q)
+    await audit_service.record(db, action="history.cleared", org_id=principal.org_id,
+                               actor_id=principal.user_id)
+    await db.commit()

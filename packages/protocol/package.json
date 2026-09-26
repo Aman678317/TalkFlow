@@ -1,0 +1,9 @@
+{
+  "name": "@globaltalk/protocol",
+  "version": "0.1.0",
+  "description": "Realtime protocol constants & binary frame codec (mirror of globaltalk.realtime.protocol)",
+  "type": "module",
+  "main": "index.ts",
+  "types": "index.ts",
+  "license": "MIT"
+}
