@@ -264,4 +264,14 @@ def lookup_dictionary(word: str, source_lang: str = "en", target_lang: str = "en
             examples=[f"The term '{word}' was successfully processed in the current context."]
         ))
 
-    return DictionaryResponse(query=word, entries=entries)
+    first_entry = entries[0] if entries else None
+    return DictionaryResponse(
+        query=word,
+        word=w,
+        part_of_speech=first_entry.pos if first_entry else "general",
+        meanings=first_entry.definitions if first_entry else [],
+        synonyms=first_entry.synonyms if first_entry else [],
+        translations=[f"{w} ({target_lang.upper()})"],
+        examples=first_entry.examples if first_entry else [],
+        entries=entries,
+    )
