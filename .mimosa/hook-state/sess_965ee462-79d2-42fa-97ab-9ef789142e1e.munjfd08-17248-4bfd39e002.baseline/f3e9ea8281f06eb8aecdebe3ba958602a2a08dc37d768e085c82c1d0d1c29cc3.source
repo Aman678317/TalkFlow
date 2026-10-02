@@ -1,0 +1,161 @@
+import { create } from "zustand";
+import { api, setTokens, setUnauthorizedHandler, persistTokens, loadPersistedTokens } from "../lib/api";
+
+export interface AuthUser {
+  id: string;
+  email: string;
+  name?: string;
+  full_name?: string;
+  is_platform_admin: boolean;
+  email_verified: boolean;
+  default_language?: string;
+  speak_lang?: string;
+  hear_lang?: string;
+}
+
+export interface AuthOrg {
+  id: string;
+  name: string;
+  slug: string;
+  plan: string;
+  status?: string;
+}
+
+export interface AuthOrgMember {
+  org: AuthOrg;
+  role: string;
+}
+
+interface AuthState {
+  user: AuthUser | null;
+  org: AuthOrg | null;
+  organizations: AuthOrgMember[];
+  role: string | null;
+  permissions: string[];
+  initialized: boolean;
+  status: "loading" | "authed" | "unauthed";
+  login: (email: string, password: string) => Promise<void>;
+  signup: (data: { email: string; password: string; full_name: string; organization_name: string }) => Promise<void>;
+  logout: () => Promise<void>;
+  refreshMe: () => Promise<void>;
+}
+
+function normalizeUser(u: any): AuthUser | null {
+  if (!u || !u.id) return null;
+  return {
+    ...u,
+    name: u.name || u.full_name || u.email || "",
+    full_name: u.full_name || u.name || u.email || "",
+    default_language: u.default_language || u.speak_lang || "en",
+  };
+}
+
+export const useAuth = create<AuthState>((set, get) => ({
+  user: null,
+  org: null,
+  organizations: [],
+  role: null,
+  permissions: [],
+  initialized: false,
+  status: "loading",
+
+  async login(email, password) {
+    const r = await api("/api/v1/auth/login", {
+      method: "POST",
+      body: { email, password },
+    });
+    setTokens(r.tokens.access_token, r.tokens.refresh_token);
+    persistTokens();
+    const user = normalizeUser(r.user);
+    set({
+      user,
+      org: r.membership?.org ?? null,
+      organizations: r.organizations ?? (r.membership?.org ? [{ org: r.membership.org, role: r.membership.role }] : []),
+      role: r.membership?.role ?? null,
+      initialized: true,
+      status: user ? "authed" : "unauthed",
+    });
+    // Immediately fetch /auth/me to populate full organization details and permissions
+    try {
+      await get().refreshMe();
+    } catch {
+      /* ignore */
+    }
+  },
+
+  async signup(data) {
+    const r = await api("/api/v1/auth/signup", { method: "POST", body: data });
+    setTokens(r.tokens.access_token, r.tokens.refresh_token);
+    persistTokens();
+    const user = normalizeUser(r.user);
+    set({
+      user,
+      org: r.membership?.org ?? null,
+      organizations: r.organizations ?? (r.membership?.org ? [{ org: r.membership.org, role: r.membership.role }] : []),
+      role: r.membership?.role ?? null,
+      initialized: true,
+      status: user ? "authed" : "unauthed",
+    });
+  },
+
+  async logout() {
+    try {
+      const refresh = localStorage.getItem("gt.refresh");
+      if (refresh) await api("/api/v1/auth/logout", { method: "POST", body: { refresh_token: refresh } });
+    } catch { /* best effort */ }
+    setTokens(null, null);
+    persistTokens();
+    set({
+      user: null,
+      org: null,
+      organizations: [],
+      role: null,
+      permissions: [],
+      initialized: true,
+      status: "unauthed",
+    });
+  },
+
+  async refreshMe() {
+    loadPersistedTokens();
+    setUnauthorizedHandler(() => {
+      setTokens(null, null);
+      persistTokens();
+      set({
+        user: null,
+        org: null,
+        organizations: [],
+        role: null,
+        permissions: [],
+        initialized: true,
+        status: "unauthed",
+      });
+    });
+    try {
+      const r = await api("/api/v1/auth/me");
+      const user = normalizeUser(r.user);
+      const organizations = r.organizations ?? (r.membership?.org ? [{ org: r.membership.org, role: r.membership.role }] : []);
+      const primaryOrg = r.membership?.org ?? organizations[0]?.org ?? null;
+      const primaryRole = r.membership?.role ?? organizations[0]?.role ?? null;
+      set({
+        user,
+        org: primaryOrg,
+        organizations,
+        role: primaryRole,
+        permissions: r.permissions ?? [],
+        initialized: true,
+        status: user ? "authed" : "unauthed",
+      });
+    } catch {
+      set({
+        user: null,
+        org: null,
+        organizations: [],
+        role: null,
+        permissions: [],
+        initialized: true,
+        status: "unauthed",
+      });
+    }
+  },
+}));

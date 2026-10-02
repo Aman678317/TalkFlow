@@ -1,0 +1,14 @@
+apiVersion: backstage.io/v1alpha1
+kind: API
+metadata:
+  name: desi-public-api
+  namespace: default
+  title: Desi Language AI & GlobalTalk AI Public API
+  description: Authoritative OpenAPI and AsyncAPI specifications for the Desi neural translation and voice streaming platform
+spec:
+  type: openapi
+  lifecycle: production
+  owner: api-core-team
+  system: desi-language-ai
+  definition:
+    $text: ./openapi.yaml

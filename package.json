@@ -1,0 +1,21 @@
+{
+  "name": "globaltalk-ai",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "apps/amazon-connect-v2v/webapp"
+  ],
+  "scripts": {
+    "dev": "npm --prefix apps/web run dev",
+    "dev:web": "npm --prefix apps/web run dev",
+    "dev:docs": "npm --prefix developer-docs run dev",
+    "dev:connect": "npm --prefix apps/amazon-connect-v2v/webapp run dev",
+    "dev:cli": "npm --prefix cli/desi-cli run dev",
+    "build:cli": "npm --prefix cli/desi-cli run build",
+    "test:cli": "npm --prefix cli/desi-cli test",
+    "build": "npm --prefix apps/web run build",
+    "preview": "npm --prefix apps/web run preview",
+    "start": "START_ALL.bat"
+  }
+}

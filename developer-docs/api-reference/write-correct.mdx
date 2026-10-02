@@ -1,0 +1,37 @@
+---
+title: "Grammar & Spelling Correction"
+api: "POST /v2/write/correct"
+description: "Correct grammar, typographical errors, and punctuation without altering author voice"
+---
+
+# Grammar & Spelling Correction
+
+Fixes grammatical errors, typographical mistakes, and punctuation anomalies while preserving original meaning and syntax.
+
+### Request Body (`application/json`)
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `text` | string | **Yes** | Text to evaluate and correct. |
+
+---
+
+### Request Example
+
+```bash
+curl -X POST "https://api.globaltalk.ai/v2/write/correct" \
+  -H "Authorization: Bearer $GTK_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "The team have completed their analysis and their is no remaining bugs."
+  }'
+```
+
+### Response Example (`200 OK`)
+
+```json
+{
+  "corrected_text": "The team has completed its analysis and there are no remaining bugs.",
+  "corrections_count": 3
+}
+```

@@ -20,7 +20,7 @@ from gt_ai.capabilities import DEFAULT_LANGUAGES, QualityStatus
 
 log = logging.getLogger("app.seed")
 
-STATUS_NAMES = {v: k for k, v in QualityStatus.__members__.items()}
+STATUS_NAMES: dict[int, str] = {int(v.value): k for k, v in QualityStatus.__members__.items()}
 
 DEFAULT_STYLE_PROFILES = [
     ("Formal", "formal", {"tone": "professional", "formality": "formal",
@@ -53,6 +53,8 @@ FEATURE_FLAGS = {
 
 MODEL_REGISTRY_SEED = [
     # name, task, provider, quality, cost, latency_class, private, gpu
+    ("neural-web-mt", "mt", "neural_online", 92, 0, "fast", False, False),
+    ("deepl-v2", "mt", "deepl", 95, 20, "fast", False, False),
     ("madlad-400-3b", "mt", "madlad400", 85, 70, "fast", True, False),
     ("nllb-200-600m-ct2", "mt", "nllb_ct2", 78, 40, "fast", True, False),
     ("argos-packs", "mt", "argos", 60, 20, "fast", True, False),
@@ -154,6 +156,20 @@ async def seed_demo_org(db) -> None:
         db.add(user)
         await db.flush()
         log.info("seeded demo user demo@globaltalk.local / demo1234")
+
+    res_admin = await db.execute(select(M.User).where(M.User.email == "admin@globaltalk.dev"))
+    admin_user = res_admin.scalars().first()
+    if admin_user is None:
+        admin_user = M.User(
+            email="admin@globaltalk.dev",
+            password_hash=hash_password("Demo1234!"),
+            name="GlobalTalk Admin",
+            locale="en", speak_lang="en", hear_lang="en",
+            email_verified=True, is_platform_admin=True,
+        )
+        db.add(admin_user)
+        await db.flush()
+        log.info("seeded admin user admin@globaltalk.dev / Demo1234!")
 
     res = await db.execute(select(M.Organization).where(M.Organization.slug == "demo-org"))
     org = res.scalars().first()

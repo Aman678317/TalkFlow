@@ -1,0 +1,54 @@
+---
+title: "Style Rules (v3)"
+description: "Define custom brand voice and style instructions for neural translation"
+---
+
+# Style Rules API
+
+Style rules provide fine-grained instructions on capitalization, punctuation conventions, persona tone, and phrasing guidelines for translations.
+
+---
+
+## 1. Create Style Rule (`POST /v3/style_rules`)
+
+```bash
+curl -X POST "https://api.globaltalk.ai/v3/style_rules" \
+  -H "Authorization: Bearer $GTK_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Concise Technical German",
+    "language": "de",
+    "custom_instructions": "Always translate technical headings using infinitive verbs without pronouns. Maintain passive voice in security alerts."
+  }'
+```
+
+### Response Example (`201 Created`)
+
+```json
+{
+  "style_rule_id": "rule_3d4e5f6a",
+  "name": "Concise Technical German",
+  "language": "de",
+  "custom_instructions": "Always translate technical headings using infinitive verbs without pronouns. Maintain passive voice in security alerts.",
+  "created_at": "2026-09-29T21:00:00Z"
+}
+```
+
+---
+
+## 2. List Style Rules (`GET /v3/style_rules`)
+
+```bash
+curl -X GET "https://api.globaltalk.ai/v3/style_rules" \
+  -H "Authorization: Bearer $GTK_API_KEY"
+```
+
+---
+
+## 3. Delete Style Rule (`DELETE /v3/style_rules/{id}`)
+
+```bash
+curl -X DELETE "https://api.globaltalk.ai/v3/style_rules/rule_3d4e5f6a" \
+  -H "Authorization: Bearer $GTK_API_KEY"
+```
+*(Returns `204 No Content` on success)*

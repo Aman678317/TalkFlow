@@ -22,6 +22,7 @@ export default function Documents() {
   const [source, setSource] = React.useState("AUTO");
   const [glossaryId, setGlossaryId] = React.useState("");
   const [styleId, setStyleId] = React.useState("");
+  const [statusFilter, setStatusFilter] = React.useState<"all" | "active" | "completed">("all");
   const inputRef = React.useRef<HTMLInputElement>(null);
 
   const docsQ = useQuery({ queryKey: ["documents"], queryFn: () => api<DocRow[]>("/api/v1/documents"), refetchInterval: 3000 });
@@ -33,8 +34,10 @@ export default function Documents() {
       if (file.size > MAX_MB * 1024 * 1024) throw new Error(`File exceeds ${MAX_MB} MB`);
       const form = new FormData();
       form.append("file", file);
-      form.append("source_language", source);
+      form.append("target_lang", target);
       form.append("target_language", target);
+      form.append("source_lang", source);
+      form.append("source_language", source);
       if (glossaryId) form.append("glossary_id", glossaryId);
       if (styleId) form.append("style_profile_id", styleId);
       return api<DocRow>("/api/v1/documents", { method: "POST", form });
@@ -131,57 +134,117 @@ export default function Documents() {
       </Card>
 
       {/* list */}
-      {(docsQ.data ?? []).length === 0 ? (
-        <Card><EmptyState title="No documents yet" body="Uploaded documents and their pipeline status will appear here." icon="▤" /></Card>
-      ) : (
-        <div className="space-y-2">
-          {(docsQ.data ?? []).map((d) => (
-            <div key={d.id} className="gt-card p-4">
-              <div className="flex flex-wrap items-center gap-3">
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-semibold text-ink-900">{d.filename}</p>
-                  <p className="text-[11px] text-ink-400">
-                    {(d.size_bytes / 1024).toFixed(0)} KB · {d.detected_language || d.source_language} → {d.target_language}
-                    {" · "}{d.pages} pages · {new Date(d.created_at).toLocaleString()}
-                  </p>
-                </div>
-                <Badge tone={d.status === "ready" ? "good" : d.status === "failed" ? "bad" : d.status === "review" ? "warn" : "info"}>
-                  {d.status}
-                </Badge>
-                {d.status === "ready" && (
-                  <Button size="sm" onClick={async () => {
-                    const res = await api<Response>(`/api/v1/documents/${d.id}/download`, { raw: true });
-                    const blob = await res.blob();
-                    const a = document.createElement("a");
-                    a.href = URL.createObjectURL(blob);
-                    a.download = `translated_${d.filename}`;
-                    a.click();
-                    URL.revokeObjectURL(a.href);
-                  }}>
-                    Download
-                  </Button>
-                )}
-                {(d.status === "failed" || d.status === "review") && (
-                  <Button size="sm" variant="secondary" onClick={() => retry.mutate(d.id)} loading={retry.isPending}>Retry</Button>
-                )}
-                <Button size="sm" variant="ghost" onClick={() => remove.mutate(d.id)} aria-label={`Delete ${d.filename}`}>Delete</Button>
+      {(() => {
+        const allDocs = docsQ.data ?? [];
+        const filteredDocs = allDocs.filter((d) => {
+          if (statusFilter === "active") return d.status !== "ready" && d.status !== "failed";
+          if (statusFilter === "completed") return d.status === "ready";
+          return true;
+        });
+
+        return (
+          <Card
+            title="Documents"
+            subtitle="Track ongoing translation pipeline status and download completed files."
+            action={
+              <div className="flex gap-1 rounded-lg bg-slate-100 p-0.5 text-xs font-medium" role="tablist" aria-label="Filter documents by status">
+                {(["all", "active", "completed"] as const).map((tab) => {
+                  const count =
+                    tab === "all"
+                      ? allDocs.length
+                      : tab === "active"
+                      ? allDocs.filter((d) => d.status !== "ready" && d.status !== "failed").length
+                      : allDocs.filter((d) => d.status === "ready").length;
+                  return (
+                    <button
+                      key={tab}
+                      type="button"
+                      role="tab"
+                      aria-selected={statusFilter === tab}
+                      onClick={() => setStatusFilter(tab)}
+                      className={`rounded-md px-2.5 py-1 capitalize transition-colors ${
+                        statusFilter === tab
+                          ? "bg-white text-slate-900 shadow-sm"
+                          : "text-slate-600 hover:text-slate-900"
+                      }`}
+                    >
+                      {tab === "all" ? "All" : tab === "active" ? "Active" : "Completed"} ({count})
+                    </button>
+                  );
+                })}
               </div>
-              {d.status !== "ready" && d.status !== "failed" && (
-                <div className="mt-3">
-                  <div className="h-1.5 overflow-hidden rounded-full bg-ink-100" role="progressbar"
-                       aria-valuenow={stageProgress(d)} aria-valuemin={0} aria-valuemax={100} aria-label="Translation progress">
-                    <div className="h-full rounded-full bg-signal-500 transition-all" style={{ width: `${stageProgress(d)}%` }} />
+            }
+          >
+            {filteredDocs.length === 0 ? (
+              <EmptyState
+                title={
+                  statusFilter === "active"
+                    ? "No active translations"
+                    : statusFilter === "completed"
+                    ? "No completed documents"
+                    : "No documents yet"
+                }
+                body={
+                  statusFilter === "active"
+                    ? "Documents currently being parsed or translated will appear here."
+                    : statusFilter === "completed"
+                    ? "Finished translations ready for download will appear here."
+                    : "Uploaded documents and their pipeline status will appear here."
+                }
+                icon="▤"
+              />
+            ) : (
+              <div className="space-y-2">
+                {filteredDocs.map((d) => (
+                  <div key={d.id} className="gt-card p-4">
+                    <div className="flex flex-wrap items-center gap-3">
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-semibold text-ink-900">{d.filename}</p>
+                        <p className="text-[11px] text-ink-400">
+                          {(d.size_bytes / 1024).toFixed(0)} KB · {d.detected_language || d.source_language} → {d.target_language}
+                          {" · "}{d.pages} pages · {new Date(d.created_at).toLocaleString()}
+                        </p>
+                      </div>
+                      <Badge tone={d.status === "ready" ? "good" : d.status === "failed" ? "bad" : d.status === "review" ? "warn" : "info"}>
+                        {d.status}
+                      </Badge>
+                      {d.status === "ready" && (
+                        <Button size="sm" onClick={async () => {
+                          const res = await api<Response>(`/api/v1/documents/${d.id}/download`, { raw: true });
+                          const blob = await res.blob();
+                          const a = document.createElement("a");
+                          a.href = URL.createObjectURL(blob);
+                          a.download = `translated_${d.filename}`;
+                          a.click();
+                          URL.revokeObjectURL(a.href);
+                        }}>
+                          Download
+                        </Button>
+                      )}
+                      {(d.status === "failed" || d.status === "review") && (
+                        <Button size="sm" variant="secondary" onClick={() => retry.mutate(d.id)} loading={retry.isPending}>Retry</Button>
+                      )}
+                      <Button size="sm" variant="ghost" onClick={() => remove.mutate(d.id)} aria-label={`Delete ${d.filename}`}>Delete</Button>
+                    </div>
+                    {d.status !== "ready" && d.status !== "failed" && (
+                      <div className="mt-3">
+                        <div className="h-1.5 overflow-hidden rounded-full bg-ink-100" role="progressbar"
+                             aria-valuenow={stageProgress(d)} aria-valuemin={0} aria-valuemax={100} aria-label="Translation progress">
+                          <div className="h-full rounded-full bg-signal-500 transition-all" style={{ width: `${stageProgress(d)}%` }} />
+                        </div>
+                        <p className="mt-1 text-[11px] text-ink-400">
+                          {d.status}… {d.segments_total > 0 && `(${d.segments_done}/${d.segments_total} segments)`}
+                        </p>
+                      </div>
+                    )}
+                    {d.error && <p className="mt-2 rounded bg-red-50 px-2 py-1 text-xs text-red-700">{d.error}</p>}
                   </div>
-                  <p className="mt-1 text-[11px] text-ink-400">
-                    {d.status}… {d.segments_total > 0 && `(${d.segments_done}/${d.segments_total} segments)`}
-                  </p>
-                </div>
-              )}
-              {d.error && <p className="mt-2 rounded bg-red-50 px-2 py-1 text-xs text-red-700">{d.error}</p>}
-            </div>
-          ))}
-        </div>
-      )}
+                ))}
+              </div>
+            )}
+          </Card>
+        );
+      })()}
     </div>
   );
 }

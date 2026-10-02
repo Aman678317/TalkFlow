@@ -1,0 +1,178 @@
+---
+title: "Client SDKs & Libraries"
+description: "Official, production-ready client libraries for Java, .NET, Python, and Node.js"
+---
+
+# Official Client SDKs
+
+GlobalTalk AI and Desi Language AI maintain official, pure MIT-licensed client libraries with zero third-party copyright claims. Every SDK includes connection pooling, automatic exponential backoff jitter, and complete typings.
+
+---
+
+## ☕ Java SDK (`desi-java`)
+
+Targeting Java 11+, `desi-java` is a lightweight, high-performance client with **zero external runtime dependencies** (using Java 11's built-in `java.net.http.HttpClient`).
+
+### Installation
+
+<Tabs>
+  <Tab title="Gradle">
+```groovy
+dependencies {
+    implementation 'com.desi.api:desi-java:1.17.0'
+}
+```
+  </Tab>
+
+  <Tab title="Maven">
+```xml
+<dependency>
+    <groupId>com.desi.api</groupId>
+    <artifactId>desi-java</artifactId>
+    <version>1.17.0</version>
+</dependency>
+```
+  </Tab>
+</Tabs>
+
+### Basic Usage
+
+```java
+import com.desi.api.DesiClient;
+import com.desi.api.DesiClientOptions;
+import com.desi.api.TextTranslation;
+
+public class App {
+    public static void main(String[] args) throws Exception {
+        String authKey = System.getenv("DESI_API_KEY");
+        
+        DesiClientOptions options = new DesiClientOptions()
+            .setServerUrl("https://api.globaltalk.ai")
+            .setMaxRetries(5);
+
+        try (DesiClient client = new DesiClient(authKey, options)) {
+            // Standard translation
+            TextTranslation translation = client.translateText(
+                "Welcome to the team!", "en", "de"
+            );
+            System.out.println("German: " + translation.getText());
+
+            // Indic native translation with honorifics
+            TextTranslation indic = client.translateDesi(
+                "Please submit your report.", "hi", "formal", true
+            );
+            System.out.println("Hindi Formal: " + indic.getText());
+        }
+    }
+}
+```
+
+---
+
+## 🔷 .NET SDK (`GlobalTalk.Desi`)
+
+Targeting `netstandard2.0`, `net6.0`, and `net8.0`, the .NET SDK provides modern asynchronous C# APIs.
+
+### Installation
+
+```bash
+dotnet add package GlobalTalk.Desi --version 1.17.0
+```
+
+### Basic Usage
+
+```csharp
+using System;
+using System.Threading.Tasks;
+using GlobalTalk.Desi;
+
+class Program
+{
+    static async Task Main()
+    {
+        string apiKey = Environment.GetEnvironmentVariable("DESI_API_KEY");
+        var client = new DesiClient(apiKey, new DesiClientOptions
+        {
+            ServerUrl = "https://api.globaltalk.ai"
+        });
+
+        // Translate text
+        var result = await client.TranslateTextAsync(
+            "Security audit passed successfully.", 
+            sourceLanguageCode: "en", 
+            targetLanguageCode: "fr"
+        );
+        Console.WriteLine($"French: {result.Text}");
+
+        // Translate document
+        var docJob = await client.TranslateDocumentAsync(
+            new System.IO.FileInfo("annual_report.docx"),
+            targetLanguageCode: "es"
+        );
+        Console.WriteLine($"Document translated: {docJob.DocumentId}");
+    }
+}
+```
+
+---
+
+## 🐍 Python SDK (`desi-python`)
+
+Async and synchronous Python client targeting Python 3.9+.
+
+### Installation
+
+```bash
+pip install desi-python
+```
+
+### Basic Usage
+
+```python
+import os
+from desi import DesiClient, DesiClientOptions
+
+client = DesiClient(
+    auth_key=os.environ["DESI_API_KEY"],
+    options=DesiClientOptions(server_url="https://api.globaltalk.ai")
+)
+
+# Text translation
+res = client.translate_text("The deployment is complete.", target_lang="JA")
+print("Japanese:", res.text)
+
+# Indic transliteration
+trans = client.transliterate_desi("Dhanyavaad", target_script="devanagari")
+print("Devanagari:", trans.transliterated_text)
+```
+
+---
+
+## 🟢 Node.js / TypeScript SDK (`@globaltalk/sdk`)
+
+Native TypeScript library targeting Node.js 18+ and modern browser environments.
+
+### Installation
+
+```bash
+npm install @globaltalk/sdk
+```
+
+### Basic Usage
+
+```typescript
+import { DesiClient } from "@globaltalk/sdk";
+
+const client = new DesiClient({
+  apiKey: process.env.DESI_API_KEY!,
+  baseUrl: "https://api.globaltalk.ai"
+});
+
+const result = await client.translate({
+  text: "Hello, welcome to GlobalTalk AI!",
+  targetLang: "hi",
+  honorific: "formal"
+});
+
+console.log("Translation:", result.translations[0].text);
+```

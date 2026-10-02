@@ -1,0 +1,4 @@
+search_path = ["services/api", "apps/api", "ai", "."]
+
+[tool.pyrefly]
+search_path = ["services/api", "apps/api", "ai", "."]

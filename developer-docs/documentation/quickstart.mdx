@@ -1,0 +1,178 @@
+---
+title: "5-Minute Quickstart"
+description: "Start translating text and using Indic AI in less than five minutes"
+---
+
+# Quickstart Guide
+
+This guide walks you through sending your first translation requests using the GlobalTalk AI and Desi Language AI APIs.
+
+## 1. Obtain Your API Key
+
+1. Sign in to your [GlobalTalk AI Dashboard](https://globaltalk.ai/developers).
+2. Generate an API Key (starts with `gtk_...`).
+3. Set your environment variable:
+
+```bash
+export GTK_API_KEY="gtk_live_0123456789abcdef"
+# Or for Desi-specific tooling:
+export DESI_API_KEY="gtk_live_0123456789abcdef"
+```
+
+---
+
+## 2. Translate Text (cURL)
+
+Send a translation request to the `/v2/translate` endpoint:
+
+```bash
+curl -X POST "https://api.globaltalk.ai/v2/translate" \
+  -H "Authorization: Bearer $GTK_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": ["Hello, world! Welcome to GlobalTalk AI."],
+    "target_lang": "DE",
+    "formality": "default"
+  }'
+```
+
+### Response
+```json
+{
+  "translations": [
+    {
+      "detected_source_language": "EN",
+      "text": "Hallo Welt! Willkommen bei GlobalTalk AI.",
+      "billed_characters": 41,
+      "model_type_used": "quality_optimized"
+    }
+  ]
+}
+```
+
+---
+
+## 3. Desi Indic AI Translation with Cultural Honorifics
+
+The `/v2/desi/translate` endpoint allows you to specify exact cultural honorific levels:
+
+```bash
+curl -X POST "https://api.globaltalk.ai/v2/desi/translate" \
+  -H "X-API-Key: $GTK_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "Please take your seat and review the quarterly report.",
+    "target_lang": "hi",
+    "honorific": "formal",
+    "respectful_suffix": true,
+    "domain": "business"
+  }'
+```
+
+### Response
+```json
+{
+  "translations": [
+    {
+      "text": "कृपया अपना स्थान ग्रहण करें और त्रैमासिक रिपोर्ट की समीक्षा करें जी।",
+      "detected_source_language": "EN",
+      "target_lang": "HI",
+      "script": "Devanagari",
+      "honorific_applied": "formal",
+      "domain": "business",
+      "billed_characters": 55
+    }
+  ]
+}
+```
+
+---
+
+## 4. Code Examples by SDK
+
+<Tabs>
+  <Tab title="Java">
+```java
+import com.desi.api.DesiClient;
+import com.desi.api.DesiClientOptions;
+import com.desi.api.TextTranslation;
+
+public class Quickstart {
+    public static void main(String[] args) throws Exception {
+        String apiKey = System.getenv("DESI_API_KEY");
+        DesiClientOptions options = new DesiClientOptions()
+            .setServerUrl("https://api.globaltalk.ai");
+        
+        try (DesiClient client = new DesiClient(apiKey, options)) {
+            TextTranslation result = client.translateText(
+                "Good morning, team!", "en", "hi"
+            );
+            System.out.println("Translated: " + result.getText());
+        }
+    }
+}
+```
+  </Tab>
+
+  <Tab title=".NET (C#)">
+```csharp
+using System;
+using System.Threading.Tasks;
+using GlobalTalk.Desi;
+
+class Program
+{
+    static async Task Main()
+    {
+        string apiKey = Environment.GetEnvironmentVariable("DESI_API_KEY");
+        var client = new DesiClient(apiKey, new DesiClientOptions
+        {
+            ServerUrl = "https://api.globaltalk.ai"
+        });
+
+        var result = await client.TranslateTextAsync(
+            "Welcome to our global conference.", "en", "de"
+        );
+        Console.WriteLine($"Translation: {result.Text}");
+    }
+}
+```
+  </Tab>
+
+  <Tab title="Python">
+```python
+import os
+from desi import DesiClient
+
+client = DesiClient(
+    auth_key=os.environ["DESI_API_KEY"],
+    server_url="https://api.globaltalk.ai"
+)
+
+result = client.translate_text(
+    "Hello team, let's begin the review.",
+    target_lang="HI",
+    honorific="formal"
+)
+print("Translated:", result.text)
+```
+  </Tab>
+
+  <Tab title="Node.js">
+```typescript
+import { DesiClient } from "@globaltalk/sdk";
+
+const client = new DesiClient({
+  apiKey: process.env.DESI_API_KEY!,
+  baseUrl: "https://api.globaltalk.ai"
+});
+
+const response = await client.translate({
+  text: "Hello world!",
+  targetLang: "ja"
+});
+
+console.log("Translated:", response.translations[0].text);
+```
+  </Tab>
+</Tabs>

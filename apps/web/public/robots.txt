@@ -1,0 +1,58 @@
+# GlobalTalk AI Robots.txt
+# https://globaltalk.ai
+
+User-agent: *
+Allow: /
+Allow: /translate
+Allow: /write
+Allow: /login
+Allow: /signup
+Allow: /og-preview.svg
+Allow: /og-preview.png
+Allow: /llms.txt
+Allow: /llms-full.txt
+Allow: /sitemap.xml
+
+# Protect authenticated user dashboard and private workspace data
+Disallow: /dashboard
+Disallow: /voice
+Disallow: /documents
+Disallow: /meetings
+Disallow: /chat
+Disallow: /history
+Disallow: /glossaries
+Disallow: /translation-memory
+Disallow: /style-profiles
+Disallow: /api/
+Disallow: /admin/
+Disallow: /settings/
+Disallow: /team/
+Disallow: /billing/
+Disallow: /usage/
+Disallow: /api-keys/
+
+# Search Engine Crawlers
+User-agent: Googlebot
+Allow: /
+
+User-agent: Bingbot
+Allow: /
+
+# Generative AI & Search Engine Agents (GEO)
+User-agent: GPTBot
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+User-agent: Applebot-Extended
+Allow: /
+
+# XML Sitemap declaration
+Sitemap: https://globaltalk.ai/sitemap.xml

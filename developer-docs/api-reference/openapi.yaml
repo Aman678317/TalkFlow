@@ -1,0 +1,1033 @@
+openapi: 3.1.0
+info:
+  title: GlobalTalk AI & Desi Language AI API
+  description: |
+    Official API specification for GlobalTalk AI and the Desi Language AI engine.
+    Provides real-time neural translation, document translation, writing assistance,
+    and native Indic linguistic intelligence across 100+ global languages and all 22 official
+    Eighth Schedule Indian languages.
+  version: 3.2.0
+  contact:
+    name: GlobalTalk AI Developer Relations
+    url: https://globaltalk.ai/support
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: https://api.globaltalk.ai
+    description: Global Production Edge Gateway
+  - url: http://127.0.0.1:8088
+    description: Local Development / Edge Instance
+
+security:
+  - ApiKeyAuth: []
+  - DesiKeyAuth: []
+  - BearerAuth: []
+
+paths:
+  /v2/translate:
+    post:
+      summary: Translate Text
+      description: |
+        Translates single or multiple text segments into target languages with support for
+        formality levels, custom glossaries, translation memory integration, and HTML/XML tag handling.
+      operationId: translateText
+      tags:
+        - Core Translation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TranslateRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/TranslateRequest'
+      responses:
+        '200':
+          description: Successful translation response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranslateResponse'
+        '400':
+          $ref: '#/components/responses/400BadRequest'
+        '403':
+          $ref: '#/components/responses/403Forbidden'
+        '429':
+          $ref: '#/components/responses/429TooManyRequests'
+        '500':
+          $ref: '#/components/responses/500InternalError'
+
+  /v2/desi/translate:
+    post:
+      summary: Desi Indic Native Translation
+      description: |
+        Translates text with cultural honorific awareness across 22 official Indian languages.
+        Supports 3-tier formality (formal [आप], familiar [तुम], intimate [तू], respectful suffix [-जी]),
+        domain awareness, and native script targeting.
+      operationId: desiTranslate
+      tags:
+        - Desi Indic AI
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DesiTranslateRequest'
+      responses:
+        '200':
+          description: Indic translation result with applied honorifics and script annotations
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DesiTranslateResponse'
+        '400':
+          $ref: '#/components/responses/400BadRequest'
+
+  /v2/desi/transliterate:
+    post:
+      summary: Phonetic Script Transliteration
+      description: |
+        Performs phonetic script conversion between Latin/Roman phonetic text (Hinglish/Tanglish)
+        and native Indic scripts (Devanagari, Bengali, Gurmukhi, Tamil, Telugu, Kannada, Malayalam, Gujarati, Odia).
+      operationId: desiTransliterate
+      tags:
+        - Desi Indic AI
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DesiTransliterateRequest'
+      responses:
+        '200':
+          description: Transliteration result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DesiTransliterateResponse'
+
+  /v2/desi/normalize:
+    post:
+      summary: Normalize Indic Unicode Text
+      description: |
+        Sanitizes and normalizes Indic Unicode text. Cleans redundant Zero-Width Non-Joiner (ZWNJ)
+        and Zero-Width Joiner (ZWJ) anomalies and standardizes canonical composed nukta characters.
+      operationId: desiNormalize
+      tags:
+        - Desi Indic AI
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DesiNormalizeRequest'
+      responses:
+        '200':
+          description: Normalized Indic text with sanitization count
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DesiNormalizeResponse'
+
+  /v2/desi/languages:
+    get:
+      summary: List Supported Indic Languages
+      description: |
+        Returns the comprehensive catalog of all 22 official Eighth Schedule Indian languages,
+        including ISO 639-1, ISO 639-3, native script names, and cultural honorific capabilities.
+      operationId: desiLanguages
+      tags:
+        - Desi Indic AI
+      responses:
+        '200':
+          description: Catalog of Indic languages
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DesiLanguagesResponse'
+
+  /v2/languages:
+    get:
+      summary: Retrieve Supported Languages
+      description: Lists languages supported for text or document translation.
+      operationId: getLanguages
+      tags:
+        - Core Translation
+      parameters:
+        - name: type
+          in: query
+          description: Filter by 'source' or 'target' capabilities
+          schema:
+            type: string
+            enum: [source, target]
+            default: source
+      responses:
+        '200':
+          description: List of supported languages
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/LanguageInfo'
+
+  /v2/document:
+    post:
+      summary: Upload Document for Translation
+      description: |
+        Asynchronously submits a document (PDF, DOCX, PPTX, XLSX, HTML, TXT) for layout-preserving translation.
+      operationId: uploadDocument
+      tags:
+        - Document Translation
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/DocumentUploadRequest'
+      responses:
+        '200':
+          description: Document successfully queued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentUploadResponse'
+
+  /v2/document/{document_id}:
+    get:
+      summary: Check Document Status
+      description: Polls the processing status, progress percentage, and billing metrics of a document job.
+      operationId: getDocumentStatus
+      tags:
+        - Document Translation
+      parameters:
+        - name: document_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: document_key
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Current document status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentStatusResponse'
+
+  /v2/document/{document_id}/result:
+    get:
+      summary: Download Translated Document
+      description: Downloads the translated document in its original layout-preserved format once status is 'done'.
+      operationId: downloadDocumentResult
+      tags:
+        - Document Translation
+      parameters:
+        - name: document_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: document_key
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The translated document binary stream
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+
+  /v2/write/rephrase:
+    post:
+      summary: Rephrase Text (Desi Write)
+      description: Rephrases text to enhance tone, vocabulary, and stylistic expression.
+      operationId: writeRephrase
+      tags:
+        - Writing Assistant
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WriteRephraseRequest'
+      responses:
+        '200':
+          description: Rephrased text options
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WriteRephraseResponse'
+
+  /v2/write/correct:
+    post:
+      summary: Correct Spelling and Grammar
+      description: Corrects spelling, grammatical errors, and punctuation without altering the author's voice.
+      operationId: writeCorrect
+      tags:
+        - Writing Assistant
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WriteCorrectRequest'
+      responses:
+        '200':
+          description: Corrected text
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WriteCorrectResponse'
+
+  /v2/usage:
+    get:
+      summary: Check Account Usage & Quotas
+      description: Returns character and document usage counts against configured subscription limits.
+      operationId: getUsage
+      tags:
+        - Account & Quota
+      responses:
+        '200':
+          description: Account quota status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageResponse'
+
+  /v3/glossaries:
+    get:
+      summary: List Multilingual Glossaries
+      operationId: listGlossariesV3
+      tags:
+        - Customization
+      responses:
+        '200':
+          description: List of glossaries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  glossaries:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/GlossaryV3'
+    post:
+      summary: Create Multilingual Glossary
+      operationId: createGlossaryV3
+      tags:
+        - Customization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateGlossaryV3Request'
+      responses:
+        '201':
+          description: Created glossary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GlossaryV3'
+
+  /v3/glossaries/{glossary_id}:
+    get:
+      summary: Get Glossary Metadata
+      operationId: getGlossaryV3
+      tags:
+        - Customization
+      parameters:
+        - name: glossary_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Details of the specified glossary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GlossaryV3'
+    delete:
+      summary: Delete Glossary
+      operationId: deleteGlossaryV3
+      tags:
+        - Customization
+      parameters:
+        - name: glossary_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Successfully deleted
+
+  /v3/style_rules:
+    get:
+      summary: List Style Rules
+      operationId: listStyleRules
+      tags:
+        - Customization
+      responses:
+        '200':
+          description: List of style rules
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  style_rules:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/StyleRule'
+    post:
+      summary: Create Style Rule
+      operationId: createStyleRule
+      tags:
+        - Customization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateStyleRuleRequest'
+      responses:
+        '201':
+          description: Created style rule
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StyleRule'
+
+  /v3/translation_memories:
+    get:
+      summary: List Translation Memories
+      operationId: listTranslationMemories
+      tags:
+        - Customization
+      responses:
+        '200':
+          description: List of translation memories
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  translation_memories:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TranslationMemory'
+    post:
+      summary: Create Translation Memory
+      operationId: createTranslationMemory
+      tags:
+        - Customization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTMRequest'
+      responses:
+        '201':
+          description: Created translation memory
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranslationMemory'
+
+  /v3/voice/realtime:
+    post:
+      summary: Initiate Real-Time Voice Session
+      description: |
+        Creates a real-time bi-directional voice streaming session using WebRTC or WebSocket.
+        Enforces the Canonical Source Invariant: audio is transcribed to an immutable canonical source
+        segment, which fans out to per-listener synthesized speech streams.
+      operationId: createVoiceSession
+      tags:
+        - Real-Time Voice
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VoiceSessionRequest'
+      responses:
+        '200':
+          description: Session handshake details with LiveKit or WebSocket connection tokens
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VoiceSessionResponse'
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: GlobalTalk AI API Key (`gtk_...`)
+    DesiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Desi-Key
+      description: Desi Platform API Key
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    TranslateRequest:
+      type: object
+      required:
+        - text
+        - target_lang
+      properties:
+        text:
+          description: Single string or array of strings to translate.
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+          example: ["Hello, world! Welcome to GlobalTalk AI."]
+        target_lang:
+          type: string
+          description: Target language ISO code (e.g. 'DE', 'FR', 'HI', 'JA').
+          example: "DE"
+        source_lang:
+          type: string
+          description: Source language ISO code (omit for auto-detection).
+          example: "EN"
+        formality:
+          type: string
+          enum: [default, more, less, prefer_more, prefer_less]
+          default: default
+        glossary_id:
+          type: string
+          description: Glossary ID to apply during translation.
+        glossary_ids:
+          type: array
+          items:
+            type: string
+          description: Multiple glossary IDs for simultaneous application.
+        model_type:
+          type: string
+          enum: [quality_optimized, latency_optimized, cost_optimized]
+          default: quality_optimized
+        split_sentences:
+          type: string
+          enum: ["0", "1", "nonewlines"]
+          default: "1"
+        preserve_formatting:
+          type: string
+          enum: ["0", "1"]
+          default: "0"
+        tag_handling:
+          type: string
+          enum: [xml, html]
+        context:
+          type: string
+          description: Surrounding context to disambiguate meaning.
+
+    TranslateResponse:
+      type: object
+      properties:
+        translations:
+          type: array
+          items:
+            type: object
+            properties:
+              detected_source_language:
+                type: string
+                example: "EN"
+              text:
+                type: string
+                example: "Hallo Welt! Willkommen bei GlobalTalk AI."
+              billed_characters:
+                type: integer
+                example: 41
+              model_type_used:
+                type: string
+                example: "quality_optimized"
+
+    DesiTranslateRequest:
+      type: object
+      required:
+        - text
+        - target_lang
+      properties:
+        text:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+          example: "Please take your seat and review the document."
+        target_lang:
+          type: string
+          description: Indic language code (e.g. 'hi', 'bn', 'te', 'mr', 'ta', 'ur', 'gu', 'kn', 'ml').
+          example: "hi"
+        source_lang:
+          type: string
+          default: "en"
+        honorific:
+          type: string
+          enum: [formal, familiar, intimate, respectful, neutral]
+          default: formal
+          description: "Cultural honorific level: formal (आप), familiar (तुम), intimate (तू), respectful suffix (-जी)."
+        respectful_suffix:
+          type: boolean
+          default: false
+          description: Appends respectful suffix (-जी, -గారు, -அவர்கள்) to personal addresses.
+        domain:
+          type: string
+          enum: [general, legal, medical, government, finance, technical]
+          default: general
+
+    DesiTranslateResponse:
+      type: object
+      properties:
+        translations:
+          type: array
+          items:
+            type: object
+            properties:
+              text:
+                type: string
+                example: "कृपया अपना स्थान ग्रहण करें और दस्तावेज़ की समीक्षा करें।"
+              detected_source_language:
+                type: string
+                example: "EN"
+              target_lang:
+                type: string
+                example: "HI"
+              script:
+                type: string
+                example: "Devanagari"
+              honorific_applied:
+                type: string
+                example: "formal"
+              domain:
+                type: string
+                example: "general"
+              billed_characters:
+                type: integer
+                example: 48
+
+    DesiTransliterateRequest:
+      type: object
+      required:
+        - text
+      properties:
+        text:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+          example: "Namaste aap kaise hain"
+        source_script:
+          type: string
+          default: "latin"
+        target_script:
+          type: string
+          enum: [devanagari, bengali, gurmukhi, gujarati, odia, tamil, telugu, kannada, malayalam]
+          default: "devanagari"
+
+    DesiTransliterateResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              source_text:
+                type: string
+                example: "Namaste aap kaise hain"
+              transliterated_text:
+                type: string
+                example: "नमस्ते आप कैसे हैं"
+              source_script:
+                type: string
+                example: "latin"
+              target_script:
+                type: string
+                example: "devanagari"
+              characters:
+                type: integer
+                example: 22
+
+    DesiNormalizeRequest:
+      type: object
+      required:
+        - text
+      properties:
+        text:
+          type: string
+          example: "क़िताब में सही वर्ण विन्यास"
+        clean_zwnj:
+          type: boolean
+          default: true
+        fix_nuktas:
+          type: boolean
+          default: true
+
+    DesiNormalizeResponse:
+      type: object
+      properties:
+        original_text:
+          type: string
+        normalized_text:
+          type: string
+        corrections_count:
+          type: integer
+          example: 1
+        script:
+          type: string
+          example: "Devanagari"
+
+    DesiLanguagesResponse:
+      type: object
+      properties:
+        total_count:
+          type: integer
+          example: 22
+        schedule:
+          type: string
+          example: "Eighth Schedule to the Constitution of India"
+        languages:
+          type: array
+          items:
+            type: object
+            properties:
+              code:
+                type: string
+                example: "hi"
+              iso_639_3:
+                type: string
+                example: "hin"
+              name:
+                type: string
+                example: "Hindi"
+              native_name:
+                type: string
+                example: "हिन्दी"
+              script:
+                type: string
+                example: "Devanagari"
+              family:
+                type: string
+                example: "Indo-Aryan"
+              honorific_tiers:
+                type: array
+                items:
+                  type: string
+                example: ["formal", "familiar", "intimate", "respectful"]
+
+    LanguageInfo:
+      type: object
+      properties:
+        language:
+          type: string
+          example: "DE"
+        name:
+          type: string
+          example: "German"
+        supports_formality:
+          type: boolean
+          example: true
+
+    DocumentUploadRequest:
+      type: object
+      required:
+        - file
+        - target_lang
+      properties:
+        file:
+          type: string
+          format: binary
+        target_lang:
+          type: string
+          example: "ES"
+        source_lang:
+          type: string
+        formality:
+          type: string
+          enum: [default, more, less]
+        glossary_id:
+          type: string
+
+    DocumentUploadResponse:
+      type: object
+      properties:
+        document_id:
+          type: string
+          example: "doc_9a7b8c12"
+        document_key:
+          type: string
+          example: "key_sec_4f5e6d"
+
+    DocumentStatusResponse:
+      type: object
+      properties:
+        document_id:
+          type: string
+        status:
+          type: string
+          enum: [queued, translating, done, error]
+          example: "done"
+        seconds_remaining:
+          type: integer
+          example: 0
+        billed_characters:
+          type: integer
+          example: 1420
+
+    WriteRephraseRequest:
+      type: object
+      required:
+        - text
+      properties:
+        text:
+          type: string
+          example: "We gotta deliver this asap or clients gonna be mad."
+        target_lang:
+          type: string
+          default: "en"
+        style:
+          type: string
+          enum: [academic, business, casual, simple, creative, prefer_business]
+          default: business
+        tone:
+          type: string
+          enum: [confident, diplomatic, enthusiastic, friendly, neutral]
+          default: diplomatic
+
+    WriteRephraseResponse:
+      type: object
+      properties:
+        target_lang:
+          type: string
+        improvements:
+          type: array
+          items:
+            type: object
+            properties:
+              text:
+                type: string
+                example: "We should prioritize delivering this promptly to ensure client satisfaction."
+              style:
+                type: string
+                example: "business"
+              tone:
+                type: string
+                example: "diplomatic"
+
+    WriteCorrectRequest:
+      type: object
+      required:
+        - text
+      properties:
+        text:
+          type: string
+          example: "There is several error in this sentences."
+
+    WriteCorrectResponse:
+      type: object
+      properties:
+        corrected_text:
+          type: string
+          example: "There are several errors in these sentences."
+        corrections_count:
+          type: integer
+          example: 3
+
+    UsageResponse:
+      type: object
+      properties:
+        character_count:
+          type: integer
+          example: 154200
+        character_limit:
+          type: integer
+          example: 10000000
+        document_count:
+          type: integer
+          example: 45
+        document_limit:
+          type: integer
+          example: 500
+
+    GlossaryV3:
+      type: object
+      properties:
+        glossary_id:
+          type: string
+          example: "glo_8e7f6a5b"
+        name:
+          type: string
+          example: "Medical Oncology Terms"
+        entry_count:
+          type: integer
+          example: 240
+        created_at:
+          type: string
+          format: date-time
+
+    CreateGlossaryV3Request:
+      type: object
+      required:
+        - name
+        - dictionaries
+      properties:
+        name:
+          type: string
+        dictionaries:
+          type: array
+          items:
+            type: object
+            properties:
+              source_lang:
+                type: string
+              target_lang:
+                type: string
+              entries:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    source:
+                      type: string
+                    target:
+                      type: string
+
+    StyleRule:
+      type: object
+      properties:
+        style_rule_id:
+          type: string
+        name:
+          type: string
+        language:
+          type: string
+        custom_instructions:
+          type: string
+
+    CreateStyleRuleRequest:
+      type: object
+      required:
+        - name
+        - language
+      properties:
+        name:
+          type: string
+        language:
+          type: string
+        custom_instructions:
+          type: string
+
+    TranslationMemory:
+      type: object
+      properties:
+        translation_memory_id:
+          type: string
+        name:
+          type: string
+        segment_count:
+          type: integer
+
+    CreateTMRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+
+    VoiceSessionRequest:
+      type: object
+      required:
+        - meeting_id
+      properties:
+        meeting_id:
+          type: string
+        spoken_language:
+          type: string
+          default: "hi"
+        listening_language:
+          type: string
+          default: "en"
+        sample_rate:
+          type: integer
+          default: 16000
+
+    VoiceSessionResponse:
+      type: object
+      properties:
+        session_id:
+          type: string
+        livekit_token:
+          type: string
+        livekit_url:
+          type: string
+        websocket_url:
+          type: string
+        canonical_source_guarantee:
+          type: string
+          example: "Single immutable canonical source segment. Zero translation chaining."
+
+  responses:
+    400BadRequest:
+      description: Invalid request parameters or malformed body
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              message:
+                type: string
+    403Forbidden:
+      description: Authentication failed or quota exceeded
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              message:
+                type: string
+    429TooManyRequests:
+      description: Rate limit exceeded
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              message:
+                type: string
+              retry_after_seconds:
+                type: integer
+    500InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              message:
+                type: string

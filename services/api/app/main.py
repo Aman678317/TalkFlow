@@ -12,7 +12,7 @@ import asyncio
 import contextlib
 import logging
 import time
-from typing import AsyncIterator
+from collections.abc import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,6 +23,15 @@ from app.errors import register_error_handlers
 from app.logging_conf import setup_logging
 
 log = logging.getLogger("app.main")
+
+
+@contextlib.asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncGenerator[None]:
+    await _lifespan_startup(app)
+    try:
+        yield
+    finally:
+        await _lifespan_shutdown(app)
 
 
 def create_app() -> FastAPI:
@@ -40,6 +49,7 @@ def create_app() -> FastAPI:
         docs_url="/api/docs",
         redoc_url="/api/redoc",
         openapi_url="/api/openapi.json",
+        lifespan=_lifespan,
     )
 
     app.add_middleware(GZipMiddleware, minimum_size=1024)
@@ -61,8 +71,9 @@ def create_app() -> FastAPI:
     from app.routers import (
         assistant as assistant_routers,
         auth, documents, health, meetings, orgs, platform, translate,
-        customization, write,
+        customization, write, v2_v3, telephony,
     )
+    app.include_router(v2_v3.router)
     app.include_router(health.router)
     app.include_router(auth.router)
     app.include_router(orgs.router)
@@ -75,6 +86,7 @@ def create_app() -> FastAPI:
     app.include_router(assistant_routers.chat_router)
     app.include_router(assistant_routers.assistant_router)
     app.include_router(assistant_routers.agent_router)
+    app.include_router(telephony.router)
     for r in (platform.keys_router, platform.usage_router, platform.webhooks_router,
               platform.search_router, platform.feedback_router, platform.flags_router,
               platform.integrations_router, platform.admin_router):
@@ -90,13 +102,11 @@ def create_app() -> FastAPI:
             "docs": "/api/docs",
         }
 
-    @app.on_event("startup")
-    async def _startup() -> None:
-        await _lifespan_startup(app)
-
-    @app.on_event("shutdown")
-    async def _shutdown() -> None:
-        await _lifespan_shutdown(app)
+    @app.get("/api", include_in_schema=False)
+    @app.get("/api-docs", include_in_schema=False)
+    async def _api_docs_redirect():
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url="/api/docs")
 
     return app
 
@@ -116,15 +126,15 @@ async def _lifespan_startup(app: FastAPI) -> None:
     # auto-migrate schema in dev/test when tables are missing
     await _ensure_schema()
 
+    # seed defaults if empty (idempotent)
+    from app.seed import run_seed
+    await run_seed()
+
     # AI layer
     from app.ai import ai
     from app.db.session import db_session
     async with db_session() as db:
         await ai.load_registry(db)
-
-    # seed defaults if empty (idempotent)
-    from app.seed import run_seed
-    await run_seed()
 
     # workers
     app.state.workers = []
@@ -159,16 +169,16 @@ async def _ensure_schema() -> None:
     from app.db.session import engine
     from app.db.base import Base
     import app.db.models  # noqa: F401
+    if not settings.is_production:
+        async with engine().begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        return
     async with engine().connect() as conn:
         tables = await conn.run_sync(
             lambda sync_conn: inspect(sync_conn).get_table_names())
     if "users" in tables:
         return
-    if settings.is_production:
-        raise RuntimeError("database schema missing — run `alembic upgrade head`")
-    log.warning("empty schema detected; creating tables directly (dev/test only)")
-    async with engine().begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    raise RuntimeError("database schema missing — run `alembic upgrade head`")
 
 
 async def _lifespan_shutdown(app: FastAPI) -> None:

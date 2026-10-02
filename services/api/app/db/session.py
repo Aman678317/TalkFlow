@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 
 from sqlalchemy import event, text
@@ -18,9 +18,18 @@ _engine: AsyncEngine | None = None
 _sessionmaker: async_sessionmaker[AsyncSession] | None = None
 
 
+def _normalize_db_url(url: str) -> str:
+    if url.startswith("sqlite://") and not url.startswith("sqlite+"):
+        return url.replace("sqlite://", "sqlite+aiosqlite://", 1)
+    if url.startswith("postgresql://") and not url.startswith("postgresql+"):
+        return url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    return url
+
+
 def _make_engine(url: str) -> AsyncEngine:
+    url = _normalize_db_url(url)
     kwargs: dict = {"echo": settings.db_echo, "future": True}
-    if url.startswith("postgresql"):
+    if "postgresql" in url:
         kwargs.update(pool_size=settings.db_pool_size,
                       max_overflow=settings.db_max_overflow,
                       pool_pre_ping=True, pool_recycle=1800)
@@ -66,7 +75,7 @@ async def get_db() -> AsyncIterator[AsyncSession]:
 
 
 @asynccontextmanager
-async def db_session() -> AsyncIterator[AsyncSession]:
+async def db_session() -> AsyncGenerator[AsyncSession, None]:
     """Service/worker context manager."""
     async with sessionmaker()() as session:
         yield session

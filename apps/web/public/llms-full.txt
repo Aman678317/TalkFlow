@@ -1,0 +1,108 @@
+# GlobalTalk AI — Full Technical & System Specification
+> Canonical Reference Document for LLM Search Engines, Code Agents, and Indexers
+> URI: https://globaltalk.ai/llms-full.txt
+> License: MIT Open Source
+> Repository: https://github.com/Aman678317/Anv-AI
+
+---
+
+## 1. System Overview & Core Mission
+GlobalTalk AI is a real-time multilingual communication platform engineered for sub-second voice and text translation across 100+ languages. Unlike traditional translation platforms that route text sequentially through English as an intermediary bridge (e.g. Hindi -> English -> Japanese), GlobalTalk AI enforces the Canonical Source Principle:
+- **Canonical Source Principle**: The human speaker's original utterance is the sole semantic source of truth. Each target listener's stream fans out independently and directly from the source audio or transcript, preserving nuance, register, and preventing compounded drift.
+
+---
+
+## 2. Core Functional Modules
+
+### 2.1 Desi-Grade Dual-Pane Translator
+- **Interface**: Side-by-side bidirectional translation pane with quick language swapping (`ArrowLeftRight`).
+- **Features**:
+  - Contextual dictionary lookup: phonetic pronunciation, part of speech, definition, synonyms, and localized usage examples.
+  - Multi-engine optimization modes: Best Quality (`quality_optimized`), Lowest Latency (`latency_optimized`), Lowest Cost (`cost_optimized`), and Private Only (`private_only`).
+  - Domain specialization: General, Technical, Legal, Finance, Medical, Customer Support, and Education.
+  - Native speech synthesis listen playback via Piper TTS / Web Speech API.
+
+### 2.2 Desi Write AI (Writing Assistant)
+- **Interface**: Intelligent AI-driven rewriting and grammar assistant.
+- **Modes**:
+  - 5 Styles: Business, Academic, Casual, Simple, Creative.
+  - 5 Tones: Neutral, Confident, Empathetic, Direct, Persuasive.
+- **Diff Highlighting**: Side-by-side visual diff highlighting added, modified, and removed tokens in real time.
+
+### 2.3 Desi Voice Live (Face-to-Face Voice Translation)
+- **Audio Pipeline**:
+  - Capture: WebRTC 16kHz PCM mono audio input.
+  - Voice Activity Detection (VAD): Silero VAD running locally or via lightweight edge inference.
+  - Speech-to-Text (STT): OpenAI Whisper (large-v3-turbo / base / small) streaming segments.
+  - Neural Machine Translation (NMT): Transformer-based sequence-to-sequence translation models.
+  - Text-to-Speech (TTS): Piper neural TTS providing native natural speaker voices.
+- **Latency**: End-to-end processing completes in < 1,000 milliseconds.
+- **Visuals**: Real-time soundwave pulsing visualizer and bilingual live transcript feed with speaker diarization.
+
+### 2.4 Google Meet-Style WebRTC Video Meetings
+- **Infrastructure**: Powered by LiveKit WebRTC SFU (Selective Forwarding Unit).
+- **Features**:
+  - Multi-participant video rooms with per-participant translated audio tracks.
+  - Screen sharing, camera toggle, microphone mute, in-room translated chat.
+  - Real-time closed captioning rendered in each participant's preferred native language.
+  - One-click invite link sharing (`https://globaltalk.ai/meeting/:id`).
+
+### 2.5 Document Translation Engine
+- **Supported Formats**: PDF, DOCX (Microsoft Word), PPTX (PowerPoint), XLSX (Excel), TXT, and HTML.
+- **Layout Preservation**: Parses document ASTs (Abstract Syntax Trees) to translate string nodes while preserving exact typography, fonts, images, tables, cell borders, and slide geometries.
+
+### 2.6 Enterprise Privacy & Customization
+- **Translation Memory (TM)**: 100% and fuzzy match retrieval for previously translated segments.
+- **Glossary Management**: Enforces company-specific nomenclature, brand terms, and untranslatable keywords.
+- **Data Governance**: Zero third-party telemetry, self-hosted deployment options, GDPR-compliant architecture.
+
+---
+
+## 3. Supported Languages
+GlobalTalk AI supports 100+ languages including:
+- South Asian: Hindi (हिन्दी), Bengali (বাংলা), Marathi (मराठी), Telugu (తెలుగు), Tamil (தமிழ்), Gujarati (ગુજરાતી), Urdu (اردو), Kannada (ಕನ್ನಡ), Malayalam (മലയാളം), Punjabi (ਪੰਜਾਬੀ).
+- Global: English, Spanish (Español), French (Français), German (Deutsch), Japanese (日本語), Chinese Simplified & Traditional (中文), Arabic (العربية), Portuguese (Português), Italian (Italiano), Russian (Русский), Korean (한국어), Dutch (Nederlands), Turkish (Türkçe), Vietnamese (Tiếng Việt), Polish (Polski), and more.
+
+---
+
+## 4. Technical Architecture & Tech Stack
+
+### 4.1 Frontend Client
+- **Framework**: React 18, TypeScript (strict mode enabled).
+- **Build System**: Vite 5 with Rollup chunking and PostCSS.
+- **State Management**: Zustand 4.5 store architecture.
+- **Data Fetching**: TanStack React Query 5.
+- **Styling**: Tailwind CSS with custom Iris/Slate palette and responsive CSS Grid/Flexbox layouts.
+- **WebRTC**: `livekit-client` v2.22.
+
+### 4.2 Backend & Microservices
+- **API Framework**: Python 3.11 with FastAPI (async ASGI endpoints) and Pydantic v2 validation.
+- **Database & ORM**: PostgreSQL, SQLAlchemy 2.0 async session, Alembic migrations.
+- **Streaming Protocols**: WebSockets (`/ws/voice/stream`, `/ws/chat/stream`) and WebRTC SFU tracks.
+- **Containerization**: Docker Compose and Kubernetes deployment manifests.
+
+---
+
+## 5. Public API & Routing Table
+
+| Route / Endpoint | Description | Access Level |
+| :--- | :--- | :--- |
+| `GET /` | Marketing & Platform Overview Landing Page | Public |
+| `GET /login` | User Authentication & Sign-in | Public |
+| `GET /signup` | Workspace Registration & Onboarding | Public |
+| `GET /meeting/:id` | Live WebRTC Video Conference Room | Public / Link-Invited |
+| `GET /dashboard` | User Workspace & Metrics Console | Authenticated |
+| `GET /translate` | Dual-Pane Translation Console | Workspace User |
+| `GET /write` | AI Writing & Grammar Assistant | Workspace User |
+| `GET /voice` | Live Speech-to-Speech Streaming Session | Workspace User |
+| `GET /meetings` | Scheduled & Instant Video Meetings | Workspace User |
+| `GET /documents` | Batch & Single Document Translation | Workspace User |
+| `GET /history` | Historical Transcripts & Exports | Workspace User |
+| `GET /glossaries` | Custom Terminology & Dictionaries | Workspace User |
+| `GET /translation-memory` | Translation Memory Segments | Workspace User |
+| `GET /style-profiles` | Custom Tone & Style Guidelines | Workspace User |
+| `GET /api` | API Keys & Webhook Management | Workspace User |
+| `GET /usage` | Real-time Token & Bandwidth Analytics | Workspace User |
+| `GET /billing` | Subscription & Invoicing Management | Workspace User |
+| `GET /team` | RBAC Team Member Management | Admin / Owner |
+| `GET /admin` | System Administration & Node Health | System Admin |

@@ -1,0 +1,32 @@
+{
+  "name": "@globaltalk-ai/api-specs",
+  "version": "1.0.0",
+  "description": "Public authoritative OpenAPI 3.1.0 and AsyncAPI 3.0.0 specifications for GlobalTalk AI and Desi Language AI",
+  "private": true,
+  "main": "openapi.json",
+  "scripts": {
+    "lint": "npm run lint:openapi && npm run lint:asyncapi",
+    "lint:openapi": "npx @redocly/cli lint openapi.yaml",
+    "lint:asyncapi": "npx @asyncapi/cli validate voice.asyncapi.yaml",
+    "bundle:openapi": "npx @redocly/cli bundle openapi.yaml -o dist/openapi.json",
+    "preview:docs": "npx @redocly/cli preview-docs openapi.yaml",
+    "preview:voice": "npx @asyncapi/cli start studio -f voice.asyncapi.yaml",
+    "generate:ts-client": "npx openapi-generator-cli generate -i openapi.yaml -g typescript-axios -o generated/typescript-axios",
+    "generate:python-client": "npx openapi-generator-cli generate -i openapi.yaml -g python -o generated/python"
+  },
+  "keywords": [
+    "globaltalk-ai",
+    "desi-language-ai",
+    "openapi",
+    "asyncapi",
+    "translation-api",
+    "voice-translation",
+    "indic-languages"
+  ],
+  "author": "GlobalTalk AI Authors and Contributors",
+  "license": "MIT",
+  "devDependencies": {
+    "@asyncapi/cli": "^2.9.0",
+    "@redocly/cli": "^1.18.0"
+  }
+}

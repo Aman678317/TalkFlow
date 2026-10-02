@@ -1,45 +1,160 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap");
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/* ─── Design tokens ────────────────────────────────────────────── */
 :root {
-  --gt-focus: #23a685;
+  --dl-blue:        #0A66C2;
+  --dl-blue-hover:  #0958A8;
+  --dl-navy:        #0F2B46;
+  --dl-border:      #E4E7EB;
+  --dl-bg-alt:      #F8F9FA;
+  --dl-focus:       #0A66C2;
+  --dl-radius:      10px;
+  --sidebar-w:      230px;
 }
 
+/* ─── Base ─────────────────────────────────────────────────────── */
 html, body, #root { height: 100%; }
 
 body {
-  @apply bg-ink-50 text-ink-900 antialiased;
+  @apply bg-white text-dl-navy antialiased;
+  font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
 }
 
 *:focus-visible {
-  outline: 2px solid var(--gt-focus);
+  outline: 2px solid var(--dl-focus);
   outline-offset: 2px;
-  border-radius: 4px;
+  border-radius: 6px;
 }
 
+/* ─── Scrollbar ─────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb {
+  background: #CBD2DA;
+  border-radius: 99px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-track { background: transparent; }
+
+/* ─── Components ────────────────────────────────────────────────── */
 @layer components {
-  .gt-card { @apply bg-white rounded-xl shadow-card border border-ink-100; }
-  .gt-label { @apply block text-xs font-semibold uppercase tracking-wider text-ink-400 mb-1.5; }
-  .gt-input {
-    @apply w-full rounded-lg border border-ink-200 bg-white px-3 py-2 text-sm text-ink-900
-           placeholder:text-ink-300 focus:border-signal-500 focus:ring-2 focus:ring-signal-500/20
+
+  /* Cards */
+  .dl-card {
+    @apply bg-white rounded-2xl border border-dl-border shadow-card overflow-hidden;
+  }
+  .dl-panel {
+    @apply bg-white rounded-2xl border border-dl-border overflow-hidden;
+    box-shadow: 0 1px 3px rgba(15,43,70,.05), 0 0 0 1px #E4E7EB;
+  }
+
+  /* Labels */
+  .dl-label {
+    @apply block text-xs font-semibold uppercase tracking-wider text-dl-muted mb-1.5;
+  }
+
+  /* Input */
+  .dl-input {
+    @apply w-full rounded-xl border border-dl-border bg-white px-3 py-2 text-sm text-dl-navy
+           placeholder:text-dl-faint
+           focus:border-dl-blue focus:ring-2 focus:ring-dl-blue/20
            transition disabled:opacity-50 disabled:cursor-not-allowed;
   }
-  .gt-chip {
-    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium;
+
+  /* Language pill button (inactive) */
+  .lang-pill {
+    @apply rounded-lg px-3 py-1.5 text-xs font-medium text-dl-muted
+           hover:bg-dl-pill hover:text-dl-navy transition-all duration-150;
   }
+  .lang-pill-active {
+    @apply rounded-lg px-3 py-1.5 text-xs font-semibold bg-dl-pill-active text-white transition-all;
+  }
+
+  /* Toolbar button */
+  .tool-btn {
+    @apply inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium
+           text-dl-muted hover:bg-dl-bg-alt hover:text-dl-navy
+           transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+
+  /* Icon button */
+  .icon-btn {
+    @apply inline-flex items-center justify-center h-8 w-8 rounded-lg
+           text-dl-muted hover:bg-dl-bg-alt hover:text-dl-navy
+           transition-all duration-150 disabled:opacity-30;
+  }
+
+  /* Sidebar nav item */
+  .nav-item {
+    @apply flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium
+           text-slate-400 hover:bg-white/5 hover:text-white
+           transition-colors duration-150;
+  }
+  .nav-item-active {
+    @apply bg-white/10 text-white font-semibold;
+  }
+
+  /* Chip / badge */
+  .dl-chip {
+    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-medium;
+  }
+}
+
+/* ─── Animations ─────────────────────────────────────────────────── */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes slide-down {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-fadeIn  { animation: fade-in  0.18s ease-out both; }
+.animate-slideDown { animation: slide-down 0.18s ease-out both; }
+
+/* pulse-ring for voice indicator */
+@keyframes pulse-ring {
+  0%   { transform: scale(.9); opacity: .7; }
+  100% { transform: scale(1.6); opacity: 0; }
+}
+.animate-pulse-ring { animation: pulse-ring 1.4s ease-out infinite; }
+
+/* skeleton shimmer */
+@keyframes shimmer {
+  0%   { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+.skeleton {
+  background: linear-gradient(90deg, #F0F4F8 25%, #E4E7EB 50%, #F0F4F8 75%);
+  background-size: 800px 100%;
+  animation: shimmer 1.4s infinite;
+  border-radius: 8px;
 }
 
 /* caption stream */
 .caption-line { @apply leading-relaxed; }
 
-/* scrollbar */
-::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-thumb { @apply bg-ink-200 rounded-full border-2 border-solid border-transparent bg-clip-content; }
-::-webkit-scrollbar-track { background: transparent; }
+/* ─── Apple HIG: Direct manipulation press feedback ─────────────── */
+a.bg-iris-600:active,
+button.bg-iris-600:active,
+.btn-press:active {
+  transform: scale(0.97) !important;
+  transition: transform 100ms ease-out !important;
+}
 
+/* Motion preferences */
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  *, *::before, *::after {
+    animation: none !important;
+    transition-duration: 150ms !important;
+    transform: none !important;
+  }
 }

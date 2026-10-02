@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "desi": {
+      "command": "node",
+      "args": ["../../mcp/desi-mcp-server/src/index.mjs"],
+      "env": {
+        "DESI_API_KEY": "${env:DESI_API_KEY}",
+        "DESI_API_URL": "${env:DESI_API_URL:-http://127.0.0.1:8088}"
+      }
+    }
+  }
+}

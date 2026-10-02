@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="https://raw.githubusercontent.com/Aman678317/Anv-AI/main/docs/assets/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script src="lib/connect-rtc-1.1.26.min.js"></script>
+    <script src="/frontend-config.js" type="text/javascript"></script>
+    <title>Amazon Connect + Desi Voice-to-Voice AI</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="app">
+
+      <!-- ── Header ─────────────────────────────────────────────────────── -->
+      <header>
+        <h1>
+          <span class="desi-badge">Desi AI</span>
+          Amazon Connect Voice-to-Voice (V2V) Translation
+        </h1>
+        <div id="environmentSelector" class="environment-selector">
+          <label for="environmentSelect">Environment:</label>
+          <select id="environmentSelect">
+            <option value="prod">Production (GlobalTalk Edge)</option>
+            <option value="dev">Local Dev / Edge</option>
+          </select>
+        </div>
+        <button id="logoutButton" class="hidden">Logout</button>
+      </header>
+
+      <!-- ── Main ───────────────────────────────────────────────────────── -->
+      <main>
+
+        <!-- ── Left Column: CCP + Audio Controls ──────────────────────── -->
+        <div id="leftColumn">
+
+          <section id="ccpSection">
+            <h2>Contact Control Panel</h2>
+            <div id="ccpContainer"></div>
+          </section>
+
+          <section id="audioControls">
+            <h2>Audio Controls</h2>
+            <div class="control-group">
+              <h3>Speaker</h3>
+              <div class="input-group">
+                <label for="speakerSelect">Speaker Output:</label>
+                <select id="speakerSelect">
+                  <option value="">-- Select Speaker --</option>
+                </select>
+                <button id="testAudioButton">Test Output</button>
+              </div>
+
+              <h3>Microphone Settings</h3>
+              <div class="checkbox-group">
+                <input type="checkbox" id="echoCancellationCheckbox" checked />
+                <label for="echoCancellationCheckbox">Acoustic Echo Cancellation</label>
+              </div>
+              <div class="checkbox-group">
+                <input type="checkbox" id="noiseSuppressionCheckbox" checked />
+                <label for="noiseSuppressionCheckbox">Noise Suppression</label>
+              </div>
+              <div class="checkbox-group">
+                <input type="checkbox" id="autoGainControlCheckbox" />
+                <label for="autoGainControlCheckbox">Auto Gain Control</label>
+              </div>
+            </div>
+          </section>
+
+          <section id="audioPlayback" hidden>
+            <h2>Audio Streams (Monitoring)</h2>
+            <div class="audio-group">
+              <label for="remote-audio">From Customer (Raw):</label>
+              <audio id="remote-audio" controls autoplay></audio>
+            </div>
+            <div class="audio-group">
+              <label for="toCustomerAudioElement">To Customer (Synthesized):</label>
+              <audio id="toCustomerAudioElement" controls autoplay muted></audio>
+            </div>
+            <div class="audio-group">
+              <label for="toAgentAudioElement">To Agent (Synthesized):</label>
+              <audio id="toAgentAudioElement" controls autoplay></audio>
+            </div>
+          </section>
+
+        </div><!-- /#leftColumn -->
+
+        <!-- ── Right Column: Customer & Agent Controls + Transcripts ─────── -->
+        <div id="rightColumn">
+          <section id="transcribeTranslate">
+
+            <div id="controls-column">
+
+              <!-- ── Customer Controls ─────────────────────────────────── -->
+              <div id="customer-controls" class="participant-controls">
+                <h2>Customer</h2>
+
+                <div class="control-group-transcribe">
+                  <h3>Audio Controls</h3>
+                  <div class="checkbox-group">
+                    <input type="checkbox" id="customerStreamTranslationCheckbox" checked />
+                    <label for="customerStreamTranslationCheckbox">Stream Translation to Customer</label>
+                  </div>
+                  <div class="checkbox-group">
+                    <input type="checkbox" id="customerInterruptOnSpeakCheckbox" checked />
+                    <label for="customerInterruptOnSpeakCheckbox">Barge-In (Interrupt when speaking)</label>
+                  </div>
+                  <div class="vad-container">
+                    <div id="customerVadIndicator" class="vad-indicator"></div>
+                    <h4>Customer Speaking (VAD)</h4>
+                  </div>
+                </div>
+
+                <div class="control-group-translate">
+                  <h3>Language & Dialect</h3>
+                  <div class="input-group">
+                    <label for="customerLanguageSelect">Customer speaks:</label>
+                    <select id="customerLanguageSelect">
+                      <option value="">-- Select Language --</option>
+                    </select>
+                  </div>
+                  <div class="input-group">
+                    <label for="customerFormalitySelect">Cultural Formality:</label>
+                    <select id="customerFormalitySelect">
+                      <option value="formal">Formal (आप / Aap) - Respectful</option>
+                      <option value="familiar">Familiar (तुम / Tum) - Peers</option>
+                      <option value="intimate">Intimate (तू / Tu) - Family</option>
+                      <option value="respectful">Respectful Suffix (-जी / -garu)</option>
+                      <option value="default">Default Formality</option>
+                    </select>
+                  </div>
+                  <div class="input-group">
+                    <label for="customerTtsProviderSelect">Speech Synthesizer:</label>
+                    <select id="customerTtsProviderSelect">
+                      <option value="desi">Desi Neural Voice (Native)</option>
+                      <option value="elevenlabs">ElevenLabs</option>
+                      <option value="polly">Amazon Polly</option>
+                    </select>
+                  </div>
+                  <div class="input-group">
+                    <label for="customerVoiceIdSelect">Voice Persona:</label>
+                    <select id="customerVoiceIdSelect">
+                      <option value="female">Natural Female</option>
+                      <option value="male">Natural Male</option>
+                    </select>
+                  </div>
+                  <div class="output-group">
+                    <label>Live Customer Utterance:</label>
+                    <div id="customerTranscriptionTextOutputDiv" class="output-text"></div>
+                  </div>
+                  <div class="output-group">
+                    <label>Translated Output to Agent:</label>
+                    <div id="customerTranslatedTextOutputDiv" class="output-text"></div>
+                  </div>
+                </div>
+
+                <div class="control-group-latency">
+                  <h3>Telemetry (Customer &rarr; Agent)</h3>
+                  <div id="customer-latency-transcription">
+                    &Delta; Customer Speech &rarr; Transcription
+                    <div class="latency-value">-- ms</div>
+                    <div class="latency-stats">Avg: -- | Min: -- | Max: -- | P95: --</div>
+                  </div>
+                  <div id="customer-latency-translation">
+                    &Delta; Transcription &rarr; Translation
+                    <div class="latency-value">-- ms</div>
+                    <div class="latency-stats">Avg: -- | Min: -- | Max: -- | P95: --</div>
+                  </div>
+                  <div id="customer-latency-tts">
+                    &Delta; Translation &rarr; Synthesized Audio
+                    <div class="latency-value">-- ms</div>
+                    <div class="latency-stats">Avg: -- | Min: -- | Max: -- | P95: --</div>
+                  </div>
+                </div>
+              </div><!-- /#customer-controls -->
+
+              <!-- ── Agent Controls ────────────────────────────────────── -->
+              <div id="agent-controls" class="participant-controls">
+                <h2>Agent</h2>
+
+                <div class="control-group-transcribe">
+                  <h3>Audio Controls</h3>
+                  <div class="checkbox-group">
+                    <input type="checkbox" id="agentStreamTranslationCheckbox" checked />
+                    <label for="agentStreamTranslationCheckbox">Stream Translation to Agent</label>
+                  </div>
+                  <div class="checkbox-group">
+                    <input type="checkbox" id="agentInterruptOnSpeakCheckbox" checked />
+                    <label for="agentInterruptOnSpeakCheckbox">Barge-In (Interrupt when speaking)</label>
+                  </div>
+                  <div class="button-group">
+                    <button id="agentMuteTranscriptionButton">Mute Translation</button>
+                  </div>
+                  <div class="vad-container">
+                    <div id="agentVadIndicator" class="vad-indicator"></div>
+                    <h4>Agent Speaking (VAD)</h4>
+                  </div>
+                </div>
+
+                <div class="control-group-translate">
+                  <h3>Language & Dialect</h3>
+                  <div class="input-group">
+                    <label for="agentLanguageSelect">Agent speaks:</label>
+                    <select id="agentLanguageSelect">
+                      <option value="">-- Select Language --</option>
+                    </select>
+                  </div>
+                  <div class="input-group">
+                    <label for="agentFormalitySelect">Cultural Formality:</label>
+                    <select id="agentFormalitySelect">
+                      <option value="formal">Formal (आप / Aap) - Respectful</option>
+                      <option value="familiar">Familiar (तुम / Tum) - Peers</option>
+                      <option value="intimate">Intimate (तू / Tu) - Family</option>
+                      <option value="respectful">Respectful Suffix (-जी / -garu)</option>
+                      <option value="default">Default Formality</option>
+                    </select>
+                  </div>
+                  <div class="input-group">
+                    <label for="agentTtsProviderSelect">Speech Synthesizer:</label>
+                    <select id="agentTtsProviderSelect">
+                      <option value="desi">Desi Neural Voice (Native)</option>
+                      <option value="elevenlabs">ElevenLabs</option>
+                      <option value="polly">Amazon Polly</option>
+                    </select>
+                  </div>
+                  <div class="input-group">
+                    <label for="agentVoiceIdSelect">Voice Persona:</label>
+                    <select id="agentVoiceIdSelect">
+                      <option value="female">Natural Female</option>
+                      <option value="male">Natural Male</option>
+                    </select>
+                  </div>
+                  <div class="output-group">
+                    <label>Live Agent Utterance:</label>
+                    <div id="agentTranscriptionTextOutputDiv" class="output-text"></div>
+                  </div>
+                  <div class="output-group">
+                    <label>Translated Output to Customer:</label>
+                    <div id="agentTranslatedTextOutputDiv" class="output-text"></div>
+                  </div>
+                </div>
+
+                <div class="control-group-latency">
+                  <h3>Telemetry (Agent &rarr; Customer)</h3>
+                  <div id="agent-latency-transcription">
+                    &Delta; Agent Speech &rarr; Transcription
+                    <div class="latency-value">-- ms</div>
+                    <div class="latency-stats">Avg: -- | Min: -- | Max: -- | P95: --</div>
+                  </div>
+                  <div id="agent-latency-translation">
+                    &Delta; Transcription &rarr; Translation
+                    <div class="latency-value">-- ms</div>
+                    <div class="latency-stats">Avg: -- | Min: -- | Max: -- | P95: --</div>
+                  </div>
+                  <div id="agent-latency-tts">
+                    &Delta; Translation &rarr; Synthesized Audio
+                    <div class="latency-value">-- ms</div>
+                    <div class="latency-stats">Avg: -- | Min: -- | Max: -- | P95: --</div>
+                  </div>
+                </div>
+              </div><!-- /#agent-controls -->
+
+            </div><!-- /#controls-column -->
+
+            <!-- ── Conversation Panel ─────────────────────────────────── -->
+            <div id="divTranscription">
+              <h2>Real-Time Conversation</h2>
+              <div class="control-group-transcription">
+                <div id="divTranscriptContainer" class="transcript-container">
+                  <div class="transcript-spacer"></div>
+                </div>
+              </div>
+            </div>
+
+          </section><!-- /#transcribeTranslate -->
+        </div><!-- /#rightColumn -->
+
+      </main>
+    </div><!-- /#app -->
+    <script type="module" src="/main.js"></script>
+  </body>
+</html>

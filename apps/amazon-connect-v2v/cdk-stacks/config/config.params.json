@@ -1,0 +1,77 @@
+{
+  "CdkAppName": "AmazonConnectDesiV2V",
+  "CdkBackendStack": "AmazonConnectDesiV2VBackend",
+  "CdkFrontendStack": "AmazonConnectDesiV2VFrontend",
+  "WebAppRootPrefix": "WebAppRoot/",
+  "WebAppStagingPrefix": "WebAppStaging/",
+  "hierarchy": "/AmazonConnectDesiV2V/",
+  "parameters": [
+    {
+      "name": "cognitoDomainPrefix",
+      "cliFormat": "cognito-domain-prefix",
+      "description": "Amazon Cognito hosted UI domain prefix (must be unique).",
+      "required": true
+    },
+    {
+      "name": "cognitoCallbackUrls",
+      "cliFormat": "cognito-callback-urls",
+      "description": "Callback URLs for Cognito auth (e.g. https://localhost:5173).",
+      "required": true
+    },
+    {
+      "name": "cognitoLogoutUrls",
+      "cliFormat": "cognito-logout-urls",
+      "description": "Logout URLs for Cognito auth.",
+      "required": true
+    },
+    {
+      "name": "connectInstanceURL",
+      "cliFormat": "connect-instance-url",
+      "description": "Amazon Connect instance URL (e.g. https://instance.my.connect.aws).",
+      "required": true
+    },
+    {
+      "name": "connectInstanceRegion",
+      "cliFormat": "connect-instance-region",
+      "description": "Amazon Connect instance region (e.g. us-east-1).",
+      "required": true
+    },
+    {
+      "name": "transcribeRegion",
+      "cliFormat": "transcribe-region",
+      "description": "Amazon Transcribe region for fallback STT.",
+      "defaultValue": "us-east-1",
+      "required": true
+    },
+    {
+      "name": "translateRegion",
+      "cliFormat": "translate-region",
+      "description": "Amazon Translate region for fallback MT.",
+      "defaultValue": "us-east-1",
+      "required": true
+    },
+    {
+      "name": "translateProxyEnabled",
+      "cliFormat": "translate-proxy-enabled",
+      "description": "Proxy Translate requests through CloudFront to avoid CORS.",
+      "defaultValue": true,
+      "required": true,
+      "boolean": true
+    },
+    {
+      "name": "pollyRegion",
+      "cliFormat": "polly-region",
+      "description": "Amazon Polly region for fallback TTS.",
+      "defaultValue": "us-east-1",
+      "required": true
+    },
+    {
+      "name": "pollyProxyEnabled",
+      "cliFormat": "polly-proxy-enabled",
+      "description": "Proxy Polly requests through CloudFront to avoid CORS.",
+      "defaultValue": true,
+      "required": true,
+      "boolean": true
+    }
+  ]
+}

@@ -107,6 +107,10 @@ async def join_meeting(db: AsyncSession, meeting: M.Meeting, *,
     p.left_at = None
     pref.speak_lang = speak_lang
     pref.hear_lang = hear_lang
+    if audio_mode == "both":
+        audio_mode = "mixed"
+    elif audio_mode not in ("original", "translated", "mixed", "captions_only"):
+        audio_mode = "translated"
     pref.audio_mode = audio_mode
     if meeting.status == "scheduled":
         meeting.status = "live"

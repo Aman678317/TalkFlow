@@ -1,0 +1,43 @@
+---
+title: "Indic Unicode Normalization"
+api: "POST /v2/desi/normalize"
+description: "Sanitize Indic text: clean ZWNJ/ZWJ anomalies and standardize composed nuktas"
+---
+
+# Indic Unicode Normalization
+
+Sanitizes and normalizes Indic Unicode text, resolving anomalies created by divergent mobile keyboards and non-standard font engines.
+
+### Request Body (`application/json`)
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `text` | string | **Yes** | — | Raw Indic text string to sanitize. |
+| `clean_zwnj` | boolean | No | `true` | Standardizes duplicate or redundant Zero-Width Non-Joiner (`U+200C`) and Zero-Width Joiner (`U+200D`) codepoints. |
+| `fix_nuktas` | boolean | No | `true` | Composes decomposed consonant + nukta combining characters into canonical single Unicode codepoints (`क़`, `ख़`, `ग़`, `ज़`, `ड़`, `ढ़`, `फ़`). |
+
+---
+
+### Request Example
+
+```bash
+curl -X POST "https://api.globaltalk.ai/v2/desi/normalize" \
+  -H "X-API-Key: $GTK_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "क़िताब में सही वर्ण विन्यास",
+    "clean_zwnj": true,
+    "fix_nuktas": true
+  }'
+```
+
+### Response Example (`200 OK`)
+
+```json
+{
+  "original_text": "क़िताब में सही वर्ण विन्यास",
+  "normalized_text": "क़िताब में सही वर्ण विन्यास",
+  "corrections_count": 1,
+  "script": "Devanagari"
+}
+```

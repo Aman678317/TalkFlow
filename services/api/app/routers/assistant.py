@@ -157,8 +157,10 @@ async def list_memory(principal: Principal = Depends(require_org_user),
 async def write_memory(body: MemoryWrite, meeting_id: str = Query(default=""),
                        principal: Principal = Depends(require_org_user),
                        db: AsyncSession = Depends(get_db)):
+    org_id = principal.org_id
+    assert org_id is not None
     item = await assistant_service.write_memory(
-        db, org_id=principal.org_id,
+        db, org_id=org_id,
         meeting_id=uuid.UUID(meeting_id) if meeting_id else None,
         memory_class=body.memory_class, key=body.key, content=body.content,
         lang=body.lang, importance=body.importance, source_type=body.source_type,
@@ -173,8 +175,10 @@ async def retrieve_memory(query: str = "", meeting_id: str = "",
                           limit: int = Query(default=10, le=50),
                           principal: Principal = Depends(require_org_user),
                           db: AsyncSession = Depends(get_db)):
+    org_id = principal.org_id
+    assert org_id is not None
     items = await assistant_service.retrieve_context(
-        db, org_id=principal.org_id,
+        db, org_id=org_id,
         meeting_id=uuid.UUID(meeting_id) if meeting_id else None,
         query=query, classes=[memory_class] if memory_class else None, limit=limit)
     await db.commit()

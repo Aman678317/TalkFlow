@@ -40,8 +40,10 @@ async def _get_doc(db: AsyncSession, doc_id: uuid.UUID,
 @router.post("", response_model=DocumentOut, status_code=202)
 async def upload_document(
     file: UploadFile = File(...),
-    target_lang: str = Form(...),
+    target_lang: str = Form(default=""),
+    target_language: str = Form(default=""),
     source_lang: str = Form(default="auto"),
+    source_language: str = Form(default=""),
     domain: str = Form(default="general"),
     glossary_id: str = Form(default=""),
     style_profile_id: str = Form(default=""),
@@ -50,6 +52,11 @@ async def upload_document(
     db: AsyncSession = Depends(get_db),
 ):
     principal.require("manage_documents")
+    effective_target = (target_lang or target_language).strip()
+    if not effective_target:
+        from app.errors import ValidationError
+        raise ValidationError("Target language is required (target_lang or target_language).")
+    effective_source = (source_lang if source_lang != "auto" else source_language) or "auto"
     from app.deps import flag_enabled
     if not await flag_enabled(db, "document_translation", principal.org_id):
         from app.errors import FeatureDisabledError
@@ -63,8 +70,8 @@ async def upload_document(
 
     # validate languages via capability registry
     from app.services.translation_service import validate_pair
-    await validate_pair(db, "en" if source_lang == "auto" else source_lang,
-                        target_lang)
+    await validate_pair(db, "en" if effective_source == "auto" else effective_source,
+                        effective_target)
 
     await usage_service.check_quota(db, principal.org_id, "documents", 1)
 
@@ -74,7 +81,7 @@ async def upload_document(
     doc = M.Document(
         org_id=principal.org_id, filename=safe_name, mime_type=mime,
         size_bytes=len(data), checksum=checksum,
-        source_lang=source_lang, target_lang=target_lang, domain=domain,
+        source_lang=effective_source, target_lang=effective_target, domain=domain,
         glossary_id=uuid.UUID(glossary_id) if glossary_id else None,
         style_profile_id=uuid.UUID(style_profile_id) if style_profile_id else None,
         status="uploaded", source_object_key=key, created_by=principal.user_id,

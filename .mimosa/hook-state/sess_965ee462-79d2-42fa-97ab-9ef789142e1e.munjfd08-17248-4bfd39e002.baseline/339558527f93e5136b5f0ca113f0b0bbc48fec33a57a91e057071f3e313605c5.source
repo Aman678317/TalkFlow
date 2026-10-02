@@ -1,0 +1,33 @@
+{
+  "name": "amazon-connect-desi-v2v",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Amazon Connect Bidirectional Real-Time Voice Translation with Desi Voice-to-Voice AI",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "build:gitbash": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "vite": "^5.4.14",
+    "vite-plugin-mkcert": "^1.17.6",
+    "vite-plugin-node-polyfills": "^0.22.0",
+    "vite-plugin-static-copy": "^2.2.0"
+  },
+  "dependencies": {
+    "@aws-sdk/client-cloudwatch-logs": "^3.1045.0",
+    "@aws-sdk/client-polly": "^3.687.0",
+    "@aws-sdk/client-transcribe-streaming": "^3.687.0",
+    "@aws-sdk/client-translate": "^3.687.0",
+    "@aws-sdk/credential-provider-node": "^3.699.0",
+    "@aws-sdk/protocol-http": "^3.370.0",
+    "amazon-connect-streams": "^2.18.0",
+    "buffer": "^6.0.3",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "ioredis": "^5.10.1",
+    "microphone-stream": "^6.0.1"
+  }
+}

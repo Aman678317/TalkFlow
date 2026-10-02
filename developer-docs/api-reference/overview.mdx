@@ -1,0 +1,38 @@
+---
+title: "API Overview"
+description: "Introduction to the GlobalTalk AI and Desi REST and Streaming APIs"
+---
+
+# API Reference Overview
+
+The GlobalTalk AI and Desi REST API endpoints adhere to standard HTTP conventions, use JSON for request and response payloads, return standard HTTP status codes, and enforce UTF-8 encoding across all endpoints.
+
+## Base URLs
+
+| Environment | Base URL |
+|---|---|
+| **Production Edge** | `https://api.globaltalk.ai` |
+| **Local Development** | `http://127.0.0.1:8088` |
+
+## Standard Request Headers
+
+```http
+Authorization: Bearer <your_api_key>
+X-API-Key: <your_api_key>
+Content-Type: application/json
+Accept: application/json
+```
+
+## Standard Status Codes
+
+| Code | Status | Meaning |
+|---|---|---|
+| `200` | OK | Request succeeded. |
+| `201` | Created | Resource (glossary, style rule, TM) successfully created. |
+| `204` | No Content | Resource successfully deleted. |
+| `400` | Bad Request | Missing or invalid request parameters. |
+| `401` | Unauthorized | Missing or malformed authorization header. |
+| `403` | Forbidden | Invalid API key or quota exceeded. |
+| `404` | Not Found | Requested resource does not exist. |
+| `429` | Too Many Requests | Rate limit reached. Inspect `Retry-After` header. |
+| `500` | Internal Error | Internal processing error. |

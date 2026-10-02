@@ -1,0 +1,51 @@
+---
+title: "List Supported Languages"
+api: "GET /v2/languages"
+description: "Discover supported source and target languages and formality capabilities"
+---
+
+# List Supported Languages
+
+Returns the list of languages supported for text and document translation.
+
+### Query Parameters
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `type` | string | No | `"source"` | Filter by capability: `source` (can be translated from) or `target` (can be translated into). |
+
+---
+
+### Request Example
+
+```bash
+curl -X GET "https://api.globaltalk.ai/v2/languages?type=target" \
+  -H "Authorization: Bearer $GTK_API_KEY"
+```
+
+### Response Example (`200 OK`)
+
+```json
+[
+  {
+    "language": "DE",
+    "name": "German",
+    "supports_formality": true
+  },
+  {
+    "language": "FR",
+    "name": "French",
+    "supports_formality": true
+  },
+  {
+    "language": "HI",
+    "name": "Hindi",
+    "supports_formality": true
+  },
+  {
+    "language": "JA",
+    "name": "Japanese",
+    "supports_formality": true
+  }
+]
+```

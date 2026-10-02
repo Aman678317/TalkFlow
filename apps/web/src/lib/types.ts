@@ -30,6 +30,7 @@ export interface TranslateResponse {
   quality_flags: string[];
   from_translation_memory: boolean;
   detected_confidence: number;
+  alternatives?: string[];
 }
 
 export interface Meeting {

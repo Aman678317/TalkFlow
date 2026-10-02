@@ -1,0 +1,11 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: desi-java
+  title: Desi Java Client SDK
+  description: Official enterprise Java client library for the Desi Language AI Platform
+spec:
+  type: library
+  lifecycle: production
+  owner: core-ai-team
+  system: desi-client-libraries

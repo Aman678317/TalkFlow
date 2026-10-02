@@ -2,11 +2,12 @@ import React from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Logo } from "../components/Layout";
 import { Button, Field, Input } from "../components/ui";
+import { SocialAuthButtons } from "../components/auth/SocialAuthButtons";
 import { useAuth } from "../stores/auth";
 import { ApiError } from "../lib/api";
 
 export default function Signup() {
-  const signup = useAuth((s) => s.signup);
+  const { signup, user, status } = useAuth();
   const nav = useNavigate();
   const [form, setForm] = React.useState({
     email: "", password: "", full_name: "", organization_name: "",
@@ -16,15 +17,25 @@ export default function Signup() {
   const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setForm((f) => ({ ...f, [k]: e.target.value }));
 
+  React.useEffect(() => {
+    if (status === "authed" && user) {
+      nav("/dashboard", { replace: true });
+    }
+  }, [user, status, nav]);
+
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!form.email.trim() || !form.password) {
+      setError("Please fill in your email and password.");
+      return;
+    }
     setBusy(true);
     setError("");
     try {
       await signup(form);
       nav("/dashboard", { replace: true });
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Signup failed");
+    } catch (err: any) {
+      setError(err instanceof ApiError ? err.message : (err?.message || "Signup failed"));
     } finally {
       setBusy(false);
     }
@@ -38,10 +49,21 @@ export default function Signup() {
           <h1 className="text-xl font-bold text-ink-900">Create your workspace</h1>
           <p className="text-sm text-ink-400">Free plan · no credit card</p>
         </div>
-        <form onSubmit={onSubmit} className="gt-card space-y-4 p-6" noValidate>
-          <Field label="Full name">
-            <Input required autoComplete="name" value={form.full_name} onChange={set("full_name")} />
-          </Field>
+        <div className="gt-card space-y-4 p-6">
+          {/* Google, GitHub & Apple SSO */}
+          <SocialAuthButtons prefix="Sign up with" disabled={busy} onError={setError} />
+
+          <div className="relative my-4 flex items-center justify-center">
+            <div className="w-full border-t border-ink-200" />
+            <span className="absolute bg-white px-2.5 text-[11px] font-medium uppercase tracking-wider text-ink-400">
+              or continue with email
+            </span>
+          </div>
+
+          <form onSubmit={onSubmit} className="space-y-4" noValidate>
+            <Field label="Full name">
+              <Input required autoComplete="name" value={form.full_name} onChange={set("full_name")} />
+            </Field>
           <Field label="Work email">
             <Input type="email" required autoComplete="email" value={form.email} onChange={set("email")} />
           </Field>
@@ -60,5 +82,6 @@ export default function Signup() {
         </form>
       </div>
     </div>
-  );
+  </div>
+);
 }

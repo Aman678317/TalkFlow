@@ -1,0 +1,55 @@
+---
+title: "Desi Indic Translation"
+api: "POST /v2/desi/translate"
+description: "Translate text into 22 Indian languages with 3-tier cultural honorifics and respectful suffixes"
+---
+
+# Desi Indic Translation
+
+Translates text into any of the **22 official Eighth Schedule Indian languages** with native cultural honorific precision (*Aap / Tum / Tu*), optional respectful suffixes (*-ji / -garu / -avargal*), and domain-specific terminology tuning.
+
+### Request Body (`application/json`)
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `text` | string \| string[] | **Yes** | — | Single text string or array of text strings to translate. |
+| `target_lang` | string | **Yes** | — | Target Indian language code (e.g., `hi`, `bn`, `te`, `mr`, `ta`, `ur`, `gu`, `kn`, `ml`, `pa`, `or`, `as`). |
+| `source_lang` | string | No | `"en"` | Source language code (defaults to auto-detection if omitted). |
+| `honorific` | string | No | `"formal"` | Cultural formality tier: `formal` (*Aap*), `familiar` (*Tum*), `intimate` (*Tu*), `respectful` (*-ji*), or `neutral`. |
+| `respectful_suffix` | boolean | No | `false` | When true, appends culturally appropriate respectful suffixes (*-जी*, *-గారు*, *-அவர்கள்*) to person-referencing predicates. |
+| `domain` | string | No | `"general"` | Domain specialization: `general`, `legal`, `medical`, `government`, `finance`, or `technical`. |
+
+---
+
+### Request Example
+
+```bash
+curl -X POST "https://api.globaltalk.ai/v2/desi/translate" \
+  -H "X-API-Key: $GTK_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "Please sit down and review this contract.",
+    "target_lang": "hi",
+    "honorific": "formal",
+    "respectful_suffix": true,
+    "domain": "legal"
+  }'
+```
+
+### Response Example (`200 OK`)
+
+```json
+{
+  "translations": [
+    {
+      "text": "कृपया अपना स्थान ग्रहण करें और इस अनुबंध की समीक्षा करें जी।",
+      "detected_source_language": "EN",
+      "target_lang": "HI",
+      "script": "Devanagari",
+      "honorific_applied": "formal",
+      "domain": "legal",
+      "billed_characters": 41
+    }
+  ]
+}
+```

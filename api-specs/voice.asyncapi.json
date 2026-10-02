@@ -1,0 +1,703 @@
+{
+  "asyncapi": "3.0.0",
+  "info": {
+    "title": "Desi Voice API - WebSocket Streaming",
+    "version": "1.0.0",
+    "description": "WebSocket streaming API for real-time voice transcription and translation in Desi Language AI and GlobalTalk AI.\nAfter obtaining a streaming URL and ephemeral token via the REST API (/v3/voice/realtime), establish a\nWebSocket connection to stream audio data and receive real-time transcriptions and speech translations.\n\nThe API supports two message encoding formats: JSON (default) and MessagePack.\nThe encoding format is configured via the message_format parameter when requesting a session.\nJSON format uses TEXT WebSocket frames. Fields with binary data (such as audio chunks) are base64-encoded strings,\nwhile MessagePack format uses BINARY WebSocket frames where fields with binary data contain raw binary data.\nCompared to JSON, MessagePack typically reduces bandwidth usage by 25-30% and improves message\nencoding/decoding speed by 2x-4x.\n\nWhen using MessagePack encoding, messages must be encoded as maps with string keys, not as arrays.\nThe message structure must match the JSON schema exactly, with all field names preserved as string keys.\nArray-based or integer-keyed encoding is not supported.\n",
+    "contact": {
+      "name": "GlobalTalk AI Developer Relations",
+      "url": "https://globaltalk.ai/support"
+    }
+  },
+  "servers": {
+    "production": {
+      "host": "api.globaltalk.ai",
+      "pathname": "/v3/voice/realtime/connect",
+      "protocol": "wss",
+      "description": "Desi Voice API Production WebSocket Gateway.",
+      "variables": {
+        "token": {
+          "description": "Ephemeral single-use authentication token obtained from POST /v3/voice/realtime",
+          "examples": [
+            "GTK_sess_908f7e6d_tok_87654321"
+          ]
+        }
+      }
+    },
+    "local-edge": {
+      "host": "127.0.0.1:8088",
+      "pathname": "/v3/voice/realtime/connect",
+      "protocol": "ws",
+      "description": "Local Development / Edge WebSocket Gateway.",
+      "variables": {
+        "token": {
+          "description": "Local session token",
+          "examples": [
+            "dev_local_token_123"
+          ]
+        }
+      }
+    }
+  },
+  "channels": {
+    "voiceStream": {
+      "address": "/v3/voice/realtime/connect?token={token}",
+      "description": "WebSocket channel for streaming audio and receiving transcriptions and translations.\nMessages are exchanged in JSON or MessagePack format.\nWebSocket messages are exchanged in TEXT frames when using JSON format and in BINARY frames when using\nMessagePack format. Sending the wrong frame type will result in connection errors.\n",
+      "parameters": {
+        "token": {
+          "description": "This is the ephemeral authentication token obtained from the\n[Request Voice Session](/api-reference/voice-realtime) endpoint.\nThe token is valid for one-time use only and must be passed as a query parameter when establishing\nthe WebSocket connection.\n",
+          "examples": [
+            "GTK_sess_908f7e6d_tok_87654321"
+          ]
+        }
+      },
+      "messages": {
+        "SourceMediaChunk": {
+          "$ref": "#/components/messages/SourceMediaChunk"
+        },
+        "EndOfSourceMedia": {
+          "$ref": "#/components/messages/EndOfSourceMedia"
+        },
+        "SourceTranscriptUpdate": {
+          "$ref": "#/components/messages/SourceTranscriptUpdate"
+        },
+        "TargetTranscriptUpdate": {
+          "$ref": "#/components/messages/TargetTranscriptUpdate"
+        },
+        "TargetMediaChunk": {
+          "$ref": "#/components/messages/TargetMediaChunk"
+        },
+        "EndOfSourceTranscript": {
+          "$ref": "#/components/messages/EndOfSourceTranscript"
+        },
+        "EndOfTargetTranscript": {
+          "$ref": "#/components/messages/EndOfTargetTranscript"
+        },
+        "EndOfTargetMedia": {
+          "$ref": "#/components/messages/EndOfTargetMedia"
+        },
+        "EndOfStream": {
+          "$ref": "#/components/messages/EndOfStream"
+        },
+        "Error": {
+          "$ref": "#/components/messages/Error"
+        }
+      }
+    }
+  },
+  "operations": {
+    "sendAudioData": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/voiceStream"
+      },
+      "summary": "Send audio data to the Desi Voice Server",
+      "description": "Send audio chunks and control messages to the server.\nAudio data must be base64-encoded (JSON mode) or raw binary (MessagePack mode) and match the configured format.",
+      "messages": [
+        {
+          "$ref": "#/channels/voiceStream/messages/SourceMediaChunk"
+        },
+        {
+          "$ref": "#/channels/voiceStream/messages/EndOfSourceMedia"
+        }
+      ]
+    },
+    "receiveTranscriptions": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/voiceStream"
+      },
+      "summary": "Receive transcriptions, translations, and synthesized speech from Desi Voice Server",
+      "description": "Receive real-time transcription and translation messages from the server.\nThe server sends transcript updates, translated audio chunks, end of transcript notifications and errors.",
+      "messages": [
+        {
+          "$ref": "#/channels/voiceStream/messages/SourceTranscriptUpdate"
+        },
+        {
+          "$ref": "#/channels/voiceStream/messages/TargetTranscriptUpdate"
+        },
+        {
+          "$ref": "#/channels/voiceStream/messages/TargetMediaChunk"
+        },
+        {
+          "$ref": "#/channels/voiceStream/messages/EndOfSourceTranscript"
+        },
+        {
+          "$ref": "#/channels/voiceStream/messages/EndOfTargetTranscript"
+        },
+        {
+          "$ref": "#/channels/voiceStream/messages/EndOfTargetMedia"
+        },
+        {
+          "$ref": "#/channels/voiceStream/messages/EndOfStream"
+        },
+        {
+          "$ref": "#/channels/voiceStream/messages/Error"
+        }
+      ]
+    }
+  },
+  "components": {
+    "messages": {
+      "SourceMediaChunk": {
+        "name": "SourceMediaChunk",
+        "title": "Source Media Chunk",
+        "description": "The message contains a chunk of audio data. The audio encoding must be the same that was specified in the session initialization request. When using JSON format, the audio data is base64-encoded. When using MessagePack format, the audio data is raw binary data. The chunk size must not be more than 100 kilobyte or one second in duration. The recommended duration is 50 - 250 milliseconds to achieve the best tradeoff between latency and quality. The interval between chunks must not be less than half of the duration of the preceding chunk and not exceed 30 seconds. For PCM data the chunk size must be a multiple of the frame size (e.g. 16-bit linear PCM mono at 16,000 Hz = 3200 bytes per 100ms).",
+        "contentType": "application/json",
+        "payload": {
+          "$ref": "#/components/schemas/SourceMediaChunkPayload"
+        },
+        "examples": [
+          {
+            "name": "SourceMediaChunk",
+            "summary": "Source media chunk (Linear PCM16)",
+            "payload": {
+              "source_media_chunk": {
+                "data": "UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA="
+              }
+            }
+          }
+        ]
+      },
+      "EndOfSourceMedia": {
+        "name": "EndOfSourceMedia",
+        "title": "End of Source Media",
+        "description": "The message indicates the end of source media data. It causes the finalization of tentative transcript segments and triggers the emission of final transcript updates, end of transcript messages, and the end of stream message. No more data chunks can be sent afterwards. It marks the end of the stream input.",
+        "contentType": "application/json",
+        "payload": {
+          "$ref": "#/components/schemas/EndOfSourceMediaPayload"
+        },
+        "examples": [
+          {
+            "name": "EndStream",
+            "summary": "End of audio stream",
+            "payload": {
+              "end_of_source_media": {}
+            }
+          }
+        ]
+      },
+      "SourceTranscriptUpdate": {
+        "name": "SourceTranscriptUpdate",
+        "title": "Source Transcript Update",
+        "description": "The message contains an update to the transcription of the supplied media in the source language. Each message is an incremental addition to the already received updates of the source transcript with concluded and tentative text segments. Concluded segments are fixed and will only appear once, while tentative segments may be updated in subsequent messages as more audio is processed. Clients should merge the concluded segments into a final transcript and update the tentative segments as new updates arrive.",
+        "contentType": "application/json",
+        "payload": {
+          "$ref": "#/components/schemas/SourceTranscriptUpdatePayload"
+        },
+        "examples": [
+          {
+            "name": "TranscriptUpdateHindi",
+            "summary": "Hindi source transcript update",
+            "payload": {
+              "source_transcript_update": {
+                "concluded": [
+                  {
+                    "language": "hi",
+                    "text": "नमस्ते, आप कैसे हैं",
+                    "start_time": 0,
+                    "end_time": 1400
+                  }
+                ],
+                "tentative": [
+                  {
+                    "language": "hi",
+                    "text": " आज?",
+                    "start_time": 1400,
+                    "end_time": 1850
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "TargetTranscriptUpdate": {
+        "name": "TargetTranscriptUpdate",
+        "title": "Target Transcript Update",
+        "description": "The message contains an update to the translation of the supplied media in the target language. Translates directly and independently from the canonical source segment without intermediate pivot chaining. Includes cultural honorific applications for Indic languages.",
+        "contentType": "application/json",
+        "payload": {
+          "$ref": "#/components/schemas/TargetTranscriptUpdatePayload"
+        },
+        "examples": [
+          {
+            "name": "TranslationUpdateEnglish",
+            "summary": "English target translation update",
+            "payload": {
+              "target_transcript_update": {
+                "language": "en",
+                "concluded": [
+                  {
+                    "text": "Hello, how are you",
+                    "start_time": 0,
+                    "end_time": 1400
+                  }
+                ],
+                "tentative": [
+                  {
+                    "text": " today?",
+                    "start_time": 1400,
+                    "end_time": 1850
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "TargetMediaChunk": {
+        "name": "TargetMediaChunk",
+        "title": "Target Media Chunk (Synthesized Speech)",
+        "description": "The message contains translated synthesized audio data in the target language. The audio data is provided as an array of base64-encoded indivisible chunks. The first message of this type includes the content type and optional headers field. The headers field indicates how many packets at the start of the data array contain initialization/header data required by the decoder. The audio stream contains synthesized speech segments aligned with natural pauses. Clients should play back the audio chunks in sequence without interruption.",
+        "contentType": "application/json",
+        "payload": {
+          "$ref": "#/components/schemas/TargetMediaChunkPayload"
+        },
+        "examples": [
+          {
+            "name": "TargetMediaChunkPCM",
+            "summary": "Raw PCM synthesized speech",
+            "payload": {
+              "target_media_chunk": {
+                "language": "hi",
+                "content_type": "audio/pcm;encoding=s16le;rate=16000",
+                "data": [
+                  "AAEAAgADAAQABQAGAAcACAAJAAoACwAMAA0ADgAPABAAEQASABMAFAAVABYAFw=="
+                ],
+                "duration": 1600,
+                "text": "नमस्ते, आपका स्वागत है।"
+              }
+            }
+          }
+        ]
+      },
+      "EndOfSourceTranscript": {
+        "name": "EndOfSourceTranscript",
+        "title": "End of Source Transcript",
+        "description": "The message indicates that the source transcript is complete and no further updates will be sent. It gets emitted after the client sends End of Source Media.",
+        "contentType": "application/json",
+        "payload": {
+          "$ref": "#/components/schemas/EndOfSourceTranscriptPayload"
+        },
+        "examples": [
+          {
+            "name": "EndSource",
+            "summary": "Source transcript complete",
+            "payload": {
+              "end_of_source_transcript": {}
+            }
+          }
+        ]
+      },
+      "EndOfTargetTranscript": {
+        "name": "EndOfTargetTranscript",
+        "title": "End of Target Transcript",
+        "description": "This message indicates that the target transcript is complete and no further updates will be sent.",
+        "contentType": "application/json",
+        "payload": {
+          "$ref": "#/components/schemas/EndOfTargetTranscriptPayload"
+        },
+        "examples": [
+          {
+            "name": "EndTarget",
+            "summary": "Target transcript complete",
+            "payload": {
+              "end_of_target_transcript": {
+                "language": "hi"
+              }
+            }
+          }
+        ]
+      },
+      "EndOfTargetMedia": {
+        "name": "EndOfTargetMedia",
+        "title": "End of Target Media",
+        "description": "This message indicates that the target media stream is complete and no further audio chunks will be sent for this target language.",
+        "contentType": "application/json",
+        "payload": {
+          "$ref": "#/components/schemas/EndOfTargetMediaPayload"
+        },
+        "examples": [
+          {
+            "name": "EndTargetMedia",
+            "summary": "Target media complete",
+            "payload": {
+              "end_of_target_media": {
+                "language": "hi"
+              }
+            }
+          }
+        ]
+      },
+      "EndOfStream": {
+        "name": "EndOfStream",
+        "title": "End of Stream",
+        "description": "This message indicates that all outputs are complete and the stream has ended. It is the very last message the client will receive after sending End of Source Media.",
+        "contentType": "application/json",
+        "payload": {
+          "$ref": "#/components/schemas/EndOfStreamPayload"
+        },
+        "examples": [
+          {
+            "name": "EndStream",
+            "summary": "Stream ended",
+            "payload": {
+              "end_of_stream": {}
+            }
+          }
+        ]
+      },
+      "Error": {
+        "name": "Error",
+        "title": "Error",
+        "description": "Reports errors encountered during audio processing or streaming. Includes an error code, reason code, and human-readable explanation.",
+        "contentType": "application/json",
+        "payload": {
+          "$ref": "#/components/schemas/ErrorPayload"
+        },
+        "examples": [
+          {
+            "name": "AudioFormatError",
+            "summary": "Audio format error",
+            "payload": {
+              "error": {
+                "request_type": "source_media_chunk",
+                "error_code": 400,
+                "reason_code": 4000403,
+                "error_message": "Audio format not supported"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "schemas": {
+      "SourceMediaChunkPayload": {
+        "type": "object",
+        "required": [
+          "source_media_chunk"
+        ],
+        "properties": {
+          "source_media_chunk": {
+            "type": "object",
+            "required": [
+              "data"
+            ],
+            "properties": {
+              "data": {
+                "type": "string",
+                "format": "binary",
+                "description": "Audio data in the format specified during session initialization (PCM16, Opus, etc.). Encoded as base64 string when using JSON. Raw binary when using MessagePack."
+              }
+            }
+          }
+        }
+      },
+      "EndOfSourceMediaPayload": {
+        "type": "object",
+        "required": [
+          "end_of_source_media"
+        ],
+        "properties": {
+          "end_of_source_media": {
+            "type": "object",
+            "description": "Empty object signaling end of media stream"
+          }
+        }
+      },
+      "TranscriptSegment": {
+        "type": "object",
+        "required": [
+          "text",
+          "start_time",
+          "end_time"
+        ],
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "Source or target transcript text"
+          },
+          "start_time": {
+            "type": "integer",
+            "description": "Estimated start time of the segment in milliseconds",
+            "examples": [
+              1250
+            ]
+          },
+          "end_time": {
+            "type": "integer",
+            "description": "Estimated end time of the segment in milliseconds",
+            "examples": [
+              1570
+            ]
+          }
+        }
+      },
+      "SourceTranscriptSegment": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/TranscriptSegment"
+          },
+          {
+            "type": "object",
+            "required": [
+              "language"
+            ],
+            "properties": {
+              "language": {
+                "type": "string",
+                "description": "IETF BCP 47 / ISO 639 language tag of detected source language",
+                "examples": [
+                  "hi",
+                  "en"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "SourceTranscriptUpdatePayload": {
+        "type": "object",
+        "required": [
+          "source_transcript_update"
+        ],
+        "properties": {
+          "source_transcript_update": {
+            "type": "object",
+            "required": [
+              "concluded",
+              "tentative"
+            ],
+            "properties": {
+              "concluded": {
+                "type": "array",
+                "description": "Array of fixed transcript segments that will not change.",
+                "items": {
+                  "$ref": "#/components/schemas/SourceTranscriptSegment"
+                }
+              },
+              "tentative": {
+                "type": "array",
+                "description": "Array of preliminary transcript segments subject to change.",
+                "items": {
+                  "$ref": "#/components/schemas/SourceTranscriptSegment"
+                }
+              }
+            }
+          }
+        }
+      },
+      "TargetTranscriptUpdatePayload": {
+        "type": "object",
+        "required": [
+          "target_transcript_update"
+        ],
+        "properties": {
+          "target_transcript_update": {
+            "type": "object",
+            "required": [
+              "language",
+              "concluded",
+              "tentative"
+            ],
+            "properties": {
+              "language": {
+                "type": "string",
+                "description": "IETF BCP 47 / ISO 639 language code of target language",
+                "examples": [
+                  "en",
+                  "hi"
+                ]
+              },
+              "concluded": {
+                "type": "array",
+                "description": "Array of fixed translated segments.",
+                "items": {
+                  "$ref": "#/components/schemas/TranscriptSegment"
+                }
+              },
+              "tentative": {
+                "type": "array",
+                "description": "Array of preliminary translated segments.",
+                "items": {
+                  "$ref": "#/components/schemas/TranscriptSegment"
+                }
+              }
+            }
+          }
+        }
+      },
+      "TargetMediaChunkPayload": {
+        "type": "object",
+        "required": [
+          "target_media_chunk"
+        ],
+        "properties": {
+          "target_media_chunk": {
+            "type": "object",
+            "required": [
+              "language",
+              "data",
+              "duration"
+            ],
+            "properties": {
+              "language": {
+                "type": "string",
+                "description": "Target media language code",
+                "examples": [
+                  "hi"
+                ]
+              },
+              "content_type": {
+                "type": "string",
+                "description": "MIME type of audio stream (present in first message).",
+                "examples": [
+                  "audio/pcm;encoding=s16le;rate=16000",
+                  "audio/webm;codecs=opus;"
+                ]
+              },
+              "headers": {
+                "type": "integer",
+                "description": "Packet count of initialization headers at start of data array.",
+                "examples": [
+                  1
+                ]
+              },
+              "data": {
+                "type": "array",
+                "description": "Array of audio chunks (base64 string in JSON mode, raw binary in MessagePack).",
+                "items": {
+                  "type": "string",
+                  "format": "byte"
+                }
+              },
+              "duration": {
+                "type": "integer",
+                "description": "Total playback duration in milliseconds for this chunk.",
+                "examples": [
+                  1600
+                ]
+              },
+              "text": {
+                "type": "string",
+                "description": "Subtitle / caption text matching this synthesized speech chunk."
+              }
+            }
+          }
+        }
+      },
+      "EndOfSourceTranscriptPayload": {
+        "type": "object",
+        "required": [
+          "end_of_source_transcript"
+        ],
+        "properties": {
+          "end_of_source_transcript": {
+            "type": "object",
+            "description": "Empty object indicating source transcript is complete"
+          }
+        }
+      },
+      "EndOfTargetTranscriptPayload": {
+        "type": "object",
+        "required": [
+          "end_of_target_transcript"
+        ],
+        "properties": {
+          "end_of_target_transcript": {
+            "type": "object",
+            "required": [
+              "language"
+            ],
+            "properties": {
+              "language": {
+                "type": "string",
+                "examples": [
+                  "en"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "EndOfTargetMediaPayload": {
+        "type": "object",
+        "required": [
+          "end_of_target_media"
+        ],
+        "properties": {
+          "end_of_target_media": {
+            "type": "object",
+            "required": [
+              "language"
+            ],
+            "properties": {
+              "language": {
+                "type": "string",
+                "examples": [
+                  "hi"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "EndOfStreamPayload": {
+        "type": "object",
+        "required": [
+          "end_of_stream"
+        ],
+        "properties": {
+          "end_of_stream": {
+            "type": "object",
+            "description": "Empty object indicating all stream outputs are complete"
+          }
+        }
+      },
+      "ErrorPayload": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "object",
+            "required": [
+              "request_type",
+              "error_code",
+              "reason_code",
+              "error_message"
+            ],
+            "properties": {
+              "request_type": {
+                "type": "string",
+                "examples": [
+                  "source_media_chunk"
+                ]
+              },
+              "error_code": {
+                "type": "integer",
+                "examples": [
+                  400
+                ]
+              },
+              "reason_code": {
+                "type": "integer",
+                "examples": [
+                  4000403
+                ]
+              },
+              "error_message": {
+                "type": "string",
+                "examples": [
+                  "Audio format not supported"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

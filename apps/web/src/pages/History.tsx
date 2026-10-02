@@ -1,13 +1,20 @@
 import React from "react";
 import { useQuery } from "@tanstack/react-query";
+import { Search, Trash2 } from "lucide-react";
 import { api } from "../lib/api";
 import { useLanguages, languageLabel } from "../hooks/useLanguages";
 import { Badge, Button, Card, EmptyState, Input, Select, Skeleton } from "../components/ui";
 
-interface HistoryItem {
-  id: string; created_at: string; source_language: string; target_language: string;
-  source_text: string; translated_text: string; model: string; provider: string;
-  latency_ms: number; quality_flags: string[]; kind: string; from_tm: boolean;
+function formatHistoryDate(isoStr?: string): string {
+  if (!isoStr) return "";
+  const date = new Date(isoStr);
+  return date.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 export default function HistoryPage() {
@@ -24,12 +31,13 @@ export default function HistoryPage() {
 
   const historyQ = useQuery({
     queryKey: ["history", debounced, src, tgt],
-    queryFn: () => {
+    queryFn: async () => {
       const p = new URLSearchParams({ limit: "100" });
       if (debounced) p.set("q", debounced);
       if (src) p.set("source_language", src);
       if (tgt) p.set("target_language", tgt);
-      return api<HistoryItem[]>(`/api/v1/history?${p}`);
+      const res = await api<any>(`/api/v1/history?${p}`);
+      return Array.isArray(res) ? res : (res?.items ?? []);
     },
   });
 
@@ -38,46 +46,134 @@ export default function HistoryPage() {
     historyQ.refetch();
   };
 
+  const items: any[] = Array.isArray(historyQ.data)
+    ? historyQ.data
+    : (historyQ.data?.items ?? []);
+
   return (
     <div className="mx-auto max-w-5xl space-y-4 p-4 lg:p-6">
+      {/* Header */}
       <div>
-        <h1 className="text-lg font-bold text-ink-900">Translation history</h1>
-        <p className="text-xs text-ink-400">Full-text search across your organization's translations (PostgreSQL FTS adapter).</p>
+        <h1 className="text-xl font-bold tracking-tight text-slate-900">Translation history</h1>
+        <p className="text-xs text-slate-500 mt-0.5">
+          Search and review translation records across your organization.
+        </p>
       </div>
-      <div className="flex flex-wrap gap-2">
-        <Input className="max-w-xs flex-1" placeholder="Search source or translation…" aria-label="Search history"
-               value={q} onChange={(e) => setQ(e.target.value)} />
-        <Select aria-label="Filter source language" className="w-40" value={src} onChange={(e) => setSrc(e.target.value)}>
-          <option value="">Any source</option>
-          {(langs ?? []).map((l) => <option key={l.code} value={l.code}>{l.name}</option>)}
-        </Select>
-        <Select aria-label="Filter target language" className="w-40" value={tgt} onChange={(e) => setTgt(e.target.value)}>
-          <option value="">Any target</option>
-          {(langs ?? []).map((l) => <option key={l.code} value={l.code}>{l.name}</option>)}
-        </Select>
+
+      {/* Search & Filter Bar */}
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+        <div className="relative flex-1">
+          <Input
+            className="w-full rounded-xl pl-9"
+            placeholder="Search source or translation…"
+            aria-label="Search history"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+          />
+          <Search className="absolute left-3 top-3 h-4 w-4 text-slate-400 pointer-events-none" aria-hidden="true" />
+        </div>
+        <div className="w-full sm:w-44">
+          <Select
+            aria-label="Filter source language"
+            className="w-full rounded-xl"
+            value={src}
+            onChange={(e) => setSrc(e.target.value)}
+          >
+            <option value="">Any source</option>
+            {(langs ?? []).map((l) => (
+              <option key={l.code} value={l.code}>
+                {l.name}
+              </option>
+            ))}
+          </Select>
+        </div>
+        <div className="w-full sm:w-44">
+          <Select
+            aria-label="Filter target language"
+            className="w-full rounded-xl"
+            value={tgt}
+            onChange={(e) => setTgt(e.target.value)}
+          >
+            <option value="">Any target</option>
+            {(langs ?? []).map((l) => (
+              <option key={l.code} value={l.code}>
+                {l.name}
+              </option>
+            ))}
+          </Select>
+        </div>
       </div>
 
       {historyQ.isLoading ? (
-        <Card><div className="space-y-3">{[...Array(5)].map((_, i) => <Skeleton key={i} className="h-12 w-full" />)}</div></Card>
-      ) : (historyQ.data ?? []).length === 0 ? (
-        <Card><EmptyState title="Nothing here yet" body="Translations you run will be stored here with model, latency and quality metadata." icon="⧗" /></Card>
+        <Card>
+          <div className="space-y-3">
+            {[...Array(5)].map((_, i) => (
+              <Skeleton key={i} className="h-12 w-full" />
+            ))}
+          </div>
+        </Card>
+      ) : items.length === 0 ? (
+        <Card>
+          <EmptyState
+            title="Nothing here yet"
+            body="Translations you run will be stored here with model, latency and quality metadata."
+            icon="⧗"
+          />
+        </Card>
       ) : (
-        <div className="space-y-2">
-          {(historyQ.data ?? []).map((h) => (
-            <div key={h.id} className="gt-card p-4">
-              <div className="mb-1.5 flex flex-wrap items-center gap-2 text-[11px] text-ink-400">
-                <Badge>{languageLabel(langs, h.source_language)} → {languageLabel(langs, h.target_language)}</Badge>
-                <Badge tone="neutral">{h.kind}</Badge>
-                {h.from_tm && <Badge tone="good">translation memory</Badge>}
-                <span>{h.provider} · {h.model}</span>
-                <span>{Math.round(h.latency_ms)} ms</span>
-                <span>{new Date(h.created_at).toLocaleString()}</span>
-                <div className="flex-1" />
-                {h.quality_flags.map((f) => <Badge key={f} tone={f.includes("untranslated") ? "bad" : "neutral"}>{f.replace(/_/g, " ")}</Badge>)}
-                <Button size="sm" variant="ghost" onClick={() => del(h.id)} aria-label="Delete history item">Delete</Button>
+        <div className="space-y-3">
+          {items.map((h: any) => (
+            <div
+              key={h.id}
+              className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs hover:border-slate-300 transition-all duration-150 space-y-3"
+            >
+              {/* Card Header & Metadata */}
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2.5 text-xs text-slate-500">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge tone="neutral" className="text-xs font-medium">
+                    {languageLabel(langs, h.source_lang || h.source_language)} → {languageLabel(langs, h.target_lang || h.target_language)}
+                  </Badge>
+                  <Badge tone="neutral" className="text-xs font-medium">
+                    {h.kind || h.product || "text"}
+                  </Badge>
+                  {(h.from_tm || h.tm_match) && (
+                    <Badge tone="good" className="text-xs font-medium">
+                      translation memory
+                    </Badge>
+                  )}
+                  <span>{h.provider} · {h.model}</span>
+                  <span>{Math.round(h.latency_ms ?? 0)} ms</span>
+                  <span>{formatHistoryDate(h.created_at)}</span>
+                  {(h.quality_flags ?? []).map((f: string) => (
+                    <Badge
+                      key={f}
+                      tone={f.includes("untranslated") ? "bad" : "neutral"}
+                      className="text-xs font-medium"
+                    >
+                      {f.replace(/_/g, " ")}
+                    </Badge>
+                  ))}
+                </div>
+
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => del(h.id)}
+                  aria-label="Delete history item"
+                  className="h-8 gap-1.5 text-xs font-medium text-rose-600 hover:bg-rose-50 hover:text-rose-700 active:bg-rose-100 transition-colors"
+                >
+                  <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span>Delete</span>
+                </Button>
               </div>
-              <p className="text-sm text-ink-500">{h.source_text}</p>
-              <p className="mt-0.5 text-sm font-medium text-ink-900">{h.translated_text}</p>
+
+              {/* Translation Content */}
+              <div className="space-y-1">
+                <p className="text-sm text-slate-600 leading-relaxed">{h.source_text}</p>
+                <p className="text-sm font-semibold text-slate-900 leading-relaxed">
+                  {h.target_text || h.translated_text}
+                </p>
+              </div>
             </div>
           ))}
         </div>

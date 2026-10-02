@@ -92,6 +92,7 @@ export interface RequestOptions extends Omit<RequestInit, "body"> {
   body?: unknown;
   form?: FormData;
   raw?: boolean;
+  timeoutMs?: number;
 }
 
 export async function api<T = any>(path: string, opts: RequestOptions = {}): Promise<T> {
@@ -101,18 +102,39 @@ export async function api<T = any>(path: string, opts: RequestOptions = {}): Pro
   if (opts.body !== undefined && !headers.has("content-type"))
     headers.set("content-type", "application/json");
 
-  const doFetch = () =>
-    fetch(`${BASE}${path}`, {
+  const timeoutMs = opts.timeoutMs ?? (opts.form ? 60000 : 15000);
+  const doFetch = () => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    const signal = opts.signal || controller.signal;
+    return fetch(`${BASE}${path}`, {
       ...opts,
+      signal,
       headers,
       body: opts.form ?? (opts.body !== undefined ? JSON.stringify(opts.body) : undefined),
-    });
+    }).finally(() => clearTimeout(timeoutId));
+  };
 
-  let res = await doFetch();
+  let res: Response;
+  try {
+    res = await doFetch();
+  } catch (err: any) {
+    if (err?.name === "AbortError") {
+      throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s. Please check connection and try again.`);
+    }
+    throw err;
+  }
   if (res.status === 401 && refreshToken) {
     if (await tryRefresh()) {
       headers.set("Authorization", `Bearer ${accessToken}`);
-      res = await doFetch();
+      try {
+        res = await doFetch();
+      } catch (err: any) {
+        if (err?.name === "AbortError") {
+          throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s. Please check connection and try again.`);
+        }
+        throw err;
+      }
     }
   }
   if (res.status === 401) {
@@ -125,4 +147,42 @@ export async function api<T = any>(path: string, opts: RequestOptions = {}): Pro
   const data = res.status === 204 ? null : await res.json().catch(() => null);
   if (!res.ok) throw new ApiError(res.status, data);
   return data as T;
+}
+
+api.get = <T = any>(path: string, opts?: RequestOptions) =>
+  api<T>(path, { ...opts, method: "GET" });
+
+api.post = <T = any>(path: string, body?: unknown, opts?: RequestOptions) =>
+  api<T>(path, { ...opts, method: "POST", body });
+
+api.put = <T = any>(path: string, body?: unknown, opts?: RequestOptions) =>
+  api<T>(path, { ...opts, method: "PUT", body });
+
+api.delete = <T = any>(path: string, opts?: RequestOptions) =>
+  api<T>(path, { ...opts, method: "DELETE" });
+
+export function friendlyMessage(err: unknown): string {
+  if (!err) return "An unexpected error occurred.";
+  if (err instanceof ApiError) {
+    if (err.message && err.message !== `Request failed (${err.status})`) {
+      return err.message;
+    }
+    if (err.details && typeof err.details === "object" && Object.keys(err.details).length > 0) {
+      return JSON.stringify(err.details);
+    }
+    return `Request failed with status ${err.status}`;
+  }
+  if (err instanceof Error) {
+    if (err.name === "AbortError" || err.message.includes("timed out")) {
+      return "Request timed out. Please check your connection or service status.";
+    }
+    return err.message;
+  }
+  if (typeof err === "string") {
+    return err;
+  }
+  if (typeof err === "object" && "message" in (err as any)) {
+    return String((err as any).message);
+  }
+  return "An error occurred. Please try again.";
 }

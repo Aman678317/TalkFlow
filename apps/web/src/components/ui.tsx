@@ -161,10 +161,21 @@ export function Toggle({ checked, onChange, label, id }:
 // Surfaces
 // ---------------------------------------------------------------------------
 
-export function Card({ className, children, ...rest }: React.HTMLAttributes<HTMLDivElement>) {
+export interface CardProps extends Omit<React.HTMLAttributes<HTMLDivElement>, 'title'> {
+  title?: ReactNode;
+  subtitle?: ReactNode;
+  action?: ReactNode;
+}
+
+export function Card({ className, children, title, subtitle, action, ...rest }: CardProps) {
   return (
-    <div className={cn('rounded-2xl border border-slate-200 bg-white shadow-card', className)} {...rest}>
-      {children}
+    <div className={cn('rounded-2xl border border-slate-200 bg-white shadow-card overflow-hidden', className)} {...rest}>
+      {(title !== undefined || subtitle !== undefined || action !== undefined) && (
+        <CardHeader title={title} subtitle={subtitle} action={action} />
+      )}
+      <div className={title !== undefined || subtitle !== undefined || action !== undefined ? "p-5" : undefined}>
+        {children}
+      </div>
     </div>
   );
 }
@@ -184,6 +195,10 @@ export function CardHeader({ title, subtitle, action }:
 
 const BADGE_TONES: Record<string, string> = {
   neutral: 'bg-slate-100 text-slate-700 border-slate-200',
+  good: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  warn: 'bg-amber-50 text-amber-700 border-amber-200',
+  bad: 'bg-rose-50 text-rose-700 border-rose-200',
+  info: 'bg-sky-50 text-sky-700 border-sky-200',
   green: 'bg-emerald-50 text-emerald-700 border-emerald-200',
   amber: 'bg-amber-50 text-amber-700 border-amber-200',
   red: 'bg-rose-50 text-rose-700 border-rose-200',
@@ -191,11 +206,12 @@ const BADGE_TONES: Record<string, string> = {
   lagoon: 'bg-lagoon-50 text-lagoon-700 border-lagoon-200',
 };
 
-export function Badge({ tone = 'neutral', children, className }:
-  { tone?: keyof typeof BADGE_TONES; children: ReactNode; className?: string }) {
+export function Badge({ tone = 'neutral', children, className, title }:
+  { tone?: string; children: ReactNode; className?: string; title?: string }) {
+  const toneClass = BADGE_TONES[tone] || BADGE_TONES.neutral;
   return (
-    <span className={cn('inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium',
-      BADGE_TONES[tone], className)}>
+    <span title={title} className={cn('inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium',
+      toneClass, className)}>
       {children}
     </span>
   );
@@ -239,26 +255,30 @@ export function Modal({ open, onClose, title, children, wide }:
 // States
 // ---------------------------------------------------------------------------
 
-export function EmptyState({ icon, title, hint, action }:
-  { icon?: ReactNode; title: string; hint?: string; action?: ReactNode }) {
+export function EmptyState({ icon, title, hint, body, action }:
+  { icon?: ReactNode; title: string; hint?: string; body?: string; action?: ReactNode }) {
+  const desc = hint || body;
   return (
     <div className="flex flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-slate-300 bg-slate-50/60 px-6 py-12 text-center">
-      {icon && <div className="text-slate-400">{icon}</div>}
+      {icon && <div className="text-2xl text-slate-400">{icon}</div>}
       <p className="text-sm font-semibold text-slate-700">{title}</p>
-      {hint && <p className="max-w-sm text-xs text-slate-500">{hint}</p>}
+      {desc && <p className="max-w-sm text-xs text-slate-500">{desc}</p>}
       {action && <div className="mt-2">{action}</div>}
     </div>
   );
 }
 
-export function ErrorState({ title, detail, retry }:
-  { title?: string; detail?: string; retry?: () => void }) {
+export function ErrorState({ title, detail, message, code, retry, onRetry }:
+  { title?: string; detail?: string; message?: string; code?: string; retry?: () => void; onRetry?: () => void }) {
+  const heading = title || message || 'Something went wrong';
+  const sub = detail || (code ? `Error code: ${code}` : undefined);
+  const handleRetry = retry || onRetry;
   return (
     <div className="flex flex-col items-center gap-2 rounded-2xl border border-rose-200 bg-rose-50 px-6 py-8 text-center"
          role="alert">
-      <p className="text-sm font-semibold text-rose-800">{title ?? 'Something went wrong'}</p>
-      {detail && <p className="max-w-md text-xs text-rose-600">{detail}</p>}
-      {retry && <Button size="sm" variant="secondary" onClick={retry} className="mt-1">Retry</Button>}
+      <p className="text-sm font-semibold text-rose-800">{heading}</p>
+      {sub && <p className="max-w-md text-xs text-rose-600">{sub}</p>}
+      {handleRetry && <Button size="sm" variant="secondary" onClick={handleRetry} className="mt-1">Retry</Button>}
     </div>
   );
 }

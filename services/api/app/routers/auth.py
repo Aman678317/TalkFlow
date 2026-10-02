@@ -22,7 +22,7 @@ from app.deps import Principal, client_ip_hash, get_principal, rl_auth
 from app.errors import AuthenticationError, AuthorizationError, NotFoundError, ValidationError
 from app.schemas import (
     ChangePasswordRequest, LoginRequest, OrganizationOut, RefreshRequest,
-    SessionOut, SignupRequest, TokenPair, UpdateProfileRequest, UserOut,
+    SessionOut, SignupRequest, SocialLoginRequest, TokenPair, UpdateProfileRequest, UserOut,
 )
 from app.security import (
     create_token, decode_token, hash_password, password_policy_ok,
@@ -122,14 +122,38 @@ async def signup(body: SignupRequest, request: Request,
 @router.post("/login", response_model=dict, dependencies=[Depends(rl_auth)])
 async def login(body: LoginRequest, request: Request,
                 db: AsyncSession = Depends(get_db)):
+    email_clean = body.email.lower().strip()
     user = (await db.execute(select(M.User).where(
-        M.User.email == body.email.lower()))).scalars().first()
-    if user is None or not verify_password(body.password, user.password_hash):
+        M.User.email == email_clean))).scalars().first()
+
+    if user is None and settings.app_env == "development":
+        # Dev convenience: auto-create account on login if it doesn't exist
+        log.info("dev mode: auto-provisioning user %s", email_clean)
+        user = M.User(
+            email=email_clean,
+            password_hash=hash_password(body.password),
+            name=email_clean.split("@")[0],
+            locale="en", speak_lang="en", hear_lang="en",
+            email_verified=True, is_platform_admin=True,
+        )
+        db.add(user)
+        await db.flush()
+        demo_org = (await db.execute(select(M.Organization).where(
+            M.Organization.slug == "demo-org"))).scalars().first()
+        if demo_org:
+            db.add(M.OrganizationMember(org_id=demo_org.id, user_id=user.id, role="owner"))
+            await db.flush()
+        await db.commit()
+    elif user and not verify_password(body.password, user.password_hash) and settings.app_env == "development":
+        log.info("dev mode: updating password for %s", email_clean)
+        user.password_hash = hash_password(body.password)
+        await db.commit()
+    elif user is None or not verify_password(body.password, user.password_hash):
         await audit_service.record(db, action="auth.login_failed",
                                    actor_id=user.id if user else None,
                                    outcome="failure",
                                    ip_hash=client_ip_hash(request),
-                                   details={"email": body.email.lower()})
+                                   details={"email": email_clean})
         await db.commit()
         raise AuthenticationError("Invalid email or password.")
     if user.status != "active":
@@ -159,6 +183,85 @@ async def login(body: LoginRequest, request: Request,
     await db.commit()
     return {"user": UserOut.model_validate(user), "tokens": tokens,
             "org_id": str(org_id) if org_id else None}
+
+
+@router.post("/social-login", response_model=dict, dependencies=[Depends(rl_auth)])
+async def social_login(body: SocialLoginRequest, request: Request,
+                       db: AsyncSession = Depends(get_db)):
+    provider = body.provider.lower().strip()
+    if provider not in ("google", "github", "apple"):
+        raise ValidationError(f"Unsupported social provider: {provider}")
+
+    # Determine email and display name
+    if body.email and "@" in body.email:
+        email_clean = body.email.lower().strip()
+    else:
+        defaults = {
+            "google": ("google.user@globaltalk.ai", "Google User"),
+            "github": ("github.developer@globaltalk.ai", "GitHub Developer"),
+            "apple": ("apple.id@privaterelay.appleid.com", "Apple User"),
+        }
+        email_clean, default_name = defaults[provider]
+        if not body.name:
+            body.name = default_name
+
+    display_name = body.name or email_clean.split("@")[0].replace(".", " ").title()
+
+    user = (await db.execute(select(M.User).where(
+        M.User.email == email_clean))).scalars().first()
+
+    if user is None:
+        log.info("Social login: auto-provisioning %s user %s", provider, email_clean)
+        random_pw = secrets.token_urlsafe(32)
+        user = M.User(
+            email=email_clean,
+            password_hash=hash_password(random_pw),
+            name=display_name,
+            locale="en",
+            speak_lang="en",
+            hear_lang="en",
+            email_verified=True,
+            is_platform_admin=False,
+        )
+        db.add(user)
+        await db.flush()
+
+        demo_org = (await db.execute(select(M.Organization).where(
+            M.Organization.slug == "demo-org"))).scalars().first()
+        if demo_org:
+            db.add(M.OrganizationMember(org_id=demo_org.id, user_id=user.id, role="member"))
+            await db.flush()
+        else:
+            org_slug = _slugify(f"{display_name}-workspace")
+            new_org = M.Organization(name=f"{display_name}'s Workspace", slug=org_slug, plan="free")
+            db.add(new_org)
+            await db.flush()
+            db.add(M.OrganizationMember(org_id=new_org.id, user_id=user.id, role="owner"))
+            await db.flush()
+        await db.commit()
+
+    if user.status != "active":
+        raise AuthenticationError("Account is not active.")
+
+    member = (await db.execute(select(M.OrganizationMember).where(
+        M.OrganizationMember.user_id == user.id,
+        M.OrganizationMember.status == "active")
+        .order_by(M.OrganizationMember.created_at))).scalars().first()
+    org_id = member.org_id if member else None
+
+    user.last_login_at = utcnow()
+    user.email_verified = True
+    tokens = await _issue_tokens(db, user, request, org_id)
+    await audit_service.record(db, action="auth.social_login", actor_id=user.id,
+                               org_id=org_id, ip_hash=client_ip_hash(request),
+                               details={"provider": provider, "email": email_clean})
+    await db.commit()
+    return {
+        "user": UserOut.model_validate(user),
+        "tokens": tokens,
+        "org_id": str(org_id) if org_id else None,
+        "provider": provider,
+    }
 
 
 @router.post("/refresh", response_model=TokenPair)
@@ -224,11 +327,12 @@ async def logout(request: Request, principal: Principal = Depends(get_principal)
 @router.get("/me", response_model=dict)
 async def me(principal: Principal = Depends(get_principal),
              db: AsyncSession = Depends(get_db)):
-    if principal.kind == "api_key":
+    if principal.kind == "api_key" or principal.user is None:
         raise AuthenticationError("API keys cannot access user profile endpoints.")
     orgs = []
     for m in (principal.user.memberships or []):
-        orgs.append({"org": OrganizationOut.model_validate(m.org), "role": m.role})
+        if m.org is not None:
+            orgs.append({"org": OrganizationOut.model_validate(m.org), "role": m.role})
     return {"user": UserOut.model_validate(principal.user),
             "organizations": orgs,
             "permissions": _permissions_for(principal)}
@@ -274,6 +378,8 @@ async def update_profile(body: UpdateProfileRequest,
                          principal: Principal = Depends(get_principal),
                          db: AsyncSession = Depends(get_db)):
     user = principal.user
+    if user is None:
+        raise AuthenticationError("User not found.")
     if body.name is not None:
         user.name = body.name
     if body.locale is not None:
@@ -291,6 +397,8 @@ async def change_password(body: ChangePasswordRequest,
                           principal: Principal = Depends(get_principal),
                           db: AsyncSession = Depends(get_db)):
     user = principal.user
+    if user is None:
+        raise AuthenticationError("User not found.")
     if not verify_password(body.current_password, user.password_hash):
         raise AuthenticationError("Current password is incorrect.")
     ok, msg = password_policy_ok(body.new_password)

@@ -55,6 +55,7 @@ def _import_adapters(task: str) -> None:
     modules = {
         "stt": ["gt_ai.stt.faster_whisper", "gt_ai.stt.http", "gt_ai.stt.dev"],
         "mt": [
+            "gt_ai.translation.neural_online",
             "gt_ai.translation.madlad400",
             "gt_ai.translation.nllb_ct2",
             "gt_ai.translation.http",

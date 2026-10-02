@@ -8,7 +8,7 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -72,9 +72,21 @@ class Settings(BaseSettings):
     livekit_api_key: str = ""
     livekit_api_secret: str = ""
 
+    # --- telephony & international calling ---
+    telephony_provider: str = "auto"  # auto | twilio | telnyx | livekit_sip | simulated
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    twilio_phone_number: str = ""
+    telnyx_api_key: str = ""
+    telnyx_phone_number: str = ""
+    telephony_webhook_base_url: str = ""
+    telephony_sample_rate: int = 8000
+
     # --- AI providers ---
     translation_provider: str = "auto"
     translation_model: str = ""
+    deepl_api_key: str = ""
+    deepl_api_url: str = "https://api-free.deepl.com/v2/translate"
     mt_http_url: str = ""
     mt_http_style: str = "opennmt"
     stt_provider: str = "auto"
@@ -106,9 +118,15 @@ class Settings(BaseSettings):
 
     # --- rate limits (count/period) ---
     rate_limit_translate: str = "60/minute"
-    rate_limit_auth: str = "10/minute"
+    rate_limit_auth: str = "300/minute"
     rate_limit_default: str = "300/minute"
     rate_limit_ws_connect: str = "30/minute"
+    rate_limit_telephony_call: str = "30/minute"
+    rate_limit_telephony_webhook: str = "120/minute"
+
+    # --- telephony security & privacy (PDD Phase 12 & 13) ---
+    telephony_recording_default: bool = False
+    telephony_verify_webhook_signatures: bool = True
 
     # --- observability ---
     otel_enabled: bool = False
@@ -119,8 +137,29 @@ class Settings(BaseSettings):
     # --- security ---
     clamav_host: str = ""
     clamav_port: int = 3310
-    cors_origins: list[str] = Field(default_factory=lambda: [
+    cors_origins: list[str] | str = Field(default_factory=lambda: [
         "http://localhost:5173", "http://localhost:4173", "http://127.0.0.1:5173"])
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def _parse_cors_origins(cls, v: object) -> list[str]:
+        if isinstance(v, str):
+            v = v.strip()
+            if not v:
+                return ["http://localhost:5173", "http://localhost:4173", "http://127.0.0.1:5173"]
+            if v.startswith("[") and v.endswith("]"):
+                try:
+                    import json
+                    loaded = json.loads(v)
+                    if isinstance(loaded, list):
+                        return [str(x).strip() for x in loaded]
+                except Exception:
+                    pass
+            return [x.strip() for x in v.split(",") if x.strip()]
+        if isinstance(v, (list, tuple, set)):
+            return [str(x).strip() for x in v]
+        return ["http://localhost:5173", "http://localhost:4173", "http://127.0.0.1:5173"]
+
     secure_cookies: bool = False
     csrf_enabled: bool = True
 

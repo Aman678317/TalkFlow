@@ -776,3 +776,137 @@ class WebhookDelivery(Base, UUIDPkMixin, TimestampMixin):
     last_status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
     next_retry_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
     delivered_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
+
+
+# --------------------------------------------------------------------------- #
+# Telephony, Global Calling & AI Agent Models
+# --------------------------------------------------------------------------- #
+
+
+class PhoneNumber(Base, UUIDPkMixin, TimestampMixin):
+    """Registered or provisioned caller ID phone numbers (E.164 format)."""
+    __tablename__ = "phone_numbers"
+
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), index=True, nullable=False)
+    e164_number: Mapped[str] = mapped_column(String(32), unique=True, index=True, nullable=False)
+    country_code: Mapped[str] = mapped_column(String(8), default="US", nullable=False)  # ISO 3166-1 alpha-2 (e.g. IN, US, JP)
+    friendly_name: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), default="twilio", nullable=False)  # twilio|telnyx|livekit_sip|custom
+    provider_sid: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="active", nullable=False)  # active|pending|released
+    capabilities_json: Mapped[dict] = mapped_column(JSON, default=lambda: {"voice": True, "sms": False}, nullable=False)
+    assigned_agent_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+
+
+class CallSession(Base, UUIDPkMixin, TimestampMixin):
+    """PSTN / VoIP Call Session for International Calling with Realtime AI Translation."""
+    __tablename__ = "call_sessions"
+    __table_args__ = (
+        Index("ix_call_org_created", "org_id", "created_at"),
+        Index("ix_call_sid", "call_sid"),
+    )
+
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), index=True, nullable=False)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    call_sid: Mapped[str] = mapped_column(String(120), unique=True, index=True, nullable=False)
+    direction: Mapped[str] = mapped_column(String(16), default="outbound", nullable=False)  # outbound|inbound
+    from_number: Mapped[str] = mapped_column(String(32), nullable=False)
+    to_number: Mapped[str] = mapped_column(String(32), nullable=False)
+    caller_name: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    recipient_name: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+
+    # Language Configuration
+    caller_language: Mapped[str] = mapped_column(String(16), default="en", nullable=False)
+    receiver_language: Mapped[str] = mapped_column(String(16), default="ja", nullable=False)
+
+    # State Machine: idle|initiating|connecting|ringing|connected|translating|ending|ended|busy|declined|no_answer|failed
+    status: Mapped[str] = mapped_column(String(32), default="initiating", index=True, nullable=False)
+    mode: Mapped[str] = mapped_column(String(32), default="human_to_human", nullable=False)  # human_to_human|ai_agent|call_center
+    provider: Mapped[str] = mapped_column(String(32), default="twilio", nullable=False)
+    stream_sid: Mapped[str | None] = mapped_column(String(120), nullable=True)
+
+    # Agent / Prompt integration
+    agent_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    prompt_version_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+
+    # Optional bound Meeting for realtime pipeline reuse
+    meeting_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("meetings.id", ondelete="SET NULL"), nullable=True)
+
+    # Timing & Metrics
+    started_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
+    connected_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
+    duration_seconds: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    # Cost metering (independent breakdown)
+    telephony_cost_cents: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    stt_cost_cents: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    mt_cost_cents: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    tts_cost_cents: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_cost_cents: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    # Privacy & Recording (Phase 12 & 13: Recording OFF by default)
+    recording_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    # Status / Failure diagnostics
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+
+
+class CallEvent(Base, UUIDPkMixin):
+    """Immutable audit ledger for Call lifecycle events."""
+    __tablename__ = "call_events"
+    __table_args__ = (
+        Index("ix_call_event_call_time", "call_id", "created_at"),
+    )
+
+    call_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("call_sessions.id", ondelete="CASCADE"), index=True, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)  # status_change|dtmf|media_start|media_stop|translation_error
+    payload_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, nullable=False)
+
+
+class AgentPrompt(Base, UUIDPkMixin, TimestampMixin):
+    """AI Voice Agent configuration with versioned prompt management."""
+    __tablename__ = "agent_prompts"
+
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), index=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    agent_role: Mapped[str] = mapped_column(String(120), default="customer_support", nullable=False)
+    active_version_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="active", nullable=False)  # draft|testing|active|archived
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+
+class PromptVersion(Base, UUIDPkMixin, TimestampMixin):
+    """Versioned prompt record with Platform + Custom prompt merge history."""
+    __tablename__ = "prompt_versions"
+    __table_args__ = (
+        UniqueConstraint("agent_prompt_id", "version", name="uq_agent_version"),
+    )
+
+    agent_prompt_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("agent_prompts.id", ondelete="CASCADE"), index=True, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="draft", nullable=False)  # draft|testing|active|archived
+
+    original_platform_prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    original_custom_prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    project_context: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    merged_prompt: Mapped[str] = mapped_column(Text, nullable=False)
+
+    conflicts_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    validation_status: Mapped[str] = mapped_column(String(32), default="valid", nullable=False)  # valid|needs_review
+    validation_errors_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True)

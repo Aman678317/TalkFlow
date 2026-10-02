@@ -1,0 +1,266 @@
+asyncapi: 2.6.0
+info:
+  title: GlobalTalk AI Real-Time Voice Streaming API
+  version: 3.2.0
+  description: |
+    Asynchronous event and stream protocol specification for GlobalTalk AI's real-time
+    voice translation network. Implements low-latency (<800ms) bi-directional audio
+    streaming over WebRTC and WebSocket channels with strict adherence to the
+    **Canonical Source Invariant**.
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  production-webrtc:
+    url: wss://rtc.globaltalk.ai/voice/v3
+    protocol: wss
+    description: Production LiveKit / WebRTC Signal Gateway
+  edge-websocket:
+    url: ws://127.0.0.1:8088/ws/voice/v3
+    protocol: ws
+    description: Local Dev and Low-Latency Edge WebSocket Endpoint
+
+channels:
+  voice/stream/{meetingId}:
+    parameters:
+      meetingId:
+        schema:
+          type: string
+        description: Unique meeting room or voice conversation identifier
+    publish:
+      summary: Client Audio Input & Control Messages
+      description: Audio frames sent by the client's AudioWorklet and session control events.
+      message:
+        oneOf:
+          - $ref: '#/components/messages/AudioChunkInput'
+          - $ref: '#/components/messages/ClientPreferencesUpdate'
+          - $ref: '#/components/messages/KeepAlivePing'
+    subscribe:
+      summary: Server Transcript, Translations, & TTS Output
+      description: Immutable canonical transcripts, per-listener fan-out translations, and synthesized audio frames.
+      message:
+        oneOf:
+          - $ref: '#/components/messages/VadStateChanged'
+          - $ref: '#/components/messages/TranscriptPartial'
+          - $ref: '#/components/messages/CanonicalSourceFinal'
+          - $ref: '#/components/messages/TranslationFanOut'
+          - $ref: '#/components/messages/SynthesizedAudioFrame'
+          - $ref: '#/components/messages/TelemetryMetrics'
+
+components:
+  messages:
+    AudioChunkInput:
+      name: AudioChunkInput
+      title: Raw PCM16 Audio Chunk
+      payload:
+        type: object
+        required:
+          - type
+          - sequence
+          - pcm_base64
+        properties:
+          type:
+            type: string
+            const: "audio_chunk"
+          sequence:
+            type: integer
+            description: Monotonically increasing sequence number
+          timestamp_ms:
+            type: integer
+          pcm_base64:
+            type: string
+            description: Linear PCM 16-bit mono audio at 16,000 Hz, base64 encoded
+
+    ClientPreferencesUpdate:
+      name: ClientPreferencesUpdate
+      title: Participant Language & Audio Preferences
+      payload:
+        type: object
+        required:
+          - type
+          - speaking_language
+          - listening_language
+        properties:
+          type:
+            type: string
+            const: "preferences_update"
+          speaking_language:
+            type: string
+            example: "hi"
+          listening_language:
+            type: string
+            example: "en"
+          honorific_level:
+            type: string
+            enum: [formal, familiar, intimate, respectful, neutral]
+            default: formal
+          audio_mode:
+            type: string
+            enum: [voice_translation, subtitles_only, original_and_voice]
+            default: voice_translation
+
+    KeepAlivePing:
+      name: KeepAlivePing
+      payload:
+        type: object
+        properties:
+          type:
+            type: string
+            const: "ping"
+          timestamp:
+            type: integer
+
+    VadStateChanged:
+      name: VadStateChanged
+      title: Voice Activity Detection (VAD) Event
+      payload:
+        type: object
+        properties:
+          type:
+            type: string
+            const: "vad_state"
+          speaking:
+            type: boolean
+          participant_id:
+            type: string
+
+    TranscriptPartial:
+      name: TranscriptPartial
+      title: Interim Speech Recognition Partial
+      payload:
+        type: object
+        properties:
+          type:
+            type: string
+            const: "transcript_partial"
+          participant_id:
+            type: string
+          text:
+            type: string
+          source_language:
+            type: string
+
+    CanonicalSourceFinal:
+      name: CanonicalSourceFinal
+      title: Immutable Canonical Source Segment
+      description: |
+        The finalized, authoritative transcript segment representing the speaker's true words.
+        Once emitted, this segment is immutable and forms the single semantic source for all listener translations.
+      payload:
+        type: object
+        required:
+          - type
+          - segment_id
+          - participant_id
+          - canonical_text
+          - source_language
+        properties:
+          type:
+            type: string
+            const: "canonical_source_final"
+          segment_id:
+            type: string
+            format: uuid
+          participant_id:
+            type: string
+          canonical_text:
+            type: string
+            example: "हम अगली तिमाही के लक्ष्यों की समीक्षा करने के लिए एकत्रित हुए हैं।"
+          source_language:
+            type: string
+            example: "hi"
+          start_ms:
+            type: integer
+          end_ms:
+            type: integer
+          confidence:
+            type: number
+            example: 0.985
+
+    TranslationFanOut:
+      name: TranslationFanOut
+      title: Fan-Out Translated Segment (Per Listener)
+      description: |
+        Independent translation directly derived from the canonical source segment.
+        Translates directly into each listener's target language without intermediate pivot degradation.
+      payload:
+        type: object
+        required:
+          - type
+          - source_segment_id
+          - target_language
+          - translated_text
+        properties:
+          type:
+            type: string
+            const: "translation_fanout"
+          source_segment_id:
+            type: string
+            format: uuid
+          target_language:
+            type: string
+            example: "en"
+          translated_text:
+            type: string
+            example: "We have gathered to review the goals for the next quarter."
+          honorific_applied:
+            type: string
+            example: "formal"
+          model:
+            type: string
+            example: "globaltalk-nmt-v3"
+          latency_ms:
+            type: integer
+            example: 184
+
+    SynthesizedAudioFrame:
+      name: SynthesizedAudioFrame
+      title: Per-Listener Synthesized Speech Frame (TTS)
+      payload:
+        type: object
+        required:
+          - type
+          - source_segment_id
+          - target_language
+          - audio_pcm_base64
+        properties:
+          type:
+            type: string
+            const: "audio_frame"
+          source_segment_id:
+            type: string
+            format: uuid
+          target_language:
+            type: string
+            example: "en"
+          audio_pcm_base64:
+            type: string
+            description: 24kHz mono PCM synthesized voice
+          is_final:
+            type: boolean
+
+    TelemetryMetrics:
+      name: TelemetryMetrics
+      title: End-to-End Latency & Jitter Telemetry
+      payload:
+        type: object
+        properties:
+          type:
+            type: string
+            const: "telemetry"
+          e2e_latency_ms:
+            type: integer
+            example: 742
+          vad_latency_ms:
+            type: integer
+            example: 45
+          stt_latency_ms:
+            type: integer
+            example: 220
+          mt_latency_ms:
+            type: integer
+            example: 180
+          tts_latency_ms:
+            type: integer
+            example: 297

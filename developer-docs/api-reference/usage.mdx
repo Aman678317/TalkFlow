@@ -1,0 +1,38 @@
+---
+title: "Account Usage & Quota"
+api: "GET /v2/usage"
+description: "Monitor character counts, document limits, and quota consumption"
+---
+
+# Account Usage & Quota API
+
+Returns real-time character and document usage counts against configured subscription tiers and billing cycles.
+
+---
+
+### Request Example
+
+```bash
+curl -X GET "https://api.globaltalk.ai/v2/usage" \
+  -H "Authorization: Bearer $GTK_API_KEY"
+```
+
+### Response Example (`200 OK`)
+
+```json
+{
+  "character_count": 154200,
+  "character_limit": 10000000,
+  "document_count": 45,
+  "document_limit": 500
+}
+```
+
+### Field Descriptions
+
+| Field | Type | Description |
+|---|---|---|
+| `character_count` | integer | Total billed characters consumed during the current billing cycle. |
+| `character_limit` | integer | Total monthly character allocation for the subscription plan. |
+| `document_count` | integer | Number of documents translated in the current billing cycle. |
+| `document_limit` | integer | Maximum documents permitted per billing cycle. |

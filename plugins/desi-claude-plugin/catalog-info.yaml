@@ -1,0 +1,11 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: desi-claude-plugin
+  title: Desi Claude Plugin
+  description: Claude Plugin providing Desi Language AI translation, writing enhancement, glossaries, and document translation via MCP
+spec:
+  type: plugin
+  lifecycle: production
+  owner: core-ai-team
+  system: desi-ecosystem

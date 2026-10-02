@@ -12,6 +12,7 @@ const NAV = [
   { to: '/translate', label: 'Translate', icon: Languages },
   { to: '/write', label: 'Write', icon: Sparkles },
   { to: '/voice', label: 'Live Voice', icon: Mic },
+  { to: '/voice?tab=phone', label: 'Global Call', icon: Phone },
   { to: '/meetings', label: 'Meetings', icon: Video },
   { to: '/chat', label: 'Chat', icon: MessageSquare },
   { to: '/documents', label: 'Documents', icon: FileText },
@@ -44,7 +45,7 @@ export default function AppShell() {
       <aside className="hidden w-60 shrink-0 flex-col border-r border-slate-200 bg-white md:flex"
              aria-label="Main navigation">
         <button className="flex items-center gap-2.5 px-5 py-5 text-left"
-                onClick={() => navigate('/dashboard')}>
+                onClick={() => navigate(user ? '/dashboard' : '/')}>
           <Logo />
           <div>
             <div className="text-sm font-bold tracking-tight text-slate-900">GlobalTalk AI</div>
@@ -62,20 +63,31 @@ export default function AppShell() {
           ]} />
         </nav>
         <div className="border-t border-slate-100 px-4 py-3">
-          <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-iris-100 text-sm font-bold text-iris-700">
-              {(user?.name || user?.email || '?').slice(0, 1).toUpperCase()}
+          {user ? (
+            <div className="flex items-center gap-3">
+              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-iris-100 text-sm font-bold text-iris-700">
+                {(user.name || user.email || '?').slice(0, 1).toUpperCase()}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-medium text-slate-800">{user.name || user.email}</div>
+                <div className="truncate text-xs text-slate-500">{org?.name ?? '—'}</div>
+              </div>
+              <button onClick={() => { void logout(); navigate('/'); }}
+                      className="text-xs font-medium text-slate-400 hover:text-rose-600"
+                      aria-label="Sign out">
+                Sign out
+              </button>
             </div>
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-sm font-medium text-slate-800">{user?.name || user?.email}</div>
-              <div className="truncate text-xs text-slate-500">{org?.name ?? '—'}</div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => navigate('/login')}
+                className="w-full rounded-xl bg-iris-600 px-3 py-2 text-center text-xs font-semibold text-white shadow-sm hover:bg-iris-500 active:scale-[0.98] transition-all"
+              >
+                Sign In to Save
+              </button>
             </div>
-            <button onClick={() => { void logout(); navigate('/'); }}
-                    className="text-xs font-medium text-slate-400 hover:text-rose-600"
-                    aria-label="Sign out">
-              Sign out
-            </button>
-          </div>
+          )}
         </div>
       </aside>
 

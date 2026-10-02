@@ -1,0 +1,41 @@
+import { defineConfig } from "vite";
+import { fileURLToPath } from "node:url";
+
+let reactPlugin: any = null;
+try {
+  const reactMod = await import("@vitejs/plugin-react");
+  reactPlugin = reactMod.default ?? reactMod;
+} catch {
+  console.warn("\x1b[33m[@globaltalk/web] Notice: @vitejs/plugin-react not found in node_modules. Falling back to built-in esbuild JSX. Run 'npm install' in apps/web for full Fast-Refresh.\x1b[0m");
+}
+
+export default defineConfig({
+  plugins: reactPlugin ? [reactPlugin()] : [],
+  esbuild: {
+    jsx: "automatic",
+  },
+  resolve: {
+    alias: {
+      "@": fileURLToPath(new URL("./src", import.meta.url)),
+      "@globaltalk/shared-types": fileURLToPath(new URL("../../packages/shared-types/src/index.ts", import.meta.url)),
+    },
+  },
+  server: {
+    port: 5173,
+    proxy: {
+      "^/api/(v1|docs|redoc|openapi\\.json)": { target: "http://127.0.0.1:8088", changeOrigin: true },
+      "/api-docs": { target: "http://127.0.0.1:8088", changeOrigin: true },
+      "/v2": { target: "http://127.0.0.1:8088", changeOrigin: true },
+      "/v3": { target: "http://127.0.0.1:8088", changeOrigin: true },
+      "/ws": { target: "ws://127.0.0.1:8088", ws: true },
+      "/health": { target: "http://127.0.0.1:8088" },
+      "/metrics": { target: "http://127.0.0.1:8088" },
+    },
+  },
+  build: { sourcemap: true },
+  test: {
+    environment: "jsdom",
+    globals: true,
+    setupFiles: ["./src/test-setup.ts"],
+  },
+} as any);

@@ -1,0 +1,17 @@
+{
+  "name": "@globaltalk/developer-docs",
+  "version": "3.2.0",
+  "private": true,
+  "description": "Authoritative Developer Documentation & OpenAPI Specifications for GlobalTalk AI and Desi Language AI",
+  "license": "MIT",
+  "scripts": {
+    "dev": "mint dev",
+    "build": "mint broken-links",
+    "lint:openapi": "npx @redocly/cli lint api-reference/openapi.yaml",
+    "validate": "mint broken-links && npx @redocly/cli lint api-reference/openapi.yaml"
+  },
+  "devDependencies": {
+    "@redocly/cli": "^1.25.0",
+    "mint": "latest"
+  }
+}

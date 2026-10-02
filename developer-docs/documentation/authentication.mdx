@@ -1,0 +1,107 @@
+---
+title: "Authentication & Headers"
+description: "How to authenticate requests to the GlobalTalk AI and Desi APIs"
+---
+
+# Authentication
+
+All requests to the GlobalTalk AI and Desi APIs require valid credentials transmitted via HTTP headers. Unauthenticated requests will return `401 Unauthorized` or `403 Forbidden`.
+
+---
+
+## 🔑 Authentication Methods
+
+The API Gateway supports three standard authentication headers:
+
+### 1. Bearer Token (`Authorization`)
+The recommended standard for server-to-server applications and automated pipelines:
+
+```http
+Authorization: Bearer gtk_live_0123456789abcdef
+```
+
+### 2. GlobalTalk API Key (`X-API-Key`)
+Standard developer key header:
+
+```http
+X-API-Key: gtk_live_0123456789abcdef
+```
+
+### 3. Desi API Key (`X-Desi-Key`)
+Drop-in compatibility header for Desi client libraries:
+
+```http
+X-Desi-Key: gtk_live_0123456789abcdef
+```
+
+---
+
+## 🏢 Multi-Tenant Organization Switcher
+
+For users or API keys associated with multiple workspaces or organizations, specify the tenant context using the `X-Org-Id` header:
+
+```http
+X-Org-Id: org_88c42b10
+```
+
+If omitted, requests default to the primary organization tied to the API key.
+
+---
+
+## 🛡️ Error Contract
+
+When authentication fails or quotas are exceeded, the API responds with a structured JSON error body:
+
+```json
+{
+  "error": {
+    "code": "api_key_invalid",
+    "message": "The provided API key is invalid or has expired.",
+    "request_id": "req_f81d4fae-7dec-11d0-a765-00a0c91e6bf6",
+    "recoverable": false,
+    "details": {}
+  }
+}
+```
+
+### Common Error Codes
+
+| Status Code | Error Code | Explanation |
+|---|---|---|
+| `401` | `unauthorized` | No authentication header provided or token is expired. |
+| `403` | `api_key_invalid` | API key string does not match any active credential. |
+| `403` | `quota_exceeded` | Account monthly character or document limit reached. |
+| `429` | `rate_limited` | Requests exceed the per-minute concurrency limit. |
+
+---
+
+## ⏱️ Rate Limiting & Backoff
+
+To ensure high availability, the platform enforces tier-based rate limits:
+
+- **Free Tier**: 60 requests/minute
+- **Pro / Enterprise**: Custom high-throughput allowances
+
+When rate-limited (`429 Too Many Requests`), the response includes a `Retry-After` header indicating the wait time in seconds:
+
+```http
+HTTP/1.1 429 Too Many Requests
+Retry-After: 4
+Content-Type: application/json
+
+{
+  "error": {
+    "code": "rate_limited",
+    "message": "Too many requests. Please wait 4 seconds.",
+    "recoverable": true
+  }
+}
+```
+
+### Exponential Backoff Best Practice
+
+When implementing custom HTTP clients, always use exponential backoff with random jitter:
+
+$$t_{\text{wait}} = \min(t_{\text{max}}, t_{\text{base}} \times 2^{\text{attempt}}) \pm \text{jitter}$$
+
+*Note: All official GlobalTalk AI and Desi SDKs have built-in exponential backoff jitter enabled by default.*

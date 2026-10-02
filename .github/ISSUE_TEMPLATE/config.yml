@@ -1,0 +1,9 @@
+blank_issues_enabled: false
+
+contact_links:
+  - name: 💬 GitHub Discussions
+    url: https://github.com/YOUR_USERNAME/globaltalk-ai/discussions
+    about: Ask questions, share ideas, or get help from the community.
+  - name: 📧 Email Support
+    url: mailto:open-source@globaltalk.ai
+    about: For sensitive issues or security disclosures, contact us by email.

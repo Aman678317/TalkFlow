@@ -1,0 +1,92 @@
+---
+title: "Custom Glossaries"
+description: "Enforce exact terminology mappings across translation requests"
+---
+
+# Glossaries API
+
+Glossaries allow organizations to enforce exact translations for brand names, product terms, and specialized industry jargon.
+
+---
+
+## Multilingual Glossaries (v3)
+
+The v3 API supports multilingual dictionaries within a single glossary entity.
+
+### 1. Create Multilingual Glossary (`POST /v3/glossaries`)
+
+```bash
+curl -X POST "https://api.globaltalk.ai/v3/glossaries" \
+  -H "Authorization: Bearer $GTK_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Corporate Brand Lexicon",
+    "dictionaries": [
+      {
+        "source_lang": "en",
+        "target_lang": "de",
+        "entries": [
+          {"source": "Cloud Hub", "target": "Cloud-Hub"},
+          {"source": "Smart Sync", "target": "SmartSync"}
+        ]
+      },
+      {
+        "source_lang": "en",
+        "target_lang": "hi",
+        "entries": [
+          {"source": "Cloud Hub", "target": "क्लाउड हब"},
+          {"source": "Smart Sync", "target": "स्मार्ट सिंक"}
+        ]
+      }
+    ]
+  }'
+```
+
+### Response Example (`201 Created`)
+
+```json
+{
+  "glossary_id": "glo_8e7f6a5b",
+  "name": "Corporate Brand Lexicon",
+  "entry_count": 4,
+  "created_at": "2026-09-29T21:00:00Z"
+}
+```
+
+---
+
+### 2. List Glossaries (`GET /v3/glossaries`)
+
+```bash
+curl -X GET "https://api.globaltalk.ai/v3/glossaries" \
+  -H "Authorization: Bearer $GTK_API_KEY"
+```
+
+---
+
+### 3. Upsert Glossary Entries (`POST /v3/glossaries/{id}/entries`)
+
+Add or update term pairs in an existing glossary:
+
+```bash
+curl -X POST "https://api.globaltalk.ai/v3/glossaries/glo_8e7f6a5b/entries" \
+  -H "Authorization: Bearer $GTK_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source_lang": "en",
+    "target_lang": "de",
+    "entries": [
+      {"source": "Single Sign-On", "target": "Einmalanmeldung"}
+    ]
+  }'
+```
+
+---
+
+### 4. Delete Glossary (`DELETE /v3/glossaries/{id}`)
+
+```bash
+curl -X DELETE "https://api.globaltalk.ai/v3/glossaries/glo_8e7f6a5b" \
+  -H "Authorization: Bearer $GTK_API_KEY"
+```
+*(Returns `204 No Content` on success)*

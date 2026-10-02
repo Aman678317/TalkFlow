@@ -70,9 +70,9 @@ async def realtime_ws(
         org_id = meeting.org_id
         room_name = meeting.room_name
         mode = meeting.mode
-        db_seq = int((await db.execute(
+        db_seq = (await db.execute(
             select(func.coalesce(func.max(M.TranscriptSegment.seq), 0))
-            .where(M.TranscriptSegment.meeting_id == meeting.id))).scalar() or 0)
+            .where(M.TranscriptSegment.meeting_id == meeting.id))).scalar() or 0
         p_data = dict(
             participant_id=participant.id, user_id=participant.user_id,
             display_name=participant.display_name,
@@ -153,6 +153,21 @@ async def realtime_ws(
             tdata = message.get("text")
             if not tdata:
                 continue
+
+            # Desi Voice Streaming standard: {"source_media_chunk": {"data": "<base64_audio>"}}
+            if "source_media_chunk" in tdata:
+                try:
+                    payload = json.loads(tdata)
+                    if "source_media_chunk" in payload and "data" in payload["source_media_chunk"]:
+                        chunk_b64 = payload["source_media_chunk"]["data"]
+                        raw_bytes = base64.b64decode(chunk_b64)
+                        await pl.get_pipeline(session).feed_audio(rp.participant_id, raw_bytes)
+                        await manager.relay_audio(session, rp.participant_id, raw_bytes)
+                        continue
+                except Exception as ex:
+                    log.warning("Failed decoding source_media_chunk: %s", ex)
+                    continue
+
             try:
                 event = parse_client_event(tdata)
             except Exception:

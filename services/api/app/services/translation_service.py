@@ -56,6 +56,7 @@ class TranslateContext:
     tm_id: uuid.UUID | None = None
     domain: str = "general"
     intent: str = "quality_optimized"
+    formality: str = "default"
     product: str = "text"          # text|document|realtime|chat
     meeting_id: uuid.UUID | None = None
     segment_id: uuid.UUID | None = None
@@ -68,7 +69,7 @@ class TranslateContext:
 @dataclass
 class TranslateOutput:
     result: TranslationResult
-    translation_id: uuid.UUID | None
+    translation_id: uuid.UUID
     tm_match: str | None          # exact|fuzzy|semantic|None
     source_lang: str
 
@@ -258,7 +259,9 @@ async def translate_text(
         loaded = await load_glossary(db, ctx.glossary_id, detected, target_language)
         if loaded:
             glossary_row, glossary_terms, _spoken = loaded
-    style_cfg = await load_style(db, ctx.style_profile_id)
+    style_cfg = await load_style(db, ctx.style_profile_id) or {}
+    if ctx.formality and ctx.formality != "default":
+        style_cfg["formality"] = ctx.formality
 
     # 5) translate via router ---------------------------------------------- #
     req = TranslationRequest(

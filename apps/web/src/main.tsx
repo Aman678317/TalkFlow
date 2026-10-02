@@ -11,6 +11,8 @@ import Login from "./pages/Login";
 import Signup from "./pages/Signup";
 import Dashboard from "./pages/Dashboard";
 import TranslatePage from "./pages/Translate";
+import WritePage from "./pages/Write";
+import Voice from "./pages/Voice";
 import Documents from "./pages/Documents";
 import Meetings from "./pages/Meetings";
 import MeetingRoom from "./pages/MeetingRoom";
@@ -25,6 +27,7 @@ import Billing from "./pages/Billing";
 import Team from "./pages/Team";
 import SettingsPage from "./pages/Settings";
 import Admin from "./pages/Admin";
+import JoinCall from "./pages/JoinCall";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -59,9 +62,13 @@ export default function App() {
           <Route path="/" element={<Landing />} />
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
+          {/* Public Call Join Route: Recipient joins directly from their mobile or browser without authentication */}
+          <Route path="/join/:roomId" element={<JoinCall />} />
           <Route element={<RequireAuth><Layout /></RequireAuth>}>
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/translate" element={<TranslatePage />} />
+            <Route path="/write" element={<WritePage />} />
+            <Route path="/voice" element={<Voice />} />
             <Route path="/documents" element={<Documents />} />
             <Route path="/meetings" element={<Meetings />} />
             <Route path="/meeting/:id" element={<MeetingRoom />} />

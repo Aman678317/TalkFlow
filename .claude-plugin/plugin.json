@@ -1,0 +1,23 @@
+{
+  "name": "desi-claude-plugin",
+  "displayName": "Desi Language AI & GlobalTalk AI",
+  "version": "1.0.0",
+  "description": "Official Claude plugin for Desi Language AI and GlobalTalk AI: high-precision neural translation across 100+ global world languages and 22 official Indic languages, 3-tier cultural honorifics (Aap/Tum/Tu), AI writing enhancement, multilingual glossaries, and layout-preserving document translation.",
+  "author": {
+    "name": "GlobalTalk AI Authors and Contributors",
+    "email": "dev@globaltalk.ai",
+    "url": "https://globaltalk.ai"
+  },
+  "homepage": "https://globaltalk.ai",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Aman678317/Anv-AI.git"
+  },
+  "license": "MIT",
+  "mcpServers": "./.mcp.json",
+  "skills": [
+    "./plugins/desi-claude-plugin/skills/translation-rules/SKILL.md",
+    "./plugins/desi-claude-plugin/skills/desi-writing-rules/SKILL.md",
+    "./plugins/desi-claude-plugin/skills/indic-honorifics/SKILL.md"
+  ]
+}

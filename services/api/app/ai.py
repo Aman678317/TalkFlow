@@ -60,7 +60,7 @@ class AIFacade:
             return name
         # auto: prefer real providers that can healthcheck; dev fallback last
         order = {
-            Task.MT: ["madlad400", "nllb_ct2", "argos", "mt_http", "dev_echo"],
+            Task.MT: ["neural_online", "deepl", "madlad400", "nllb_ct2", "argos", "mt_http", "dev_echo"],
             Task.STT: ["faster_whisper", "stt_http", "dev_text"],
             Task.TTS: ["kokoro", "piper", "tts_http", "dev_tone"],
             Task.LANG_DETECT: ["fasttext", "langdetect"],
@@ -75,7 +75,12 @@ class AIFacade:
             return self._provider_args[key]
         kwargs: dict[str, Any] = {}
         cache = settings.model_cache_path
-        if task == Task.MT and name == "madlad400":
+        if task == Task.MT and name in ("neural_online", "deepl"):
+            kwargs = {
+                "api_key": getattr(settings, "deepl_api_key", ""),
+                "api_url": getattr(settings, "deepl_api_url", "https://api-free.deepl.com/v2/translate"),
+            }
+        elif task == Task.MT and name == "madlad400":
             kwargs = {"model_id": settings.translation_model or "google/madlad-400-3b-mt",
                       "cache_dir": cache}
         elif task == Task.MT and name == "mt_http":
@@ -173,23 +178,55 @@ class AIFacade:
         order: list[RouteDecision] = []
         tried: set[str] = set()
         touched: list[tuple[Task, str, bool]] = []
+        candidates = list(self.router.providers.get(task, []))
+        max_attempts = max(10, len(candidates) + 2)
         try:
-            for _ in range(4):
-                decision = self.router.route(task, **route_kw)
+            for _ in range(max_attempts):
+                try:
+                    decision = self.router.route(task, **route_kw)
+                except Exception:
+                    break
                 if decision.provider in tried:
                     break
                 tried.add(decision.provider)
                 order.append(decision)
-                touched.append((task, decision.provider,
-                                self.router.health.get((task, decision.provider),
-                                                       ProviderHealth()).available))
+                t_key = task.value if isinstance(task, Task) else task
+                prev_h = self.router.health.get((t_key, decision.provider))
+                touched.append((task, decision.provider, prev_h.available if prev_h is not None else True))
                 self.router.mark_available(task, decision.provider, False)
+
+            # Ensure neural_online and dev fallback are always in candidates list if not tried yet
+            if task == Task.MT:
+                for cand, rsn in [("neural_online", "neural translation provider"), ("dev_echo", "fallback to dev provider")]:
+                    if cand not in tried:
+                        order.append(RouteDecision(
+                            provider=cand,
+                            model=cand,
+                            task=task,
+                            reason=rsn,
+                        ))
+            else:
+                dev_fallback = {
+                    Task.STT: "dev_text",
+                    Task.TTS: "dev_tone",
+                    Task.LANG_DETECT: "langdetect",
+                    Task.SUMMARIZE: "extractive",
+                    Task.EMBED: "hash_tfidf",
+                }.get(task)
+                if dev_fallback and dev_fallback not in tried:
+                    order.append(RouteDecision(
+                        provider=dev_fallback,
+                        model=dev_fallback,
+                        task=task,
+                        reason="fallback provider",
+                    ))
         finally:
             for t, name, prev in touched:
+                t_key = t.value if isinstance(t, Task) else t
                 self.router.mark_available(t, name, prev)
                 # mark_available reset counters only when flipping to unavailable;
                 # ensure original state restored
-                h = self.router.health.get((t, name))
+                h = self.router.health.get((t_key, name))
                 if h is not None:
                     h.available = prev
         return order
@@ -198,22 +235,25 @@ class AIFacade:
         """call(provider) -> result; failover across providers."""
         last_err: Exception | None = None
         for decision in self._ordered_candidates(task, route_kw):
-            provider = self.provider(task, decision.provider)
             t0 = time.perf_counter()
             try:
+                provider = self.provider(task, decision.provider)
                 result = await call(provider)
                 latency = (time.perf_counter() - t0) * 1000
-                self.router.record_outcome(task, decision.provider, latency, ok=True)
+                if self.router is not None:
+                    self.router.record_outcome(task, decision.provider, latency, ok=True)
                 return result, decision
             except ProviderUnavailable as e:
                 latency = (time.perf_counter() - t0) * 1000
-                self.router.record_outcome(task, decision.provider, latency, ok=False)
+                if self.router is not None:
+                    self.router.record_outcome(task, decision.provider, latency, ok=False)
                 last_err = e
                 log.warning("provider %s/%s unavailable (%s); failing over",
                             task, decision.provider, e)
             except Exception as e:
                 latency = (time.perf_counter() - t0) * 1000
-                self.router.record_outcome(task, decision.provider, latency, ok=False)
+                if self.router is not None:
+                    self.router.record_outcome(task, decision.provider, latency, ok=False)
                 last_err = e
                 log.exception("provider %s/%s failed", task, decision.provider)
         raise ProviderError(
@@ -242,6 +282,8 @@ class AIFacade:
         return result, decision
 
     async def translate_stream(self, req: TranslationRequest):
+        if self.router is None:
+            raise ProviderError("AI router not initialized")
         decision = self.router.route(Task.MT, source_lang=req.source_lang,
                                      target_lang=req.target_lang, domain=req.domain,
                                      intent=req.intent)
@@ -264,6 +306,8 @@ class AIFacade:
         return result, decision
 
     async def synthesize_stream(self, text: str, lang: str, voice: str | None = None):
+        if self.router is None:
+            raise ProviderError("AI router not initialized")
         decision = self.router.route(Task.TTS)
         provider = self.provider(Task.TTS, decision.provider)
         return provider.synthesize_stream(text, lang, voice), decision  # type: ignore[attr-defined]

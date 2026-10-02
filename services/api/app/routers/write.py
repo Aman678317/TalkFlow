@@ -1,4 +1,4 @@
-"""DeepL Write & Dictionary API router."""
+"""Desi Write & Dictionary API router."""
 from __future__ import annotations
 
 import logging
@@ -21,12 +21,13 @@ async def improve_text(
     principal: Principal | None = Depends(get_principal_optional),
     db: AsyncSession = Depends(get_db),
 ):
-    """DeepL Write equivalent: rewrites text, fixes grammar/punctuation, adjusts tone and generates diffs."""
+    """Desi Write equivalent: rewrites text, fixes grammar/punctuation, adjusts tone and generates diffs."""
     return write_service.improve_text(
         text=body.text,
         language=body.language,
         style=body.style,
         tone=body.tone,
+        corrections_only=body.corrections_only,
     )
 
 
@@ -36,7 +37,7 @@ async def lookup_dictionary(
     principal: Principal | None = Depends(get_principal_optional),
     db: AsyncSession = Depends(get_db),
 ):
-    """DeepL Dictionary equivalent: returns POS, definitions, synonyms and examples for words."""
+    """Desi Dictionary equivalent: returns POS, definitions, synonyms and examples for words."""
     return write_service.lookup_dictionary(
         word=body.word,
         source_lang=body.source_lang,

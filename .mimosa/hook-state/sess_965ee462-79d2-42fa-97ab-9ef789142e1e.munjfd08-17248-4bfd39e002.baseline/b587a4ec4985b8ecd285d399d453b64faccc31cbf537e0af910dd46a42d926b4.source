@@ -1,0 +1,254 @@
+"""HTTP Transport layer for the GlobalTalk AI Python SDK.
+
+Mirrors the ``http_client.py`` node in the loop-engineering diagram:
+
+    GlobalTalkSDK  →  GlobalTalkHTTPClient  →  GlobalTalk AI API
+                            ↑
+                      (this module)
+
+Features:
+- Async-first (``httpx.AsyncClient``) with sync wrapper for scripts
+- Automatic retry with exponential back-off (429, 503, 502)
+- Injects ``Authorization: Desi-Auth-Key`` header on every request
+- Raises SDK exceptions (not raw httpx errors) for clean error handling
+- Request-ID propagated from ``X-Request-ID`` response header
+
+Usage::
+
+    async with GlobalTalkHTTPClient(api_key="gt-...") as client:
+        result = await client.post("/v2/translate", json={...})
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from typing import Any
+from contextlib import asynccontextmanager
+
+try:
+    import httpx
+    _HTTPX_AVAILABLE = True
+except ImportError:
+    _HTTPX_AVAILABLE = False
+
+from gt_ai.exceptions import (
+    AuthenticationError,
+    NetworkError,
+    QuotaExceededError,
+    GlobalTalkError,
+)
+
+log = logging.getLogger("gt_ai.http")
+
+DEFAULT_BASE_URL = "http://127.0.0.1:8088"
+DEFAULT_TIMEOUT  = 30.0          # seconds
+MAX_RETRIES      = 3
+RETRY_STATUSES   = {429, 502, 503, 504}
+BACKOFF_BASE     = 0.4           # seconds
+
+
+class GlobalTalkHTTPClient:
+    """Async HTTP client for the GlobalTalk AI API.
+
+    Wraps ``httpx.AsyncClient`` with:
+    - Auth header injection
+    - Retry logic for transient errors
+    - SDK exception mapping
+
+    Args:
+        api_key:   GlobalTalk API key (``gt-...``) or Desi-compatible key.
+        base_url:  API base URL (default: ``http://127.0.0.1:8088``).
+        timeout:   Request timeout in seconds.
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str = DEFAULT_BASE_URL,
+        timeout: float = DEFAULT_TIMEOUT,
+    ) -> None:
+        if not _HTTPX_AVAILABLE:
+            raise ImportError(
+                "httpx is required for the GlobalTalk AI SDK HTTP client. "
+                "Install it with: pip install httpx"
+            )
+        self._api_key  = api_key
+        self._base_url = base_url.rstrip("/")
+        self._timeout  = timeout
+        self._client: httpx.AsyncClient | None = None
+
+    # ── Lifecycle ────────────────────────────────────────────────────────────
+
+    async def __aenter__(self) -> "GlobalTalkHTTPClient":
+        self._client = httpx.AsyncClient(
+            base_url=self._base_url,
+            timeout=self._timeout,
+            headers=self._default_headers(),
+        )
+        return self
+
+    async def __aexit__(self, *_: Any) -> None:
+        if self._client:
+            await self._client.aclose()
+            self._client = None
+
+    def _default_headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Desi-Auth-Key {self._api_key}",
+            "User-Agent": "GlobalTalkAI-Python/0.1.0",
+            "Accept": "application/json",
+        }
+
+    def _ensure_client(self) -> httpx.AsyncClient:
+        if self._client is None:
+            raise RuntimeError(
+                "GlobalTalkHTTPClient must be used as an async context manager: "
+                "`async with GlobalTalkHTTPClient(...) as client: ...`"
+            )
+        return self._client
+
+    # ── Core request method ──────────────────────────────────────────────────
+
+    async def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: dict[str, Any] | None = None,
+        data: dict[str, Any] | None = None,
+        files: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Make an authenticated HTTP request with retries.
+
+        Args:
+            method:  HTTP method (``"GET"``, ``"POST"``, etc.)
+            path:    API path (e.g. ``"/v2/translate"``).
+            json:    JSON body dict.
+            data:    Form-encoded body dict.
+            files:   Multipart file dict (for document upload).
+            params:  Query parameters.
+
+        Returns:
+            Parsed JSON response dict.
+
+        Raises:
+            AuthenticationError:   On 401.
+            QuotaExceededError:    On 429 (after retries exhausted).
+            NetworkError:          On connection/timeout errors.
+            GlobalTalkError:       On other API errors.
+        """
+        client = self._ensure_client()
+        last_exc: Exception | None = None
+
+        for attempt in range(MAX_RETRIES):
+            try:
+                t0 = time.monotonic()
+                resp = await client.request(
+                    method=method.upper(),
+                    url=path,
+                    json=json,
+                    data=data,
+                    files=files,
+                    params=params,
+                )
+                elapsed = (time.monotonic() - t0) * 1000
+                log.debug(
+                    "%s %s → %d (%.0fms) attempt=%d",
+                    method.upper(), path, resp.status_code, elapsed, attempt + 1,
+                )
+                return self._handle_response(resp)
+
+            except httpx.TimeoutException as exc:
+                last_exc = exc
+                log.warning("Timeout on %s %s (attempt %d)", method, path, attempt + 1)
+            except httpx.NetworkError as exc:
+                last_exc = exc
+                log.warning("Network error on %s %s (attempt %d): %s", method, path, attempt + 1, exc)
+
+            if attempt < MAX_RETRIES - 1:
+                wait = BACKOFF_BASE * (2 ** attempt)
+                await asyncio.sleep(wait)
+
+        raise NetworkError(
+            f"Request failed after {MAX_RETRIES} attempts: {last_exc}",
+            recoverable=True,
+        ) from last_exc
+
+    def _handle_response(self, resp: "httpx.Response") -> dict[str, Any]:
+        request_id = resp.headers.get("X-Request-ID", "")
+        if resp.status_code == 200:
+            try:
+                return resp.json()
+            except Exception:
+                return {"raw": resp.text}
+
+        if resp.status_code == 401:
+            raise AuthenticationError(
+                "Invalid API key or token expired.",
+                request_id=request_id,
+            )
+        if resp.status_code == 429:
+            raise QuotaExceededError(
+                "Character or realtime-minutes quota exceeded.",
+                request_id=request_id,
+            )
+
+        # Try to parse structured error body
+        try:
+            body = resp.json()
+            msg  = body.get("message", resp.text)
+            code = body.get("code", "api_error")
+        except Exception:
+            msg, code = resp.text, "api_error"
+
+        raise GlobalTalkError(
+            msg,
+            code=code,
+            status=resp.status_code,
+            request_id=request_id,
+        )
+
+    # ── Convenience helpers ──────────────────────────────────────────────────
+
+    async def get(self, path: str, **kw: Any) -> dict[str, Any]:
+        return await self.request("GET", path, **kw)
+
+    async def post(self, path: str, **kw: Any) -> dict[str, Any]:
+        return await self.request("POST", path, **kw)
+
+    async def delete(self, path: str, **kw: Any) -> dict[str, Any]:
+        return await self.request("DELETE", path, **kw)
+
+
+# ---------------------------------------------------------------------------
+# Sync wrapper (for scripts and notebooks that don't run an event loop)
+# ---------------------------------------------------------------------------
+
+class GlobalTalkHTTPClientSync:
+    """Synchronous wrapper around :class:`GlobalTalkHTTPClient`.
+
+    Usage::
+
+        client = GlobalTalkHTTPClientSync(api_key="gt-...")
+        result = client.post("/v2/translate", json={"text": "Hello", "target_lang": "HI"})
+    """
+
+    def __init__(self, api_key: str, base_url: str = DEFAULT_BASE_URL) -> None:
+        self._async = GlobalTalkHTTPClient(api_key=api_key, base_url=base_url)
+
+    def _run(self, coro: Any) -> Any:
+        return asyncio.get_event_loop().run_until_complete(coro)
+
+    def post(self, path: str, **kw: Any) -> dict[str, Any]:
+        async def _inner():
+            async with self._async:
+                return await self._async.post(path, **kw)
+        return self._run(_inner())
+
+    def get(self, path: str, **kw: Any) -> dict[str, Any]:
+        async def _inner():
+            async with self._async:
+                return await self._async.get(path, **kw)
+        return self._run(_inner())

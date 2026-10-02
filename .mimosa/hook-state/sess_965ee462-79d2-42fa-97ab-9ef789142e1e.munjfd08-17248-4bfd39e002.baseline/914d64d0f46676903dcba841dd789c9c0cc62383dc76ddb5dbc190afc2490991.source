@@ -1,0 +1,797 @@
+"""Pydantic schemas — API contracts (mirrored in packages/shared-types)."""
+from __future__ import annotations
+
+import uuid
+from datetime import datetime
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+
+# --------------------------------------------------------------------------- #
+# Common
+# --------------------------------------------------------------------------- #
+
+
+class ORMModel(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+
+class Page(BaseModel):
+    items: list[Any]
+    total: int
+    limit: int
+    offset: int
+
+
+# --------------------------------------------------------------------------- #
+# Auth
+# --------------------------------------------------------------------------- #
+
+
+class SignupRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=256)
+    password: str = Field(min_length=8, max_length=256)
+    name: str = Field(default="", max_length=200)
+    organization_name: str = Field(default="", max_length=200)
+    locale: str = "en"
+
+    @field_validator("email")
+    @classmethod
+    def _validate_email(cls, v: str) -> str:
+        v = v.strip().lower()
+        if "@" not in v or "." not in v.split("@")[-1]:
+            raise ValueError("Invalid email format")
+        return v
+
+
+class LoginRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=256)
+    password: str
+    org_id: str | None = None  # optional explicit organization (multi-org users)
+
+    @field_validator("email")
+    @classmethod
+    def _validate_email(cls, v: str) -> str:
+        return v.strip().lower()
+
+
+class TokenPair(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    expires_in: int
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
+class UserOut(ORMModel):
+    id: uuid.UUID
+    email: str
+    name: str
+    locale: str
+    speak_lang: str
+    hear_lang: str
+    email_verified: bool
+    mfa_enabled: bool
+    is_platform_admin: bool
+    created_at: datetime
+
+
+class OrgMemberOut(ORMModel):
+    id: uuid.UUID
+    user_id: uuid.UUID
+    role: str
+    status: str
+    created_at: datetime
+    user: UserOut | None = None
+
+
+class OrganizationOut(ORMModel):
+    id: uuid.UUID
+    name: str
+    slug: str
+    plan: str
+    status: str
+    created_at: datetime
+
+
+class PasswordResetRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=256)
+
+    @field_validator("email")
+    @classmethod
+    def _validate_email(cls, v: str) -> str:
+        return v.strip().lower()
+
+
+class PasswordResetConfirm(BaseModel):
+    token: str
+    new_password: str = Field(min_length=8, max_length=256)
+
+
+class SessionOut(ORMModel):
+    id: uuid.UUID
+    device_info: str
+    last_seen_at: datetime | None
+    created_at: datetime
+    revoked_at: datetime | None
+
+
+class UpdateProfileRequest(BaseModel):
+    name: str | None = Field(default=None, max_length=200)
+    locale: str | None = None
+    speak_lang: str | None = None
+    hear_lang: str | None = None
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=8, max_length=256)
+
+
+# --------------------------------------------------------------------------- #
+# Translation
+# --------------------------------------------------------------------------- #
+
+ModelIntent = Literal["latency_optimized", "quality_optimized", "cost_optimized", "private_only"]
+
+
+class TranslateRequest(BaseModel):
+    text: str | list[str] = Field(min_length=1)
+    source_language: str = "AUTO"
+    target_language: str = Field(min_length=2, max_length=8)
+    glossary_id: uuid.UUID | None = None
+    style_profile_id: uuid.UUID | None = None
+    translation_memory_id: uuid.UUID | None = None
+    domain: str = "general"
+    intent: ModelIntent = "quality_optimized"
+    batch: bool = False
+
+    @field_validator("text")
+    @classmethod
+    def _check_text(cls, v):
+        items = v if isinstance(v, list) else [v]
+        if not items:
+            raise ValueError("text must not be empty")
+        if len(items) > 100:
+            raise ValueError("batch limit is 100 texts per request")
+        for t in items:
+            if not isinstance(t, str) or len(t) > 50_000:
+                raise ValueError("each text must be a string <= 50000 chars")
+        return v
+
+
+class TranslationOut(BaseModel):
+    translation_id: uuid.UUID
+    source_language: str
+    target_language: str
+    source_text: str
+    translated_text: str
+    model: str
+    provider: str
+    latency_ms: float
+    quality_flags: list[str]
+    tm_match: str | None = None
+    domain: str = "general"
+
+
+class TranslateResponse(BaseModel):
+    translations: list[TranslationOut]
+    request_id: str
+
+
+class DetectRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=10_000)
+
+
+class DetectResponse(BaseModel):
+    language: str
+    confidence: float
+    alternatives: list[tuple[str, float]]
+    provider: str
+
+
+# --------------------------------------------------------------------------- #
+# Desi Write & Dictionary Schemas
+# --------------------------------------------------------------------------- #
+
+class WriteRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=50_000)
+    language: str = "en"
+    style: str = "business"    # business | academic | casual | simple | creative
+    tone: str = "professional" # professional | friendly | confident | diplomatic | direct
+
+
+class WriteDiff(BaseModel):
+    original: str
+    replacement: str
+    diff_type: str  # grammar | vocabulary | style | phrasing
+    explanation: str
+
+
+class WriteResponse(BaseModel):
+    original_text: str
+    improved_text: str
+    language: str
+    style: str
+    tone: str
+    changes_count: int
+    diffs: list[WriteDiff] = []
+    alternatives: list[str] = []
+
+
+class DictionaryRequest(BaseModel):
+    word: str = Field(min_length=1, max_length=100)
+    source_lang: str = "en"
+    target_lang: str = "en"
+
+
+class DictionaryEntry(BaseModel):
+    word: str
+    pos: str
+    definitions: list[str] = []
+    synonyms: list[str] = []
+    examples: list[str] = []
+
+
+class DictionaryResponse(BaseModel):
+    query: str
+    entries: list[DictionaryEntry] = []
+
+
+# --------------------------------------------------------------------------- #
+# Languages
+# --------------------------------------------------------------------------- #
+
+
+class LanguageOut(ORMModel):
+    code: str
+    name: str
+    native_name: str
+    script: str
+    rtl: bool
+    translation_supported: bool
+    speech_input_supported: bool
+    speech_output_supported: bool
+    realtime_supported: bool
+    document_supported: bool
+    translation_status: str
+    speech_input_status: str
+    speech_output_status: str
+    realtime_status: str
+    document_status: str
+    tts_voices: list[str] = []
+
+
+# --------------------------------------------------------------------------- #
+# Glossary / TM / Style
+# --------------------------------------------------------------------------- #
+
+
+class GlossaryCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    source_lang: str
+    target_lang: str
+    description: str = ""
+    terms: list[dict] = Field(default_factory=list)
+
+
+class GlossaryTermIn(BaseModel):
+    source_text: str = Field(min_length=1, max_length=500)
+    target_text: str = Field(min_length=1, max_length=500)
+    case_sensitive: bool = False
+    spoken_variants: list[str] = Field(default_factory=list)
+    notes: str = ""
+
+
+class GlossaryTermOut(ORMModel):
+    id: uuid.UUID
+    source_text: str
+    target_text: str
+    case_sensitive: bool
+    spoken_variants_json: list
+    notes: str
+
+
+class GlossaryOut(ORMModel):
+    id: uuid.UUID
+    name: str
+    source_lang: str
+    target_lang: str
+    version: int
+    status: str
+    description: str
+    created_at: datetime
+    terms: list[GlossaryTermOut] = []
+
+
+class TMCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    source_lang: str
+    target_lang: str
+    domain: str = "general"
+
+
+class TMEntryIn(BaseModel):
+    source_text: str = Field(min_length=1)
+    target_text: str = Field(min_length=1)
+    approved: bool = False
+    domain: str = "general"
+
+
+class TMOut(ORMModel):
+    id: uuid.UUID
+    name: str
+    source_lang: str
+    target_lang: str
+    domain: str
+    version: int
+    entry_count: int
+    created_at: datetime
+
+
+class TMEntryOut(ORMModel):
+    id: uuid.UUID
+    source_text: str
+    target_text: str
+    approved: bool
+    confidence: float
+    usage_count: int
+
+
+class StyleProfileCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    kind: str = "custom"
+    config: dict = Field(default_factory=dict)
+
+
+class StyleProfileOut(ORMModel):
+    id: uuid.UUID
+    name: str
+    kind: str
+    version: int
+    config_json: dict
+    status: str
+    org_id: uuid.UUID | None
+
+
+# --------------------------------------------------------------------------- #
+# Documents
+# --------------------------------------------------------------------------- #
+
+
+class DocumentOut(ORMModel):
+    id: uuid.UUID
+    filename: str
+    mime_type: str
+    size_bytes: int
+    source_lang: str
+    detected_lang: str
+    target_lang: str
+    status: str
+    progress: int
+    error_code: str | None = None
+    error_message: str | None = None
+    page_count: int
+    char_count: int
+    model_version: str
+    created_at: datetime
+    ready_at: datetime | None = None
+
+
+class DocumentStatusOut(BaseModel):
+    id: uuid.UUID
+    status: str
+    progress: int
+    stage: str
+    message: str
+    error_code: str | None = None
+    error_message: str | None = None
+
+
+# --------------------------------------------------------------------------- #
+# Meetings & realtime
+# --------------------------------------------------------------------------- #
+
+
+class MeetingCreate(BaseModel):
+    title: str = Field(default="Untitled meeting", max_length=300)
+    mode: Literal["ws", "livekit"] = "ws"
+    speak_lang: str = "auto"
+    hear_lang: str = "en"
+
+
+class ParticipantOut(ORMModel):
+    id: uuid.UUID
+    display_name: str
+    role: str
+    status: str
+    joined_at: datetime | None
+
+
+class PreferenceOut(ORMModel):
+    speak_lang: str
+    hear_lang: str
+    audio_mode: str
+    captions_enabled: bool
+
+
+class ParticipantFullOut(BaseModel):
+    participant: ParticipantOut
+    preference: PreferenceOut | None = None
+
+
+class MeetingOut(ORMModel):
+    id: uuid.UUID
+    title: str
+    status: str
+    mode: str
+    room_name: str
+    created_at: datetime
+    started_at: datetime | None
+    ended_at: datetime | None
+
+
+class MeetingDetailOut(MeetingOut):
+    participants: list[ParticipantFullOut] = []
+    livekit: dict | None = None
+
+
+class JoinMeetingRequest(BaseModel):
+    display_name: str = Field(default="", max_length=200)
+    speak_lang: str = "auto"
+    hear_lang: str = "en"
+    audio_mode: Literal["original", "translated", "mixed", "captions_only"] = "translated"
+    guest_key: str = ""
+
+
+class JoinMeetingResponse(BaseModel):
+    meeting_id: uuid.UUID
+    participant_id: uuid.UUID
+    session_key: str
+    rt_url: str
+    livekit: dict | None = None
+
+
+class PreferenceUpdate(BaseModel):
+    speak_lang: str | None = None
+    hear_lang: str | None = None
+    audio_mode: Literal["original", "translated", "mixed", "captions_only"] | None = None
+    captions_enabled: bool | None = None
+
+
+class VoiceSessionCreate(BaseModel):
+    """Standalone voice translation session (no meeting) — API product."""
+    speak_lang: str = "auto"
+    hear_langs: list[str] = Field(default_factory=lambda: ["en"])
+    audio_mode: Literal["original", "translated", "mixed"] = "translated"
+
+
+class TranscriptSegmentOut(ORMModel):
+    id: uuid.UUID
+    seq: int
+    speaker_name: str
+    source_lang: str
+    source_text: str
+    start_ms: int | None
+    end_ms: int | None
+    is_final: bool
+    confidence: float | None
+    stt_model: str
+    created_at: datetime
+    translations: list["TranslationSegmentOut"] = []
+
+
+class TranslationSegmentOut(ORMModel):
+    id: uuid.UUID
+    target_lang: str
+    target_text: str
+    model: str
+    latency_ms: float
+    quality_flags_json: list
+    created_at: datetime
+
+
+# --------------------------------------------------------------------------- #
+# Chat
+# --------------------------------------------------------------------------- #
+
+
+class ChatMessageCreate(BaseModel):
+    text: str = Field(min_length=1, max_length=10_000)
+    target_langs: list[str] = Field(default_factory=list)
+
+
+class ChatMessageOut(ORMModel):
+    id: uuid.UUID
+    meeting_id: uuid.UUID
+    sender_name: str
+    original_text: str
+    detected_lang: str
+    kind: str
+    seq: int
+    translations_json: dict
+    created_at: datetime
+
+
+# --------------------------------------------------------------------------- #
+# Assistant / Memory
+# --------------------------------------------------------------------------- #
+
+
+class SummaryRequest(BaseModel):
+    max_length: int = Field(default=800, ge=100, le=4000)
+    lang: str = "en"
+
+
+class SummaryOut(BaseModel):
+    meeting_id: uuid.UUID
+    summary: str
+    key_points: list[str] = []
+    decisions: list[str] = []
+    action_items: list[str] = []
+    unanswered_questions: list[str] = []
+    topics: list[str] = []
+    method: str = ""
+    generated_at: datetime
+
+
+class AssistantQuestion(BaseModel):
+    question: str = Field(min_length=1, max_length=2000)
+    lang: str = ""
+
+
+class AssistantAnswer(BaseModel):
+    answer: str
+    sources: list[dict] = []
+    method: str
+
+
+class MemoryWrite(BaseModel):
+    memory_class: Literal["working", "semantic", "episodic", "procedural",
+                          "retrieval", "parametric", "prospective"]
+    key: str = ""
+    content: dict = Field(default_factory=dict)
+    lang: str = ""
+    importance: float = 0.5
+    source_type: Literal["human_source", "derived_translation", "assistant", "system"] = "system"
+
+
+class MemoryOut(ORMModel):
+    id: uuid.UUID
+    memory_class: str
+    key: str
+    content_json: dict
+    importance: float
+    source_type: str
+    created_at: datetime
+
+
+# --------------------------------------------------------------------------- #
+# API keys / usage / billing / webhooks / admin
+# --------------------------------------------------------------------------- #
+
+
+class ApiKeyCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    scopes: list[str] = Field(default_factory=lambda: ["translate", "detect", "documents",
+                                                        "voice", "languages", "usage"])
+    expires_in_days: int | None = Field(default=None, ge=1, le=3650)
+
+
+class ApiKeyOut(ORMModel):
+    id: uuid.UUID
+    name: str
+    prefix: str
+    scopes: list
+    status: str
+    created_at: datetime
+    last_used_at: datetime | None
+    expires_at: datetime | None
+
+
+class ApiKeyCreated(ApiKeyOut):
+    plaintext_key: str  # shown exactly once
+
+
+class UsageSummary(BaseModel):
+    period: str
+    totals: dict[str, float]
+    by_product: dict[str, dict[str, float]]
+    by_day: list[dict]
+
+
+class SubscriptionOut(ORMModel):
+    id: uuid.UUID
+    org_id: uuid.UUID
+    plan_code: str
+    status: str
+    current_period_start: datetime | None
+    current_period_end: datetime | None
+    quota_json: dict
+
+
+class BillingEventOut(ORMModel):
+    id: uuid.UUID
+    kind: str
+    amount_cents: int
+    currency: str
+    period: str
+    lines_json: list
+    created_at: datetime
+
+
+class WebhookCreate(BaseModel):
+    url: str = Field(min_length=8, max_length=500)
+    events: list[str] = Field(default_factory=list)
+
+    @field_validator("url")
+    @classmethod
+    def _no_local(cls, v: str) -> str:
+        # SSRF guard: reject obvious internal targets at creation time;
+        # delivery re-checks resolved IPs.
+        import urllib.parse
+        p = urllib.parse.urlparse(v)
+        if p.scheme not in ("https", "http"):
+            raise ValueError("webhook url must be http(s)")
+        host = (p.hostname or "").lower()
+        blocked = ("localhost", "127.", "0.0.0.0", "169.254.", "[::1]", "metadata.google")
+        if host.startswith(blocked) or host in ("10.", "192.168."):
+            from app.config import settings as _s
+            if _s.is_production:
+                raise ValueError("internal addresses are not allowed in production")
+        return v
+
+
+class WebhookOut(ORMModel):
+    id: uuid.UUID
+    url: str
+    events: list
+    status: str
+    created_at: datetime
+
+
+class AuditLogOut(ORMModel):
+    id: uuid.UUID
+    action: str
+    actor_kind: str
+    actor_id: uuid.UUID | None
+    resource_type: str
+    resource_id: str
+    outcome: str
+    details_json: dict
+    created_at: datetime
+
+
+class FeedbackIn(BaseModel):
+    target_type: Literal["translation", "segment", "document", "summary", "tts"]
+    target_id: str
+    rating: int | None = Field(default=None, ge=-1, le=1)
+    correction_text: str | None = None
+    comment: str | None = None
+    source_lang: str = ""
+    target_lang: str = ""
+
+
+class SearchResponse(BaseModel):
+    query: str
+    meetings: list[dict] = []
+    segments: list[dict] = []
+    documents: list[dict] = []
+    chat_messages: list[dict] = []
+    glossary_terms: list[dict] = []
+    tm_entries: list[dict] = []
+
+
+class HealthOut(BaseModel):
+    status: str
+    version: str
+    uptime_s: float
+
+
+class ReadyOut(BaseModel):
+    ready: bool
+    checks: dict[str, bool]
+
+
+class AgentBridgeCreate(BaseModel):
+    """Agent-to-agent language bridge session (PDD §22)."""
+    agent_name: str = Field(min_length=1, max_length=100)
+    agent_lang: str
+    meeting_id: uuid.UUID | None = None
+
+
+class AgentBridgeOut(ORMModel):
+    id: uuid.UUID
+    agent_name: str
+    agent_lang: str
+    status: str
+    consumed_seq: int
+    meeting_id: uuid.UUID | None
+
+
+class AgentTurnRequest(BaseModel):
+    """Agent submits its response in ITS language; the bridge stores the human
+    source reference and produces per-listener outputs from the human source,
+    never from another agent's translation."""
+    text: str = Field(min_length=1, max_length=20_000)
+    canonical_ref: str = ""
+    target_langs: list[str] = Field(default_factory=list)
+
+
+class AgentTurnOut(BaseModel):
+    agent_output_id: uuid.UUID
+    agent_lang: str
+    canonical_ref: str
+    outputs: list[TranslationOut]
+
+
+# --------------------------------------------------------------------------- #
+# Desi Write & Dictionary
+# --------------------------------------------------------------------------- #
+
+
+class WriteRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=50_000)
+    language: str = "en"
+    style: str = "business"  # business, academic, casual, simple, creative
+    tone: str = "professional"  # professional, friendly, confident, diplomatic, direct
+
+
+class WriteDiff(BaseModel):
+    type: str = "replace"
+    original: str = ""
+    suggested: str = ""
+    replacement: str = ""
+    diff_type: str = "style"
+    category: str = "style"  # grammar, vocabulary, style, tone, punctuation
+    explanation: str = ""
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.replacement and not self.suggested:
+            self.suggested = self.replacement
+        elif self.suggested and not self.replacement:
+            self.replacement = self.suggested
+        if self.diff_type and not self.type:
+            self.type = self.diff_type
+        elif self.type and not self.diff_type:
+            self.diff_type = self.type
+
+
+class WriteResponse(BaseModel):
+    original_text: str
+    improved_text: str
+    language: str
+    style: str
+    tone: str
+    changes_count: int
+    diffs: list[WriteDiff] = []
+    alternatives: list[str] = []
+
+
+class DictionaryRequest(BaseModel):
+    word: str = Field(min_length=1, max_length=200)
+    source_lang: str = "en"
+    target_lang: str = "en"
+
+
+class DictionaryEntry(BaseModel):
+    word: str
+    pos: str
+    definitions: list[str] = []
+    synonyms: list[str] = []
+    examples: list[str] = []
+
+
+class DictionaryResponse(BaseModel):
+    query: str
+    word: str = ""
+    part_of_speech: str = "general"
+    meanings: list[str] = []
+    synonyms: list[str] = []
+    translations: list[str] = []
+    examples: list[str] = []
+    entries: list[DictionaryEntry] = []
+

@@ -1,0 +1,9 @@
+{
+  "name": "@globaltalk/shared-types",
+  "version": "0.1.0",
+  "description": "Shared TypeScript contracts for GlobalTalk AI (REST + realtime protocol)",
+  "type": "module",
+  "main": "index.ts",
+  "types": "index.ts",
+  "license": "MIT"
+}

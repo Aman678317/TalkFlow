@@ -1,0 +1,33 @@
+{
+  "name": "amazon-connect-desi-v2v-cdk-stacks",
+  "version": "1.0.0",
+  "private": true,
+  "bin": {
+    "cdk-stacks": "bin/cdk-stacks.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "cdk": "cdk",
+    "configure": "node config/configure.js -il",
+    "configure:help": "node config/configure.js -h",
+    "install:webapp": "npm --prefix ../webapp install",
+    "install:cdk-stacks": "npm install",
+    "install:all": "npm run install:webapp && npm run install:cdk-stacks",
+    "build:webapp": "npm --prefix ../webapp run build",
+    "build:webapp:gitbash": "npm --prefix ../webapp run build:gitbash",
+    "cdk:deploy": "cdk deploy --all --disable-rollback",
+    "build:deploy:all": "npm run build:webapp && npm run cdk:deploy"
+  },
+  "devDependencies": {
+    "@types/node": "22.7.9",
+    "aws-cdk": "2.177.0",
+    "ts-node": "^10.9.2",
+    "typescript": "~5.6.3"
+  },
+  "dependencies": {
+    "@aws-sdk/client-ssm": "^3.699.0",
+    "aws-cdk-lib": "2.177.0",
+    "constructs": "^10.0.0"
+  }
+}

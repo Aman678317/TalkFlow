@@ -1,0 +1,91 @@
+---
+title: "Model Context Protocol (MCP) Server"
+description: "Equip Claude Code, Cursor, and LLM orchestrators with multilingual and Indic AI tools"
+---
+
+# Model Context Protocol (MCP) Server
+
+GlobalTalk AI provides a native, clean-room **Model Context Protocol (MCP)** server operating over standard input/output (`stdio`). This allows LLM orchestrators (such as **Claude Code**, **Cursor**, and **VS Code**) to directly execute text translations, cultural honorific adjustments, transliterations, and document operations within developer workflows.
+
+---
+
+## ⚙️ MCP Client Configuration
+
+### Claude Code (`~/.claude.json`)
+
+Add the Desi MCP server to your Claude Code global configuration:
+
+```json
+{
+  "mcpServers": {
+    "desi-mcp": {
+      "command": "node",
+      "args": ["c:/Users/acer/3D Objects/globaltalk-ai/mcp/desi-mcp-server/dist/index.js"],
+      "env": {
+        "DESI_API_KEY": "gtk_live_0123456789abcdef",
+        "DESI_BASE_URL": "http://127.0.0.1:8088"
+      }
+    }
+  }
+}
+```
+
+### Cursor (`.cursor/mcp.json`)
+
+```json
+{
+  "mcpServers": {
+    "desi-language-ai": {
+      "command": "npx",
+      "args": ["-y", "desi-mcp-server"],
+      "env": {
+        "DESI_API_KEY": "gtk_live_0123456789abcdef"
+      }
+    }
+  }
+}
+```
+
+---
+
+## 🛠️ Exposed MCP Tools
+
+| Tool Name | Parameters | Description |
+|---|---|---|
+| `translate-desi` | `text`, `target_lang`, `source_lang`, `honorific`, `respectful_suffix`, `domain` | Indic native translation with 3-tier cultural honorifics (*Aap / Tum / Tu*) across 22 languages. |
+| `transliterate-desi` | `text`, `source_script`, `target_script` | Phonetic script conversion between Latin/Roman Hinglish and native Brahmic scripts. |
+| `normalize-desi` | `text`, `clean_zwnj`, `fix_nuktas` | Indic Unicode sanitization for redundant ZWNJ/ZWJ anomalies and composed Nuktas. |
+| `get-desi-languages` | None | Returns the full catalog of 22 Eighth Schedule Indian languages, scripts, and ISO codes. |
+| `translate-text` | `text`, `target_lang`, `source_lang`, `formality`, `glossary_id` | Core translation across 100+ global world languages. |
+| `rephrase-text` | `text`, `style`, `tone` | Rephrase text using Desi Write (Academic, Business, Casual, Creative). |
+| `correct-text` | `text` | Grammar, spelling, and punctuation correction. |
+| `list-glossaries` | None | Retrieve active custom terminology glossaries. |
+| `list-style-rules` | None | Retrieve custom brand and styling rules. |
+
+---
+
+## 🔒 Stdio Transport Architectural Rules
+
+### 1. The Zero-Stdout Leakage Rule
+When implementing or running stdio MCP servers:
+> **`stdout` is strictly reserved for newline-delimited JSON-RPC 2.0 frames.**
+
+Any arbitrary `console.log()` or `print()` to `stdout` corrupts the JSON-RPC framing parser, breaking client execution. In our MCP servers:
+- Standard diagnostic logs route strictly to `stderr` (`console.error()` / `sys.stderr.write()`).
+- All tool execution frames format cleanly to `stdout`.
+
+### 2. Operational Error Semantics
+Linguistic or business errors (such as an unrecognized dialect or rate limit warning) are returned as **informative tool results** with `isError: true` rather than crashing the JSON-RPC transport:
+
+```json
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "Linguistic Error: 'kashmiri' requires Perso-Arabic or Devanagari script parameter."
+    }
+  ],
+  "isError": true
+}
+```
+This enables the host LLM to inspect the error explanation and self-correct seamlessly.

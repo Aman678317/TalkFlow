@@ -1,0 +1,24 @@
+# GlobalTalk AI
+> One shared conversation. Every participant speaks and hears their own language.
+
+## Overview
+GlobalTalk AI is an open-source, production-ready real-time multilingual AI communication platform.
+It eliminates language barriers across speech, text, documents, and video meetings with sub-second latency.
+
+## Core Rules & Architecture
+- Canonical Source Principle: Human speech or text is the only semantic source of truth. Translation chains (e.g. Hindi -> English -> Japanese) are forbidden; each target language fans out directly from the original source segment.
+- WebRTC & WebSocket streaming pipeline: Audio Stream -> VAD -> STT -> NMT -> TTS -> Listener Routing.
+
+## Key Capabilities
+- Real-Time Voice Translation: Low-latency speech-to-speech translation with speaker diarization.
+- GlobalTalk Write: DeepL-grade AI writing assistant with style and tone adaptation.
+- Document Translation: Formats DOCX, PPTX, XLSX, PDF, TXT, HTML preserving layout.
+- Multilingual Video Meetings: Powered by LiveKit WebRTC with per-listener translated audio streams.
+- Multilingual Chat: Real-time chat translation in video rooms.
+- Subtitle & Transcript Exporter: SubRip (.srt), WebVTT (.vtt), JSON, and Plain Text.
+
+## Technical Specifications
+- Frontend: React 18, TypeScript (strict), Vite, Tailwind CSS, Zustand, TanStack Query.
+- Backend: Python 3.11, FastAPI, Pydantic v2, SQLAlchemy 2, Alembic.
+- License: MIT Open Source.
+- Repository: https://github.com/Aman678317/Anv-AI

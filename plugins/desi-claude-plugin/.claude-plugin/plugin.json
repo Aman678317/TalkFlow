@@ -1,0 +1,64 @@
+{
+  "name": "desi-claude-plugin",
+  "displayName": "Desi Language AI & GlobalTalk AI",
+  "version": "1.0.0",
+  "description": "Official Claude plugin for Desi Language AI and GlobalTalk AI: high-precision neural translation across 100+ global world languages and 22 official Indic languages, 3-tier cultural honorifics (Aap/Tum/Tu), AI writing enhancement, multilingual glossaries, and layout-preserving document translation.",
+  "author": {
+    "name": "GlobalTalk AI Authors and Contributors",
+    "email": "dev@globaltalk.ai",
+    "url": "https://globaltalk.ai"
+  },
+  "homepage": "https://globaltalk.ai",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Aman678317/Anv-AI.git"
+  },
+  "license": "MIT",
+  "keywords": [
+    "desi",
+    "globaltalk-ai",
+    "translation",
+    "indic",
+    "hindi",
+    "bengali",
+    "telugu",
+    "tamil",
+    "marathi",
+    "urdu",
+    "honorifics",
+    "transliteration",
+    "writing-assistant",
+    "glossaries",
+    "document-translation",
+    "claude-plugin",
+    "mcp"
+  ],
+  "mcpServers": "./.mcp.json",
+  "skills": [
+    "./skills/translation-rules/SKILL.md",
+    "./skills/desi-writing-rules/SKILL.md",
+    "./skills/indic-honorifics/SKILL.md"
+  ],
+  "capabilities": {
+    "translation": {
+      "enabled": true,
+      "description": "Neural text translation across 100+ world languages and 22 official Indic languages with formality control"
+    },
+    "writing_improvement": {
+      "enabled": true,
+      "description": "Desi Write: Style rephrasing (business, academic, casual, simple) and grammar/spelling corrections"
+    },
+    "glossary_access": {
+      "enabled": true,
+      "description": "Custom bilingual and multilingual terminology enforcement and dictionary lookups"
+    },
+    "document_translation": {
+      "enabled": true,
+      "description": "Layout-preserving asynchronous translation of DOCX, PPTX, XLSX, PDF, TXT, and HTML files"
+    },
+    "indic_honorifics": {
+      "enabled": true,
+      "description": "3-tier cultural honorifics (Aap/Tum/Tu), respectful suffixes (-जी/-గారు/-அவர்கள்), and phonetic transliteration"
+    }
+  }
+}

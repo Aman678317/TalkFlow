@@ -1,0 +1,79 @@
+---
+title: "Document Translation"
+description: "Asynchronous, layout-preserving translation for PDF, DOCX, PPTX, XLSX, HTML, and TXT"
+---
+
+# Document Translation API
+
+The Document Translation API translates entire documents while preserving formatting, table structures, vector graphics, slide geometry, and font styling.
+
+---
+
+## 1. Upload Document (`POST /v2/document`)
+
+Submits a document file to the asynchronous translation pipeline.
+
+### Request Body (`multipart/form-data`)
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `file` | binary | **Yes** | The document file to translate (`.pdf`, `.docx`, `.pptx`, `.xlsx`, `.html`, `.txt`). |
+| `target_lang` | string | **Yes** | Target language code (e.g. `ES`, `DE`, `HI`). |
+| `source_lang` | string | No | Source language code (auto-detected if omitted). |
+| `formality` | string | No | Formality setting (`default`, `more`, `less`). |
+| `glossary_id` | string | No | Custom glossary ID for technical terms. |
+
+```bash
+curl -X POST "https://api.globaltalk.ai/v2/document" \
+  -H "Authorization: Bearer $GTK_API_KEY" \
+  -F "file=@presentation.pptx" \
+  -F "target_lang=ES"
+```
+
+### Response Example (`200 OK`)
+```json
+{
+  "document_id": "doc_9a7b8c12",
+  "document_key": "key_sec_4f5e6d"
+}
+```
+
+---
+
+## 2. Check Document Status (`GET /v2/document/{document_id}`)
+
+Polls the translation progress of an uploaded document.
+
+```bash
+curl -X GET "https://api.globaltalk.ai/v2/document/doc_9a7b8c12?document_key=key_sec_4f5e6d" \
+  -H "Authorization: Bearer $GTK_API_KEY"
+```
+
+### Response Example (`200 OK`)
+```json
+{
+  "document_id": "doc_9a7b8c12",
+  "status": "done",
+  "seconds_remaining": 0,
+  "billed_characters": 18450
+}
+```
+
+| Status Value | Description |
+|---|---|
+| `queued` | Document is awaiting allocation to a translation worker. |
+| `translating` | Document is currently parsing, translating, and reconstructing. |
+| `done` | Translation complete. Ready for download. |
+| `error` | Processing failed. |
+
+---
+
+## 3. Download Translated Document (`GET /v2/document/{document_id}/result`)
+
+Retrieves the translated file stream in its original layout.
+
+```bash
+curl -X GET "https://api.globaltalk.ai/v2/document/doc_9a7b8c12/result?document_key=key_sec_4f5e6d" \
+  -H "Authorization: Bearer $GTK_API_KEY" \
+  --output "presentation_es.pptx"
+```

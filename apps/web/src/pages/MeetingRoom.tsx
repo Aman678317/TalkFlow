@@ -45,6 +45,8 @@ export default function MeetingRoom() {
   const { data: langs } = useLanguages();
   const caps = langs ?? [];
   const [localVideoStream, setLocalVideoStream] = React.useState<MediaStream | null>(null);
+  const localVideoStreamRef = React.useRef<MediaStream | null>(null);
+  localVideoStreamRef.current = localVideoStream;
 
   const meetingQ = useQuery({ queryKey: ["meeting", id], queryFn: () => api<Meeting>(`/api/v1/meetings/${id}`) });
   const participantsQ = useQuery({
@@ -151,6 +153,9 @@ export default function MeetingRoom() {
       socket.close();
       micRef.current?.stop();
       playerRef.current?.dispose();
+      if (localVideoStreamRef.current) {
+        localVideoStreamRef.current.getTracks().forEach((t) => t.stop());
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meetingQ.data?.id]);
@@ -595,7 +600,17 @@ export default function MeetingRoom() {
             <ControlButton on={screenOn} onClick={toggleScreen} label={screenOn ? "Stop sharing" : "Share screen"}
                            icon={<MonitorUp />} />
             <div className="mx-2 h-8 w-px bg-ink-800" aria-hidden />
-            <Button variant="danger" size="sm" onClick={() => nav(`/meetings?end=${id}`)}>
+            <Button
+              variant="danger"
+              size="sm"
+              onClick={() => {
+                if (localVideoStream) {
+                  localVideoStream.getTracks().forEach((t) => t.stop());
+                }
+                micRef.current?.stop();
+                nav(`/meetings?end=${id}`);
+              }}
+            >
               <PhoneOff className="h-4 w-4" /> Leave meeting
             </Button>
           </div>

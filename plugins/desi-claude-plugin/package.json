@@ -1,0 +1,35 @@
+{
+  "name": "@globaltalk-ai/desi-claude-plugin",
+  "version": "1.0.0",
+  "description": "Official Claude plugin exposing Desi Language AI & GlobalTalk AI translation, writing improvement, glossary access, and document translation",
+  "type": "module",
+  "files": [
+    ".claude-plugin",
+    ".mcp.json",
+    "skills",
+    "README.md",
+    "LICENSE",
+    "catalog-info.yaml"
+  ],
+  "keywords": [
+    "desi",
+    "globaltalk-ai",
+    "claude-plugin",
+    "mcp",
+    "translation",
+    "indic",
+    "hindi",
+    "tamil",
+    "telugu",
+    "writing-assistant",
+    "glossary",
+    "document-translation"
+  ],
+  "author": "GlobalTalk AI Authors and Contributors <dev@globaltalk.ai>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Aman678317/Anv-AI.git"
+  },
+  "homepage": "https://globaltalk.ai"
+}

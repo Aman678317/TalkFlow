@@ -1,0 +1,48 @@
+---
+title: "Rephrase Text (Desi Write)"
+api: "POST /v2/write/rephrase"
+description: "Enhance vocabulary, phrasing, style, and tone using the AI writing assistant"
+---
+
+# Rephrase Text (Desi Write)
+
+The Rephrase API improves text clarity, professionalism, and eloquence according to targeted styles and tones.
+
+### Request Body (`application/json`)
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `text` | string | **Yes** | — | Input text to rephrase. |
+| `target_lang` | string | No | `"en"` | Language of the text. |
+| `style` | string | No | `"business"` | Style preset: `academic`, `business`, `casual`, `simple`, `creative`, `prefer_business`. |
+| `tone` | string | No | `"diplomatic"` | Tone preset: `confident`, `diplomatic`, `enthusiastic`, `friendly`, `neutral`. |
+
+---
+
+### Request Example
+
+```bash
+curl -X POST "https://api.globaltalk.ai/v2/write/rephrase" \
+  -H "Authorization: Bearer $GTK_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "We gotta ship this feature today or the customer is gonna be super pissed.",
+    "style": "business",
+    "tone": "diplomatic"
+  }'
+```
+
+### Response Example (`200 OK`)
+
+```json
+{
+  "target_lang": "EN",
+  "improvements": [
+    {
+      "text": "We should aim to deploy this feature today to ensure customer satisfaction and avoid any potential friction.",
+      "style": "business",
+      "tone": "diplomatic"
+    }
+  ]
+}
+```

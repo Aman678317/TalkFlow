@@ -23,6 +23,7 @@ import Billing from './pages/Billing';
 import Settings from './pages/Settings';
 import Team from './pages/Team';
 import Admin from './pages/Admin';
+import JoinCall from './pages/JoinCall';
 
 function RequireAuth({ children }: { children: JSX.Element }) {
   const status = useAuth((s) => s.status);
@@ -48,11 +49,17 @@ export default function App() {
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
         <Route path="/meeting/:id" element={<MeetingRoom />} />
-        {/* App shell routes */}
-        <Route element={<RequireAuth><AppShell /></RequireAuth>}>
-          <Route path="/dashboard" element={<Dashboard />} />
+        {/* Public join page — other person opens this link on their phone (NO login required) */}
+        <Route path="/join/:roomId" element={<JoinCall />} />
+
+        <Route element={<AppShell />}>
           <Route path="/translate" element={<Translate />} />
           <Route path="/write" element={<WritePage />} />
+        </Route>
+
+        {/* Protected app shell routes: requires user authentication */}
+        <Route element={<RequireAuth><AppShell /></RequireAuth>}>
+          <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/documents" element={<Documents />} />
           <Route path="/voice" element={<Voice />} />
           <Route path="/meetings" element={<Meetings />} />

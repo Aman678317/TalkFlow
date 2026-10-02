@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>netstandard2.0;net6.0;net8.0</TargetFrameworks>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <PackageId>GlobalTalk.Client</PackageId>
+    <Version>2.0.0</Version>
+    <Authors>GlobalTalk AI Authors</Authors>
+    <Company>GlobalTalk AI</Company>
+    <PackageDescription>Official production .NET client library for GlobalTalk AI. Wire-compatible with DeepL API standards and enhanced with native Indic (Desi) language translation, transliteration, and text normalization.</PackageDescription>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/GlobalTalk-AI</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/GlobalTalk-AI/globaltalk-ai</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>globaltalk;deepl;translation;desi;indic;hindi;transliteration;ai</PackageTags>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);1591</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
+    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="8.0.0" />
+  </ItemGroup>
+
+</Project>

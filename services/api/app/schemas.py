@@ -55,6 +55,16 @@ class LoginRequest(BaseModel):
         return v.strip().lower()
 
 
+class SocialLoginRequest(BaseModel):
+    provider: Literal["google", "github", "apple"]
+    token: str | None = None
+    code: str | None = None
+    email: str | None = None
+    name: str | None = None
+    avatar_url: str | None = None
+    provider_user_id: str | None = None
+
+
 class TokenPair(BaseModel):
     access_token: str
     refresh_token: str
@@ -147,6 +157,7 @@ class TranslateRequest(BaseModel):
     translation_memory_id: uuid.UUID | None = None
     domain: str = "general"
     intent: ModelIntent = "quality_optimized"
+    formality: Literal["default", "formal", "informal"] = "default"
     batch: bool = False
 
     @field_validator("text")
@@ -175,6 +186,7 @@ class TranslationOut(BaseModel):
     quality_flags: list[str]
     tm_match: str | None = None
     domain: str = "general"
+    alternatives: list[str] = Field(default_factory=list)
 
 
 class TranslateResponse(BaseModel):
@@ -194,7 +206,7 @@ class DetectResponse(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
-# DeepL Write & Dictionary Schemas
+# Desi Write & Dictionary Schemas
 # --------------------------------------------------------------------------- #
 
 class WriteRequest(BaseModel):
@@ -202,6 +214,7 @@ class WriteRequest(BaseModel):
     language: str = "en"
     style: str = "business"    # business | academic | casual | simple | creative
     tone: str = "professional" # professional | friendly | confident | diplomatic | direct
+    corrections_only: bool = False
 
 
 class WriteDiff(BaseModel):
@@ -209,6 +222,7 @@ class WriteDiff(BaseModel):
     replacement: str
     diff_type: str  # grammar | vocabulary | style | phrasing
     explanation: str
+    alternatives: list[str] = []
 
 
 class WriteResponse(BaseModel):
@@ -729,7 +743,7 @@ class AgentTurnOut(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
-# DeepL Write & Dictionary
+# Desi Write & Dictionary
 # --------------------------------------------------------------------------- #
 
 
@@ -738,14 +752,27 @@ class WriteRequest(BaseModel):
     language: str = "en"
     style: str = "business"  # business, academic, casual, simple, creative
     tone: str = "professional"  # professional, friendly, confident, diplomatic, direct
+    corrections_only: bool = False
 
 
 class WriteDiff(BaseModel):
-    type: Literal["replace", "delete", "insert", "equal"]
-    original: str
-    suggested: str
+    type: str = "replace"
+    original: str = ""
+    suggested: str = ""
+    replacement: str = ""
+    diff_type: str = "style"
     category: str = "style"  # grammar, vocabulary, style, tone, punctuation
     explanation: str = ""
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.replacement and not self.suggested:
+            self.suggested = self.replacement
+        elif self.suggested and not self.replacement:
+            self.replacement = self.suggested
+        if self.diff_type and not self.type:
+            self.type = self.diff_type
+        elif self.type and not self.diff_type:
+            self.diff_type = self.type
 
 
 class WriteResponse(BaseModel):

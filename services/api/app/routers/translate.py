@@ -34,7 +34,7 @@ def _ctx(principal: Principal, body: TranslateRequest, product: str = "text") ->
         api_key_id=principal.api_key.id if principal.api_key else None,
         glossary_id=body.glossary_id, style_profile_id=body.style_profile_id,
         tm_id=body.translation_memory_id, domain=body.domain,
-        intent=body.intent, product=product)
+        intent=body.intent, formality=body.formality, product=product)
 
 
 @router.post("/translate", response_model=TranslateResponse)
@@ -68,6 +68,7 @@ async def translate(body: TranslateRequest,
             quality_flags=out.result.quality_flags,
             tm_match=out.tm_match,
             domain=body.domain,
+            alternatives=getattr(out.result, "alternatives", []),
         ))
     from app import context
     return TranslateResponse(translations=outputs,

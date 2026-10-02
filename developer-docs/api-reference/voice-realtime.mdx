@@ -1,0 +1,89 @@
+---
+title: "Real-Time Voice Streaming"
+api: "POST /v3/voice/realtime"
+description: "Initiate bi-directional WebRTC / WebSocket voice translation sessions (<800ms latency)"
+---
+
+# Real-Time Voice Streaming API
+
+The Real-Time Voice Streaming API coordinates full-duplex speech-to-speech translation sessions. It enforces the **Canonical Source Invariant**: spoken audio is ingested, transcribed into an immutable canonical source segment, and fanned out concurrently to all listeners in their preferred languages.
+
+---
+
+### Request Body (`application/json`)
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `meeting_id` | string | **Yes** | — | Unique meeting room or voice conversation identifier. |
+| `spoken_language` | string | No | `"hi"` | Participant's primary speaking language code. |
+| `listening_language` | string | No | `"en"` | Participant's desired receiving audio language code. |
+| `sample_rate` | integer | No | `16000` | Input PCM sample rate (must be `16000` Hz for AudioWorklet). |
+
+---
+
+### Request Example
+
+```bash
+curl -X POST "https://api.globaltalk.ai/v3/voice/realtime" \
+  -H "Authorization: Bearer $GTK_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "meeting_id": "meet_908f7e6d",
+    "spoken_language": "hi",
+    "listening_language": "en",
+    "sample_rate": 16000
+  }'
+```
+
+### Response Example (`200 OK`)
+
+```json
+{
+  "session_id": "sess_4a3b2c1d",
+  "livekit_url": "wss://rtc.globaltalk.ai",
+  "livekit_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "websocket_url": "wss://rtc.globaltalk.ai/ws/voice/v3/meet_908f7e6d?ticket=tick_87654321",
+  "canonical_source_guarantee": "Single immutable canonical source segment. Zero translation chaining."
+}
+```
+
+---
+
+## 📡 Streaming Audio Protocol (AsyncAPI)
+
+Once connected via WebSocket or WebRTC DataChannel:
+
+1. **Client Audio Stream**: Send continuous `audio_chunk` messages containing base64-encoded PCM16 mono 16kHz audio:
+   ```json
+   {
+     "type": "audio_chunk",
+     "sequence": 142,
+     "timestamp_ms": 1727643600120,
+     "pcm_base64": "UklGRiQAAABXQVZFZm10IBAAAAABAAEA..."
+   }
+   ```
+
+2. **Server Canonical Transcript**: When the speaker completes a phrase, the server emits the immutable canonical segment:
+   ```json
+   {
+     "type": "canonical_source_final",
+     "segment_id": "7b09d94b-9e23-421b-8588-e9f02271295b",
+     "participant_id": "usr_991823",
+     "source_language": "hi",
+     "canonical_text": "हम अगली तिमाही के लक्ष्यों की समीक्षा करने के लिए एकत्रित हुए हैं।",
+     "confidence": 0.985
+   }
+   ```
+
+3. **Per-Listener Fan-Out Audio**: Simultaneously, each participant receives translated audio in their language:
+   ```json
+   {
+     "type": "audio_frame",
+     "source_segment_id": "7b09d94b-9e23-421b-8588-e9f02271295b",
+     "target_language": "en",
+     "audio_pcm_base64": "UklGRuQAAABXQVZFZm10IBAA...",
+     "is_final": true
+   }
+   ```
+
+*For complete message schemas, consult the [AsyncAPI Specification](/api-reference/voice.asyncapi.yaml).*

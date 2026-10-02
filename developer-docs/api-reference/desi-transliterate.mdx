@@ -1,0 +1,48 @@
+---
+title: "Phonetic Script Transliteration"
+api: "POST /v2/desi/transliterate"
+description: "Convert phonetic Latin/Romanized text (Hinglish/Tanglish) to native Indic scripts"
+---
+
+# Phonetic Script Transliteration
+
+Performs bidirectional phonetic script conversion between Latin/Roman alphabet text (such as Hinglish or Tanglish) and native Brahmic scripts.
+
+### Request Body (`application/json`)
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `text` | string \| string[] | **Yes** | — | Text to transliterate. |
+| `source_script` | string | No | `"latin"` | Source script (`latin`, `devanagari`, etc.). |
+| `target_script` | string | No | `"devanagari"` | Target script: `devanagari`, `bengali`, `gurmukhi`, `gujarati`, `odia`, `tamil`, `telugu`, `kannada`, `malayalam`. |
+
+---
+
+### Request Example
+
+```bash
+curl -X POST "https://api.globaltalk.ai/v2/desi/transliterate" \
+  -H "X-API-Key: $GTK_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "Dhanyavaad aapka bohot bohot shukriya",
+    "source_script": "latin",
+    "target_script": "devanagari"
+  }'
+```
+
+### Response Example (`200 OK`)
+
+```json
+{
+  "results": [
+    {
+      "source_text": "Dhanyavaad aapka bohot bohot shukriya",
+      "transliterated_text": "धन्यवाद आपका बोहोत बोहोत शुक्रिया",
+      "source_script": "latin",
+      "target_script": "devanagari",
+      "characters": 36
+    }
+  ]
+}
+```

@@ -1,0 +1,60 @@
+---
+title: "Translation Memories (v3)"
+description: "Fuzzy and exact segment matching to reduce costs and maintain consistency"
+---
+
+# Translation Memories API
+
+Translation Memories (TM) store previously approved segment translations. During translation inference, TM segments are retrieved using exact and vector-embedded fuzzy matching (cosine similarity $\ge 0.82$), eliminating duplicate inference costs.
+
+---
+
+## 1. Create Translation Memory (`POST /v3/translation_memories`)
+
+```bash
+curl -X POST "https://api.globaltalk.ai/v3/translation_memories" \
+  -H "Authorization: Bearer $GTK_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Global Support Knowledgebase TM"
+  }'
+```
+
+### Response Example (`201 Created`)
+
+```json
+{
+  "translation_memory_id": "tm_1a2b3c4d",
+  "name": "Global Support Knowledgebase TM",
+  "segment_count": 0,
+  "created_at": "2026-09-29T21:00:00Z"
+}
+```
+
+---
+
+## 2. Insert Approved Segment (`POST /v3/translation_memories/{id}/segments`)
+
+```bash
+curl -X POST "https://api.globaltalk.ai/v3/translation_memories/tm_1a2b3c4d/segments" \
+  -H "Authorization: Bearer $GTK_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source_lang": "en",
+    "target_lang": "hi",
+    "source_segment": "Please contact system administration if the issue persists.",
+    "target_segment": "यदि समस्या बनी रहती है तो कृपया सिस्टम व्यवस्थापक से संपर्क करें।"
+  }'
+```
+
+---
+
+## 3. Export Translation Memory (`GET /v3/translation_memories/{id}/export`)
+
+Exports all stored segments in Translation Memory eXchange (TMX) format:
+
+```bash
+curl -X GET "https://api.globaltalk.ai/v3/translation_memories/tm_1a2b3c4d/export?format=tmx" \
+  -H "Authorization: Bearer $GTK_API_KEY" \
+  --output "tm_export.tmx"
+```

@@ -1,6 +1,6 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["apps/api", "."]
+pythonpath = ["services/api", "apps/api", "ai", "."]
 filterwarnings = ["ignore::DeprecationWarning"]
 asyncio_mode = "auto"
 markers = ["model: tests that require downloaded AI model weights", "realtime: end-to-end realtime golden call test"]
@@ -8,3 +8,11 @@ markers = ["model: tests that require downloaded AI model weights", "realtime: e
 [tool.ruff]
 line-length = 110
 target-version = "py311"
+
+[tool.pyrefly]
+search_path = ["services/api", "apps/api", "ai", "."]
+extraPaths = ["services/api", "apps/api", "ai", "."]
+
+[tool.pyright]
+extraPaths = ["services/api", "apps/api", "ai", "."]
+

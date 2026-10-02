@@ -1,0 +1,40 @@
+{
+    "git.ignoreLimitWarning": true,
+    "editor.tabSize": 2,
+    "editor.insertSpaces": true,
+    "editor.formatOnSave": true,
+    "[python]": {
+        "editor.tabSize": 4
+    },
+    "[typescript]": {
+        "editor.defaultFormatter": "vscode.typescript-language-features"
+    },
+    "[typescriptreact]": {
+        "editor.defaultFormatter": "vscode.typescript-language-features"
+    },
+    "files.exclude": {
+        "**/__pycache__": true,
+        "**/.pytest_cache": true,
+        "**/*.pyc": true,
+        "**/node_modules": true,
+        "**/.vite-temp": true
+    },
+    "search.exclude": {
+        "**/node_modules": true,
+        "**/__pycache__": true,
+        "**/dist": true,
+        "**/.venv": true
+    },
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}",
+        "${workspaceFolder}/apps/api",
+        "${workspaceFolder}/services/api",
+        "${workspaceFolder}/ai"
+    ],
+    "typescript.tsdk": "apps/web/node_modules/typescript/lib",
+    "css.validate": false,
+    "tailwindCSS.experimental.classRegex": [
+        ["cn\\(([^)]*)\\)", "[\"'`]([^\"'`]*).*?[\"'`]"]
+    ]
+}

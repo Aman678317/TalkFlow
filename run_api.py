@@ -26,4 +26,4 @@ if __name__ == "__main__":
     print(f"Starting GlobalTalk AI backend on http://127.0.0.1:{port}")
     print(f"Docs available at: http://127.0.0.1:{port}/api/docs")
     print(f"============================================================")
-    uvicorn.run("app.main:app", host="0.0.0.0", port=port, reload=True)
+    uvicorn.run("app.main:app", host="0.0.0.0", port=port, reload=True, reload_dirs=[str(API_DIR), str(AI_DIR)])

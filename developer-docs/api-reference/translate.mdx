@@ -1,0 +1,53 @@
+---
+title: "Translate Text"
+api: "POST /v2/translate"
+description: "Translate text across 100+ global languages with formality and custom glossaries"
+---
+
+# Translate Text
+
+Translates text into specified target languages. Supports multi-segment batching, formality controls, custom terminology glossaries, and XML/HTML tag preservation.
+
+### Request Body (`application/json` or `application/x-www-form-urlencoded`)
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `text` | string \| string[] | **Yes** | — | Text to translate. Up to 128 KB per request. |
+| `target_lang` | string | **Yes** | — | Target language code (e.g. `DE`, `FR`, `ES`, `JA`, `ZH`, `HI`). |
+| `source_lang` | string | No | Auto | Source language code (auto-detected if omitted). |
+| `formality` | string | No | `"default"` | Formality level: `default`, `more`, `less`, `prefer_more`, `prefer_less`. |
+| `glossary_id` | string | No | — | Single glossary ID to enforce domain vocabulary. |
+| `glossary_ids` | string[] | No | — | Array of glossary IDs applied in prioritized order. |
+| `model_type` | string | No | `"quality_optimized"` | Model trade-off: `quality_optimized`, `latency_optimized`, or `cost_optimized`. |
+| `tag_handling` | string | No | — | Tag parser for markup: `xml` or `html`. |
+| `context` | string | No | — | Additional surrounding text to disambiguate meaning without translating the context itself. |
+
+---
+
+### Request Example
+
+```bash
+curl -X POST "https://api.globaltalk.ai/v2/translate" \
+  -H "Authorization: Bearer $GTK_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": ["Welcome to our annual leadership summit."],
+    "target_lang": "DE",
+    "formality": "more"
+  }'
+```
+
+### Response Example (`200 OK`)
+
+```json
+{
+  "translations": [
+    {
+      "detected_source_language": "EN",
+      "text": "Herzlich willkommen zu unserem jährlichen Führungsgipfel.",
+      "billed_characters": 40,
+      "model_type_used": "quality_optimized"
+    }
+  ]
+}
+```

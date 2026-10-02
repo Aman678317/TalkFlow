@@ -1,0 +1,65 @@
+---
+title: "List Indic Languages"
+api: "GET /v2/desi/languages"
+description: "Retrieve catalog and metadata for all 22 official Eighth Schedule Indian languages"
+---
+
+# List Indic Languages
+
+Returns the comprehensive list of all **22 official Eighth Schedule Indian languages** recognized by the Constitution of India, including ISO codes, script systems, language families, and supported honorific tiers.
+
+---
+
+### Request Example
+
+```bash
+curl -X GET "https://api.globaltalk.ai/v2/desi/languages" \
+  -H "X-API-Key: $GTK_API_KEY"
+```
+
+### Response Example (`200 OK`)
+
+```json
+{
+  "total_count": 22,
+  "schedule": "Eighth Schedule to the Constitution of India",
+  "languages": [
+    {
+      "code": "hi",
+      "iso_639_3": "hin",
+      "name": "Hindi",
+      "native_name": "हिन्दी",
+      "script": "Devanagari",
+      "family": "Indo-Aryan",
+      "honorific_tiers": ["formal", "familiar", "intimate", "respectful"]
+    },
+    {
+      "code": "bn",
+      "iso_639_3": "ben",
+      "name": "Bengali",
+      "native_name": "বাংলা",
+      "script": "Bengali",
+      "family": "Indo-Aryan",
+      "honorific_tiers": ["formal", "familiar", "intimate"]
+    },
+    {
+      "code": "te",
+      "iso_639_3": "tel",
+      "name": "Telugu",
+      "native_name": "తెలుగు",
+      "script": "Telugu",
+      "family": "Dravidian",
+      "honorific_tiers": ["formal", "familiar", "respectful"]
+    },
+    {
+      "code": "ta",
+      "iso_639_3": "tam",
+      "name": "Tamil",
+      "native_name": "தமிழ்",
+      "script": "Tamil",
+      "family": "Dravidian",
+      "honorific_tiers": ["formal", "familiar", "respectful"]
+    }
+  ]
+}
+```

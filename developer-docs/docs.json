@@ -1,0 +1,135 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "GlobalTalk AI / Desi Developer Docs",
+  "colors": {
+    "primary": "#2563EB",
+    "light": "#60A5FA",
+    "dark": "#1D4ED8"
+  },
+  "favicon": "/assets/favicon.svg",
+  "logo": {
+    "dark": "/assets/logo.svg",
+    "light": "/assets/logo.svg"
+  },
+  "background": {
+    "color": {
+      "light": "#FFFFFF",
+      "dark": "#0F172A"
+    }
+  },
+  "navbar": {
+    "links": [
+      {
+        "label": "Platform",
+        "href": "https://globaltalk.ai"
+      },
+      {
+        "label": "GitHub",
+        "href": "https://github.com/Aman678317/Anv-AI"
+      }
+    ],
+    "primary": {
+      "type": "button",
+      "label": "Get API Key",
+      "href": "https://globaltalk.ai/developers"
+    }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "documentation/introduction",
+              "documentation/quickstart",
+              "documentation/authentication"
+            ]
+          },
+          {
+            "group": "Architecture & Linguistic AI",
+            "pages": [
+              "documentation/canonical-source",
+              "documentation/languages",
+              "documentation/indic-features"
+            ]
+          },
+          {
+            "group": "SDKs & Integration",
+            "pages": [
+              "documentation/sdks-and-tools",
+              "documentation/mcp-server"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "API Reference - Overview",
+            "pages": [
+              "api-reference/overview"
+            ]
+          },
+          {
+            "group": "Desi Indic Language APIs",
+            "pages": [
+              "api-reference/desi-translate",
+              "api-reference/desi-transliterate",
+              "api-reference/desi-normalize",
+              "api-reference/desi-languages"
+            ]
+          },
+          {
+            "group": "Core Translation & Languages",
+            "pages": [
+              "api-reference/translate",
+              "api-reference/languages"
+            ]
+          },
+          {
+            "group": "Document Translation",
+            "pages": [
+              "api-reference/documents"
+            ]
+          },
+          {
+            "group": "Writing Assistant (Desi Write)",
+            "pages": [
+              "api-reference/write-rephrase",
+              "api-reference/write-correct"
+            ]
+          },
+          {
+            "group": "Linguistic Customization",
+            "pages": [
+              "api-reference/glossaries",
+              "api-reference/style-rules",
+              "api-reference/translation-memories"
+            ]
+          },
+          {
+            "group": "Real-Time Streaming Voice",
+            "pages": [
+              "api-reference/voice-realtime"
+            ]
+          },
+          {
+            "group": "Account & Quota",
+            "pages": [
+              "api-reference/usage"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/Aman678317/Anv-AI"
+    }
+  }
+}

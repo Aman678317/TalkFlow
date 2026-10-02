@@ -1,0 +1,111 @@
+{
+  "name": "@globaltalk-ai/desi-cli",
+  "version": "2.1.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "description": "Production command-line interface for Desi Language AI & GlobalTalk AI: 100+ world languages, 22 Eighth Schedule Indian languages, 3-tier cultural honorifics, continuous localization sync, writing enhancement, and real-time voice streaming",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "!dist/**/*.tsbuildinfo",
+    "!dist/**/*.js.map",
+    "!dist/**/*.d.ts.map",
+    "docs",
+    "README.md",
+    "LICENSE",
+    "SECURITY.md"
+  ],
+  "bin": {
+    "desi": "dist/cli/index.js",
+    "globaltalk": "dist/cli/index.js"
+  },
+  "scripts": {
+    "dev": "ts-node src/cli/index.ts",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo",
+    "build": "npm run clean && tsc && chmod +x dist/cli/index.js",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "test:unit": "jest tests/unit",
+    "test:integration": "jest tests/integration",
+    "test:e2e": "jest tests/e2e",
+    "lint": "eslint 'src/**/*.ts' 'tests/**/*.ts' --max-warnings 0",
+    "lint:fix": "eslint 'src/**/*.ts' 'tests/**/*.ts' --fix",
+    "type-check": "tsc --noEmit",
+    "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"tests/**/*.ts\""
+  },
+  "keywords": [
+    "desi",
+    "globaltalk-ai",
+    "translation",
+    "cli",
+    "indic",
+    "hindi",
+    "tamil",
+    "telugu",
+    "bengali",
+    "i18n",
+    "localization",
+    "honorifics",
+    "transliteration",
+    "voice-translation",
+    "desi-write",
+    "glossary",
+    "translation-memory",
+    "continuous-localization"
+  ],
+  "author": "GlobalTalk AI Authors and Contributors",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=9.0.0"
+  },
+  "dependencies": {
+    "@inquirer/prompts": "^8.5.2",
+    "axios": "^1.7.9",
+    "chalk": "^6.0.0",
+    "chokidar": "^5.0.0",
+    "cli-table3": "^0.6.5",
+    "commander": "^15.0.0",
+    "diff": "^9.0.0",
+    "fast-glob": "^3.3.3",
+    "form-data": "^4.0.4",
+    "minimatch": "^10.2.6",
+    "ora": "^9.4.1",
+    "p-limit": "^7.3.1",
+    "smol-toml": "^1.7.1",
+    "ws": "^8.21.1",
+    "yaml": "^2.9.0"
+  },
+  "devDependencies": {
+    "@types/jest": "^30.0.0",
+    "@types/node": "^26.1.2",
+    "@types/ws": "^8.18.1",
+    "eslint": "^10.8.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-jest": "^29.16.0",
+    "jest": "^30.4.2",
+    "memfs": "^4.64.0",
+    "nock": "^14.0.16",
+    "prettier": "^3.9.6",
+    "ts-jest": "^29.4.12",
+    "ts-node": "^10.9.2",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.65.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Aman678317/Anv-AI.git"
+  },
+  "homepage": "https://globaltalk.ai"
+}
