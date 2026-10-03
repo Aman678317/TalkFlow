@@ -19,12 +19,16 @@ START_TIME = time.time()
 
 
 @router.get("/health")
+@router.get("/healthz")
+@router.get("/api/v1/health")
 async def health():
     return {"status": "ok", "version": settings.version,
             "uptime_s": round(time.time() - START_TIME, 1)}
 
 
 @router.get("/ready")
+@router.get("/readyz")
+@router.get("/api/v1/ready")
 async def ready():
     from app.cache import cache
     from app.db.session import healthcheck as db_health

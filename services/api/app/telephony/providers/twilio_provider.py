@@ -210,6 +210,58 @@ class TwilioProvider(BaseTelephonyProvider):
 
         return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding="unicode")
 
+    def generate_twiml_dial_response(
+        self,
+        *,
+        to_number: str,
+        caller_id: str = "",
+        status_callback_url: str = "",
+        stream_url: str = "",
+    ) -> str:
+        """Generate carrier TwiML to dial external PSTN phone number."""
+        root = ET.Element("Response")
+        if stream_url:
+            connect = ET.SubElement(root, "Connect")
+            ET.SubElement(connect, "Stream", {"url": stream_url})
+
+        dial_attrs: dict[str, str] = {
+            "callerId": caller_id or self.default_from_number or "+8521027649",
+            "answerOnBridge": "true",
+        }
+        if status_callback_url:
+            dial_attrs["action"] = status_callback_url
+            dial_attrs["method"] = "POST"
+
+        dial = ET.SubElement(root, "Dial", dial_attrs)
+        number = ET.SubElement(dial, "Number")
+        number.text = to_number
+
+        return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding="unicode")
+
+    def generate_twiml_inbound_response(
+        self,
+        *,
+        client_identity: str = "human_agent",
+        mobile_number: str = "",
+        status_callback_url: str = "",
+    ) -> str:
+        """Generate carrier TwiML routing inbound call to browser client (+ optional mobile)."""
+        root = ET.Element("Response")
+        dial_attrs: dict[str, str] = {"timeout": "30"}
+        if status_callback_url:
+            dial_attrs["action"] = status_callback_url
+            dial_attrs["method"] = "POST"
+
+        dial = ET.SubElement(root, "Dial", dial_attrs)
+        client = ET.SubElement(dial, "Client")
+        client.text = client_identity
+
+        if mobile_number:
+            num = ET.SubElement(dial, "Number")
+            num.text = mobile_number
+
+        return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding="unicode")
+
     def parse_webhook(self, headers: dict[str, str], payload: dict[str, Any]) -> WebhookEvent:
         call_sid = payload.get("CallSid", payload.get("call_sid", ""))
         from_num = payload.get("From", payload.get("from", ""))

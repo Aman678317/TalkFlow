@@ -211,7 +211,7 @@ class CallService:
         if not call:
             return None
 
-        status_val = new_status.value if isinstance(new_status, CallStatus) else str(new_status)
+        status_val = new_status.value if isinstance(new_status, CallStatus) else new_status
         call.status = status_val
 
         if status_val in ("connected", "translating") and not call.connected_at:

@@ -41,19 +41,28 @@ def _slugify(name: str) -> str:
 
 
 async def _issue_tokens(db: AsyncSession, user: M.User, request: Request,
-                        org_id: uuid.UUID | None) -> TokenPair:
+                        org_id: uuid.UUID | None,
+                        session_id: uuid.UUID | None = None) -> TokenPair:
     access, _ = create_token(str(user.id), "access",
                              extra={"org_id": str(org_id) if org_id else None})
     refresh, jti = create_token(str(user.id), "refresh",
                                 extra={"org_id": str(org_id) if org_id else None})
     # session + refresh-token rows (device tracking)
     device = request.headers.get("user-agent", "")[:300]
-    session = M.Session(user_id=user.id, device_info=device,
-                        ip_hash=client_ip_hash(request),
-                        last_seen_at=utcnow(),
-                        expires_at=utcnow() + timedelta(days=settings.jwt_refresh_ttl_days))
-    db.add(session)
-    await db.flush()
+    session = None
+    if session_id:
+        session = await db.get(M.Session, session_id)
+    if session:
+        session.last_seen_at = utcnow()
+        session.device_info = device
+        session.ip_hash = client_ip_hash(request)
+    else:
+        session = M.Session(user_id=user.id, device_info=device,
+                            ip_hash=client_ip_hash(request),
+                            last_seen_at=utcnow(),
+                            expires_at=utcnow() + timedelta(days=settings.jwt_refresh_ttl_days))
+        db.add(session)
+        await db.flush()
     from app.security import hash_api_key
     db.add(M.RefreshToken(user_id=user.id, session_id=session.id, jti=jti,
                           token_hash=hash_api_key(refresh),
@@ -272,6 +281,21 @@ async def refresh(body: RefreshRequest, request: Request,
     token_hash = hash_api_key(body.refresh_token)
     row = (await db.execute(select(M.RefreshToken).where(
         M.RefreshToken.jti == payload["jti"]))).scalars().first()
+    if row is not None and row.revoked_at is not None and row.token_hash == token_hash:
+        # Grace window for concurrent multi-tab requests / network retries (15 seconds)
+        revoked_at = row.revoked_at
+        if revoked_at.tzinfo is None:
+            revoked_at = revoked_at.replace(tzinfo=timezone.utc)
+        if (utcnow() - revoked_at) <= timedelta(seconds=15) and row.replaced_by:
+            user = await db.get(M.User, row.user_id)
+            if user and user.status == "active":
+                log.info("Concurrent refresh within 15s grace window for user %s; issuing tokens", user.id)
+                tokens = await _issue_tokens(db, user, request,
+                                             uuid.UUID(payload["org_id"]) if payload.get("org_id") else None,
+                                             session_id=row.session_id)
+                await db.commit()
+                return tokens
+
     if row is None or row.revoked_at is not None or row.token_hash != token_hash:
         # possible token reuse — revoke the whole session family
         if row is not None:
@@ -290,13 +314,10 @@ async def refresh(body: RefreshRequest, request: Request,
     # rotate
     row.revoked_at = utcnow()
     tokens = await _issue_tokens(db, user, request,
-                                 uuid.UUID(payload["org_id"]) if payload.get("org_id") else None)
-    new_row = (await db.execute(select(M.RefreshToken).where(
-        M.RefreshToken.session_id == row.session_id,
-        M.RefreshToken.revoked_at.is_(None))
-        .order_by(M.RefreshToken.created_at.desc()))).scalars().first()
-    if new_row:
-        row.replaced_by = new_row.jti
+                                 uuid.UUID(payload["org_id"]) if payload.get("org_id") else None,
+                                 session_id=row.session_id)
+    new_payload = decode_token(tokens.refresh_token, "refresh")
+    row.replaced_by = new_payload.get("jti")
     session = await db.get(M.Session, row.session_id)
     if session:
         session.last_seen_at = utcnow()

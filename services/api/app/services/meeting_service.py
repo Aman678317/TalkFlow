@@ -97,6 +97,12 @@ async def join_meeting(db: AsyncSession, meeting: M.Meeting, *,
     else:
         pref = (await db.execute(select(M.ParticipantPreference).where(
             M.ParticipantPreference.participant_id == p.id))).scalars().first()
+        if pref is None:
+            pref = M.ParticipantPreference(
+                participant_id=p.id, meeting_id=meeting.id,
+                speak_lang=speak_lang, hear_lang=hear_lang,
+                audio_mode="translated", captions_enabled=True)
+            db.add(pref)
         if not display_name and p.user_id:
             u = await db.get(M.User, p.user_id)
             display_name = (u.name or u.email.split("@")[0]) if u else ""
@@ -191,12 +197,12 @@ def livekit_join_token(room_name: str, identity: str, name: str,
         # fallback: hand-rolled JWT (LiveKit tokens are standard JWTs)
         return _manual_livekit_token(room_name, identity, name, metadata)
     import time as _t
+    from datetime import timedelta as _td
     at = lk_api.AccessToken(settings.livekit_api_key, settings.livekit_api_secret)
-    at.identity = identity
-    at.name = name
-    at.metadata = __import__("json").dumps(metadata)
-    at.add_grant(lk_api.VideoGrants(room_join=True, room=room_name))
-    at.ttl = _t.timedelta(hours=6) if hasattr(_t, "timedelta") else 21600
+    at = at.with_identity(identity).with_name(name).with_metadata(
+        __import__("json").dumps(metadata)
+    ).with_grants(lk_api.VideoGrants(room_join=True, room=room_name))  # type: ignore[attr-defined]
+    at.ttl = _td(hours=6)
     return {"url": settings.livekit_url, "token": at.to_jwt()}
 
 

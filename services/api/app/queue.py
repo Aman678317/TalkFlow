@@ -69,9 +69,16 @@ class MemoryQueue(JobQueue):
             return None
 
     async def requeue(self, job: Job, queue: str = "default", delay_s: float = 0) -> None:
-        if delay_s:
-            await asyncio.sleep(delay_s)
-        await self._q(queue).put(job)
+        if delay_s > 0:
+            async def _delayed_put():
+                try:
+                    await asyncio.sleep(delay_s)
+                    await self._q(queue).put(job)
+                except Exception as e:
+                    log.error("memory queue delayed requeue failed: %s", e)
+            asyncio.create_task(_delayed_put())
+        else:
+            await self._q(queue).put(job)
 
     async def depth(self, queue: str = "default") -> int:
         return self._q(queue).qsize()
@@ -108,9 +115,16 @@ class RedisQueue(JobQueue):
         return Job(**data)
 
     async def requeue(self, job: Job, queue: str = "default", delay_s: float = 0) -> None:
-        if delay_s:
-            await asyncio.sleep(delay_s)
-        await self._r.lpush(self._key(queue), json.dumps(job.__dict__))
+        if delay_s > 0:
+            async def _delayed_redis_requeue():
+                try:
+                    await asyncio.sleep(delay_s)
+                    await self._r.lpush(self._key(queue), json.dumps(job.__dict__))
+                except Exception as e:
+                    log.error("redis queue delayed requeue failed: %s", e)
+            asyncio.create_task(_delayed_redis_requeue())
+        else:
+            await self._r.lpush(self._key(queue), json.dumps(job.__dict__))
 
     async def depth(self, queue: str = "default") -> int:
         return int(await self._r.llen(self._key(queue)))

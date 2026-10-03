@@ -191,3 +191,45 @@ def test_extractive_summarizer_deterministic():
     assert "benchmark" in texts or "prepare" in texts
     qs = [q for q in [transcript] if "?" in q]
     assert qs
+
+
+# ------------------------------------------------------------------ production guards
+
+def test_production_secret_guard():
+    import sys
+    from pathlib import Path
+    services_path = str(Path(__file__).resolve().parents[2] / "services" / "api")
+    if services_path not in sys.path:
+        sys.path.insert(0, services_path)
+
+    from app.config import Settings
+    # Default/short secrets must fail in production
+    with pytest.raises(ValueError) as exc:
+        Settings(app_env="production", secret_key="dev-secret-key", jwt_secret="dev-jwt-secret")
+    assert "Production environment requires a strong 'SECRET_KEY'" in str(exc.value)
+
+    # 32+ char custom keys must succeed in production
+    valid_settings = Settings(
+        app_env="production",
+        secret_key="x" * 32,
+        jwt_secret="y" * 32,
+    )
+    assert valid_settings.is_production
+
+
+def test_production_telephony_failsafe():
+    import sys
+    from pathlib import Path
+    services_path = str(Path(__file__).resolve().parents[2] / "services" / "api")
+    if services_path not in sys.path:
+        sys.path.insert(0, services_path)
+
+    from app.config import Settings
+    from app.errors import ProviderError
+    from app.telephony.service import TelephonyService
+
+    ts = TelephonyService()
+    # In dev, unconfigured twilio falls back safely to simulated
+    dev_provider = ts.get_provider("simulated")
+    assert dev_provider.provider_name == "simulated"
+

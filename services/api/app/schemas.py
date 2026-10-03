@@ -615,6 +615,8 @@ class UsageSummary(BaseModel):
     totals: dict[str, float]
     by_product: dict[str, dict[str, float]]
     by_day: list[dict]
+    plan: str = "free"
+    limits: dict[str, float | None] = {}
 
 
 class SubscriptionOut(ORMModel):

@@ -5,6 +5,7 @@ import logging
 from typing import ClassVar
 
 from app.config import settings
+from app.errors import ProviderError
 from app.telephony.base import BaseTelephonyProvider
 from app.telephony.providers.simulated_provider import SimulatedProvider
 from app.telephony.providers.telnyx_provider import TelnyxProvider
@@ -46,12 +47,16 @@ class TelephonyService:
         if req_name == "twilio":
             if settings.twilio_account_sid and settings.twilio_auth_token:
                 return self._providers["twilio"]
+            if settings.is_production:
+                raise ProviderError("Twilio telephony requested in production but TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN are missing")
             log.warning("Twilio credentials not configured; falling back to simulated provider")
             return self._providers["simulated"]
 
         if req_name == "telnyx":
             if settings.telnyx_api_key:
                 return self._providers["telnyx"]
+            if settings.is_production:
+                raise ProviderError("Telnyx telephony requested in production but TELNYX_API_KEY is missing")
             log.warning("Telnyx credentials not configured; falling back to simulated provider")
             return self._providers["simulated"]
 

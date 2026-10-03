@@ -38,6 +38,18 @@ integrations_router = APIRouter(prefix="/api/v1/integrations", tags=["integratio
 admin_router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 
 
+def _org_id(p: Principal) -> uuid.UUID:
+    """Narrow principal.org_id to UUID (guaranteed non-None by require_org_user)."""
+    assert p.org_id is not None, "org_id is None — require_org_user must have failed"
+    return p.org_id
+
+
+def _org(p: Principal) -> M.Organization:
+    """Narrow principal.org to Organization (guaranteed non-None by require_org_user)."""
+    assert p.org is not None, "org is None — require_org_user must have failed"
+    return p.org
+
+
 # --------------------------------------------------------------------------- #
 # API keys
 # --------------------------------------------------------------------------- #
@@ -93,11 +105,11 @@ async def rotate_api_key(key_id: uuid.UUID,
                    name=old.name, key_hash=key_hash, prefix=prefix,
                    scopes=old.scopes, expires_at=old.expires_at)
     db.add(new)
-    await audit_service.record(db, action="api_key.rotated", org_id=principal.org_id,
+    await audit_service.record(db, action="api_key.rotated", org_id=_org_id(principal),
                                actor_id=principal.user_id, resource_type="api_key",
                                resource_id=prefix, details={"old": old.prefix})
     await db.commit()
-    await webhook_service.dispatch(db, principal.org_id, "api_key.revoked",
+    await webhook_service.dispatch(db, _org_id(principal), "api_key.revoked",
                                    {"prefix": old.prefix, "reason": "rotated"})
     out = ApiKeyCreated(**ApiKeyOut.model_validate(new).model_dump(),
                         plaintext_key=plaintext)
@@ -112,11 +124,11 @@ async def revoke_api_key(key_id: uuid.UUID,
     k = await _key(db, key_id, principal)
     k.status = "revoked"
     k.revoked_at = utcnow()
-    await audit_service.record(db, action="api_key.revoked", org_id=principal.org_id,
+    await audit_service.record(db, action="api_key.revoked", org_id=_org_id(principal),
                                actor_id=principal.user_id, resource_type="api_key",
                                resource_id=k.prefix)
     await db.commit()
-    await webhook_service.dispatch(db, principal.org_id, "api_key.revoked",
+    await webhook_service.dispatch(db, _org_id(principal), "api_key.revoked",
                                    {"prefix": k.prefix, "reason": "manual"})
 
 
@@ -129,16 +141,23 @@ async def get_usage(principal: Principal = Depends(require_org_user),
                     db: AsyncSession = Depends(get_db),
                     days: int = Query(default=30, le=365)):
     principal.require("view_usage")
-    data = await usage_service.usage_summary(db, principal.org_id, days)
+    data = await usage_service.usage_summary(db, _org_id(principal), days)
+    sub = (await db.execute(select(M.Subscription).where(
+        M.Subscription.org_id == _org_id(principal)))).scalars().first()
+    plan = sub.plan_code if sub else "free"
+    quotas = (sub.quota_json if sub else None) or \
+        usage_service.DEFAULT_PLAN_QUOTAS.get(plan, usage_service.DEFAULT_PLAN_QUOTAS["free"])
+    data["plan"] = plan
+    data["limits"] = {k: (None if v == float("inf") else v) for k, v in quotas.items()}
     return UsageSummary(**data)
 
 
 @usage_router.get("/usage/quota", response_model=dict)
 async def get_quota(principal: Principal = Depends(require_org_user),
                     db: AsyncSession = Depends(get_db)):
-    used = await usage_service.current_period_usage(db, principal.org_id)
+    used = await usage_service.current_period_usage(db, _org_id(principal))
     sub = (await db.execute(select(M.Subscription).where(
-        M.Subscription.org_id == principal.org_id))).scalars().first()
+        M.Subscription.org_id == _org_id(principal)))).scalars().first()
     quotas = (sub.quota_json if sub else None) or \
         usage_service.DEFAULT_PLAN_QUOTAS.get(sub.plan_code if sub else "free",
                                               usage_service.DEFAULT_PLAN_QUOTAS["free"])
@@ -149,7 +168,7 @@ async def get_quota(principal: Principal = Depends(require_org_user),
 @usage_router.get("/billing/subscription", response_model=SubscriptionOut)
 async def get_subscription(principal: Principal = Depends(require_org_user),
                            db: AsyncSession = Depends(get_db)):
-    sub = await billing_service.get_or_create_subscription(db, principal.org)
+    sub = await billing_service.get_or_create_subscription(db, _org(principal))
     return SubscriptionOut.model_validate(sub)
 
 
@@ -162,7 +181,7 @@ async def change_subscription(body: PlanChange,
                               principal: Principal = Depends(require_org_user),
                               db: AsyncSession = Depends(get_db)):
     principal.require("manage_billing")
-    sub = await billing_service.change_plan(db, principal.org, body.plan,
+    sub = await billing_service.change_plan(db, _org(principal), body.plan,
                                             principal.user_id)
     return SubscriptionOut.model_validate(sub)
 
@@ -171,7 +190,7 @@ async def change_subscription(body: PlanChange,
 async def billing_events(principal: Principal = Depends(require_org_user),
                          db: AsyncSession = Depends(get_db)):
     principal.require("manage_billing")
-    events = await billing_service.list_events(db, principal.org_id)
+    events = await billing_service.list_events(db, _org_id(principal))
     return [BillingEventOut.model_validate(e) for e in events]
 
 
@@ -181,7 +200,7 @@ async def preview_invoice(principal: Principal = Depends(require_org_user),
     principal.require("manage_billing")
     now = utcnow()
     start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    return await billing_service.compute_invoice(db, principal.org_id, start, now)
+    return await billing_service.compute_invoice(db, _org_id(principal), start, now)
 
 
 # --------------------------------------------------------------------------- #
@@ -193,7 +212,7 @@ async def create_webhook(body: WebhookCreate,
                          principal: Principal = Depends(require_org_user),
                          db: AsyncSession = Depends(get_db)):
     principal.require("manage_webhooks")
-    ep = await webhook_service.register_endpoint(db, principal.org_id, body.url,
+    ep = await webhook_service.register_endpoint(db, _org_id(principal), body.url,
                                                  body.events, principal.user_id)
     out = WebhookOut.model_validate(ep)
     return out
@@ -265,7 +284,7 @@ async def search(q: str = Query(min_length=1, max_length=200),
                  principal: Principal = Depends(require_org_user),
                  db: AsyncSession = Depends(get_db)):
     from app.services import search_service
-    result = await search_service.search_all(db, principal.org_id, q)
+    result = await search_service.search_all(db, _org_id(principal), q)
     return SearchResponse(query=q, **result)
 
 

@@ -37,6 +37,7 @@ from app.db import models as M
 from app.db.base import utcnow
 from app.db.session import get_db
 from app.deps import Principal, get_principal_optional
+from app.errors import AuthenticationError
 from app.security import create_session_ticket
 from app.services import meeting_service, write_service
 from app.services.translation_service import TranslateContext, translate_text

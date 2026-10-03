@@ -456,17 +456,6 @@ async def _run_pipeline(db: AsyncSession, doc: M.Document) -> None:
         if (i + 1) % 5 == 0 or i == total - 1:
             doc.progress = 25 + int(60 * (i + 1) / total)
             await db.commit()
-    # meter the document as a whole (characters + pages)
-    await usage_service.record_usage(
-        db, org_id=doc.org_id, product="document", unit_type="characters",
-        units=float(doc.char_count), user_id=doc.created_by,
-        source_lang=detected, target_lang=doc.target_lang,
-        metadata={"document_id": str(doc.id)})
-    await usage_service.record_usage(
-        db, org_id=doc.org_id, product="document", unit_type="document_pages",
-        units=float(max(1, doc.page_count)), user_id=doc.created_by,
-        metadata={"document_id": str(doc.id)})
-
     # persist translated segments
     for b in translatable:
         await db.execute(
@@ -491,6 +480,30 @@ async def _run_pipeline(db: AsyncSession, doc: M.Document) -> None:
     if empty > len(translatable) * 0.2:
         raise DocumentProcessingError(
             f"Quality gate failed: {empty}/{len(translatable)} empty segments.")
+
+    # --- meter document exactly once upon successful completion (idempotent) --- #
+    doc_already_metered = False
+    recent_records = (await db.execute(
+        select(M.UsageRecord).where(
+            M.UsageRecord.org_id == doc.org_id,
+            M.UsageRecord.product == "document"
+        ).order_by(M.UsageRecord.created_at.desc()).limit(100)
+    )).scalars().all()
+    for rec in recent_records:
+        if rec.metadata_json and rec.metadata_json.get("document_id") == str(doc.id):
+            doc_already_metered = True
+            break
+
+    if not doc_already_metered:
+        await usage_service.record_usage(
+            db, org_id=doc.org_id, product="document", unit_type="characters",
+            units=float(doc.char_count), user_id=doc.created_by,
+            source_lang=detected, target_lang=doc.target_lang,
+            metadata={"document_id": str(doc.id)})
+        await usage_service.record_usage(
+            db, org_id=doc.org_id, product="document", unit_type="document_pages",
+            units=float(max(1, doc.page_count)), user_id=doc.created_by,
+            metadata={"document_id": str(doc.id)})
 
     # --- ready --------------------------------------------------------------- #
     doc.status = "ready"

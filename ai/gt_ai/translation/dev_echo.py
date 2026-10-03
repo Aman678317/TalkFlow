@@ -73,17 +73,21 @@ class DevEchoTranslationProvider(BaseProvider):
         pair = (src, tgt)
         if pair in COMMON_TRANSLATIONS and norm in COMMON_TRANSLATIONS[pair]:
             out = COMMON_TRANSLATIONS[pair][norm]
-            flags = ["neural_mt"]
+            flags = ["neural_mt", "dev_provider"]
             alts = []
         else:
             try:
                 from gt_ai.translation.neural_online import NeuralOnlineTranslationProvider
                 neural = NeuralOnlineTranslationProvider()
                 res = await neural.translate(req)
+                if "dev_provider" not in res.quality_flags:
+                    res.quality_flags.append("dev_provider")
+                res.model = "dev-echo-v1"
+                res.provider = self.name
                 return res
             except Exception:
                 out = text
-                flags = ["untranslated_fallback"]
+                flags = ["untranslated_fallback", "dev_provider"]
                 alts = []
 
         out, glossary_flags = apply_glossary_to_output(out, text, req.glossary or {})
@@ -93,7 +97,7 @@ class DevEchoTranslationProvider(BaseProvider):
             text=out,
             source_lang=req.source_lang,
             target_lang=req.target_lang,
-            model="neural-v1",
+            model="dev-echo-v1",
             provider=self.name,
             latency_ms=(time.perf_counter() - t0) * 1000,
             quality_flags=flags,

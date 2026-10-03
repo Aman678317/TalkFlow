@@ -12,6 +12,7 @@ target-version = "py311"
 [tool.pyrefly]
 search_path = ["services/api", "apps/api", "ai", "."]
 extraPaths = ["services/api", "apps/api", "ai", "."]
+project_excludes = ["gt_ai/**"]
 
 [tool.pyright]
 extraPaths = ["services/api", "apps/api", "ai", "."]

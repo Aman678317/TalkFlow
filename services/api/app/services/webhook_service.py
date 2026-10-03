@@ -81,6 +81,16 @@ async def deliver_job(payload: dict) -> None:
         delivery = await db.get(M.WebhookDelivery, delivery_id)
         if delivery is None or delivery.status == "delivered":
             return
+        # If scheduled for a future backoff time, requeue and wait
+        if delivery.next_retry_at and delivery.next_retry_at > utcnow():
+            wait_s = (delivery.next_retry_at - utcnow()).total_seconds()
+            if wait_s > 0.5:
+                q = queue()
+                if hasattr(q, "requeue"):
+                    from app.queue import Job
+                    re_job = Job(job_id=uuid.uuid4().hex, type="webhook.deliver", payload=payload)
+                    await q.requeue(re_job, queue="webhooks", delay_s=wait_s)
+                return
         ep = await db.get(M.WebhookEndpoint, delivery.endpoint_id)
         if ep is None or ep.status != "active":
             delivery.status = "failed"
@@ -119,10 +129,19 @@ async def deliver_job(payload: dict) -> None:
                 delivery.status = "pending"
                 delivery.next_retry_at = utcnow() + timedelta(seconds=delay)
                 await db.commit()
-                await asyncio.sleep(0)  # yield
-                await queue().push("webhook.deliver", {
-                    "endpoint_id": str(ep.id), "delivery_id": str(delivery.id)},
-                    queue="webhooks")
+                q = queue()
+                if hasattr(q, "requeue"):
+                    from app.queue import Job
+                    re_job = Job(job_id=uuid.uuid4().hex, type="webhook.deliver",
+                                 payload={"endpoint_id": str(ep.id), "delivery_id": str(delivery.id)})
+                    await q.requeue(re_job, queue="webhooks", delay_s=float(delay))
+                else:
+                    async def _delayed_webhook_push():
+                        await asyncio.sleep(delay)
+                        await queue().push("webhook.deliver", {
+                            "endpoint_id": str(ep.id), "delivery_id": str(delivery.id)},
+                            queue="webhooks")
+                    asyncio.create_task(_delayed_webhook_push())
                 return
             delivery.status = "failed"
         await db.commit()

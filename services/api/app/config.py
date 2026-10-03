@@ -8,7 +8,7 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -77,6 +77,11 @@ class Settings(BaseSettings):
     twilio_account_sid: str = ""
     twilio_auth_token: str = ""
     twilio_phone_number: str = ""
+    twilio_twiml_app_sid: str = ""
+    twilio_api_key_sid: str = ""
+    twilio_api_key_secret: str = ""
+    twilio_agent_identity: str = "human_agent"
+    telephony_human_mobile_number: str = ""
     telnyx_api_key: str = ""
     telnyx_phone_number: str = ""
     telephony_webhook_base_url: str = ""
@@ -185,6 +190,27 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.app_env == "production"
+
+    @model_validator(mode="after")
+    def _validate_production_secrets(self) -> Settings:
+        if self.app_env == "production":
+            insecure_defaults = {
+                "dev-secret-key",
+                "dev-jwt-secret",
+                "secret",
+                "change-me",
+                "changeme",
+                "default",
+            }
+            if self.secret_key in insecure_defaults or len(self.secret_key) < 32:
+                raise ValueError(
+                    "Production environment requires a strong 'SECRET_KEY' (at least 32 characters, non-default)."
+                )
+            if self.jwt_secret in insecure_defaults or len(self.jwt_secret) < 32:
+                raise ValueError(
+                    "Production environment requires a strong 'JWT_SECRET' (at least 32 characters, non-default)."
+                )
+        return self
 
     @property
     def resolved_database_url(self) -> str:

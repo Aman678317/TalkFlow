@@ -399,10 +399,9 @@ class NeuralOnlineTranslationProvider(BaseProvider):
                 model_used = "linguistic-v1"
                 quality_flags.append("rule_matched")
 
-        # 5. Last resort fallback
+        # 5. Failover signal when all attempts in this provider fail
         if not translated_text:
-            translated_text = text
-            quality_flags.append("untranslated_fallback")
+            raise ProviderUnavailable(f"All online and rule-based translation sources failed for {src}->{tgt}")
 
         # Apply formality adjustments if requested
         if formality in ("formal", "informal") and provider_used != "deepl":

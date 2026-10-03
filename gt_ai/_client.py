@@ -126,6 +126,7 @@ class GlobalTalkSDK:
                 detected_source_lang=t.get("detected_source_language", source_lang),
                 target_lang=target_lang.upper(),
                 model_used=t.get("model_used", ""),
+                latency_ms=0.0,
                 character_count=len(texts[i]),
             )
             for i, t in enumerate(translations)

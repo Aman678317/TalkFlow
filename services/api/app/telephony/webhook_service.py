@@ -47,11 +47,36 @@ class TelephonyWebhookService:
 
         call_id_str = str(call_row.id) if call_row else "unknown"
         host_base = settings.telephony_webhook_base_url or request_url.rsplit("/api/", 1)[0]
+        status_url = f"{host_base}/api/v1/telephony/webhooks/status"
         ws_scheme = "wss" if host_base.startswith("https") else "ws"
         host_netloc = host_base.split("://")[-1]
         stream_url = f"{ws_scheme}://{host_netloc}/ws/telephony/media/{call_id_str}"
 
-        # Generate XML connecting call leg to bidirectional media stream
+        to_param = (payload.get("To") or event.to_number or "").strip()
+        from_param = (payload.get("From") or event.from_number or "").strip()
+        caller_id = settings.twilio_phone_number or "+8521027649"
+
+        # Case 1: Browser outbound call to an external phone number
+        if from_param.startswith("client:") or (to_param and to_param != settings.twilio_phone_number and not to_param.startswith("client:")):
+            log.info("Generating outbound TwiML Dial for destination %s (callerId=%s)", to_param, caller_id)
+            if hasattr(provider, "generate_twiml_dial_response"):
+                return provider.generate_twiml_dial_response(
+                    to_number=to_param,
+                    caller_id=caller_id,
+                    status_callback_url=status_url,
+                )
+
+        # Case 2: Inbound phone call to Twilio number -> dial browser agent
+        if to_param == settings.twilio_phone_number or (to_param and not from_param.startswith("client:")):
+            log.info("Generating inbound TwiML Dial routing %s to client:%s", from_param, settings.twilio_agent_identity)
+            if hasattr(provider, "generate_twiml_inbound_response"):
+                return provider.generate_twiml_inbound_response(
+                    client_identity=settings.twilio_agent_identity or "human_agent",
+                    mobile_number=settings.telephony_human_mobile_number,
+                    status_callback_url=status_url,
+                )
+
+        # Case 3: Bidirectional media stream fallback (e.g. AI translation pipeline)
         custom_params = {
             "call_id": call_id_str,
             "caller_lang": call_row.caller_language if call_row else "en",

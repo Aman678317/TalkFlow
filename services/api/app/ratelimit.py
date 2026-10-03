@@ -5,10 +5,13 @@ Returns structured 429s with Retry-After per PDD §37.
 """
 from __future__ import annotations
 
+import logging
 import time
 
 from app.cache import cache
 from app.errors import RateLimitError
+
+log = logging.getLogger("app.ratelimit")
 
 
 def _parse(spec: str) -> tuple[int, int]:
@@ -22,7 +25,12 @@ async def check_rate_limit(bucket: str, identity: str, spec: str) -> None:
     limit, window_s = _parse(spec)
     window = int(time.time() // window_s)
     key = f"rl:{bucket}:{identity}:{window}"
-    count = await cache().incr(key, ttl_s=window_s + 1)
+    try:
+        count = await cache().incr(key, ttl_s=window_s + 1)
+    except Exception as e:
+        # Resilience: cache failure must not bring down core application traffic
+        log.warning("Rate limit backend unavailable (%s) for bucket=%s; failing open", e, bucket)
+        return
     if count > limit:
         retry_after = max(1, window_s - int(time.time() % window_s))
         raise RateLimitError(

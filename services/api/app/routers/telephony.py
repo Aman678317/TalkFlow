@@ -141,6 +141,11 @@ async def initiate_call(
         spec=settings.rate_limit_telephony_call,
     )
 
+    # 2. Narrow org_id / user_id — require_org_user guarantees these, but narrow
+    #    the type so downstream code (and the type checker) sees UUID, not UUID|None.
+    if principal.org_id is None:
+        raise ValidationError("Organization not found for this account. Please contact support.")
+
     cs = CallService(db)
     base_url = str(req.base_url).rstrip("/")
     try:
@@ -159,14 +164,19 @@ async def initiate_call(
             prompt_version_id=uuid.UUID(body.prompt_version_id) if body.prompt_version_id else None,
             base_url=base_url,
         )
+    except ValidationError:
+        raise
     except Exception as exc:
         log.exception("Exception inside create_outbound_call")
-        raise ValidationError(f"Call dispatch failed: {exc}")
+        from app.errors import AppError
+        raise AppError(f"Carrier call dispatch failed: {exc}", status=502, recoverable=True)
 
     if call.status == "failed":
         err_msg = call.error_message or "Carrier failed to place outbound call."
-        raise ValidationError(f"Twilio call rejected: {err_msg}")
+        from app.errors import AppError
+        raise AppError(f"Carrier call rejected: {err_msg}", status=502, recoverable=True)
     return _serialize_call(call)
+
 
 
 @router.get("/calls/analytics")
@@ -175,6 +185,8 @@ async def get_call_analytics(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Aggregate call metering, billing breakdown and security metrics."""
+    if principal.org_id is None:
+        return {}
     cs = CallService(db)
     return await cs.get_call_summary_metrics(principal.org_id)
 
@@ -246,11 +258,110 @@ async def get_provider_status() -> dict[str, Any]:
     }
 
 
+@router.get("/token")
+async def get_voice_access_token(
+    request: Request,
+    identity: str = Query(default=""),
+) -> dict[str, Any]:
+    """Generate short-lived Twilio Voice Access Token for browser client registration."""
+    from app.telephony.twilio_token import TwilioTokenService
+
+    base_url = str(request.base_url).rstrip("/")
+    user_identity = identity or settings.twilio_agent_identity or "human_agent"
+    return await TwilioTokenService.generate_voice_token(
+        identity=user_identity,
+        webhook_base_url=base_url,
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Peer WebRTC Signaling (App-to-App calls without carrier — Phase 14)
 # --------------------------------------------------------------------------- #
 
+import json
+from pathlib import Path
+
 _peer_rooms: dict[str, dict[str, Any]] = {}
+_peer_sockets: dict[str, dict[str, WebSocket]] = {}
+_PEER_ROOMS_FILE = Path(__file__).resolve().parent.parent.parent / "storage" / "peer_rooms.json"
+
+
+def _set_peer_socket(room_id: str, role: str, ws: WebSocket | None) -> None:
+    if room_id not in _peer_sockets:
+        _peer_sockets[room_id] = {}
+    if ws is None:
+        _peer_sockets[room_id].pop(role, None)
+    else:
+        _peer_sockets[room_id][role] = ws
+
+
+def _get_peer_socket(room_id: str, role: str) -> WebSocket | None:
+    return _peer_sockets.get(room_id, {}).get(role)
+
+
+def _sanitize_peer_room(room: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "room_id": room.get("room_id", ""),
+        "caller_language": room.get("caller_language", "hi"),
+        "receiver_language": room.get("receiver_language", "en"),
+        "caller_name": room.get("caller_name", "Caller"),
+        "receiver_name": room.get("receiver_name", ""),
+        "status": room.get("status", "waiting"),
+        "created_at": room.get("created_at"),
+    }
+
+
+def _persist_peer_rooms():
+    try:
+        _PEER_ROOMS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        serializable = {
+            rid: {k: v for k, v in r.items() if not k.startswith("ws_")}
+            for rid, r in _peer_rooms.items()
+        }
+        _PEER_ROOMS_FILE.write_text(json.dumps(serializable, indent=2), encoding="utf-8")
+    except Exception as exc:
+        log.warning("Could not persist peer rooms: %s", exc)
+
+
+def _load_persisted_peer_rooms():
+    try:
+        if _PEER_ROOMS_FILE.exists():
+            data = json.loads(_PEER_ROOMS_FILE.read_text(encoding="utf-8"))
+            for rid, r in data.items():
+                if rid not in _peer_rooms:
+                    _peer_rooms[rid] = r
+    except Exception as exc:
+        log.warning("Could not load persisted peer rooms: %s", exc)
+
+
+_load_persisted_peer_rooms()
+
+
+def _get_or_create_peer_room(
+    room_id: str,
+    caller_language: str = "hi",
+    receiver_language: str = "en",
+    caller_name: str = "Caller",
+) -> dict[str, Any]:
+    """Retrieve or auto-provision peer room so shared links and reloads remain active."""
+    if room_id not in _peer_rooms:
+        _load_persisted_peer_rooms()
+    if room_id not in _peer_rooms:
+        import datetime
+        _peer_rooms[room_id] = {
+            "room_id": room_id,
+            "caller_language": caller_language,
+            "receiver_language": receiver_language,
+            "caller_name": caller_name,
+            "receiver_name": "",
+            "status": "waiting",
+            "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "ws_offer": None,
+            "ws_answer": None,
+            "ice_candidates": [],
+        }
+        _persist_peer_rooms()
+    return _peer_rooms[room_id]
 
 
 class PeerCallCreateRequest(BaseModel):
@@ -274,8 +385,18 @@ async def create_peer_call(
     Returns a shareable join_url the other person opens in their browser."""
     import secrets
     room_id = secrets.token_urlsafe(10)
-    base = str(req.base_url).rstrip("/")
-    web_origin = settings.web_origin if hasattr(settings, "web_origin") else "http://localhost:5173"
+
+    # Dynamically detect caller's web origin (e.g. localhost:5174 or localhost:5173)
+    origin_hdr = req.headers.get("origin")
+    referer_hdr = req.headers.get("referer")
+    if origin_hdr:
+        web_origin = origin_hdr.rstrip("/")
+    elif referer_hdr:
+        from urllib.parse import urlparse
+        p = urlparse(referer_hdr)
+        web_origin = f"{p.scheme}://{p.netloc}"
+    else:
+        web_origin = getattr(settings, "web_origin", "http://localhost:5173")
     join_url = f"{web_origin}/join/{room_id}"
 
     _peer_rooms[room_id] = {
@@ -290,8 +411,9 @@ async def create_peer_call(
         "ws_answer": None,
         "ice_candidates": [],
     }
+    _persist_peer_rooms()
 
-    log.info("Peer call room %s created by org %s", room_id, principal.org_id)
+    log.info("Peer call room %s created by org %s (origin: %s)", room_id, principal.org_id, web_origin)
     return {
         "room_id": room_id,
         "join_url": join_url,
@@ -304,43 +426,57 @@ async def create_peer_call(
 
 @router.get("/peer-calls/{room_id}")
 async def get_peer_call(room_id: str) -> dict[str, Any]:
-    """Poll peer call room status (used by both caller and callee)."""
-    room = _peer_rooms.get(room_id)
-    if not room:
-        raise NotFoundError(f"Peer call room '{room_id}' not found or expired.")
-    return room
+    """Poll peer call room status (used by both caller and callee).
+    Auto-provisions room if not found so links and sessions are always joinable."""
+    room = _get_or_create_peer_room(room_id)
+    return _sanitize_peer_room(room)
 
 
 @router.websocket("/peer-calls/{room_id}/signal")
 async def peer_call_signal_ws(ws: WebSocket, room_id: str, role: str = "caller"):
     """WebRTC signaling WebSocket for peer-to-peer browser calls.
     role: 'caller' | 'callee'
-    Messages: {type: 'offer'|'answer'|'ice'|'bye', data: ...}
+    Messages: {type: 'offer'|'answer'|'ice'|'bye'|'peer_joined', data: ...}
     """
     import json
     await ws.accept()
-    room = _peer_rooms.get(room_id)
-    if not room:
-        await ws.send_text(json.dumps({"type": "error", "message": "Room not found"}))
-        await ws.close()
-        return
+    room = _get_or_create_peer_room(room_id)
 
-    # Register this WebSocket in the room
-    room[f"ws_{role}"] = ws
+    # Register this WebSocket in peer sockets
+    _set_peer_socket(room_id, role, ws)
+    peer_role = "callee" if role == "caller" else "caller"
+
+    peer_ws = _get_peer_socket(room_id, peer_role)
+    if peer_ws:
+        try:
+            await peer_ws.send_text(json.dumps({"type": "peer_joined", "role": role}))
+        except Exception:
+            pass
+
     if role == "callee":
         room["status"] = "connected"
-    await ws.send_text(json.dumps({"type": "ready", "room_id": room_id, "role": role, "room": {
+
+    caller_online = bool(_get_peer_socket(room_id, "caller"))
+    callee_online = bool(_get_peer_socket(room_id, "callee"))
+
+    await ws.send_text(json.dumps({"type": "ready", "room_id": room_id, "role": role, "caller_online": caller_online, "callee_online": callee_online, "room": {
         "caller_language": room["caller_language"],
         "receiver_language": room["receiver_language"],
         "caller_name": room["caller_name"],
     }}))
 
-    # Flush buffered ICE candidates for this role
-    for cand in room.get("ice_candidates", []):
-        if cand.get("for_role") != role:
-            await ws.send_text(json.dumps({"type": "ice", "data": cand["data"]}))
+    # If caller already submitted an offer and callee just joined, send it immediately
+    if role == "callee" and room.get("ws_offer"):
+        await ws.send_text(json.dumps({"type": "offer", "data": room["ws_offer"]}))
 
-    peer_role = "callee" if role == "caller" else "caller"
+    # Flush buffered ICE candidates intended for this role
+    remaining_ice = []
+    for cand in room.get("ice_candidates", []):
+        if cand.get("for_role") == role:
+            await ws.send_text(json.dumps({"type": "ice", "data": cand["data"]}))
+        else:
+            remaining_ice.append(cand)
+    room["ice_candidates"] = remaining_ice
 
     try:
         while True:
@@ -350,29 +486,38 @@ async def peer_call_signal_ws(ws: WebSocket, room_id: str, role: str = "caller")
 
             if msg_type == "offer":
                 room["ws_offer"] = msg.get("data")
-                peer_ws = room.get(f"ws_{peer_role}")
+                peer_ws = _get_peer_socket(room_id, peer_role)
                 if peer_ws:
                     await peer_ws.send_text(json.dumps({"type": "offer", "data": msg.get("data")}))
 
             elif msg_type == "answer":
                 room["ws_answer"] = msg.get("data")
-                peer_ws = room.get(f"ws_{peer_role}")
+                peer_ws = _get_peer_socket(room_id, peer_role)
                 if peer_ws:
                     await peer_ws.send_text(json.dumps({"type": "answer", "data": msg.get("data")}))
 
             elif msg_type == "ice":
-                peer_ws = room.get(f"ws_{peer_role}")
+                peer_ws = _get_peer_socket(room_id, peer_role)
                 if peer_ws:
                     try:
                         await peer_ws.send_text(json.dumps({"type": "ice", "data": msg.get("data")}))
                     except Exception:
-                        # Buffer for when peer connects later
+                        # Buffer for when peer reconnects
                         room["ice_candidates"].append({"for_role": peer_role, "data": msg.get("data")})
                 else:
                     room["ice_candidates"].append({"for_role": peer_role, "data": msg.get("data")})
 
+            elif msg_type == "instant_connect":
+                peer_ws = _get_peer_socket(room_id, peer_role)
+                if peer_ws:
+                    try:
+                        await peer_ws.send_text(json.dumps({"type": "instant_connect"}))
+                    except Exception:
+                        pass
+                room["status"] = "connected"
+
             elif msg_type == "bye":
-                peer_ws = room.get(f"ws_{peer_role}")
+                peer_ws = _get_peer_socket(room_id, peer_role)
                 if peer_ws:
                     try:
                         await peer_ws.send_text(json.dumps({"type": "bye"}))
@@ -383,14 +528,20 @@ async def peer_call_signal_ws(ws: WebSocket, room_id: str, role: str = "caller")
 
     except WebSocketDisconnect:
         log.info("Peer signal WS disconnected: room=%s role=%s", room_id, role)
-        peer_ws = room.get(f"ws_{peer_role}")
+        peer_ws = _get_peer_socket(room_id, peer_role)
         if peer_ws:
             try:
                 await peer_ws.send_text(json.dumps({"type": "peer_left"}))
             except Exception:
                 pass
     finally:
-        room[f"ws_{role}"] = None
+        _set_peer_socket(room_id, role, None)
+
+
+def _org_id(p: Principal) -> uuid.UUID:
+    """Narrow principal.org_id to UUID (guaranteed non-None by require_org_user)."""
+    assert p.org_id is not None, "org_id is None — require_org_user must have failed"
+    return p.org_id
 
 
 @router.get("/calls", response_model=list[CallSessionOut])
@@ -402,7 +553,7 @@ async def list_calls(
 ):
     """List recent call history."""
     cs = CallService(db)
-    calls = await cs.list_calls(principal.org_id, limit=limit, status=status)
+    calls = await cs.list_calls(_org_id(principal), limit=limit, status=status)
     return [_serialize_call(c) for c in calls]
 
 
@@ -414,7 +565,7 @@ async def get_call(
 ):
     """Get call details and current live state."""
     cs = CallService(db)
-    call = await cs.get_call_by_id(call_id, principal.org_id)
+    call = await cs.get_call_by_id(call_id, _org_id(principal))
     return _serialize_call(call)
 
 
@@ -426,7 +577,7 @@ async def end_call(
 ):
     """Hang up / terminate an active call."""
     cs = CallService(db)
-    call = await cs.end_call(call_id, principal.org_id)
+    call = await cs.end_call(call_id, _org_id(principal))
     return _serialize_call(call)
 
 

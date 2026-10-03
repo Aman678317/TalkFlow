@@ -14,7 +14,7 @@ import logging
 import time
 from collections.abc import AsyncGenerator
 
-from fastapi import FastAPI
+from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
@@ -87,6 +87,13 @@ def create_app() -> FastAPI:
     app.include_router(assistant_routers.assistant_router)
     app.include_router(assistant_routers.agent_router)
     app.include_router(telephony.router)
+    # Technical specification alias: /api/voice/* endpoints
+    voice_alias_router = APIRouter(prefix="/api/voice", tags=["voice-aliases"])
+    voice_alias_router.add_api_route("/token", telephony.get_voice_access_token, methods=["GET"])
+    voice_alias_router.add_api_route("/incoming", telephony.telephony_voice_webhook, methods=["POST"])
+    voice_alias_router.add_api_route("/status", telephony.telephony_status_webhook, methods=["POST"])
+    app.include_router(voice_alias_router)
+
     for r in (platform.keys_router, platform.usage_router, platform.webhooks_router,
               platform.search_router, platform.feedback_router, platform.flags_router,
               platform.integrations_router, platform.admin_router):
