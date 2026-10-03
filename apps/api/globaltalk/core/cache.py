@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import threading
 import time
 from collections import defaultdict, deque
@@ -175,6 +176,10 @@ _backend_name = "memory"
 def get_cache() -> CacheBackend:
     global _backend, _backend_name
     if _backend is not None:
+        return _backend
+    if os.environ.get("CACHE_BACKEND") == "memory" or not settings.redis_url:
+        _backend = InProcessBackend()
+        _backend_name = "memory"
         return _backend
     try:
         _backend = RedisBackend(settings.redis_url)

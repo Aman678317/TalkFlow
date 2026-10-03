@@ -567,14 +567,18 @@ class Webhook(Base, TimestampMixin):
 class WebhookDelivery(Base, TimestampMixin):
     __tablename__ = "webhook_deliveries"
     id: Mapped[str] = mapped_column(GUID(36), primary_key=True, default=_uuid)
-    webhook_id: Mapped[str] = mapped_column(GUID(36), ForeignKey("webhooks.id", ondelete="CASCADE"),
-                                            index=True)
-    event_type: Mapped[str] = mapped_column(String(40))
+    webhook_id: Mapped[str | None] = mapped_column(GUID(36), ForeignKey("webhooks.id", ondelete="CASCADE"),
+                                            index=True, nullable=True)
+    endpoint_id: Mapped[str | None] = mapped_column(GUID(36), index=True, nullable=True)
+    event_type: Mapped[str] = mapped_column(String(60))
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    payload_json: Mapped[dict] = mapped_column(JSON, default=dict)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(20), default="pending")  # pending|delivered|failed
+    last_status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_error: Mapped[str] = mapped_column(Text, default="")
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 

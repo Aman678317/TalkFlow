@@ -172,13 +172,27 @@ async def _lifespan_startup(app: FastAPI) -> None:
 async def _ensure_schema() -> None:
     """Dev/test convenience: create tables if migrations haven't run.
     Production REQUIRES alembic upgrade head (schema drift fails loudly)."""
-    from sqlalchemy import inspect
+    from sqlalchemy import inspect, text
     from app.db.session import engine
     from app.db.base import Base
     import app.db.models  # noqa: F401
     if not settings.is_production:
         async with engine().begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            def _patch_schema(sync_conn):
+                insp = inspect(sync_conn)
+                tables = insp.get_table_names()
+                if "webhook_deliveries" in tables:
+                    cols = {c["name"] for c in insp.get_columns("webhook_deliveries")}
+                    if "endpoint_id" not in cols:
+                        sync_conn.execute(text("ALTER TABLE webhook_deliveries ADD COLUMN endpoint_id VARCHAR(36)"))
+                    if "payload_json" not in cols:
+                        sync_conn.execute(text("ALTER TABLE webhook_deliveries ADD COLUMN payload_json JSON"))
+                    if "last_status_code" not in cols:
+                        sync_conn.execute(text("ALTER TABLE webhook_deliveries ADD COLUMN last_status_code INTEGER"))
+                    if "next_retry_at" not in cols:
+                        sync_conn.execute(text("ALTER TABLE webhook_deliveries ADD COLUMN next_retry_at TIMESTAMP"))
+            await conn.run_sync(_patch_schema)
         return
     async with engine().connect() as conn:
         tables = await conn.run_sync(

@@ -71,3 +71,23 @@ def init_db() -> None:
     import globaltalk.models  # noqa: F401  (register mappers)
     if settings.db_autocreate:
         Base.metadata.create_all(bind=engine)
+        _ensure_columns()
+
+
+def _ensure_columns() -> None:
+    """Ensure newly added columns exist on existing SQLite databases in dev/test."""
+    from sqlalchemy import inspect, text
+    with engine.begin() as conn:
+        insp = inspect(conn)
+        tables = insp.get_table_names()
+        if "webhook_deliveries" in tables:
+            cols = {c["name"] for c in insp.get_columns("webhook_deliveries")}
+            if "endpoint_id" not in cols:
+                conn.execute(text("ALTER TABLE webhook_deliveries ADD COLUMN endpoint_id VARCHAR(36)"))
+            if "payload_json" not in cols:
+                conn.execute(text("ALTER TABLE webhook_deliveries ADD COLUMN payload_json JSON"))
+            if "last_status_code" not in cols:
+                conn.execute(text("ALTER TABLE webhook_deliveries ADD COLUMN last_status_code INTEGER"))
+            if "next_retry_at" not in cols:
+                conn.execute(text("ALTER TABLE webhook_deliveries ADD COLUMN next_retry_at TIMESTAMP"))
+

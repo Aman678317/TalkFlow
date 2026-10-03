@@ -37,6 +37,8 @@ jobs:
       - name: Unit + integration tests (SQLite fast lane)
         env:
           APP_ENV: test
+          CACHE_BACKEND: memory
+          REDIS_URL: ""
           JWT_SECRET: ci-jwt-secret-0123456789abcdef0123456789
           RATE_LIMIT_AUTH: 100000/minute
           RATE_LIMIT_TRANSLATE: 100000/minute
@@ -44,6 +46,7 @@ jobs:
       - name: Integration tests (PostgreSQL + Redis + pgvector)
         env:
           APP_ENV: test
+          CACHE_BACKEND: redis
           DATABASE_URL: postgresql+psycopg://gt:gt@localhost:5432/gt_test
           REDIS_URL: redis://localhost:6379/0
           JWT_SECRET: ci-jwt-secret-0123456789abcdef0123456789
@@ -72,6 +75,8 @@ jobs:
         env:
           MODEL_CACHE_PATH: ${{ runner.temp }}/models
           APP_ENV: test
+          CACHE_BACKEND: memory
+          REDIS_URL: ""
           RATE_LIMIT_AUTH: 100000/minute
           RATE_LIMIT_TRANSLATE: 100000/minute
         run: python -m pytest tests/realtime -q

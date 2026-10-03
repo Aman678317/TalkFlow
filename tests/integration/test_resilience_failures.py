@@ -97,8 +97,20 @@ async def test_webhook_backoff_timing_rescheduling():
     """Verify webhook deliver_job reschedules when next_retry_at is in the future."""
     delivery_id = uuid.uuid4()
     endpoint_id = uuid.uuid4()
+    org_id = uuid.uuid4()
 
     async with db_session() as db:
+        org = M.Organization(id=org_id, name="Test Org", slug=f"test-{uuid.uuid4().hex[:8]}")
+        db.add(org)
+        ep = M.WebhookEndpoint(
+            id=endpoint_id,
+            org_id=org_id,
+            url="https://example.com/test-webhook",
+            events=["test.event"],
+            secret="whsec_test_secret_12345",
+            status="active",
+        )
+        db.add(ep)
         delivery = M.WebhookDelivery(
             id=delivery_id,
             endpoint_id=endpoint_id,
