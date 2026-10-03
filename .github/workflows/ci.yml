@@ -17,7 +17,7 @@ jobs:
           POSTGRES_DB: gt_test
         ports: ["5432:5432"]
         options: >-
-          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+          --health-cmd "pg_isready -U gt -d gt_test" --health-interval 10s --health-timeout 5s --health-retries 5
       redis:
         image: redis:7-alpine
         ports: ["6379:6379"]
@@ -30,7 +30,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r apps/api/requirements.txt
-          pip install greenlet
+          pip install greenlet prometheus-client
           pip install ruff
       - name: Lint (ruff)
         run: ruff check apps/api ai services scripts --select E,F,W --ignore E501,E402,W505 || true
@@ -50,7 +50,7 @@ jobs:
           RATE_LIMIT_AUTH: 100000/minute
           RATE_LIMIT_TRANSLATE: 100000/minute
         run: |
-          pip install psycopg[binary] pgvector
+          pip install psycopg[binary] asyncpg pgvector
           python -m pytest tests/integration -q
 
   realtime-golden:
@@ -63,7 +63,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r apps/api/requirements.txt
-          pip install greenlet
+          pip install greenlet prometheus-client
       - name: Download CPU model weights
         env:
           MODEL_CACHE_PATH: ${{ runner.temp }}/models
