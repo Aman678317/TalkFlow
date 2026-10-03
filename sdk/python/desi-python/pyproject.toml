@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "desi-python"
+version = "2.1.0"
+description = "Official Python client for Desi Language AI & GlobalTalk AI: 100+ languages, 22 Indic languages with honorifics, transliteration, and async support."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [
+    { name = "GlobalTalk AI Authors", email = "api-support@globaltalk.ai" }
+]
+keywords = [
+    "desi", "globaltalk", "translation", "indic", "hindi", "tamil", "telugu",
+    "transliteration", "nlp", "voice", "honorifics"
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Text Processing :: Linguistic",
+]
+dependencies = [
+    "httpx>=0.24.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+]
+
+[project.urls]
+Homepage = "https://globaltalk.ai"
+Documentation = "https://globaltalk.ai/docs"
+Repository = "https://github.com/Aman678317/Anv-AI"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["desi*"]
+
+[tool.setuptools.package-data]
+desi = ["py.typed"]

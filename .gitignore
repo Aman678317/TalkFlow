@@ -17,4 +17,7 @@ dist/
 coverage/
 .mimosa/
 services/api/storage/
+build/
+*.egg-info/
+
 

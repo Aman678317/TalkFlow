@@ -59,6 +59,7 @@
           {
             "group": "SDKs & Integration",
             "pages": [
+              "documentation/desi-cli",
               "documentation/sdks-and-tools",
               "documentation/mcp-server"
             ]

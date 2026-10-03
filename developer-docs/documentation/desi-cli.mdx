@@ -1,0 +1,143 @@
+---
+title: "Command-Line Interface (CLI)"
+description: "Production CLI for Desi Language AI & GlobalTalk AI: 100+ languages, 22 Indic languages, honorifics, continuous sync, and real-time voice streaming"
+---
+
+# Desi & GlobalTalk CLI (`desi`)
+
+The official command-line interface (`@globaltalk-ai/desi-cli`) provides instant terminal access to GlobalTalk AI and Desi Language AI translation, script transliteration, Indic Unicode normalization, writing assistance, document translation, and continuous localization sync.
+
+---
+
+## Installation
+
+Install globally via npm:
+
+```bash
+npm install -g @globaltalk-ai/desi-cli
+```
+
+Or run via `npx` without installation:
+
+```bash
+npx @globaltalk-ai/desi-cli translate "Hello world" --to hi
+```
+
+The CLI registers two aliases: `desi` and `globaltalk`.
+
+---
+
+## Authentication
+
+Configure your API key once:
+
+```bash
+export DESI_API_KEY="gtk_live_your_api_key"
+```
+
+Or persist via CLI interactive prompt:
+
+```bash
+desi auth set-key
+```
+
+Check active authentication status:
+
+```bash
+desi auth show
+```
+
+---
+
+## Core Commands
+
+### 1. `translate` — Global & Indic Text Translation
+
+Translate text or pipes across 100+ world languages and 22 Indic languages:
+
+```bash
+# Standard translation into German and Spanish
+desi translate "The release has been deployed." --to de,es
+
+# Indic translation with Aap (आप) formal honorific and respectful suffix (-ji)
+desi translate "Please sign the contract." --to hi --honorific formal --respectful-suffix
+# Output: कृपया अनुबंध पर हस्ताक्षर करें जी।
+
+# Pipe input from stdin
+cat announcement.txt | desi translate --to fr,ja
+```
+
+### 2. `transliterate` — Phonetic Script Conversion
+
+Convert Latin/Romanized text (Hinglish/Tanglish) to native Indic Brahmic scripts:
+
+```bash
+desi transliterate "Dhanyavaad aapka bohot bohot shukriya" --to devanagari
+# Output: धन्यवाद आपका बोहोत बोहोत शुक्रिया
+```
+
+### 3. `normalize` — Indic Unicode Sanitization
+
+Sanitize Indic Unicode text, cleaning ZWNJ/ZWJ anomalies and composing nuktas:
+
+```bash
+desi normalize "क़िताब में सही वर्ण विन्यास"
+```
+
+### 4. `write` — AI Writing Assistant (Desi Write)
+
+Rephrase and polish text style and tone:
+
+```bash
+# Polish text style
+desi write "we gotta ship this feature today" --style business --tone diplomatic
+
+# Show visual diff
+desi write "we gotta ship this feature today" --style business --diff
+
+# Apply fixes in-place to markdown files
+desi write README.md --style business --fix
+```
+
+### 5. `correct` (alias `c`) — Grammar & Spelling Correction
+
+Fix errors without altering phrasing or author voice:
+
+```bash
+desi correct "She do not likes the new updates."
+# Output: "She does not like the new updates."
+```
+
+### 6. `document` — Layout-Preserving Document Translation
+
+Translate PDF, DOCX, PPTX, XLSX, HTML, or TXT documents:
+
+```bash
+desi document annual_report.pdf --to es --output annual_report_es.pdf
+```
+
+### 7. `voice` — Real-Time Voice Audio Streaming
+
+Stream local audio files or microphone PCM to the voice WebSocket gateway:
+
+```bash
+desi voice speech.wav --to hi,es
+```
+
+### 8. `sync` — Continuous Localization Engine
+
+Scan your project source tree, translate missing i18n keys, and update localization files automatically:
+
+```bash
+desi sync run
+```
+
+---
+
+## Language Discovery
+
+List supported languages or filter to the 22 Eighth Schedule Indian languages:
+
+```bash
+desi languages --indic
+```

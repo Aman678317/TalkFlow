@@ -1,0 +1,44 @@
+{
+  "name": "@globaltalk/sdk",
+  "version": "2.1.0",
+  "description": "Official TypeScript and Node.js client library for GlobalTalk AI & Desi Language AI",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "lint": "eslint src/ --ext .ts"
+  },
+  "keywords": [
+    "globaltalk",
+    "desi",
+    "translation",
+    "indic",
+    "hindi",
+    "tamil",
+    "telugu",
+    "transliteration",
+    "ai",
+    "sdk"
+  ],
+  "author": "GlobalTalk AI Authors",
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.5.3",
+    "vitest": "^2.0.5"
+  }
+}
