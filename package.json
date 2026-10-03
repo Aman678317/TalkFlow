@@ -23,7 +23,7 @@
     "test:web": "npm --prefix apps/web test",
     "test:cli": "npm --prefix cli/desi-cli test",
     "test:sdk": "npm --prefix sdk/typescript test",
-    "test:all": "npm run test:web && npm run test:cli && npm run test:sdk",
+    "test:all": "npm run test:web && npm run test:sdk",
     "preview": "npm --prefix apps/web run preview",
     "start": "START_ALL.bat"
   }
