@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import time
 from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, FastAPI
@@ -182,6 +181,30 @@ async def _ensure_schema() -> None:
             def _patch_schema(sync_conn):
                 insp = inspect(sync_conn)
                 tables = insp.get_table_names()
+                if "language_capabilities" in tables:
+                    l_cols = {c["name"] for c in insp.get_columns("language_capabilities")}
+                    col_defs = [
+                        ("script", "VARCHAR(16) DEFAULT 'Latn'"),
+                        ("rtl", "BOOLEAN DEFAULT 0"),
+                        ("translation_status", "VARCHAR(16) DEFAULT 'SUPPORTED'"),
+                        ("speech_input_status", "VARCHAR(16) DEFAULT 'EXPERIMENTAL'"),
+                        ("speech_output_status", "VARCHAR(16) DEFAULT 'EXPERIMENTAL'"),
+                        ("realtime_status", "VARCHAR(16) DEFAULT 'EXPERIMENTAL'"),
+                        ("document_status", "VARCHAR(16) DEFAULT 'SUPPORTED'"),
+                        ("wer_benchmark", "FLOAT"),
+                        ("mt_quality_score", "FLOAT"),
+                        ("speech_input_supported", "BOOLEAN DEFAULT 0"),
+                        ("speech_output_supported", "BOOLEAN DEFAULT 0"),
+                        ("translation_supported", "BOOLEAN DEFAULT 0"),
+                        ("realtime_supported", "BOOLEAN DEFAULT 0"),
+                        ("document_supported", "BOOLEAN DEFAULT 0"),
+                        ("stt_status", "VARCHAR(16) DEFAULT 'EXPERIMENTAL'"),
+                        ("tts_status", "VARCHAR(16) DEFAULT 'EXPERIMENTAL'"),
+                        ("mt_status", "VARCHAR(16) DEFAULT 'EXPERIMENTAL'"),
+                    ]
+                    for col_name, col_type in col_defs:
+                        if col_name not in l_cols:
+                            sync_conn.execute(text(f"ALTER TABLE language_capabilities ADD COLUMN {col_name} {col_type}"))
                 if "webhook_deliveries" in tables:
                     cols = {c["name"] for c in insp.get_columns("webhook_deliveries")}
                     if "endpoint_id" not in cols:

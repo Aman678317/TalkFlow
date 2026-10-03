@@ -145,6 +145,15 @@ class LanguageCapability(Base, TimestampMixin):
     mt_provider: Mapped[str] = mapped_column(String(60), default="")
     tts_voices: Mapped[list] = mapped_column(JSON, default=list)
     notes: Mapped[str] = mapped_column(Text, default="")
+    script: Mapped[str] = mapped_column(String(16), default="Latn", nullable=True)
+    rtl: Mapped[bool] = mapped_column(Boolean, default=False, nullable=True)
+    translation_status: Mapped[str] = mapped_column(String(16), default="SUPPORTED", nullable=True)
+    speech_input_status: Mapped[str] = mapped_column(String(16), default="EXPERIMENTAL", nullable=True)
+    speech_output_status: Mapped[str] = mapped_column(String(16), default="EXPERIMENTAL", nullable=True)
+    realtime_status: Mapped[str] = mapped_column(String(16), default="EXPERIMENTAL", nullable=True)
+    document_status: Mapped[str] = mapped_column(String(16), default="SUPPORTED", nullable=True)
+    wer_benchmark: Mapped[float | None] = mapped_column(Float, nullable=True)
+    mt_quality_score: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
 class LanguagePairValidation(Base, TimestampMixin):

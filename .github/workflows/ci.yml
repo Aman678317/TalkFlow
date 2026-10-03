@@ -30,6 +30,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r apps/api/requirements.txt
+          pip install -r services/api/requirements.txt
           pip install greenlet prometheus-client
           pip install ruff
       - name: Lint (ruff)
@@ -66,6 +67,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r apps/api/requirements.txt
+          pip install -r services/api/requirements.txt
           pip install greenlet prometheus-client
       - name: Download CPU model weights
         env:

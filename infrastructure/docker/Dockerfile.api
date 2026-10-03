@@ -15,9 +15,10 @@ COPY ai/ ai/
 COPY services/ services/
 COPY apps/api/ apps/api/
 
-ENV PYTHONPATH=/app/apps/api:/app \
+ENV PYTHONPATH=/app/services/api:/app/apps/api:/app/ai:/app \
     MODEL_CACHE_PATH=/models \
-    STORAGE_LOCAL_PATH=/data/storage
+    STORAGE_LOCAL_PATH=/data/storage \
+    APP_MODULE=app.main:app
 
 VOLUME ["/models", "/data"]
 EXPOSE 8000
@@ -25,5 +26,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s \
   CMD curl -fsS http://localhost:8000/health || exit 1
 
-WORKDIR /app/apps/api
-CMD ["python", "-m", "uvicorn", "globaltalk.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+WORKDIR /app/services/api
+CMD ["sh", "-c", "python -m uvicorn ${APP_MODULE} --host 0.0.0.0 --port 8000 --workers 2"]

@@ -90,4 +90,28 @@ def _ensure_columns() -> None:
                 conn.execute(text("ALTER TABLE webhook_deliveries ADD COLUMN last_status_code INTEGER"))
             if "next_retry_at" not in cols:
                 conn.execute(text("ALTER TABLE webhook_deliveries ADD COLUMN next_retry_at TIMESTAMP"))
+        if "language_capabilities" in tables:
+            l_cols = {c["name"] for c in insp.get_columns("language_capabilities")}
+            col_defs = [
+                ("script", "VARCHAR(16) DEFAULT 'Latn'"),
+                ("rtl", "BOOLEAN DEFAULT 0"),
+                ("translation_status", "VARCHAR(16) DEFAULT 'SUPPORTED'"),
+                ("speech_input_status", "VARCHAR(16) DEFAULT 'EXPERIMENTAL'"),
+                ("speech_output_status", "VARCHAR(16) DEFAULT 'EXPERIMENTAL'"),
+                ("realtime_status", "VARCHAR(16) DEFAULT 'EXPERIMENTAL'"),
+                ("document_status", "VARCHAR(16) DEFAULT 'SUPPORTED'"),
+                ("wer_benchmark", "FLOAT"),
+                ("mt_quality_score", "FLOAT"),
+                ("speech_input_supported", "BOOLEAN DEFAULT 0"),
+                ("speech_output_supported", "BOOLEAN DEFAULT 0"),
+                ("translation_supported", "BOOLEAN DEFAULT 0"),
+                ("realtime_supported", "BOOLEAN DEFAULT 0"),
+                ("document_supported", "BOOLEAN DEFAULT 0"),
+                ("stt_status", "VARCHAR(16) DEFAULT 'EXPERIMENTAL'"),
+                ("tts_status", "VARCHAR(16) DEFAULT 'EXPERIMENTAL'"),
+                ("mt_status", "VARCHAR(16) DEFAULT 'EXPERIMENTAL'"),
+            ]
+            for col_name, col_type in col_defs:
+                if col_name not in l_cols:
+                    conn.execute(text(f"ALTER TABLE language_capabilities ADD COLUMN {col_name} {col_type}"))
 

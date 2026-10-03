@@ -15,7 +15,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
-    JSON, BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer,
+    JSON, BigInteger, Boolean, Float, ForeignKey, Index, Integer,
     String, Text, UniqueConstraint, CheckConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -162,6 +162,14 @@ class LanguageCapability(Base, TimestampMixin):
     wer_benchmark: Mapped[float | None] = mapped_column(Float, nullable=True)
     mt_quality_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     notes: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    speech_input_supported: Mapped[bool] = mapped_column(Boolean, default=False, nullable=True)
+    speech_output_supported: Mapped[bool] = mapped_column(Boolean, default=False, nullable=True)
+    translation_supported: Mapped[bool] = mapped_column(Boolean, default=False, nullable=True)
+    realtime_supported: Mapped[bool] = mapped_column(Boolean, default=False, nullable=True)
+    document_supported: Mapped[bool] = mapped_column(Boolean, default=False, nullable=True)
+    stt_status: Mapped[str] = mapped_column(String(16), default="EXPERIMENTAL", nullable=True)
+    tts_status: Mapped[str] = mapped_column(String(16), default="EXPERIMENTAL", nullable=True)
+    mt_status: Mapped[str] = mapped_column(String(16), default="EXPERIMENTAL", nullable=True)
 
 
 class LanguagePairCapability(Base, TimestampMixin):
