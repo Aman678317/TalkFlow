@@ -208,7 +208,7 @@ class MeetingPipeline:
         try:
             chunk, decision = await ai.transcribe(audio, 16000,
                                                   lang_hint=self._lang_hint(p))
-        except AppError as e:
+        except AppError:
             await manager.broadcast(
                 self.session, ServerEventType.ERROR,
                 {"code": "stt_unavailable", "message":
@@ -426,7 +426,7 @@ class MeetingPipeline:
             from app.realtime import livekit_bridge
             await livekit_bridge.publish_translated_audio(
                 session, target_lang, translated, str(segment_id), seq)
-        except AppError as e:
+        except AppError:
             await manager.broadcast(
                 session, ServerEventType.ERROR,
                 {"code": "tts_unavailable",

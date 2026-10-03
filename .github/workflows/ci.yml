@@ -30,6 +30,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r apps/api/requirements.txt
+          pip install greenlet
           pip install ruff
       - name: Lint (ruff)
         run: ruff check apps/api ai services scripts --select E,F,W --ignore E501,E402,W505 || true
@@ -60,7 +61,9 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.11", cache: pip }
       - name: Install dependencies
-        run: pip install -r apps/api/requirements.txt
+        run: |
+          pip install -r apps/api/requirements.txt
+          pip install greenlet
       - name: Download CPU model weights
         env:
           MODEL_CACHE_PATH: ${{ runner.temp }}/models

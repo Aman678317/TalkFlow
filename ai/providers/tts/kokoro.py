@@ -94,11 +94,15 @@ class KokoroTTS:
         except Exception as exc:
             raise ProviderUnavailable(self.name, f"synthesis failed: {exc}")
         import numpy as np
-        import wave, io
+        import wave
+        import io
         pcm = (np.clip(samples, -1, 1) * 32767).astype(np.int16).tobytes()
         buf = io.BytesIO()
         with wave.open(buf, "wb") as w:
-            w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr); w.writeframes(pcm)
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(sr)
+            w.writeframes(pcm)
         return TTSResult(audio=buf.getvalue(), sample_rate=sr, provider=self.name,
                          model="kokoro-v1.0", voice=v,
                          latency_ms=(time.perf_counter() - started) * 1000, synthetic=True)
