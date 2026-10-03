@@ -102,6 +102,7 @@ async def test_webhook_backoff_timing_rescheduling():
     async with db_session() as db:
         org = M.Organization(id=org_id, name="Test Org", slug=f"test-{uuid.uuid4().hex[:8]}")
         db.add(org)
+        await db.flush()
         ep = M.WebhookEndpoint(
             id=endpoint_id,
             org_id=org_id,
@@ -111,6 +112,7 @@ async def test_webhook_backoff_timing_rescheduling():
             status="active",
         )
         db.add(ep)
+        await db.flush()
         delivery = M.WebhookDelivery(
             id=delivery_id,
             endpoint_id=endpoint_id,

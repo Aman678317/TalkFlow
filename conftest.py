@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.join(_ROOT, "apps", "api"))
 sys.path.insert(0, _ROOT)
 
 os.environ.setdefault("APP_ENV", "test")
-os.environ["GLOBALTALK_DATABASE_URL"] = "sqlite:///" + os.path.join(_ROOT, "data", "globaltalk_test.db")
+os.environ.setdefault("GLOBALTALK_DATABASE_URL", "sqlite:///" + os.path.join(_ROOT, "data", "globaltalk_test.db"))
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///" + os.path.join(_ROOT, "data", "services_test.db"))
 os.environ.setdefault("STORAGE_BACKEND", "local")
 os.environ.setdefault("STORAGE_LOCAL_PATH", os.path.join(_ROOT, "data", "test-storage"))

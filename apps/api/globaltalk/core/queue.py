@@ -32,6 +32,10 @@ def push(queue: str, job: dict) -> None:
     payload = json.dumps(job, default=str)
     if cache_backend_name() == "redis":
         get_cache()._r.lpush(queue, payload)  # type: ignore[attr-defined]
+        import os
+        from globaltalk.core.config import settings
+        if os.environ.get("APP_ENV") == "test" or settings.app_env == "test":
+            _spawn_local(queue, job)
     else:
         _spawn_local(queue, job)
 
