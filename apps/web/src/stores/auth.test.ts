@@ -25,7 +25,7 @@ describe("useAuth store", () => {
       organizations: [{ org: { id: "org_1", name: "Acme", slug: "acme", plan: "pro" }, role: "owner" }],
     };
 
-    const apiSpy = vi.spyOn(apiModule, "api").mockImplementation(async (path: string) => {
+    vi.spyOn(apiModule, "api").mockImplementation(async (path: string) => {
       if (path === "/api/v1/auth/login") return mockApiResponse;
       if (path === "/api/v1/auth/me") return mockApiResponse;
       throw new Error(`Unexpected path: ${path}`);
