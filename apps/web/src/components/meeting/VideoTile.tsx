@@ -8,6 +8,7 @@ export interface VideoTileProps {
   hear: string;
   stream?: MediaStream | null;
   videoOn?: boolean;
+  isVirtualCamera?: boolean;
   isScreenShare?: boolean;
   speaking?: boolean;
   muted?: boolean;
@@ -25,6 +26,7 @@ export function VideoTile({
   hear,
   stream,
   videoOn = false,
+  isVirtualCamera = false,
   isScreenShare = false,
   speaking = false,
   muted = false,
@@ -111,7 +113,7 @@ export function VideoTile({
         className={cn(
           'h-full w-full',
           isScreenShare ? 'bg-black object-contain' : 'object-cover',
-          self && !isScreenShare && 'scale-x-[-1]', // Mirror self camera like Google Meet
+          self && !isScreenShare && !isVirtualCamera && 'scale-x-[-1]', // Mirror self camera only for hardware webcam
           !hasLiveVideo && 'hidden'
         )}
       />
@@ -141,6 +143,17 @@ export function VideoTile({
         <div className="absolute left-3 top-3 z-10 flex items-center gap-1.5 rounded-lg bg-iris-600/90 px-2.5 py-1 text-xs font-medium text-white shadow-md backdrop-blur">
           <MonitorUp className="h-3.5 w-3.5" />
           <span>Screen Share</span>
+        </div>
+      )}
+
+      {/* 3b. Virtual Studio Camera Indicator Badge */}
+      {isVirtualCamera && hasLiveVideo && !isScreenShare && (
+        <div className="absolute left-3 top-3 z-10 flex items-center gap-1.5 rounded-lg bg-sky-600/90 px-2.5 py-1 text-xs font-medium text-white shadow-md backdrop-blur border border-sky-400/30">
+          <span className="relative flex h-2 w-2">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-300 opacity-75"></span>
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-sky-200"></span>
+          </span>
+          <span>Virtual Camera</span>
         </div>
       )}
 

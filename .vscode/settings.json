@@ -36,5 +36,17 @@
     "css.validate": false,
     "tailwindCSS.experimental.classRegex": [
         ["cn\\(([^)]*)\\)", "[\"'`]([^\"'`]*).*?[\"'`]"]
-    ]
+    ],
+    "remote.autoForwardPorts": false,
+    "remote.portsAttributes": {
+        "5173": {
+            "onAutoForward": "ignore"
+        },
+        "5174": {
+            "onAutoForward": "ignore"
+        },
+        "8088": {
+            "onAutoForward": "ignore"
+        }
+    }
 }

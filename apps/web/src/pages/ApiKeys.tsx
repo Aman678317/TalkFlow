@@ -76,15 +76,7 @@ export default function ApiKeys() {
         </div>
       )}
 
-      <Card title="Quick start">
-        <pre className="overflow-x-auto rounded-lg bg-ink-950 p-4 font-mono text-[11px] leading-relaxed text-signal-300">{`curl -X POST "$ORIGIN/api/v1/translate" \\
-  -H "X-API-Key: gtk_..." -H "content-type: application/json" \\
-  -d '{"text":"Good morning","target_language":"hi"}'`}</pre>
-        <p className="mt-2 text-xs text-ink-400">
-          Full OpenAPI schema at <a className="text-signal-700 hover:underline" href="/docs" target="_blank" rel="noreferrer">/docs</a> ·
-          realtime protocol documented in docs/REALTIME.md · SDK-ready flat JSON contracts.
-        </p>
-      </Card>
+      <QuickStartCard />
 
       <Modal open={open} onClose={() => setOpen(false)} title="New API key">
         <form className="space-y-3" onSubmit={(e) => { e.preventDefault(); create.mutate(); }}>
@@ -122,3 +114,62 @@ export default function ApiKeys() {
     </div>
   );
 }
+
+function QuickStartCard() {
+  const [tab, setTab] = React.useState<'cli' | 'typescript' | 'python' | 'curl'>('cli');
+
+  const snippets = {
+    cli: `# 1. Install CLI
+npm install -g @globaltalk-ai/desi-cli
+
+# 2. Run translation
+export DESI_API_KEY="gtk_your_key"
+desi translate "Hello friend" --to hi --honorific formal`,
+    typescript: `// 1. npm install @globaltalk/sdk
+import { DesiClient } from '@globaltalk/sdk';
+
+const client = new DesiClient({ apiKey: 'gtk_your_key' });
+const res = await client.translateDesi({
+  text: 'Hello friend',
+  targetLang: 'hi',
+  respectfulSuffix: true
+});
+console.log(res.translations[0].text);`,
+    python: `# 1. pip install -e sdk/python/desi-python
+from desi import DesiClient, IndicHonorific
+
+client = DesiClient(auth_key="gtk_your_key")
+res = client.translate_desi("Hello friend", target_lang="hi", honorific=IndicHonorific.FORMAL)
+print(res.text)`,
+    curl: `curl -X POST "http://127.0.0.1:8088/v2/desi/translate" \\
+  -H "X-API-Key: gtk_your_key" \\
+  -H "Content-Type: application/json" \\
+  -d '{"text":"Hello friend","target_lang":"hi","honorific":"formal"}'`,
+  };
+
+  return (
+    <Card title="Quick start">
+      <div className="mb-3 flex flex-wrap gap-1.5 border-b border-ink-100 pb-2">
+        {(['cli', 'typescript', 'python', 'curl'] as const).map((t) => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${
+              tab === t ? 'bg-iris-600 text-white' : 'bg-ink-100 text-ink-600 hover:bg-ink-200'
+            }`}
+          >
+            {t.toUpperCase()}
+          </button>
+        ))}
+      </div>
+      <pre className="overflow-x-auto rounded-lg bg-ink-950 p-4 font-mono text-[11px] leading-relaxed text-signal-300">
+        {snippets[tab]}
+      </pre>
+      <p className="mt-2 text-xs text-ink-400">
+        Full SDK reference & interactive portal at <a className="text-iris-600 hover:underline" href="/docs">/docs</a> ·
+        OpenAPI spec at <a className="text-iris-600 hover:underline" href="/api/docs" target="_blank" rel="noreferrer">/api/docs</a>.
+      </p>
+    </Card>
+  );
+}
+

@@ -11,8 +11,10 @@ import { Badge, Button, EmptyState, Modal, Tabs } from '@/components/ui';
 import Login from '@/pages/Login';
 
 const mockLogin = vi.fn();
+const mockAuthState = { login: mockLogin, user: null, status: 'unauthed' };
 vi.mock('@/stores/auth', () => ({
-  useAuth: (selector: (state: { login: typeof mockLogin }) => unknown) => selector({ login: mockLogin }),
+  useAuth: (selector?: (state: typeof mockAuthState) => unknown) =>
+    typeof selector === 'function' ? selector(mockAuthState) : mockAuthState,
 }));
 
 // ---------------------------------------------------------------------------

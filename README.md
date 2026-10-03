@@ -203,7 +203,9 @@ A speaks Hindi → B hears English, C sees Marathi captions, transcripts stored,
 | [`developer-docs/`](developer-docs/) | Mintlify interactive developer portal |
 | [`api-specs/`](api-specs/) | Public OpenAPI 3.1.0 & AsyncAPI 3.0.0 authoritative specification mirror |
 | [`cli/desi-cli/`](cli/desi-cli/) | Official Desi CLI: 100+ global & 22 Indic languages, honorifics, sync, write, voice |
-| [`apps/amazon-connect-v2v/`](apps/amazon-connect-v2v/) | Full Amazon Connect Bidirectional Voice-to-Voice (V2V) translation with Desi AI |
+| [`sdk/README.md`](sdk/README.md) | Official Client SDKs Directory & Parity Matrix |
+| [`sdk/python/desi-python/`](sdk/python/desi-python/) | Official Desi Python SDK (Python 3.9+, sync & async `httpx`) |
+| [`sdk/typescript/`](sdk/typescript/) | Official GlobalTalk & Desi TypeScript / Node.js SDK (`@globaltalk/sdk`) |
 | [`sdk/java/desi-java/`](sdk/java/desi-java/) | Official Desi Java SDK (Java 11+, zero runtime dependencies) |
 | [`sdk/dotnet/Desi/`](sdk/dotnet/Desi/) | Official Desi .NET C# SDK (`netstandard2.0`, `net6.0`, `net8.0`) |
 | [`mcp/desi-mcp-server/`](mcp/desi-mcp-server/) | Stdio MCP Server for Claude Code, Cursor, and VS Code |

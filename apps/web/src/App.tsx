@@ -24,6 +24,7 @@ import Settings from './pages/Settings';
 import Team from './pages/Team';
 import Admin from './pages/Admin';
 import JoinCall from './pages/JoinCall';
+import DocsPage from './pages/DocsPage';
 
 function RequireAuth({ children }: { children: JSX.Element }) {
   const status = useAuth((s) => s.status);
@@ -55,6 +56,8 @@ export default function App() {
         <Route element={<AppShell />}>
           <Route path="/translate" element={<Translate />} />
           <Route path="/write" element={<WritePage />} />
+          <Route path="/docs" element={<DocsPage />} />
+          <Route path="/api/docs" element={<DocsPage />} />
         </Route>
 
         {/* Protected app shell routes: requires user authentication */}

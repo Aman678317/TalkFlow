@@ -16,7 +16,7 @@ import {
   Upload,
   ChevronDown,
 } from "lucide-react";
-import { api } from "../lib/api";
+import { api, ApiError } from "../lib/api";
 import type { TranslateResponse } from "../lib/types";
 import { useLanguages } from "../hooks/useLanguages";
 import { Badge, ErrorState } from "../components/ui";
@@ -468,7 +468,10 @@ export default function TranslatePage() {
             formality,
           },
         });
-      } catch (err) {
+      } catch (err: any) {
+        if (err instanceof ApiError && (err.status === 401 || err.status === 402 || err.status === 429)) {
+          throw err;
+        }
         console.warn("Backend /translate error, trying neural MT:", err);
       }
 

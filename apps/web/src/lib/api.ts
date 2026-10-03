@@ -103,12 +103,14 @@ export async function api<T = any>(path: string, opts: RequestOptions = {}): Pro
     headers.set("content-type", "application/json");
 
   const timeoutMs = opts.timeoutMs ?? (opts.form ? 60000 : 15000);
+  const method = opts.method ?? (opts.body !== undefined || opts.form ? "POST" : "GET");
   const doFetch = () => {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     const signal = opts.signal || controller.signal;
     return fetch(`${BASE}${path}`, {
       ...opts,
+      method,
       signal,
       headers,
       body: opts.form ?? (opts.body !== undefined ? JSON.stringify(opts.body) : undefined),

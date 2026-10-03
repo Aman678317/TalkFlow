@@ -23,16 +23,32 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      "^/api/(v1|docs|redoc|openapi\\.json)": { target: "http://127.0.0.1:8088", changeOrigin: true, timeout: 60000, proxyTimeout: 60000 },
+      "/api": { target: "http://127.0.0.1:8088", changeOrigin: true, ws: true, timeout: 60000, proxyTimeout: 60000 },
       "/api-docs": { target: "http://127.0.0.1:8088", changeOrigin: true, timeout: 60000, proxyTimeout: 60000 },
       "/v2": { target: "http://127.0.0.1:8088", changeOrigin: true, timeout: 60000, proxyTimeout: 60000 },
       "/v3": { target: "http://127.0.0.1:8088", changeOrigin: true, timeout: 60000, proxyTimeout: 60000 },
       "/ws": { target: "ws://127.0.0.1:8088", ws: true },
       "/health": { target: "http://127.0.0.1:8088", timeout: 10000, proxyTimeout: 10000 },
+      "/healthz": { target: "http://127.0.0.1:8088", timeout: 10000, proxyTimeout: 10000 },
+      "/ready": { target: "http://127.0.0.1:8088", timeout: 10000, proxyTimeout: 10000 },
+      "/readyz": { target: "http://127.0.0.1:8088", timeout: 10000, proxyTimeout: 10000 },
       "/metrics": { target: "http://127.0.0.1:8088", timeout: 10000, proxyTimeout: 10000 },
     },
   },
-  build: { sourcemap: true },
+  build: {
+    sourcemap: true,
+    chunkSizeWarningLimit: 700,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ["react", "react-dom", "react-router-dom"],
+          livekit: ["livekit-client"],
+          query: ["@tanstack/react-query"],
+          icons: ["lucide-react"],
+        },
+      },
+    },
+  },
   test: {
     environment: "jsdom",
     globals: true,

@@ -17,7 +17,7 @@ const DIMENSIONS: [string, string][] = [
 export default function Usage() {
   const { data, isLoading } = useQuery({
     queryKey: ["usage", 30],
-    queryFn: () => api<{ totals: Record<string, number>; plan: string; limits: Record<string, number> }>("/api/v1/usage?days=30"),
+    queryFn: () => api<{ totals: Record<string, number>; plan?: string; limits?: Record<string, number> }>("/api/v1/usage?days=30"),
     refetchInterval: 30_000,
   });
 
@@ -28,7 +28,7 @@ export default function Usage() {
           <h1 className="text-lg font-bold text-ink-900">Usage</h1>
           <p className="text-xs text-ink-400">Immutable metering events from the last 30 days. Billing is computed from these numbers.</p>
         </div>
-        {data && <Badge tone="info">{data.plan.toUpperCase()} plan</Badge>}
+        {data && <Badge tone="info">{(data.plan || "free").toUpperCase()} plan</Badge>}
       </div>
 
       {isLoading && !data ? <Card><Skeleton className="h-40 w-full" /></Card> : (

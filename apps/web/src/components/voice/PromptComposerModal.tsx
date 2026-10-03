@@ -1,8 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Sparkles, AlertTriangle, CheckCircle2, Copy, Play, Save, History,
   ShieldAlert, RefreshCw, X, ChevronRight, Check, Send, Bot, Lock,
-  Layers, Sliders, ShieldCheck, FileText, ArrowRight, CornerDownRight,
+  Layers, Sliders, FileText,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { toast } from '@/stores/toasts';
@@ -60,7 +60,7 @@ export const STANDARD_15_SECTIONS = [
   'PROHIBITED BEHAVIOR',
 ];
 
-export function generate15SectionPrompt(platform: string, custom: string, context: string): string {
+export function generate15SectionPrompt(_platform: string, custom: string, context: string): string {
   return `# ==================================================================
 # GLOBALTALK AI — UNIFIED VOICE AGENT RUNTIME SPECIFICATION (15-SECTION)
 # ==================================================================
@@ -149,11 +149,9 @@ Keep responses under two sentences so translation is fast.`
   const [mergedPrompt, setMergedPrompt] = useState('');
   const [validationStatus, setValidationStatus] = useState<'idle' | 'valid' | 'needs_review'>('idle');
   const [conflicts, setConflicts] = useState<ConflictItem[]>([]);
-  const [validationErrors, setValidationErrors] = useState<string[]>([]);
   const [isMerging, setIsMerging] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isActivating, setIsActivating] = useState(false);
-  const [selectedSectionFilter, setSelectedSectionFilter] = useState<string>('ALL');
 
   // Testing sandbox state
   const [testLanguage, setTestLanguage] = useState('en');
@@ -225,7 +223,6 @@ Keep responses under two sentences so translation is fast.`
       setMergedPrompt(res.merged_prompt);
       setValidationStatus(res.validation_status);
       setConflicts(res.conflicts || []);
-      setValidationErrors(res.validation_errors || []);
       toast.success('Prompts merged & validated across 6-level hierarchy');
     } catch (err: any) {
       console.warn('Backend merge endpoint unavailable, using smart merge engine fallback:', err);
@@ -242,7 +239,6 @@ Keep responses under two sentences so translation is fast.`
           explanation: 'Aligned custom refund threshold with platform human escalation workflow.',
         },
       ]);
-      setValidationErrors([]);
       toast.success('Prompts merged & validated (Smart 6-Level Engine)');
     } finally {
       setIsMerging(false);

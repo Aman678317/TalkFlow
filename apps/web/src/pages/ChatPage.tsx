@@ -41,7 +41,7 @@ export default function ChatPage() {
   async function send() {
     const text = draft.trim();
     if (!text || !meetingId) return;
-    await api(`/api/v1/meetings/${meetingId}/chat`, { body: { text, target_langs: [myLang] } });
+    await api(`/api/v1/meetings/${meetingId}/chat`, { method: "POST", body: { text, target_langs: [myLang] } });
     setDraft('');
     void messages.refetch();
   }

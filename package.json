@@ -4,7 +4,10 @@
   "private": true,
   "workspaces": [
     "apps/*",
-    "apps/amazon-connect-v2v/webapp"
+    "apps/amazon-connect-v2v/webapp",
+    "cli/desi-cli",
+    "sdk/typescript",
+    "developer-docs"
   ],
   "scripts": {
     "dev": "npm --prefix apps/web run dev",
@@ -12,9 +15,15 @@
     "dev:docs": "npm --prefix developer-docs run dev",
     "dev:connect": "npm --prefix apps/amazon-connect-v2v/webapp run dev",
     "dev:cli": "npm --prefix cli/desi-cli run dev",
-    "build:cli": "npm --prefix cli/desi-cli run build",
-    "test:cli": "npm --prefix cli/desi-cli test",
     "build": "npm --prefix apps/web run build",
+    "build:web": "npm --prefix apps/web run build",
+    "build:cli": "npm --prefix cli/desi-cli run build",
+    "build:sdk": "npm --prefix sdk/typescript run build",
+    "build:all": "npm run build:web && npm run build:cli && npm run build:sdk",
+    "test:web": "npm --prefix apps/web test",
+    "test:cli": "npm --prefix cli/desi-cli test",
+    "test:sdk": "npm --prefix sdk/typescript test",
+    "test:all": "npm run test:web && npm run test:cli && npm run test:sdk",
     "preview": "npm --prefix apps/web run preview",
     "start": "START_ALL.bat"
   }

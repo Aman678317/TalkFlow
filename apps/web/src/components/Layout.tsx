@@ -1,12 +1,12 @@
 import React from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "../stores/auth";
-import { Badge } from "./ui";
+
 import {
   LayoutDashboard, ArrowLeftRight, PenLine, Mic2, FileText,
   Video, MessageSquare, Clock, BookOpen, Database, Sliders,
   KeyRound, BarChart2, CreditCard, Users, Settings, Shield,
-  ChevronDown, LogOut,
+  ChevronDown, LogOut, ExternalLink,
 } from "lucide-react";
 
 export function Logo({ className = "h-8 w-8" }: { className?: string }) {
@@ -101,7 +101,7 @@ export default function Layout() {
   const [open, setOpen] = React.useState(false);
   const [collapsedGroups, setCollapsedGroups] = React.useState<Record<string, boolean>>({
     Tools: false,
-    Account: true, // Collapsed by default to reduce high scanning density
+    Account: true,
   });
 
   const toggleGroup = (groupLabel: string) => {
@@ -116,16 +116,15 @@ export default function Layout() {
 
   return (
     <div className="flex h-full bg-[#F8F9FA]">
-
       {/* ── Sidebar ─────────────────────────────────────────────── */}
       <aside
-        className={`fixed inset-y-0 left-0 z-40 flex flex-col bg-dl-navy transition-transform lg:static lg:translate-x-0
+        className={`fixed inset-y-0 left-0 z-40 flex flex-col bg-dl-navy transition-transform duration-200 lg:static lg:translate-x-0 border-r border-white/[.08] shadow-sm
                     ${open ? "translate-x-0" : "-translate-x-full"}`}
-        style={{ width: "var(--sidebar-w, 230px)" }}
+        style={{ width: "var(--sidebar-w, 240px)" }}
         aria-label="Main navigation"
       >
         {/* Brand */}
-        <div className="flex items-center gap-3 px-5 py-5 border-b border-white/[.07]">
+        <div className="flex items-center gap-3 px-5 py-4 border-b border-white/[.08]">
           <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-dl-blue shadow-sm">
             <Logo className="h-5 w-5 brightness-0 invert" />
           </div>
@@ -133,7 +132,7 @@ export default function Layout() {
             <p className="text-[13px] font-bold tracking-tight text-white leading-tight">
               GlobalTalk <span className="text-blue-400">AI</span>
             </p>
-            <p className="text-[9px] font-medium uppercase tracking-widest text-white/30 leading-tight mt-0.5">
+            <p className="text-[9px] font-medium uppercase tracking-widest text-white/40 leading-tight mt-0.5">
               Every language
             </p>
           </div>
@@ -149,9 +148,9 @@ export default function Layout() {
             const isCollapsed = Boolean(collapsedGroups[group.label]);
 
             return (
-              <div key={group.label} className={index > 0 ? "pt-2 border-t border-white/[.06]" : ""}>
+              <div key={group.label} className={index > 0 ? "pt-2.5 border-t border-white/[.07]" : ""}>
                 <div className="flex items-center justify-between mb-1 px-3">
-                  <p className="text-[9px] font-bold uppercase tracking-[0.12em] text-white/40">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-white/40">
                     {group.label}
                   </p>
                   {isCollapsible && (
@@ -160,7 +159,7 @@ export default function Layout() {
                       onClick={() => toggleGroup(group.label)}
                       aria-expanded={!isCollapsed}
                       aria-label={`${isCollapsed ? "Expand" : "Collapse"} ${group.label} category`}
-                      className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium text-white/50 hover:bg-white/10 hover:text-white transition-colors"
+                      className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium text-white/40 hover:bg-white/[.08] hover:text-white transition-colors"
                     >
                       <span>{isCollapsed ? "Show" : "Hide"}</span>
                       <ChevronDown className={`h-3 w-3 transition-transform duration-200 ${isCollapsed ? "-rotate-90" : "rotate-0"}`} />
@@ -173,15 +172,15 @@ export default function Layout() {
                     to={to}
                     onClick={() => setOpen(false)}
                     className={({ isActive }) =>
-                      `group flex items-center gap-3 rounded-lg px-3 py-2 text-[13px] font-medium transition-all duration-150 mb-0.5
+                      `group flex items-center gap-3 rounded-xl px-3 py-2 text-[13px] font-medium transition-all duration-150 mb-0.5 active:scale-[0.98]
                        ${isActive
-                         ? "bg-dl-blue text-white shadow-sm"
-                         : "text-white/50 hover:bg-white/[.06] hover:text-white/90"}`
+                         ? "bg-dl-blue text-white shadow-xs"
+                         : "text-white/60 hover:bg-white/[.07] hover:text-white"}`
                     }
                   >
                     {({ isActive }) => (
                       <>
-                        <Icon className={`h-4 w-4 shrink-0 transition-colors ${isActive ? "text-white" : "text-white/40 group-hover:text-white/70"}`} />
+                        <Icon className={`h-4 w-4 shrink-0 transition-colors ${isActive ? "text-white" : "text-white/40 group-hover:text-white/80"}`} />
                         <span className="truncate">{label}</span>
                       </>
                     )}
@@ -193,31 +192,31 @@ export default function Layout() {
         </nav>
 
         {/* User footer */}
-        <div className="shrink-0 mt-auto border-t border-white/[.07] p-3">
-          <div className="flex items-center gap-2.5 rounded-xl px-2 py-2">
+        <div className="shrink-0 mt-auto border-t border-white/[.08] p-3">
+          <div className="flex items-center gap-2.5 rounded-xl bg-white/[.04] border border-white/[.06] p-2.5">
             <div
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-dl-blue text-xs font-bold text-white"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-dl-blue text-xs font-bold text-white shadow-xs"
               aria-hidden
             >
               {(user?.full_name || user?.email || "?").slice(0, 1).toUpperCase()}
             </div>
             <div className="min-w-0 flex-1">
-              <p className="truncate text-xs font-semibold text-white/90 leading-tight">
+              <p className="truncate text-xs font-semibold text-white leading-tight">
                 {user?.full_name || user?.email}
               </p>
               <p
                 title={`${org?.name ?? ""} · ${role ?? ""}`}
-                className="text-xs text-white/60 leading-tight mt-0.5 break-words line-clamp-2"
+                className="text-[11px] text-white/50 leading-tight mt-0.5 truncate"
               >
-                {org?.name} · {role}
+                {org?.name || "GlobalTalk"} · {role || "member"}
               </p>
             </div>
           </div>
           <button
             onClick={async () => { await logout(); nav("/login"); }}
-            className="group mt-1 flex w-full items-center gap-3 rounded-lg px-3 py-2 text-[13px] font-medium text-white/50 hover:bg-white/[.06] hover:text-white/90 transition-all duration-150"
+            className="group mt-2 flex w-full items-center gap-2.5 rounded-xl px-3 py-1.5 text-xs font-medium text-white/50 hover:bg-white/[.07] hover:text-white transition-all"
           >
-            <LogOut className="h-4 w-4 shrink-0 text-white/40 group-hover:text-white/70 transition-colors" aria-hidden="true" />
+            <LogOut className="h-3.5 w-3.5 shrink-0 text-white/40 group-hover:text-white/70 transition-colors" aria-hidden="true" />
             <span>Sign out</span>
           </button>
         </div>
@@ -226,7 +225,7 @@ export default function Layout() {
       {/* Overlay (mobile) */}
       {open && (
         <div
-          className="fixed inset-0 z-30 bg-black/40 backdrop-blur-sm lg:hidden"
+          className="fixed inset-0 z-30 bg-black/40 backdrop-blur-sm lg:hidden transition-opacity"
           onClick={() => setOpen(false)}
         />
       )}
@@ -234,10 +233,10 @@ export default function Layout() {
       {/* ── Main content ────────────────────────────────────────── */}
       <div className="flex min-w-0 flex-1 flex-col">
         {/* Top bar */}
-        <header className="border-b border-dl-border bg-white">
-          <div className="mx-auto flex max-w-5xl items-center gap-3 px-4 py-3 lg:px-6">
+        <header className="border-b border-slate-200/80 bg-white/95 backdrop-blur-sm sticky top-0 z-20">
+          <div className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-4 py-2.5 lg:px-6">
             <button
-              className="rounded-lg p-2 text-dl-muted hover:bg-dl-bg-alt lg:hidden transition-colors"
+              className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 lg:hidden transition-colors"
               onClick={() => setOpen(true)}
               aria-label="Open navigation"
             >
@@ -246,19 +245,20 @@ export default function Layout() {
               </svg>
             </button>
             <div className="flex-1" />
-            <div className="flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50/80 px-2.5 py-1">
+            <div className="flex items-center gap-2.5">
               {org && (
-                <Badge tone="info" title="Current organization plan">
-                  {org.plan.toUpperCase()}
-                </Badge>
+                <span className="rounded-full border border-blue-200 bg-blue-50/80 px-2.5 py-0.5 text-[11px] font-bold uppercase tracking-wider text-dl-blue">
+                  {org.plan}
+                </span>
               )}
               <a
                 href="/api/docs"
-                className="hidden text-xs font-medium text-dl-muted hover:text-dl-navy transition-colors sm:block px-1"
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-600 hover:text-dl-navy hover:bg-slate-50 transition-colors shadow-xs"
                 target="_blank"
                 rel="noreferrer"
               >
-                API docs ↗
+                <span>API docs</span>
+                <ExternalLink className="h-3 w-3 text-slate-400" />
               </a>
             </div>
           </div>

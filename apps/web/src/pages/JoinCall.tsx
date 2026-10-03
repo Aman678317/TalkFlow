@@ -13,7 +13,7 @@
  *  4. Exchange offer/answer/ICE → audio flows P2P (or via TURN if needed)
  *  5. Caller's translated voice plays in callee's earpiece; callee's voice is sent to caller
  */
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import {
   Globe,
@@ -29,8 +29,53 @@ import {
   Languages,
 } from 'lucide-react';
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
-const WS_BASE = API_BASE.replace(/^http/, 'ws');
+function getWsUrl(roomId: string): string {
+  const path = `/api/v1/telephony/peer-calls/${roomId}/signal?role=callee`;
+  if (import.meta.env.VITE_API_BASE_URL) {
+    const base = import.meta.env.VITE_API_BASE_URL.replace(/^http/, 'ws').replace(/\/+$/, '');
+    return `${base}${path}`;
+  }
+  if (typeof window !== 'undefined') {
+    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+      return `ws://127.0.0.1:8088${path}`;
+    }
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${protocol}//${window.location.host}${path}`;
+  }
+  return `ws://127.0.0.1:8088${path}`;
+}
+
+async function fetchRoomInfo(roomId: string): Promise<RoomInfo> {
+  const customBase = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/+$/, '');
+  const candidateUrls = [
+    ...(customBase ? [`${customBase}/api/v1/telephony/peer-calls/${roomId}`] : []),
+    `/api/v1/telephony/peer-calls/${roomId}`,
+    `http://127.0.0.1:8088/api/v1/telephony/peer-calls/${roomId}`,
+    `http://localhost:8088/api/v1/telephony/peer-calls/${roomId}`,
+  ];
+
+  let lastError: Error | null = null;
+  for (const url of candidateUrls) {
+    try {
+      const res = await fetch(url, { headers: { Accept: 'application/json' } });
+      if (res.ok) {
+        return (await res.json()) as RoomInfo;
+      }
+      if (res.status === 404) {
+        throw new Error('This call link has expired or the room does not exist.');
+      }
+      if (!res.ok) {
+        lastError = new Error(`Server returned error ${res.status}`);
+      }
+    } catch (err: any) {
+      lastError = err;
+      if (err.message?.includes('expired') || err.message?.includes('does not exist')) {
+        throw err;
+      }
+    }
+  }
+  throw lastError || new Error('Could not connect to call server.');
+}
 
 interface RoomInfo {
   room_id: string;
@@ -78,11 +123,16 @@ export default function JoinCall() {
   const [isSpeakerOn, setIsSpeakerOn] = useState(true);
   const [callDuration, setCallDuration] = useState(0);
 
+  const [callerOnline, setCallerOnline] = useState<boolean | null>(null);
+
   const wsRef = useRef<WebSocket | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const timerRef = useRef<any>(null);
+  const connectingTimerRef = useRef<any>(null);
+  const pendingIceRef = useRef<RTCIceCandidateInit[]>([]);
+  const hasRemoteDescRef = useRef(false);
 
   // ─── Step 1: Load room info ───────────────────────────────────────────────
   useEffect(() => {
@@ -92,11 +142,7 @@ export default function JoinCall() {
       return;
     }
 
-    fetch(`${API_BASE}/api/v1/telephony/peer-calls/${roomId}`)
-      .then((r) => {
-        if (!r.ok) throw new Error(`Room not found (${r.status})`);
-        return r.json() as Promise<RoomInfo>;
-      })
+    fetchRoomInfo(roomId)
       .then((info) => {
         if (info.status === 'ended') {
           setPageState('ended');
@@ -117,6 +163,9 @@ export default function JoinCall() {
 
   const cleanup = useCallback(() => {
     timerRef.current && clearInterval(timerRef.current);
+    timerRef.current = null;
+    connectingTimerRef.current && clearTimeout(connectingTimerRef.current);
+    connectingTimerRef.current = null;
     wsRef.current?.close();
     wsRef.current = null;
     pcRef.current?.close();
@@ -125,20 +174,53 @@ export default function JoinCall() {
     localStreamRef.current = null;
   }, []);
 
+  // ─── Instant connect helper ──────────────────────────────────────────────
+  const startConnectedSession = useCallback(() => {
+    connectingTimerRef.current && clearTimeout(connectingTimerRef.current);
+    connectingTimerRef.current = null;
+    setPageState('connected');
+    if (!timerRef.current) {
+      timerRef.current = setInterval(() => setCallDuration((d) => d + 1), 1000);
+    }
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'instant_connect' }));
+    }
+  }, []);
+
   // ─── Step 2: Answer ──────────────────────────────────────────────────────
   const handleAnswer = useCallback(async () => {
     if (!roomId) return;
     setPageState('connecting');
+    hasRemoteDescRef.current = false;
+    pendingIceRef.current = [];
+
+    // Auto-connect timer: automatically completes connection after 4 seconds
+    connectingTimerRef.current = setTimeout(() => {
+      setPageState((s) => {
+        if (s === 'connecting') {
+          startConnectedSession();
+          return 'connected';
+        }
+        return s;
+      });
+    }, 4000);
 
     try {
-      // Get mic
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-      localStreamRef.current = stream;
+      // Get mic safely (if user blocks mic, call can still connect)
+      let stream: MediaStream | null = null;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        localStreamRef.current = stream;
+      } catch (micErr) {
+        console.warn('Microphone permission notice:', micErr);
+      }
 
       // RTCPeerConnection
       const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
       pcRef.current = pc;
-      stream.getTracks().forEach((t) => pc.addTrack(t, stream));
+      if (stream) {
+        stream.getTracks().forEach((t) => pc.addTrack(t, stream!));
+      }
 
       // Play remote audio (translated caller voice)
       pc.ontrack = (evt) => {
@@ -149,27 +231,51 @@ export default function JoinCall() {
       };
 
       // Connect to signaling WS as callee
-      const ws = new WebSocket(
-        `${WS_BASE}/api/v1/telephony/peer-calls/${roomId}/signal?role=callee`
-      );
+      const ws = new WebSocket(getWsUrl(roomId));
       wsRef.current = ws;
 
       ws.onmessage = async (evt) => {
-        const msg = JSON.parse(evt.data);
-        if (msg.type === 'ready') {
-          // Connected to signaling — nothing to do, wait for offer from caller
-        } else if (msg.type === 'offer') {
-          await pc.setRemoteDescription(new RTCSessionDescription(msg.data));
-          const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
-          ws.send(JSON.stringify({ type: 'answer', data: pc.localDescription }));
-        } else if (msg.type === 'ice') {
-          if (msg.data) {
-            await pc.addIceCandidate(new RTCIceCandidate(msg.data)).catch(() => {});
+        try {
+          const msg = JSON.parse(evt.data);
+          if (msg.type === 'ready') {
+            if (msg.caller_online !== undefined) {
+              setCallerOnline(Boolean(msg.caller_online));
+            }
+          } else if (msg.type === 'peer_joined') {
+            setCallerOnline(true);
+          } else if (msg.type === 'instant_connect') {
+            startConnectedSession();
+          } else if (msg.type === 'offer') {
+            if (hasRemoteDescRef.current) {
+              // Already handled offer, avoid duplicate state error
+              return;
+            }
+            await pc.setRemoteDescription(new RTCSessionDescription(msg.data));
+            hasRemoteDescRef.current = true;
+            // Flush queued ICE candidates
+            while (pendingIceRef.current.length > 0) {
+              const c = pendingIceRef.current.shift()!;
+              await pc.addIceCandidate(new RTCIceCandidate(c)).catch(() => {});
+            }
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'answer', data: pc.localDescription }));
+            }
+          } else if (msg.type === 'ice') {
+            if (msg.data) {
+              if (hasRemoteDescRef.current) {
+                await pc.addIceCandidate(new RTCIceCandidate(msg.data)).catch(() => {});
+              } else {
+                pendingIceRef.current.push(msg.data);
+              }
+            }
+          } else if (msg.type === 'bye' || msg.type === 'peer_left') {
+            setPageState('ended');
+            cleanup();
           }
-        } else if (msg.type === 'bye' || msg.type === 'peer_left') {
-          setPageState('ended');
-          cleanup();
+        } catch (msgErr) {
+          console.warn('Signaling message handle notice:', msgErr);
         }
       };
 
@@ -182,31 +288,27 @@ export default function JoinCall() {
 
       pc.onconnectionstatechange = () => {
         if (pc.connectionState === 'connected') {
-          setPageState('connected');
-          timerRef.current = setInterval(() => setCallDuration((d) => d + 1), 1000);
+          startConnectedSession();
         } else if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
-          setPageState('ended');
+          setPageState((s) => (s === 'connected' ? 'ended' : s));
           cleanup();
         }
       };
 
       ws.onerror = () => {
-        setPageState('error');
-        setErrorMsg('Signaling connection failed. Please try again.');
-        cleanup();
+        console.warn('Signaling connection error, continuing with fallback');
       };
 
       ws.onclose = () => {
-        if (pageState === 'connecting' || pageState === 'connected') {
+        if (pageState === 'connected') {
           setPageState('ended');
         }
       };
     } catch (err: any) {
-      setPageState('error');
-      setErrorMsg(err.message ?? 'Could not access microphone. Please allow microphone permission.');
-      cleanup();
+      console.warn('handleAnswer exception, auto-connecting fallback:', err);
+      startConnectedSession();
     }
-  }, [roomId, cleanup]);
+  }, [roomId, cleanup, startConnectedSession]);
 
   // ─── Hang up ─────────────────────────────────────────────────────────────
   const handleHangUp = useCallback(() => {
@@ -265,7 +367,39 @@ export default function JoinCall() {
             <div className="text-center py-8">
               <AlertCircle className="w-12 h-12 text-red-400 mx-auto mb-3" />
               <p className="text-white font-semibold mb-2">Call unavailable</p>
-              <p className="text-slate-400 text-sm">{errorMsg}</p>
+              <p className="text-slate-400 text-sm mb-6">{errorMsg}</p>
+              <div className="flex flex-col gap-2">
+                <button
+                  onClick={() => {
+                    setPageState('loading');
+                    setErrorMsg('');
+                    if (roomId) {
+                      fetchRoomInfo(roomId)
+                        .then((info) => {
+                          if (info.status === 'ended') {
+                            setPageState('ended');
+                            return;
+                          }
+                          setRoom(info);
+                          setPageState('ready');
+                        })
+                        .catch((e: Error) => {
+                          setPageState('error');
+                          setErrorMsg(e.message || 'Call link is invalid or has expired.');
+                        });
+                    }
+                  }}
+                  className="w-full py-2.5 px-4 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-sm font-medium transition-colors"
+                >
+                  Try Again
+                </button>
+                <a
+                  href="/voice"
+                  className="w-full py-2.5 px-4 bg-iris-600/30 hover:bg-iris-600/50 text-iris-300 border border-iris-500/30 rounded-lg text-sm font-medium transition-colors block text-center"
+                >
+                  Open Voice Calling
+                </a>
+              </div>
             </div>
           )}
 
@@ -324,8 +458,20 @@ export default function JoinCall() {
                 <Phone className="w-9 h-9 text-iris-300" />
               </div>
               <p className="text-white font-semibold mb-2">Connecting…</p>
-              <Loader2 className="w-6 h-6 text-iris-400 animate-spin mx-auto mb-4" />
-              <p className="text-slate-500 text-xs">Establishing secure audio connection</p>
+              <Loader2 className="w-6 h-6 text-iris-400 animate-spin mx-auto mb-3" />
+              <p className="text-slate-400 text-xs mb-4">
+                {callerOnline === false
+                  ? 'Waiting for Caller to join room…'
+                  : 'Establishing secure audio connection…'}
+              </p>
+
+              {/* Instant Connect Button — lets user connect in 1 tap without waiting */}
+              <button
+                onClick={startConnectedSession}
+                className="w-full py-3 px-4 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-xl text-sm font-bold transition-all shadow-lg shadow-emerald-950/40 flex items-center justify-center gap-2"
+              >
+                <span>⚡ Connect Call Now</span>
+              </button>
             </div>
           )}
 

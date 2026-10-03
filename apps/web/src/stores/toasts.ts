@@ -40,7 +40,11 @@ export const useToasts = create<ToastState>((set) => ({
     }
 
     const id = nextId++;
-    set((s) => ({ toasts: [...s.toasts, { id, kind, title: t, detail: d }] }));
+    set((s) => {
+      const exists = s.toasts.some((existing) => existing.title === t && existing.detail === d && existing.kind === kind);
+      if (exists) return s;
+      return { toasts: [...s.toasts, { id, kind, title: t, detail: d }] };
+    });
     setTimeout(
       () => set((s) => ({ toasts: s.toasts.filter((toastItem) => toastItem.id !== id) })),
       kind === 'error' ? 8000 : 4500

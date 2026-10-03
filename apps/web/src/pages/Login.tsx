@@ -90,6 +90,15 @@ export default function Login() {
             <Button type="submit" className="w-full" loading={busy}>
               Sign in
             </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              className="w-full justify-center text-xs"
+              disabled={busy}
+              onClick={() => login("demo@globaltalk.local", "demo1234")}
+            >
+              Use demo account
+            </Button>
             <p className="text-center text-xs text-ink-400">
               No account? <Link to="/signup" className="font-medium text-signal-700 hover:underline">Create one</Link>
             </p>

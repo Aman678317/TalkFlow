@@ -26,6 +26,7 @@ const CUSTOMIZE = [
 ];
 
 const PLATFORM = [
+  { to: '/docs', label: 'Docs & SDKs', icon: BookOpen },
   { to: '/api', label: 'API Keys', icon: KeyRound },
   { to: '/usage', label: 'Usage', icon: Gauge },
   { to: '/billing', label: 'Billing', icon: CreditCard },
