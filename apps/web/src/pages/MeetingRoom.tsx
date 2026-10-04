@@ -270,14 +270,30 @@ export default function MeetingRoom() {
         if (prefsRef.current.caption_mode === "original") break;
         const seg = evt.segment_id as string;
         setCaptions((prev) => {
+          const existingIdx = prev.findIndex(
+            (c) => c.id === `tr:${seg}:${evt.target_language}` || (c.id === seg && c.translated)
+          );
+          if (existingIdx !== -1) {
+            return prev.map((c, i) =>
+              i === existingIdx
+                ? {
+                    ...c,
+                    translated: evt.text as string,
+                    translatedLang: evt.target_language as string,
+                    latencyMs: (evt.latency_ms as number) || c.latencyMs,
+                  }
+                : c
+            );
+          }
           const idx = [...prev]
             .reverse()
             .findIndex(
               (c) =>
-                c.speaker === ((evt.display_name as string) || namesRef.current.get(evt.speaker_id as string)) &&
+                (c.id === seg ||
+                  c.speaker === ((evt.display_name as string) || namesRef.current.get(evt.speaker_id as string))) &&
                 !c.translated &&
                 !c.id.startsWith("tr:") &&
-                c.language === evt.source_language
+                (!c.language || c.language === evt.source_language)
             );
           if (idx === -1) {
             return [
@@ -326,16 +342,29 @@ export default function MeetingRoom() {
         );
         break;
       }
+      case "tts.chunk": {
+        if (evt.target_language !== prefsRef.current.listening_language) break;
+        const mode = prefsRef.current.audio_mode;
+        if (mode !== "translated" && mode !== "mixed") break;
+        const audio = (evt.audio_base64 as string) || (evt.audio as string);
+        if (!audio) break;
+        const uid =
+          (evt.utterance_id as string | undefined)?.slice(0, 16) ?? (evt.segment_id as string)?.slice(0, 16);
+        void playerRef.current?.resumeContext();
+        void playerRef.current?.enqueueWav(b64ToBytes(audio), `tts-${uid}`);
+        break;
+      }
       case "tts.completed": {
         if (evt.target_language !== prefsRef.current.listening_language) break;
         const mode = prefsRef.current.audio_mode;
         if (mode !== "translated" && mode !== "mixed") break;
         const audio = evt.audio as string;
-        if (!audio) break;
-        const uid =
-          (evt.utterance_id as string | undefined)?.slice(0, 16) ?? (evt.segment_id as string).slice(0, 16);
-        void playerRef.current?.resumeContext();
-        void playerRef.current?.enqueueWav(b64ToBytes(audio), `tts-${uid}`);
+        if (audio) {
+          const uid =
+            (evt.utterance_id as string | undefined)?.slice(0, 16) ?? (evt.segment_id as string)?.slice(0, 16);
+          void playerRef.current?.resumeContext();
+          void playerRef.current?.enqueueWav(b64ToBytes(audio), `tts-${uid}`);
+        }
         break;
       }
       case "quality.degraded":
@@ -353,16 +382,19 @@ export default function MeetingRoom() {
         break;
       }
       case "chat.message":
-        setChat((prev) => [
-          ...prev,
-          {
-            id: evt.message_id as string,
-            sender: (evt.display_name as string) || "Unknown",
-            original: evt.original_text as string,
-            language: (evt.language as string) || "",
-            mine: evt.participant_id === myParticipantId,
-          },
-        ]);
+        setChat((prev) => {
+          if (prev.some((c) => c.id === (evt.message_id as string))) return prev;
+          return [
+            ...prev,
+            {
+              id: evt.message_id as string,
+              sender: (evt.display_name as string) || "Unknown",
+              original: evt.original_text as string,
+              language: (evt.language as string) || "",
+              mine: evt.participant_id === myParticipantId,
+            },
+          ];
+        });
         break;
       case "chat.translation":
         if (evt.target_language !== prefsRef.current.listening_language) break;

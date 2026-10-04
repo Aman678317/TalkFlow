@@ -308,9 +308,27 @@ class AIFacade:
     async def synthesize_stream(self, text: str, lang: str, voice: str | None = None):
         if self.router is None:
             raise ProviderError("AI router not initialized")
-        decision = self.router.route(Task.TTS)
-        provider = self.provider(Task.TTS, decision.provider)
-        return provider.synthesize_stream(text, lang, voice), decision  # type: ignore[attr-defined]
+        candidates = self._ordered_candidates(Task.TTS, {})
+        for name in candidates:
+            try:
+                provider = self.provider(Task.TTS, name)
+                if hasattr(provider, "healthcheck"):
+                    ok = await provider.healthcheck()
+                    if not ok:
+                        continue
+                if hasattr(provider, "synthesize_stream"):
+                    decision = self.router.route(Task.TTS, force_provider=name)
+                    return provider.synthesize_stream(text, lang, voice), decision  # type: ignore[attr-defined]
+            except Exception:
+                continue
+        try:
+            provider = self.provider(Task.TTS, "dev_tone")
+            decision = self.router.route(Task.TTS, force_provider="dev_tone")
+            return provider.synthesize_stream(text, lang, voice), decision  # type: ignore[attr-defined]
+        except Exception:
+            decision = self.router.route(Task.TTS)
+            provider = self.provider(Task.TTS, decision.provider)
+            return provider.synthesize_stream(text, lang, voice), decision  # type: ignore[attr-defined]
 
     async def summarize(self, text: str, instruction: str = "",
                         max_length: int = 400, lang: str = "en") -> str:

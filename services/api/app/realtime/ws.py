@@ -42,28 +42,105 @@ HEARTBEAT_INTERVAL_S = 25
 RECEIVE_TIMEOUT_S = 90
 
 
+@router.websocket("/ws/meetings/{meeting_id}")
 @router.websocket("/ws/realtime")
 async def realtime_ws(
     ws: WebSocket,
+    meeting_id: str = "",
     ticket: str = Query(default=""),
-    meeting_id: str = Query(default=""),
+    token: str = Query(default=""),
+    join_token: str = Query(default=""),
 ):
-    # ---- authenticate via ticket --------------------------------------- #
-    try:
-        session_id_hint, participant_id = _auth(ticket, meeting_id)
-    except AuthenticationError as e:
-        await ws.close(code=4401, reason=e.message)
-        return
+    # ---- authenticate via ticket, JWT access token, or join_token ------- #
+    user_id: uuid.UUID | None = None
+    participant_id: uuid.UUID | None = None
+    target_meeting_id: uuid.UUID | None = None
+
+    if meeting_id:
+        try:
+            target_meeting_id = uuid.UUID(meeting_id)
+        except Exception:
+            await ws.close(code=4404, reason="invalid meeting id")
+            return
+
+    if ticket:
+        try:
+            _, pid = verify_session_ticket(ticket)
+            participant_id = uuid.UUID(pid)
+        except AuthenticationError as e:
+            await ws.close(code=4401, reason=e.message)
+            return
+        except Exception as e:
+            await ws.close(code=4401, reason=f"Invalid ticket: {e}")
+            return
+    elif token:
+        try:
+            from app.security import decode_token
+            claims = decode_token(token, "access")
+            user_id = uuid.UUID(claims["sub"])
+        except Exception as e:
+            await ws.close(code=4401, reason=f"Invalid token: {e}")
+            return
+    elif not join_token:
+        if target_meeting_id is not None:
+            join_token = f"guest-{uuid.uuid4().hex[:12]}"
+        else:
+            await ws.close(code=4401, reason="Authentication required (token, ticket, or join_token)")
+            return
 
     async with db_session() as db:
-        participant = await db.get(M.Participant, participant_id)
+        participant: M.Participant | None = None
+        if participant_id is not None:
+            participant = await db.get(M.Participant, participant_id)
+        elif user_id is not None and target_meeting_id is not None:
+            res = await db.execute(
+                select(M.Participant).where(
+                    M.Participant.meeting_id == target_meeting_id,
+                    M.Participant.user_id == user_id,
+                )
+            )
+            participant = res.scalars().first()
+            if participant is None:
+                meeting = await db.get(M.Meeting, target_meeting_id)
+                if meeting is None:
+                    await ws.close(code=4404, reason="meeting not found")
+                    return
+                user = await db.get(M.User, user_id)
+                dname = (user.name if user and user.name else (user.email.split("@")[0] if user else "Participant"))
+                from app.services import meeting_service
+                participant, _, _ = await meeting_service.join_meeting(
+                    db, meeting, user_id=user_id, display_name=dname,
+                    speak_lang="auto", hear_lang="en", audio_mode="translated"
+                )
+        elif join_token and target_meeting_id is not None:
+            res = await db.execute(
+                select(M.Participant).where(
+                    M.Participant.meeting_id == target_meeting_id,
+                    M.Participant.guest_key == join_token,
+                )
+            )
+            participant = res.scalars().first()
+            if participant is None:
+                meeting = await db.get(M.Meeting, target_meeting_id)
+                if meeting is None:
+                    await ws.close(code=4404, reason="meeting not found")
+                    return
+                from app.services import meeting_service
+                participant, _, _ = await meeting_service.join_meeting(
+                    db, meeting, user_id=None, display_name="Guest Participant",
+                    speak_lang="auto", hear_lang="en", audio_mode="translated",
+                    guest_key=join_token
+                )
+
         if participant is None:
             await ws.close(code=4404, reason="participant not found")
             return
+
         meeting = await db.get(M.Meeting, participant.meeting_id)
         if meeting is None or meeting.status not in ("scheduled", "live"):
             await ws.close(code=4410, reason="meeting not joinable")
             return
+
         pref = (await db.execute(select(M.ParticipantPreference).where(
             M.ParticipantPreference.participant_id == participant.id))).scalars().first()
         meeting_id_uuid = meeting.id
@@ -258,6 +335,32 @@ async def _handle_event(ws: WebSocket, session, rp: RtParticipant, event) -> Non
             "data": {"client_ts": data.get("ts"), "server_ts": time.time() * 1000},
             "sequence": 0}))
 
+    elif event.type == ClientEventType.SESSION_JOIN:
+        if "speaking_language" in data:
+            rp.speak_lang = data["speaking_language"]
+        elif "speak_lang" in data:
+            rp.speak_lang = data["speak_lang"]
+        if "listening_language" in data:
+            rp.hear_lang = data["listening_language"]
+        elif "hear_lang" in data:
+            rp.hear_lang = data["hear_lang"]
+        if "audio_mode" in data:
+            rp.audio_mode = data["audio_mode"]
+        if "display_name" in data and data["display_name"]:
+            rp.display_name = data["display_name"]
+
+        last_seq = int(data.get("last_sequence", 0))
+        if last_seq > 0:
+            missed = manager.replay_since(session, last_seq)
+            await ws.send_text(json.dumps({
+                "version": 1, "type": ServerEventType.SESSION_RESUMED,
+                "session_id": session.session_id,
+                "data": {"resumed_from": last_seq, "replayed": len(missed),
+                         "server_sequence": session.sequence}}))
+            for raw in missed:
+                await ws.send_text(raw)
+            met.RECONNECTS.inc()
+
     elif event.type == ClientEventType.SESSION_RESUME:
         last_seq = int(data.get("last_sequence", 0))
         missed = manager.replay_since(session, last_seq)
@@ -305,8 +408,8 @@ async def _handle_event(ws: WebSocket, session, rp: RtParticipant, event) -> Non
             await _send_error(ws, "inject_disabled", str(e)[:200])
 
     elif event.type == ClientEventType.PREFERENCES_UPDATE:
-        speak = data.get("speak_lang")
-        hear = data.get("hear_lang")
+        speak = data.get("speak_lang") or data.get("speaking_language")
+        hear = data.get("hear_lang") or data.get("listening_language")
         audio_mode = data.get("audio_mode")
         captions = data.get("captions_enabled")
         async with db_session() as db:
