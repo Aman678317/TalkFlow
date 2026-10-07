@@ -3,7 +3,6 @@
 Validates that GlobalTalk AI provides exact response shapes and protocol support
 expected by the official Desi Python SDK (desi-python v1.32.0).
 """
-import io
 import pytest
 
 
@@ -109,12 +108,12 @@ def test_v2_languages(client):
     src_resp = client.get("/v2/languages?type=source")
     assert src_resp.status_code == 200
     src_langs = src_resp.json()
-    assert any(l["language"] == "DE" for l in src_langs)
+    assert any(lang["language"] == "DE" for lang in src_langs)
     # Target languages
     tgt_resp = client.get("/v2/languages?type=target")
     assert tgt_resp.status_code == 200
     tgt_langs = tgt_resp.json()
-    german = next(l for l in tgt_langs if l["language"] == "DE")
+    german = next(lang for lang in tgt_langs if lang["language"] == "DE")
     assert german["supports_formality"] is True
 
     # Glossary language pairs
@@ -430,7 +429,7 @@ def test_v3_languages_and_resources_conformance(client):
     langs = lang_resp.json()
     assert isinstance(langs, list)
     assert len(langs) > 0
-    de_lang = next(l for l in langs if l["code"] == "de")
+    de_lang = next(lang for lang in langs if lang["code"] == "de")
     assert de_lang["usable_as_source"] is True
     assert de_lang["usable_as_target"] is True
     assert de_lang["supports_formality"] is True
@@ -440,8 +439,8 @@ def test_v3_languages_and_resources_conformance(client):
     inc_resp = client.get("/v3/languages?resource=translate_text&include=beta,external", headers=headers)
     assert inc_resp.status_code == 200
     inc_langs = inc_resp.json()
-    assert any(l["code"] == "la" and l["beta"] is True for l in inc_langs)
-    assert any(l["code"] == "sa" and l["external"] is True for l in inc_langs)
+    assert any(lang["code"] == "la" and lang["beta"] is True for lang in inc_langs)
+    assert any(lang["code"] == "sa" and lang["external"] is True for lang in inc_langs)
 
 
 def test_v3_style_rules_configured_rules_and_custom_instruction_put(client):
