@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_openai import ChatOpenAI
@@ -137,7 +137,7 @@ def mount_copilotkit_agent(app: FastAPI, path: str = "/api/copilotkit") -> None:
             )
             response = await model.ainvoke([system_prompt, HumanMessage(content=full_prompt)])
             assistant_text = response.content if isinstance(response.content, str) else str(response.content)
-        except Exception as exc:
+        except Exception:
             if "automated CopilotKit install check" in full_prompt or "short confirmation" in full_prompt:
                 assistant_text = "I am GlobalTalk AI Copilot and I am running successfully."
             else:

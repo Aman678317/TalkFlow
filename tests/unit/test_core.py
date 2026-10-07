@@ -208,11 +208,13 @@ def test_production_secret_guard():
         Settings(app_env="production", secret_key="dev-secret-key", jwt_secret="dev-jwt-secret")
     assert "Production environment requires a strong 'SECRET_KEY'" in str(exc.value)
 
-    # 32+ char custom keys must succeed in production
+    # 32+ char custom keys with production redis and postgres must succeed in production
     valid_settings = Settings(
         app_env="production",
         secret_key="x" * 32,
         jwt_secret="y" * 32,
+        redis_url="redis://localhost:6379/0",
+        database_url="postgresql+asyncpg://user:pass@localhost:5432/globaltalk",
     )
     assert valid_settings.is_production
 

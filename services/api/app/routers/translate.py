@@ -5,8 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import uuid
-from datetime import timedelta
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
@@ -14,7 +12,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import models as M
-from app.db.base import utcnow
 from app.db.session import get_db
 from app.deps import Principal, require_scope, rl_translate
 from app.errors import AuthenticationError, AuthorizationError, NotFoundError, ValidationError
@@ -113,7 +110,7 @@ async def detect_language(body: DetectRequest,
             metadata={"endpoint": "detect-language", "detected": det.language})
         await db.commit()
     return DetectResponse(language=det.language, confidence=round(det.confidence, 4),
-                          alternatives=[(l, round(c, 4)) for l, c in det.alternatives],
+                          alternatives=[(lang, round(c, 4)) for lang, c in det.alternatives],
                           provider=det.provider)
 
 
@@ -236,10 +233,10 @@ async def voice_transcribe(body: VoiceTranscribeRequest):
         raw_bytes = base64.b64decode(body.audio_base64)
     except Exception as e:
         raise ValidationError(f"Invalid base64 audio data: {e}")
-    
+
     if not raw_bytes or len(raw_bytes) < 320: # less than 10ms of audio
         return VoiceTranscribeResponse(text="", language=body.language or "en")
-    
+
     try:
         pcm = np.frombuffer(raw_bytes, dtype=np.int16).astype(np.float32) / 32768.0
         if body.sample_rate != 16000 and len(pcm) > 0:

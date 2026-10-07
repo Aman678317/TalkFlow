@@ -181,6 +181,34 @@ async def get_principal(
     if token.startswith("gt_live_") or token.startswith("gt_test_") or token.startswith("gtk_"):
         raise AuthenticationError("Invalid or revoked API key.")
 
+    # Allow test mock key strictly if non-production AND token is an explicit test SDK key
+    if not settings.is_production and (token.endswith(":fx") or token.startswith("test-key-")):
+        res_org = await db.execute(select(M.Organization).where(M.Organization.status == "active"))
+        org = res_org.scalars().first()
+        res_user = await db.execute(select(M.User).where(M.User.status == "active"))
+        user = res_user.scalars().first()
+        if not org:
+            org = M.Organization(id=uuid.uuid4(), name="Test Org", slug="test-org", status="active")
+            db.add(org)
+            await db.flush()
+        if not user:
+            user = M.User(id=uuid.uuid4(), email="test@desi.local", name="Test User", password_hash="dummy", status="active")
+            db.add(user)
+            await db.flush()
+        mock_api_key = M.ApiKey(
+            id=uuid.uuid4(),
+            org_id=org.id,
+            name="Test Desi Key",
+            key_hash=hash_api_key(token),
+            prefix="test-key",
+            scopes=["*"],
+            status="active",
+        )
+        principal = Principal(kind="api_key", user=user, org=org, member=None, api_key=mock_api_key)
+        context.bind(tenant_id=str(org.id) if org else None, user_id=str(user.id) if user else None)
+        request.state.principal = principal
+        return principal
+
     # --- JWT path ---
     try:
         payload = decode_token(token, "access")
@@ -196,19 +224,7 @@ async def get_principal(
         context.bind(tenant_id=str(org.id) if org else None, user_id=str(user.id))
         request.state.principal = principal
         return principal
-    except Exception as exc:
-        if isinstance(exc, AuthenticationError):
-            raise
-        # Allow test mock key strictly if non-production AND token is an explicit test SDK key
-        if not settings.is_production and (token.endswith(":fx") or token.startswith("test-key-")):
-            res_org = await db.execute(select(M.Organization).where(M.Organization.status == "active"))
-            org = res_org.scalars().first()
-            res_user = await db.execute(select(M.User).where(M.User.status == "active"))
-            user = res_user.scalars().first()
-            principal = Principal(kind="api_key", user=user, org=org, member=None, api_key=None)
-            context.bind(tenant_id=str(org.id) if org else None, user_id=str(user.id) if user else None)
-            request.state.principal = principal
-            return principal
+    except Exception:
         raise AuthenticationError("Invalid authentication key or token.")
 
 
