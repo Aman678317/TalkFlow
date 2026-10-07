@@ -17,7 +17,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),
-      "@globaltalk/shared-types": fileURLToPath(new URL("../../packages/shared-types/src/index.ts", import.meta.url)),
+      "@globaltalk/shared-types": fileURLToPath(new URL("./src/types/shared-types.ts", import.meta.url)),
     },
   },
   server: {

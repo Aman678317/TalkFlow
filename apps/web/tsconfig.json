@@ -2,14 +2,23 @@
   "compilerOptions": {
     "target": "ES2022",
     "useDefineForClassFields": true,
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
     "module": "ESNext",
     "skipLibCheck": true,
     "moduleResolution": "bundler",
     "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"],
-      "@globaltalk/shared-types": ["../../packages/shared-types/src/index.ts"]
+      "@/*": [
+        "src/*"
+      ],
+      "@globaltalk/shared-types": [
+        "src/types/shared-types.ts",
+        "../../packages/shared-types/src/index.ts"
+      ]
     },
     "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
@@ -20,7 +29,12 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
-    "types": ["vitest/globals", "@testing-library/jest-dom"]
+    "types": [
+      "vitest/globals",
+      "@testing-library/jest-dom"
+    ]
   },
-  "include": ["src"]
+  "include": [
+    "src"
+  ]
 }
