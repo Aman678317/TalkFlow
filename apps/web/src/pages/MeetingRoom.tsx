@@ -29,7 +29,8 @@ import { useLanguages, languageLabel } from "../hooks/useLanguages";
 import { useLiveKitRoom } from "../hooks/useLiveKitRoom";
 import { AudioPlayer, MicCapture, b64ToBytes } from "../lib/audio";
 import { MeetingSocket, type SocketState } from "../lib/ws";
-import type { Meeting, ParticipantInfo, Preferences, RealtimeEvent, TranscriptItem } from "../lib/types";
+import { WebRTCManager } from "../lib/webrtc";
+import type { JoinMeetingResponse, Meeting, ParticipantInfo, Preferences, RealtimeEvent, TranscriptItem } from "../lib/types";
 import { Button, ErrorState, SegmentedControl, Select, Spinner } from "../components/ui";
 import { VideoTile } from "../components/meeting/VideoTile";
 import { toast } from "../stores/toasts";
@@ -140,10 +141,19 @@ export default function MeetingRoom() {
   const [notice, setNotice] = React.useState<string | null>(null);
   const [summary, setSummary] = React.useState<any>(null);
   const [myParticipantId, setMyParticipantId] = React.useState<string | undefined>();
-  const [displayName, setDisplayName] = React.useState(user?.full_name || "Guest");
+  const myParticipantIdRef = React.useRef<string | undefined>(myParticipantId);
+  myParticipantIdRef.current = myParticipantId;
+  const [displayName, setDisplayName] = React.useState(user?.full_name || (user?.email ? user.email.split("@")[0] : "Guest"));
   const [inviteCopied, setInviteCopied] = React.useState(false);
   const [callTime, setCallTime] = React.useState("00:00");
   const [currentLatencyMs, setCurrentLatencyMs] = React.useState<number | null>(null);
+
+  // Pre-Join Lobby & WebRTC mesh state
+  const [hasJoined, setHasJoined] = React.useState<boolean>(false);
+  const [isJoining, setIsJoining] = React.useState<boolean>(false);
+  const [joinTicket, setJoinTicket] = React.useState<string | undefined>(undefined);
+  const [remoteStreams, setRemoteStreams] = React.useState<Map<string, MediaStream>>(new Map());
+  const webrtcRef = React.useRef<WebRTCManager | null>(null);
 
   const handleExportTranscript = React.useCallback(
     (format: "txt" | "srt" | "vtt" | "json") => {
@@ -182,6 +192,48 @@ export default function MeetingRoom() {
     },
     [captions, id, prefs.listening_language, callTime]
   );
+
+  const handleJoinMeeting = React.useCallback(async () => {
+    if (isJoining) return;
+    setIsJoining(true);
+    try {
+      const res = await api<JoinMeetingResponse>(`/api/v1/meetings/${id}/join`, {
+        method: "POST",
+        body: JSON.stringify({
+          display_name: displayName.trim() || user?.full_name || (user?.email ? user.email.split("@")[0] : "Guest"),
+          speak_lang: prefs.speaking_language === "AUTO" ? "en" : prefs.speaking_language,
+          hear_lang: prefs.listening_language,
+          audio_mode: prefs.audio_mode,
+        }),
+      });
+
+      let ticket: string | undefined;
+      if (res.rt_url) {
+        try {
+          const u = new URL(res.rt_url, window.location.origin);
+          ticket = u.searchParams.get("ticket") || undefined;
+        } catch {
+          const match = res.rt_url.match(/ticket=([^&]+)/);
+          if (match) ticket = match[1];
+        }
+      }
+
+      setMyParticipantId(res.participant_id);
+      myParticipantIdRef.current = res.participant_id;
+      if (ticket) {
+        setJoinTicket(ticket);
+      }
+      setHasJoined(true);
+      void meetingQ.refetch();
+      void participantsQ.refetch();
+      toast.success("Joined meeting", `Connected as ${displayName}`);
+    } catch (err: any) {
+      const msg = err?.message || "Failed to join meeting. Please verify meeting ID or network.";
+      toast.error("Join Failed", msg);
+    } finally {
+      setIsJoining(false);
+    }
+  }, [id, isJoining, displayName, user, prefs, meetingQ, participantsQ]);
 
   // Call timer effect
   React.useEffect(() => {
@@ -277,14 +329,55 @@ export default function MeetingRoom() {
     refetchInterval: drawerOpen && drawerTab === "captions" ? 8000 : false,
   });
 
-  // ---------------- websocket lifecycle ----------------
+  // ---------------- WebRTC & WebSocket lifecycle ----------------
   React.useEffect(() => {
-    if (!meetingQ.data) return;
-    const meeting = meetingQ.data;
+    if (!hasJoined) return;
+
+    // 1. Initialize WebRTC mesh manager
+    const webrtc = new WebRTCManager({
+      localParticipantId: myParticipantId || "guest",
+      onRemoteStream: (peerId, stream) => {
+        setRemoteStreams((prev) => {
+          const next = new Map(prev);
+          next.set(peerId, stream);
+          return next;
+        });
+      },
+      onRemoteStreamRemoved: (peerId) => {
+        setRemoteStreams((prev) => {
+          if (!prev.has(peerId)) return prev;
+          const next = new Map(prev);
+          next.delete(peerId);
+          return next;
+        });
+      },
+      sendSignal: (targetId, signal) => {
+        socketRef.current?.sendJson({
+          type: "signal",
+          data: {
+            target_id: targetId,
+            signal,
+          },
+        });
+      },
+    });
+
+    if (localVideoStreamRef.current) {
+      const vTrack = localVideoStreamRef.current.getVideoTracks()[0];
+      if (vTrack) webrtc.setVideoTrack(vTrack);
+    }
+    if (micRef.current?.mediaStream) {
+      const aTrack = micRef.current.mediaStream.getAudioTracks()[0];
+      if (aTrack) webrtc.setAudioTrack(aTrack);
+    }
+    webrtcRef.current = webrtc;
+
+    // 2. Initialize Audio Player and Meeting Socket
     playerRef.current = new AudioPlayer();
     const socket = new MeetingSocket({
       meetingId: id,
-      joinToken: meeting.join_token,
+      joinToken: meetingQ.data?.join_token,
+      ticket: joinTicket,
       displayName,
       preferences: { ...prefsRef.current },
       participantId: myParticipantId,
@@ -319,6 +412,9 @@ export default function MeetingRoom() {
     socket.connect();
     return () => {
       socket.close();
+      socketRef.current = null;
+      webrtc.dispose();
+      webrtcRef.current = null;
       micRef.current?.stop();
       playerRef.current?.dispose();
       if (virtualCameraCleanupRef.current) {
@@ -330,30 +426,85 @@ export default function MeetingRoom() {
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [meetingQ.data?.id]);
+  }, [hasJoined, id, joinTicket]);
+
+  // Synchronize local video track with WebRTC mesh
+  React.useEffect(() => {
+    if (webrtcRef.current) {
+      const vTrack = localVideoStream?.getVideoTracks()[0] || null;
+      webrtcRef.current.setVideoTrack(vTrack);
+    }
+  }, [localVideoStream]);
+
+  // Synchronize participants with WebRTC mesh
+  React.useEffect(() => {
+    if (!hasJoined || !webrtcRef.current) return;
+    const parts = participantsQ.data ?? [];
+    for (const p of parts) {
+      if (p.id !== myParticipantIdRef.current && p.status === "joined") {
+        void webrtcRef.current.initiateCallTo(p.id);
+      }
+    }
+  }, [hasJoined, participantsQ.data]);
 
   function handleEvent(evt: RealtimeEvent) {
     const t = evt.type;
     switch (t) {
+      case "signal": {
+        const senderId = (evt.data as any)?.sender_id || (evt as any).sender_id;
+        const signal = (evt.data as any)?.signal || (evt as any).signal;
+        if (senderId && signal) {
+          void webrtcRef.current?.handleSignal(senderId, signal);
+        }
+        break;
+      }
       case "session.created":
       case "session.updated":
       case "session.resumed": {
-        const pid = evt.participant_id as string | undefined;
-        if (pid && (!myParticipantId || evt.type === "session.created")) setMyParticipantId(pid);
-        const parts = (evt.participants as any[]) ?? [];
-        for (const p of parts) namesRef.current.set(p.participant_id, p.display_name);
+        const pid = (evt.participant_id as string | undefined) || (evt.data as any)?.participant_id;
+        if (pid && (!myParticipantIdRef.current || evt.type === "session.created")) {
+          setMyParticipantId(pid);
+          myParticipantIdRef.current = pid;
+        }
+        const parts = ((evt.participants || (evt.data as any)?.participants) as any[]) ?? [];
+        for (const p of parts) {
+          const peerId = p.participant_id || p.id;
+          const pName = p.display_name || p.name;
+          if (peerId && pName) namesRef.current.set(peerId, pName);
+          if (peerId && peerId !== myParticipantIdRef.current) {
+            void webrtcRef.current?.initiateCallTo(peerId);
+          }
+        }
         if (evt.type === "session.resumed")
           toast.success("Reconnected", "Session resumed — missed events replayed.");
         break;
       }
       case "participant.joined": {
-        namesRef.current.set(evt.participant_id as string, evt.display_name as string);
+        const pid = (evt.participant_id as string) || (evt.data as any)?.participant_id;
+        const pName = (evt.display_name as string) || (evt.data as any)?.display_name;
+        if (pid) {
+          if (pName) namesRef.current.set(pid, pName);
+          if (pid !== myParticipantIdRef.current) {
+            void webrtcRef.current?.initiateCallTo(pid);
+          }
+        }
         qc.invalidateQueries({ queryKey: ["meeting", id, "participants"] });
         break;
       }
-      case "participant.left":
+      case "participant.left": {
+        const pid = (evt.participant_id as string) || (evt.data as any)?.participant_id;
+        if (pid) {
+          webrtcRef.current?.removePeer(pid);
+          setRemoteStreams((prev) => {
+            if (!prev.has(pid)) return prev;
+            const next = new Map(prev);
+            next.delete(pid);
+            return next;
+          });
+        }
         qc.invalidateQueries({ queryKey: ["meeting", id, "participants"] });
         break;
+      }
       case "speech.started":
         setSpeakingNow(evt.speaker_id as string);
         break;
@@ -567,6 +718,7 @@ export default function MeetingRoom() {
       micRef.current?.stop();
       micRef.current = null;
       setMicOn(false);
+      webrtcRef.current?.setAudioTrack(null);
       socketRef.current?.sendJson({ type: "audio.stopped" });
       return;
     }
@@ -590,10 +742,13 @@ export default function MeetingRoom() {
       );
       micRef.current = mic;
       const track = mic.mediaStream?.getAudioTracks()[0];
-      if (track && mediaRoom.state === "connected") {
-        try {
-          await mediaRoom.publishMicrophone(track);
-        } catch { }
+      if (track) {
+        webrtcRef.current?.setAudioTrack(track);
+        if (mediaRoom.state === "connected") {
+          try {
+            await mediaRoom.publishMicrophone(track);
+          } catch { }
+        }
       }
       setMicOn(true);
       setMicPermissionBlocked(false);
@@ -608,6 +763,7 @@ export default function MeetingRoom() {
       micRef.current?.stop();
       micRef.current = null;
       setMicOn(false);
+      webrtcRef.current?.setAudioTrack(null);
       const isPermissionDenied =
         err?.name === "NotAllowedError" ||
         err?.name === "PermissionDeniedError" ||
@@ -682,10 +838,13 @@ export default function MeetingRoom() {
       );
       micRef.current = mic;
       const newTrack = mic.mediaStream?.getAudioTracks()[0];
-      if (newTrack && mediaRoom.state === "connected") {
-        try {
-          await mediaRoom.publishMicrophone(newTrack);
-        } catch { }
+      if (newTrack) {
+        webrtcRef.current?.setAudioTrack(newTrack);
+        if (mediaRoom.state === "connected") {
+          try {
+            await mediaRoom.publishMicrophone(newTrack);
+          } catch { }
+        }
       }
       toast.success("Audio settings updated", "Microphone DSP and input updated.");
     } catch (err: any) {
@@ -708,6 +867,7 @@ export default function MeetingRoom() {
           await mediaRoom.setCameraEnabled(false);
         } catch { }
       }
+      webrtcRef.current?.setVideoTrack(null);
       setCameraOn(false);
       setUsingVirtualCamera(false);
       return;
@@ -734,6 +894,8 @@ export default function MeetingRoom() {
           audio: false,
         });
         setLocalVideoStream(stream);
+        const vTrack = stream.getVideoTracks()[0];
+        if (vTrack) webrtcRef.current?.setVideoTrack(vTrack);
         setCameraOn(true);
         setUsingVirtualCamera(false);
         setCameraPermissionBlocked(false);
@@ -749,6 +911,8 @@ export default function MeetingRoom() {
       const virtualCam = createVirtualCameraStream(displayName);
       virtualCameraCleanupRef.current = virtualCam.stop;
       setLocalVideoStream(virtualCam.stream);
+      const vTrack = virtualCam.stream.getVideoTracks()[0];
+      if (vTrack) webrtcRef.current?.setVideoTrack(vTrack);
       setCameraOn(true);
       setUsingVirtualCamera(true);
       setCameraPermissionBlocked(true);
@@ -793,6 +957,8 @@ export default function MeetingRoom() {
         virtualCameraCleanupRef.current = null;
       }
       setLocalVideoStream(stream);
+      const vTrack = stream.getVideoTracks()[0];
+      if (vTrack) webrtcRef.current?.setVideoTrack(vTrack);
       setCameraOn(true);
       setUsingVirtualCamera(false);
       setCameraPermissionBlocked(false);
@@ -866,85 +1032,6 @@ export default function MeetingRoom() {
   });
 
   // ---------------- render calculations ----------------
-  if (meetingQ.isError) {
-    const err = meetingQ.error as any;
-    return (
-      <div className="p-6 bg-slate-900 min-h-screen text-white flex flex-col items-center justify-center gap-4">
-        <ErrorState
-          title={err?.message || "Meeting Not Found or Inaccessible"}
-          detail={err?.code || "The meeting session could not be retrieved. Please verify your connection or join link."}
-        />
-        <div className="flex items-center gap-3 mt-2">
-          <Button variant="secondary" onClick={() => nav("/meetings")}>
-            ← Back to Meetings
-          </Button>
-          <Button variant="primary" onClick={() => meetingQ.refetch()}>
-            Retry Connection
-          </Button>
-        </div>
-      </div>
-    );
-  }
-
-  const participants = (participantsQ.data ?? []).filter((participant) => participant.status === "joined");
-  const participantsById = new Map(participants.map((participant) => [participant.id, participant]));
-
-  const callTiles =
-    mediaRoom.state === "connected"
-      ? mediaRoom.peers.map((peer) => {
-        const participant = participantsById.get(peer.id);
-        const speakingLanguage = participant?.speaking_language ?? (peer.self ? prefs.speaking_language : "AUTO");
-        const listeningLanguage = participant?.listening_language ?? (peer.self ? prefs.listening_language : "en");
-        return {
-          id: peer.id,
-          name: peer.name,
-          stream: peer.self ? peer.stream || localVideoStream : peer.stream,
-          isScreenShare: peer.isScreenShare,
-          self: peer.self,
-          speakingLanguage,
-          listeningLanguage,
-          speaking: speakingNow === peer.id || (peer.self && micOn && !!speakingNow),
-          muted: peer.self ? !micOn : !peer.microphoneOn,
-          isVirtualCamera: peer.self ? usingVirtualCamera : false,
-        };
-      })
-      : participants.map((participant) => {
-        const isSelf = participant.id === myParticipantId;
-        return {
-          id: participant.id,
-          name: participant.display_name,
-          stream: isSelf ? localVideoStream : null,
-          isScreenShare: false,
-          self: isSelf,
-          speakingLanguage: participant.speaking_language,
-          listeningLanguage: participant.listening_language,
-          speaking: speakingNow === participant.id || (isSelf && micOn && !!speakingNow),
-          muted: isSelf ? !micOn : true,
-          isVirtualCamera: isSelf ? usingVirtualCamera : false,
-        };
-      });
-
-  const hasSelfTile = callTiles.some((t) => t.self);
-  const finalTiles = hasSelfTile
-    ? callTiles
-    : [
-      {
-        id: myParticipantId || "me",
-        name: displayName + " (You)",
-        stream: localVideoStream,
-        isScreenShare: screenOn,
-        self: true,
-        speakingLanguage: prefs.speaking_language,
-        listeningLanguage: prefs.listening_language,
-        speaking: micOn && !!speakingNow,
-        muted: !micOn,
-        isVirtualCamera: usingVirtualCamera,
-      },
-      ...callTiles,
-    ];
-
-  const latestCaption = captions.length > 0 ? captions[captions.length - 1] : null;
-
   const connectionInfo = React.useMemo(() => {
     if (!isOnline) {
       return {
@@ -994,6 +1081,320 @@ export default function MeetingRoom() {
       canRetry: false,
     };
   }, [isOnline, socketState, mediaRoom.state, mediaRoom.error, isDegradedNetwork]);
+
+  const participants = (participantsQ.data ?? []).filter((participant) => participant.status === "joined");
+  const participantsById = new Map(participants.map((participant) => [participant.id, participant]));
+
+  // Include peers who connected via WebRTC stream even if participantsQ polling is delayed
+  const knownPeerIds = new Set(participants.map((p) => p.id));
+  const streamOnlyPeers = Array.from(remoteStreams.keys())
+    .filter((pid) => pid !== myParticipantId && !knownPeerIds.has(pid))
+    .map((pid) => ({
+      id: pid,
+      display_name: namesRef.current.get(pid) || "Remote Participant",
+      status: "joined",
+      speaking_language: "AUTO",
+      listening_language: "en",
+      audio_mode: "translated" as const,
+      caption_mode: "both" as const,
+    }));
+  const combinedParticipants = [...participants, ...streamOnlyPeers];
+
+  const callTiles =
+    mediaRoom.state === "connected"
+      ? mediaRoom.peers.map((peer) => {
+        const participant = participantsById.get(peer.id);
+        const speakingLanguage = participant?.speaking_language ?? (peer.self ? prefs.speaking_language : "AUTO");
+        const listeningLanguage = participant?.listening_language ?? (peer.self ? prefs.listening_language : "en");
+        return {
+          id: peer.id,
+          name: peer.name,
+          stream: peer.self ? peer.stream || localVideoStream : peer.stream,
+          isScreenShare: peer.isScreenShare,
+          self: peer.self,
+          speakingLanguage,
+          listeningLanguage,
+          speaking: speakingNow === peer.id || (peer.self && micOn && !!speakingNow),
+          muted: peer.self ? !micOn : !peer.microphoneOn,
+          isVirtualCamera: peer.self ? usingVirtualCamera : false,
+        };
+      })
+      : combinedParticipants.map((participant) => {
+        const isSelf = participant.id === myParticipantId;
+        const remoteStream = !isSelf ? remoteStreams.get(participant.id) || null : null;
+        return {
+          id: participant.id,
+          name: participant.display_name,
+          stream: isSelf ? localVideoStream : remoteStream,
+          isScreenShare: false,
+          self: isSelf,
+          speakingLanguage: participant.speaking_language,
+          listeningLanguage: participant.listening_language,
+          speaking: speakingNow === participant.id || (isSelf && micOn && !!speakingNow),
+          muted: isSelf ? !micOn : false,
+          isVirtualCamera: isSelf ? usingVirtualCamera : false,
+        };
+      });
+
+  const hasSelfTile = callTiles.some((t) => t.self);
+  const finalTiles = hasSelfTile
+    ? callTiles
+    : [
+      {
+        id: myParticipantId || "me",
+        name: displayName + " (You)",
+        stream: localVideoStream,
+        isScreenShare: screenOn,
+        self: true,
+        speakingLanguage: prefs.speaking_language,
+        listeningLanguage: prefs.listening_language,
+        speaking: micOn && !!speakingNow,
+        muted: !micOn,
+        isVirtualCamera: usingVirtualCamera,
+      },
+      ...callTiles,
+    ];
+
+  const latestCaption = captions.length > 0 ? captions[captions.length - 1] : null;
+
+  // ---------------- Pre-Join Lobby View (Google Meet Green Room) ----------------
+  if (!hasJoined) {
+    return (
+      <div className="flex min-h-screen w-full flex-col bg-[#131314] text-white">
+        {/* Lobby Top Header */}
+        <header className="flex h-14 items-center justify-between border-b border-white/10 bg-[#1E1F22] px-4 sm:px-6">
+          <div className="flex items-center gap-3">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => nav("/meetings")}
+              className="text-slate-300 hover:text-white hover:bg-white/10 text-xs gap-1.5 h-8 px-2.5 rounded-lg"
+            >
+              ← Meetings
+            </Button>
+            <div className="h-4 w-px bg-white/20" />
+            <div className="flex items-center gap-2">
+              <span className="font-semibold text-sm text-white truncate max-w-xs">
+                {meetingQ.data?.title || "GlobalTalk Meeting"}
+              </span>
+              <span className="text-[11px] px-2 py-0.5 rounded-full bg-white/10 text-slate-300 font-mono">
+                {id.slice(0, 8)}
+              </span>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => void copyInviteLink()}
+              className="text-slate-300 hover:text-white hover:bg-white/10 text-xs gap-1.5 h-8 px-2.5 rounded-lg"
+            >
+              {inviteCopied ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
+              <span>{inviteCopied ? "Link Copied!" : "Copy link"}</span>
+            </Button>
+          </div>
+        </header>
+
+        {/* Lobby Main Body */}
+        <main className="flex flex-1 items-center justify-center p-4 sm:p-8">
+          <div className="w-full max-w-5xl grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
+            
+            {/* Left: Camera Preview & Quick Toggles (7 cols) */}
+            <div className="lg:col-span-7 flex flex-col items-center">
+              <div className="relative aspect-video w-full max-w-xl rounded-3xl overflow-hidden border border-white/15 bg-[#202124] shadow-2xl flex items-center justify-center">
+                {cameraOn && localVideoStream ? (
+                  <video
+                    ref={(el) => {
+                      if (el && localVideoStream && el.srcObject !== localVideoStream) {
+                        el.srcObject = localVideoStream;
+                      }
+                    }}
+                    autoPlay
+                    playsInline
+                    muted
+                    className={`h-full w-full object-cover ${usingVirtualCamera ? "" : "-scale-x-100"}`}
+                  />
+                ) : (
+                  <div className="flex flex-col items-center gap-3 text-slate-400">
+                    <div className="h-20 w-20 rounded-full bg-white/10 flex items-center justify-center text-white text-2xl font-bold">
+                      {(displayName || "U").charAt(0).toUpperCase()}
+                    </div>
+                    <span className="text-sm font-medium">Camera is off</span>
+                  </div>
+                )}
+
+                {/* Floating Media Controls on Camera Preview */}
+                <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-3 bg-black/60 backdrop-blur-md px-4 py-2 rounded-full border border-white/10">
+                  <button
+                    type="button"
+                    onClick={() => void toggleMic()}
+                    className={`h-11 w-11 rounded-full flex items-center justify-center transition-all ${
+                      micOn ? "bg-white/15 hover:bg-white/25 text-white" : "bg-[#EA4335] text-white hover:bg-[#D93025]"
+                    }`}
+                    title={micOn ? "Mute microphone" : "Unmute microphone"}
+                  >
+                    {micOn ? <Mic className="h-5 w-5" /> : <MicOff className="h-5 w-5" />}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void toggleCamera()}
+                    className={`h-11 w-11 rounded-full flex items-center justify-center transition-all ${
+                      cameraOn ? "bg-white/15 hover:bg-white/25 text-white" : "bg-[#EA4335] text-white hover:bg-[#D93025]"
+                    }`}
+                    title={cameraOn ? "Turn off camera" : "Turn on camera"}
+                  >
+                    {cameraOn ? <Camera className="h-5 w-5" /> : <CameraOff className="h-5 w-5" />}
+                  </button>
+                </div>
+
+                {usingVirtualCamera && (
+                  <div className="absolute top-3 left-3 bg-sky-500/80 backdrop-blur-sm px-2.5 py-1 rounded-full text-[11px] font-semibold text-white">
+                    Virtual Studio Camera
+                  </div>
+                )}
+              </div>
+
+              {/* Device Quick Status under video */}
+              <div className="w-full max-w-xl mt-4 flex items-center justify-between text-xs text-slate-400 px-2">
+                <span>{availableCameras.length > 0 ? `${availableCameras.length} camera(s) detected` : "Default camera ready"}</span>
+                <span>{availableMics.length > 0 ? `${availableMics.length} mic(s) detected` : "Default mic ready"}</span>
+              </div>
+            </div>
+
+            {/* Right: Meeting Information, Name, Preferences & Join Button (5 cols) */}
+            <div className="lg:col-span-5 flex flex-col gap-5 bg-[#1E1F22] border border-white/10 rounded-3xl p-6 sm:p-7 shadow-xl">
+              <div>
+                <h2 className="text-2xl font-bold text-white tracking-tight">Ready to join?</h2>
+                <p className="text-xs text-slate-400 mt-1">
+                  {participants.length > 0
+                    ? `${participants.length} participant${participants.length > 1 ? "s" : ""} in call`
+                    : "No one else is here yet"}
+                </p>
+              </div>
+
+              {/* Display Name Input */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
+                  Your Name
+                </label>
+                <input
+                  type="text"
+                  value={displayName}
+                  onChange={(e) => setDisplayName(e.target.value)}
+                  placeholder="Enter your name"
+                  className="w-full rounded-xl bg-white/5 border border-white/15 px-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-dl-blue transition-all"
+                />
+              </div>
+
+              {/* Language Selection Grid */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5 flex items-center gap-1">
+                    <Globe className="h-3.5 w-3.5 text-dl-blue" />
+                    I speak
+                  </label>
+                  <Select
+                    value={prefs.speaking_language}
+                    onChange={(e) => updatePrefs({ speaking_language: e.target.value })}
+                    className="!bg-[#282A2D] !text-white !border-white/15 w-full rounded-xl text-xs py-2"
+                  >
+                    <option value="AUTO">Auto-detect</option>
+                    {caps.map((l) => (
+                      <option key={l.code} value={l.code}>
+                        {l.name} ({l.native_name})
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5 flex items-center gap-1">
+                    <Volume2 className="h-3.5 w-3.5 text-emerald-400" />
+                    I want to hear
+                  </label>
+                  <Select
+                    value={prefs.listening_language}
+                    onChange={(e) => updatePrefs({ listening_language: e.target.value })}
+                    className="!bg-[#282A2D] !text-white !border-white/15 w-full rounded-xl text-xs py-2"
+                  >
+                    {caps.map((l) => (
+                      <option key={l.code} value={l.code}>
+                        {l.name} ({l.native_name})
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+              </div>
+
+              {/* Audio Mode */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
+                  Audio Translation Mode
+                </label>
+                <SegmentedControl
+                  options={[
+                    { value: "translated", label: "Translated" },
+                    { value: "original", label: "Original" },
+                    { value: "mixed", label: "Mixed" },
+                  ]}
+                  value={prefs.audio_mode}
+                  onChange={(v) => updatePrefs({ audio_mode: v as any })}
+                  ariaLabel="Audio translation mode"
+                />
+                <p className="text-[11px] text-slate-400 mt-1">
+                  {prefs.audio_mode === "translated"
+                    ? "Hears translated AI voice in your language; original voice muted."
+                    : prefs.audio_mode === "original"
+                      ? "Hears speaker's original voice directly with live captions."
+                      : "Hears translated AI voice + ducked (20%) original voice."}
+                </p>
+              </div>
+
+              {/* Join Now Button */}
+              <div className="pt-2">
+                <Button
+                  onClick={() => void handleJoinMeeting()}
+                  disabled={isJoining}
+                  className="w-full py-3 h-12 bg-dl-blue hover:bg-dl-blue-hover text-white font-semibold rounded-2xl shadow-lg transition-all active:scale-[0.98] text-base flex items-center justify-center gap-2"
+                >
+                  {isJoining ? (
+                    <>
+                      <Spinner className="h-5 w-5 text-white" />
+                      <span>Joining session...</span>
+                    </>
+                  ) : (
+                    <span>Join now</span>
+                  )}
+                </Button>
+              </div>
+            </div>
+
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  // ---------------- Error State (Only after join attempt) ----------------
+  if (meetingQ.isError) {
+    const err = meetingQ.error as any;
+    return (
+      <div className="p-6 bg-slate-900 min-h-screen text-white flex flex-col items-center justify-center gap-4">
+        <ErrorState
+          title={err?.message || "Meeting Not Found or Inaccessible"}
+          detail={err?.code || "The meeting session could not be retrieved. Please verify your connection or join link."}
+        />
+        <div className="flex items-center gap-3 mt-2">
+          <Button variant="secondary" onClick={() => nav("/meetings")}>
+            ← Back to Meetings
+          </Button>
+          <Button variant="primary" onClick={() => meetingQ.refetch()}>
+            Retry Connection
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen w-full flex-col overflow-hidden bg-[#131314] text-white select-none">
@@ -1313,6 +1714,8 @@ export default function MeetingRoom() {
                 speaking={tile.speaking}
                 muted={tile.muted}
                 self={tile.self}
+                audioMuted={tile.self || prefs.audio_mode === "translated"}
+                audioVolume={prefs.audio_mode === "mixed" ? 0.2 : 1.0}
                 className="aspect-video w-full rounded-2xl border border-white/10 shadow-lg bg-[#202124]"
               />
             ))}

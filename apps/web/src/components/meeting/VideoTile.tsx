@@ -17,6 +17,8 @@ export interface VideoTileProps {
   handRaised?: boolean;
   isPinned?: boolean;
   onTogglePin?: () => void;
+  audioMuted?: boolean;
+  audioVolume?: number;
   className?: string;
 }
 
@@ -30,6 +32,8 @@ export function VideoTile({
   isScreenShare = false,
   speaking = false,
   muted = false,
+  audioMuted = false,
+  audioVolume = 1,
   level = 0,
   self = false,
   handRaised = false,
@@ -50,13 +54,17 @@ export function VideoTile({
         if (videoRef.current.srcObject !== stream) {
           videoRef.current.srcObject = stream;
         }
-        void videoRef.current.play().catch(() => {});
+        void videoRef.current.play().catch(() => { });
       }
       if (audioRef.current && !self) {
         if (audioRef.current.srcObject !== stream) {
           audioRef.current.srcObject = stream;
         }
-        void audioRef.current.play().catch(() => {});
+        audioRef.current.muted = !!audioMuted;
+        if (typeof audioVolume === 'number') {
+          audioRef.current.volume = Math.max(0, Math.min(1, audioVolume));
+        }
+        void audioRef.current.play().catch(() => { });
       }
     };
 
@@ -68,7 +76,7 @@ export function VideoTile({
       stream.removeEventListener('addtrack', bindStream);
       stream.removeEventListener('removetrack', bindStream);
     };
-  }, [stream, videoOn, isScreenShare, self]);
+  }, [stream, videoOn, isScreenShare, self, audioMuted, audioVolume]);
 
   const toggleFullscreen = () => {
     if (!containerRef.current) return;
