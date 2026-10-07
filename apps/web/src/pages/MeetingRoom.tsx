@@ -153,6 +153,7 @@ export default function MeetingRoom() {
   const [isJoining, setIsJoining] = React.useState<boolean>(false);
   const [joinTicket, setJoinTicket] = React.useState<string | undefined>(undefined);
   const [remoteStreams, setRemoteStreams] = React.useState<Map<string, MediaStream>>(new Map());
+  const [leftParticipantIds, setLeftParticipantIds] = React.useState<Set<string>>(new Set());
   const webrtcRef = React.useRef<WebRTCManager | null>(null);
 
   const handleExportTranscript = React.useCallback(
@@ -193,10 +194,47 @@ export default function MeetingRoom() {
     [captions, id, prefs.listening_language, callTime]
   );
 
+  const handleLeaveMeeting = React.useCallback(async () => {
+    if (localVideoStream) {
+      localVideoStream.getTracks().forEach((t) => t.stop());
+    }
+    micRef.current?.stop();
+    const pid = myParticipantIdRef.current || myParticipantId;
+    if (pid) {
+      try {
+        await api(`/api/v1/meetings/${id}/leave`, {
+          method: "POST",
+          body: JSON.stringify({ participant_id: pid }),
+        });
+      } catch { }
+    }
+    nav(`/meetings?end=${id}`);
+  }, [id, localVideoStream, myParticipantId, nav]);
+
+  React.useEffect(() => {
+    const onUnload = () => {
+      const pid = myParticipantIdRef.current || myParticipantId;
+      if (pid) {
+        const payload = JSON.stringify({ participant_id: pid });
+        const blob = new Blob([payload], { type: "application/json" });
+        navigator.sendBeacon(`/api/v1/meetings/${id}/leave`, blob);
+      }
+    };
+    window.addEventListener("pagehide", onUnload);
+    return () => window.removeEventListener("pagehide", onUnload);
+  }, [id, myParticipantId]);
+
   const handleJoinMeeting = React.useCallback(async () => {
     if (isJoining) return;
     setIsJoining(true);
     try {
+      const guestKeyStorageKey = `gt_guest_key_${id}`;
+      let guestKey = sessionStorage.getItem(guestKeyStorageKey);
+      if (!guestKey) {
+        guestKey = `guest_${Math.random().toString(36).slice(2, 10)}_${Date.now()}`;
+        sessionStorage.setItem(guestKeyStorageKey, guestKey);
+      }
+
       const res = await api<JoinMeetingResponse>(`/api/v1/meetings/${id}/join`, {
         method: "POST",
         body: JSON.stringify({
@@ -204,6 +242,7 @@ export default function MeetingRoom() {
           speak_lang: prefs.speaking_language === "AUTO" ? "en" : prefs.speaking_language,
           hear_lang: prefs.listening_language,
           audio_mode: prefs.audio_mode,
+          guest_key: guestKey,
         }),
       });
 
@@ -337,17 +376,20 @@ export default function MeetingRoom() {
     const webrtc = new WebRTCManager({
       localParticipantId: myParticipantId || "guest",
       onRemoteStream: (peerId, stream) => {
+        const normId = peerId.toLowerCase().trim();
         setRemoteStreams((prev) => {
           const next = new Map(prev);
           next.set(peerId, stream);
+          next.set(normId, stream);
           return next;
         });
       },
       onRemoteStreamRemoved: (peerId) => {
+        const normId = peerId.toLowerCase().trim();
         setRemoteStreams((prev) => {
-          if (!prev.has(peerId)) return prev;
           const next = new Map(prev);
           next.delete(peerId);
+          next.delete(normId);
           return next;
         });
       },
@@ -483,6 +525,13 @@ export default function MeetingRoom() {
         const pid = (evt.participant_id as string) || (evt.data as any)?.participant_id;
         const pName = (evt.display_name as string) || (evt.data as any)?.display_name;
         if (pid) {
+          const normPid = pid.toLowerCase().trim();
+          setLeftParticipantIds((prev) => {
+            if (!prev.has(normPid)) return prev;
+            const next = new Set(prev);
+            next.delete(normPid);
+            return next;
+          });
           if (pName) namesRef.current.set(pid, pName);
           if (pid !== myParticipantIdRef.current) {
             void webrtcRef.current?.initiateCallTo(pid);
@@ -494,11 +543,13 @@ export default function MeetingRoom() {
       case "participant.left": {
         const pid = (evt.participant_id as string) || (evt.data as any)?.participant_id;
         if (pid) {
+          const normPid = pid.toLowerCase().trim();
+          setLeftParticipantIds((prev) => new Set(prev).add(normPid));
           webrtcRef.current?.removePeer(pid);
           setRemoteStreams((prev) => {
-            if (!prev.has(pid)) return prev;
             const next = new Map(prev);
             next.delete(pid);
+            next.delete(normPid);
             return next;
           });
         }
@@ -545,6 +596,7 @@ export default function MeetingRoom() {
           setTranslationMessage(null);
         }
         if (isDegradedNetwork) setIsDegradedNetwork(false);
+        setNotice((prev) => (prev && (prev.includes("degraded") || prev.includes("latency") || prev.includes("falling behind")) ? null : prev));
         if (evt.target_language !== prefsRef.current.listening_language) break;
         if (prefsRef.current.caption_mode === "original") break;
         const seg = evt.segment_id as string;
@@ -651,8 +703,11 @@ export default function MeetingRoom() {
       case "quality.degraded":
         setIsDegradedNetwork(true);
         setTranslationStatus("delayed");
-        setTranslationMessage((evt.user_message as string) ?? "Live translation is experiencing latency degradation.");
-        setNotice((evt.user_message as string) ?? "Live translation is temporarily degraded.");
+        setTranslationMessage((evt.user_message as string) ?? "Live translation is catching up. Original audio remains active.");
+        window.setTimeout(() => {
+          setTranslationStatus((s) => (s === "delayed" ? "normal" : s));
+          setNotice((prev) => (prev && (prev.includes("degraded") || prev.includes("latency") || prev.includes("falling behind")) ? null : prev));
+        }, 5000);
         break;
       case "quality.latency": {
         const ms = (evt.total_e2e_latency_ms as number) || 0;
@@ -1082,13 +1137,20 @@ export default function MeetingRoom() {
     };
   }, [isOnline, socketState, mediaRoom.state, mediaRoom.error, isDegradedNetwork]);
 
-  const participants = (participantsQ.data ?? []).filter((participant) => participant.status === "joined");
+  const participants = (participantsQ.data ?? []).filter(
+    (participant) =>
+      participant.status === "joined" &&
+      !leftParticipantIds.has(participant.id.toLowerCase().trim())
+  );
   const participantsById = new Map(participants.map((participant) => [participant.id, participant]));
 
   // Include peers who connected via WebRTC stream even if participantsQ polling is delayed
-  const knownPeerIds = new Set(participants.map((p) => p.id));
+  const myNormId = (myParticipantId || "").toLowerCase().trim();
+  const knownPeerIds = new Set(participants.map((p) => p.id.toLowerCase().trim()));
   const streamOnlyPeers = Array.from(remoteStreams.keys())
-    .filter((pid) => pid !== myParticipantId && !knownPeerIds.has(pid))
+    .map((k) => k.toLowerCase().trim())
+    .filter((pid, idx, arr) => arr.indexOf(pid) === idx)
+    .filter((pid) => pid !== myNormId && !knownPeerIds.has(pid) && !leftParticipantIds.has(pid))
     .map((pid) => ({
       id: pid,
       display_name: namesRef.current.get(pid) || "Remote Participant",
@@ -1120,8 +1182,9 @@ export default function MeetingRoom() {
         };
       })
       : combinedParticipants.map((participant) => {
-        const isSelf = participant.id === myParticipantId;
-        const remoteStream = !isSelf ? remoteStreams.get(participant.id) || null : null;
+        const normId = participant.id.toLowerCase().trim();
+        const isSelf = participant.id === myParticipantId || (!!myNormId && normId === myNormId);
+        const remoteStream = !isSelf ? (remoteStreams.get(participant.id) || remoteStreams.get(normId) || null) : null;
         return {
           id: participant.id,
           name: participant.display_name,
@@ -1407,7 +1470,7 @@ export default function MeetingRoom() {
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => nav("/meetings")}
+            onClick={() => void handleLeaveMeeting()}
             className="text-slate-300 hover:text-white hover:bg-white/10 text-xs gap-1.5 h-8 px-2.5 rounded-lg"
           >
             ← Meetings
@@ -2242,13 +2305,7 @@ export default function MeetingRoom() {
           {/* End Call / Leave Meeting (Red Pill) */}
           <button
             type="button"
-            onClick={() => {
-              if (localVideoStream) {
-                localVideoStream.getTracks().forEach((t) => t.stop());
-              }
-              micRef.current?.stop();
-              nav(`/meetings?end=${id}`);
-            }}
+            onClick={() => void handleLeaveMeeting()}
             className="h-11 px-5 sm:h-12 sm:px-6 rounded-full flex items-center justify-center gap-2 bg-[#EA4335] hover:bg-[#D93025] text-white font-medium shadow-md transition-all active:scale-95"
             aria-label="Leave call"
             title="Leave this meeting"

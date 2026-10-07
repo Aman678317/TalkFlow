@@ -45,11 +45,27 @@ export function VideoTile({
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [hasLiveVideoTrack, setHasLiveVideoTrack] = useState<boolean>(() => {
+    if (!stream) return false;
+    return self || isScreenShare || stream.getVideoTracks().some((t) => t.readyState === 'live' && t.enabled);
+  });
 
   useEffect(() => {
-    if (!stream) return;
+    if (!stream) {
+      setHasLiveVideoTrack(false);
+      return;
+    }
+
+    const checkVideoState = () => {
+      const vTracks = stream.getVideoTracks();
+      const hasLive = self || isScreenShare || vTracks.some((t) => t.readyState === 'live' && t.enabled);
+      setHasLiveVideoTrack(hasLive);
+    };
+
+    checkVideoState();
 
     const bindStream = () => {
+      checkVideoState();
       if (videoRef.current && (videoOn || isScreenShare)) {
         if (videoRef.current.srcObject !== stream) {
           videoRef.current.srcObject = stream;
@@ -69,12 +85,30 @@ export function VideoTile({
     };
 
     bindStream();
-    stream.addEventListener('addtrack', bindStream);
-    stream.addEventListener('removetrack', bindStream);
+
+    const handleTrackEvent = () => {
+      checkVideoState();
+      bindStream();
+    };
+
+    stream.addEventListener('addtrack', handleTrackEvent);
+    stream.addEventListener('removetrack', handleTrackEvent);
+
+    const vTracks = stream.getVideoTracks();
+    vTracks.forEach((t) => {
+      t.addEventListener('mute', checkVideoState);
+      t.addEventListener('unmute', checkVideoState);
+      t.addEventListener('ended', checkVideoState);
+    });
 
     return () => {
-      stream.removeEventListener('addtrack', bindStream);
-      stream.removeEventListener('removetrack', bindStream);
+      stream.removeEventListener('addtrack', handleTrackEvent);
+      stream.removeEventListener('removetrack', handleTrackEvent);
+      vTracks.forEach((t) => {
+        t.removeEventListener('mute', checkVideoState);
+        t.removeEventListener('unmute', checkVideoState);
+        t.removeEventListener('ended', checkVideoState);
+      });
     };
   }, [stream, videoOn, isScreenShare, self, audioMuted, audioVolume]);
 
@@ -93,7 +127,7 @@ export function VideoTile({
   const hasLiveVideo =
     !!stream &&
     (videoOn || isScreenShare) &&
-    (self || stream.getVideoTracks().some((t) => t.readyState === 'live' && t.enabled));
+    (hasLiveVideoTrack || self || stream.getVideoTracks().length > 0);
 
   return (
     <div
@@ -112,12 +146,14 @@ export function VideoTile({
         <audio ref={audioRef} autoPlay playsInline />
       )}
 
-      {/* 1. Live Video Stream */}
+      {/* 1. Live Video Stream (always muted for video rendering; audio played via dedicated <audio>) */}
       <video
         ref={videoRef}
         autoPlay
         playsInline
-        muted={self} // Prevent self audio echo loop
+        muted={true}
+        onLoadedMetadata={() => setHasLiveVideoTrack(true)}
+        onCanPlay={() => setHasLiveVideoTrack(true)}
         className={cn(
           'h-full w-full',
           isScreenShare ? 'bg-black object-contain' : 'object-cover',

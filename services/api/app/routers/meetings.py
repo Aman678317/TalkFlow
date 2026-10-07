@@ -3,10 +3,11 @@
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Body, Depends, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,6 +18,7 @@ from app.db.session import get_db
 from app.deps import Principal, get_principal_optional, require_org_user, require_scope
 from app.errors import NotFoundError, ValidationError
 from app.realtime import livekit_bridge
+from app.realtime.protocol import ServerEventType
 from app.schemas import (
     JoinMeetingRequest, JoinMeetingResponse, MeetingCreate, MeetingDetailOut,
     MeetingOut, ParticipantFullOut, ParticipantOut, PreferenceOut,
@@ -165,6 +167,51 @@ async def join_meeting(meeting_id: uuid.UUID, body: JoinMeetingRequest,
     except Exception:
         log.debug("webhook dispatch skipped")
     return resp
+
+
+@router.post("/meetings/{meeting_id}/leave", status_code=204)
+async def leave_meeting(
+    meeting_id: uuid.UUID,
+    request: Request,
+    body: dict = Body(default_factory=dict),
+    principal: Principal | None = Depends(get_principal_optional),
+    db: AsyncSession = Depends(get_db),
+):
+    """Cleanly mark participant as left and broadcast participant.left event."""
+    p_id_str = body.get("participant_id")
+    if not p_id_str:
+        p_id_str = request.headers.get("x-participant-id") or request.query_params.get("participant_id")
+
+    p_uuid: uuid.UUID | None = None
+    if p_id_str:
+        with contextlib.suppress(Exception):
+            p_uuid = uuid.UUID(str(p_id_str))
+
+    if p_uuid is None and principal and principal.user_id:
+        res = await db.execute(
+            select(M.Participant).where(
+                M.Participant.meeting_id == meeting_id,
+                M.Participant.user_id == principal.user_id,
+                M.Participant.status == "joined",
+            )
+        )
+        p_row = res.scalars().first()
+        if p_row:
+            p_uuid = p_row.id
+
+    if p_uuid:
+        await meeting_service.leave_participant(db, p_uuid)
+        from app.realtime.session_manager import manager
+        session = manager.get_session_for_meeting(meeting_id)
+        if session:
+            manager.remove_participant(session, p_uuid)
+            with contextlib.suppress(Exception):
+                await manager.broadcast(
+                    session,
+                    ServerEventType.PARTICIPANT_LEFT,
+                    {"participant_id": str(p_uuid)},
+                    to=[v for v in session.participants.values() if v.connected],
+                )
 
 
 @router.get("/meetings/{meeting_id}/participants", response_model=list[dict])

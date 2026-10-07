@@ -8,7 +8,11 @@ const RTC_CONFIG: RTCConfiguration = {
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+    { urls: 'stun:stun.cloudflare.com:3478' },
   ],
+  iceCandidatePoolSize: 10,
 };
 
 export type SignalMessage =
@@ -47,11 +51,17 @@ export class WebRTCManager {
 
   private updateSendersForKind(kind: 'audio' | 'video', track: MediaStreamTrack | null) {
     for (const [peerId, pc] of this.peers.entries()) {
+      let senderFound = false;
       const senders = pc.getSenders();
-      const sender = senders.find((s) => (s as any)._kind === kind || s.track?.kind === kind);
-      if (sender) {
-        void sender.replaceTrack(track);
-      } else if (track) {
+      for (const sender of senders) {
+        if ((sender as any)._kind === kind || sender.track?.kind === kind) {
+          senderFound = true;
+          void sender.replaceTrack(track).catch((e) => {
+            console.warn(`[WebRTC] replaceTrack failed for ${kind}:`, e);
+          });
+        }
+      }
+      if (!senderFound && track) {
         // Add new track and trigger renegotiation
         try {
           const s = pc.addTrack(track, new MediaStream([track]));
@@ -216,10 +226,13 @@ export class WebRTCManager {
         if (stream && stream.getTracks().length === 0) {
           this.remoteStreams.delete(remoteId);
           this.options.onRemoteStreamRemoved(remoteId);
+        } else if (stream) {
+          this.options.onRemoteStream(remoteId, new MediaStream(stream.getTracks()));
         }
       };
 
-      this.options.onRemoteStream(remoteId, stream);
+      // Wrap in a fresh MediaStream copy so React state sees a new reference and re-renders VideoTile immediately
+      this.options.onRemoteStream(remoteId, new MediaStream(stream.getTracks()));
     };
 
     pc.onconnectionstatechange = () => {

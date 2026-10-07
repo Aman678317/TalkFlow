@@ -40,7 +40,7 @@ from gt_ai.vad import EnergyVAD, VadState, create_vad
 
 log = logging.getLogger("app.realtime.pipeline")
 
-AUDIO_QUEUE_MAX = 200          # ~20s of 100ms chunks — backpressure bound
+AUDIO_QUEUE_MAX = 500          # ~50s of 100ms chunks — backpressure bound
 PARTIAL_INTERVAL_S = 1.2       # run partial STT cadence during speech
 
 
@@ -152,7 +152,17 @@ class MeetingPipeline:
                         if u.in_speech:
                             u.buffer.extend(chunk)
                             u.in_speech = False
-                            await self._finalize_utterance(p, u)
+                            audio_payload = bytes(u.buffer)
+                            u.buffer = bytearray()
+                            start_ms = u.started_at_ms
+                            cap_start = u.capture_started
+                            asyncio.create_task(
+                                self._finalize_utterance(
+                                    p, u, forced=False, audio_bytes=audio_payload,
+                                    start_ms=start_ms, capture_started=cap_start
+                                ),
+                                name=f"finalize-{p.participant_id}-{start_ms}"
+                            )
                 if u.in_speech:
                     u.buffer.extend(chunk)
                     now = time.perf_counter()
@@ -198,16 +208,22 @@ class MeetingPipeline:
         return None if p.speak_lang in ("auto", "") else p.speak_lang
 
     async def _finalize_utterance(self, p: RtParticipant, u: UtteranceState,
-                                  forced: bool = False) -> None:
-        audio = bytes(u.buffer)
-        u.buffer = bytearray()
+                                  forced: bool = False,
+                                  audio_bytes: bytes | None = None,
+                                  start_ms: int | None = None,
+                                  capture_started: float | None = None) -> None:
+        audio = audio_bytes if audio_bytes is not None else bytes(u.buffer)
+        if audio_bytes is None:
+            u.buffer = bytearray()
         if len(audio) < 1600:  # <50ms — noise blip
             return
-        capture_ms = (time.perf_counter() - u.capture_started) * 1000
+        cap_start = capture_started if capture_started is not None else u.capture_started
+        capture_ms = (time.perf_counter() - cap_start) * 1000
+        started_at_ms = start_ms if start_ms is not None else u.started_at_ms
         t_stt = time.perf_counter()
         try:
             chunk, decision = await ai.transcribe(audio, 16000,
-                                                  lang_hint=self._lang_hint(p))
+                                                   lang_hint=self._lang_hint(p))
         except (AppError, Exception) as ex:
             log.warning("STT transcription unavailable/failed for %s: %s", p.participant_id, ex)
             await manager.broadcast(
@@ -233,7 +249,7 @@ class MeetingPipeline:
             p, text=text, source_lang=source_lang, audio=audio,
             confidence=chunk.confidence, stt_model=chunk.model or decision.model,
             stt_provider=decision.provider, stt_ms=stt_ms, capture_ms=capture_ms,
-            start_ms=u.started_at_ms)
+            start_ms=started_at_ms)
 
     # ------------------------------------------------------------------ #
     # Dev/test text injection (guarded; STT stage marked 'injected')
@@ -315,6 +331,8 @@ class MeetingPipeline:
              "latency": {"audio_capture_ms": capture_ms, "stt_final_ms": stt_ms}},
             speaker_id=str(p.participant_id))
         self._latest_final_seq[p.participant_id] = seq
+        if session.quality_degraded:
+            session.quality_degraded = False
 
         # --- compute deduplicated target set & fan out ---
         targets = manager.required_target_languages(
