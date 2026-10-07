@@ -27,7 +27,7 @@ export default defineConfig({
       "/api-docs": { target: "http://127.0.0.1:8088", changeOrigin: true, timeout: 60000, proxyTimeout: 60000 },
       "/v2": { target: "http://127.0.0.1:8088", changeOrigin: true, timeout: 60000, proxyTimeout: 60000 },
       "/v3": { target: "http://127.0.0.1:8088", changeOrigin: true, timeout: 60000, proxyTimeout: 60000 },
-      "/ws": { target: "ws://127.0.0.1:8088", ws: true },
+      "/ws": { target: "ws://127.0.0.1:8088", changeOrigin: true, ws: true },
       "/health": { target: "http://127.0.0.1:8088", timeout: 10000, proxyTimeout: 10000 },
       "/healthz": { target: "http://127.0.0.1:8088", timeout: 10000, proxyTimeout: 10000 },
       "/ready": { target: "http://127.0.0.1:8088", timeout: 10000, proxyTimeout: 10000 },

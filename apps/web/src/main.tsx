@@ -64,6 +64,8 @@ export default function App() {
           <Route path="/signup" element={<Signup />} />
           {/* Public Call Join Route: Recipient joins directly from their mobile or browser without authentication */}
           <Route path="/join/:roomId" element={<JoinCall />} />
+          {/* Full-screen Google Meet style meeting room (accessible to all participants via link, no auth wall) */}
+          <Route path="/meeting/:id" element={<MeetingRoom />} />
           <Route element={<RequireAuth><Layout /></RequireAuth>}>
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/translate" element={<TranslatePage />} />
@@ -71,7 +73,6 @@ export default function App() {
             <Route path="/voice" element={<Voice />} />
             <Route path="/documents" element={<Documents />} />
             <Route path="/meetings" element={<Meetings />} />
-            <Route path="/meeting/:id" element={<MeetingRoom />} />
             <Route path="/chat" element={<ChatRooms />} />
             <Route path="/history" element={<HistoryPage />} />
             <Route path="/glossaries" element={<Glossaries />} />
