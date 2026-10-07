@@ -46,8 +46,10 @@ def _authenticate(db: Session, meeting: Meeting, token: str | None,
                     return user, True
         except Exception:
             pass
-    if join_token and join_token == meeting.join_token:
-        return None, True
+    if join_token and meeting.join_token:
+        from globaltalk.core.security import constant_time_eq
+        if constant_time_eq(join_token, meeting.join_token):
+            return None, True
     return None, False
 
 

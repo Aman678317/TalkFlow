@@ -201,8 +201,8 @@ export async function loadTwilioVoiceSDK(): Promise<boolean> {
   if (window.Twilio?.Device) return true;
 
   const scriptUrls = [
-    'https://media.twiliocdn.com/sdk/js/voice/v2.11/twilio.min.js',
     'https://cdn.jsdelivr.net/npm/@twilio/voice-sdk@2.11.1/dist/twilio.min.js',
+    'https://unpkg.com/@twilio/voice-sdk@2.11.1/dist/twilio.min.js',
   ];
 
   for (const url of scriptUrls) {

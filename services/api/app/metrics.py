@@ -31,6 +31,14 @@ WS_CONNECTIONS = Gauge("gt_ws_connections_active", "Active WebSocket sessions")
 ACTIVE_MEETINGS = Gauge("gt_active_meetings", "Active meetings")
 ACTIVE_PARTICIPANTS = Gauge("gt_active_participants", "Active meeting participants")
 QUEUE_DEPTH = Gauge("gt_queue_depth", "Job queue depth", ["queue"])
+QUEUE_DLQ_DEPTH = Gauge("gt_queue_dlq_depth", "Dead letter queue depth", ["queue"])
+JOB_EXECUTIONS = Counter("gt_job_executions_total", "Queue job executions", ["queue", "type", "status"])
+JOB_LATENCY = Histogram(
+    "gt_job_duration_seconds", "Job execution duration", ["queue", "type"],
+    buckets=(0.05, 0.1, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300))
+CACHE_OPS = Counter("gt_cache_operations_total", "Cache operations", ["op", "status"])
+AUTH_EVENTS = Counter("gt_auth_events_total", "Authentication events", ["event", "status"])
+SECURITY_VIOLATIONS = Counter("gt_security_violations_total", "Security violations", ["type"])
 GPU_UTIL = Gauge("gt_gpu_utilization", "GPU utilization ratio (0..1)")
 
 USAGE_CHARS = Counter("gt_usage_characters_total", "Translated characters", ["product"])

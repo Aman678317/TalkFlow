@@ -9,7 +9,7 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,17 +22,55 @@ from app.deps import Principal, client_ip_hash, get_principal, rl_auth
 from app.errors import AuthenticationError, AuthorizationError, NotFoundError, ValidationError
 from app.schemas import (
     ChangePasswordRequest, LoginRequest, OrganizationOut, RefreshRequest,
-    SessionOut, SignupRequest, SocialLoginRequest, TokenPair, UpdateProfileRequest, UserOut,
+    SessionOut, SignupRequest, SocialLoginRequest, TokenPair, UpdateProfileRequest,
+    UserIdentityOut, UserOut,
 )
 from app.security import (
     create_token, decode_token, hash_password, password_policy_ok,
     verify_password,
 )
 from app.services import audit_service, billing_service
+from app.services.social_auth_service import social_auth_service
 
 log = logging.getLogger("app.routers.auth")
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
+
+
+def _set_refresh_cookie(response: Response, refresh_token: str) -> None:
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        httponly=True,
+        secure=settings.app_env == "production",
+        samesite="lax",
+        path="/api/v1/auth",
+        max_age=settings.jwt_refresh_ttl_days * 86400,
+    )
+
+
+def _clear_refresh_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key="refresh_token",
+        path="/api/v1/auth",
+        httponly=True,
+        secure=settings.app_env == "production",
+        samesite="lax",
+    )
+
+
+def _set_csrf_cookie(response: Response, csrf_token: str | None = None) -> None:
+    if not csrf_token:
+        csrf_token = secrets.token_hex(32)
+    response.set_cookie(
+        key="csrf_token",
+        value=csrf_token,
+        httponly=False,
+        secure=settings.app_env == "production",
+        samesite="lax",
+        path="/",
+        max_age=settings.jwt_refresh_ttl_days * 86400,
+    )
 
 
 def _slugify(name: str) -> str:
@@ -74,7 +112,7 @@ async def _issue_tokens(db: AsyncSession, user: M.User, request: Request,
 
 @router.post("/signup", response_model=dict, status_code=201,
              dependencies=[Depends(rl_auth)])
-async def signup(body: SignupRequest, request: Request,
+async def signup(body: SignupRequest, request: Request, response: Response,
                  db: AsyncSession = Depends(get_db)):
     ok, msg = password_policy_ok(body.password)
     if not ok:
@@ -117,6 +155,8 @@ async def signup(body: SignupRequest, request: Request,
              verify_token)
 
     tokens = await _issue_tokens(db, user, request, org.id if org else None)
+    _set_refresh_cookie(response, tokens.refresh_token)
+    _set_csrf_cookie(response)
     await audit_service.record(db, action="auth.signup", actor_id=user.id,
                                org_id=org.id if org else None,
                                ip_hash=client_ip_hash(request))
@@ -129,35 +169,13 @@ async def signup(body: SignupRequest, request: Request,
 
 
 @router.post("/login", response_model=dict, dependencies=[Depends(rl_auth)])
-async def login(body: LoginRequest, request: Request,
+async def login(body: LoginRequest, request: Request, response: Response,
                 db: AsyncSession = Depends(get_db)):
     email_clean = body.email.lower().strip()
     user = (await db.execute(select(M.User).where(
         M.User.email == email_clean))).scalars().first()
 
-    if user is None and settings.app_env == "development":
-        # Dev convenience: auto-create account on login if it doesn't exist
-        log.info("dev mode: auto-provisioning user %s", email_clean)
-        user = M.User(
-            email=email_clean,
-            password_hash=hash_password(body.password),
-            name=email_clean.split("@")[0],
-            locale="en", speak_lang="en", hear_lang="en",
-            email_verified=True, is_platform_admin=True,
-        )
-        db.add(user)
-        await db.flush()
-        demo_org = (await db.execute(select(M.Organization).where(
-            M.Organization.slug == "demo-org"))).scalars().first()
-        if demo_org:
-            db.add(M.OrganizationMember(org_id=demo_org.id, user_id=user.id, role="owner"))
-            await db.flush()
-        await db.commit()
-    elif user and not verify_password(body.password, user.password_hash) and settings.app_env == "development":
-        log.info("dev mode: updating password for %s", email_clean)
-        user.password_hash = hash_password(body.password)
-        await db.commit()
-    elif user is None or not verify_password(body.password, user.password_hash):
+    if user is None or not verify_password(body.password, user.password_hash):
         await audit_service.record(db, action="auth.login_failed",
                                    actor_id=user.id if user else None,
                                    outcome="failure",
@@ -187,6 +205,8 @@ async def login(body: LoginRequest, request: Request,
         org_id = member.org_id if member else None
     user.last_login_at = utcnow()
     tokens = await _issue_tokens(db, user, request, org_id)
+    _set_refresh_cookie(response, tokens.refresh_token)
+    _set_csrf_cookie(response)
     await audit_service.record(db, action="auth.login", actor_id=user.id,
                                org_id=org_id, ip_hash=client_ip_hash(request))
     await db.commit()
@@ -195,63 +215,108 @@ async def login(body: LoginRequest, request: Request,
 
 
 @router.post("/social-login", response_model=dict, dependencies=[Depends(rl_auth)])
-async def social_login(body: SocialLoginRequest, request: Request,
+async def social_login(body: SocialLoginRequest, request: Request, response: Response,
                        db: AsyncSession = Depends(get_db)):
     provider = body.provider.lower().strip()
     if provider not in ("google", "github", "apple"):
         raise ValidationError(f"Unsupported social provider: {provider}")
 
-    # Determine email and display name
-    if body.email and "@" in body.email:
-        email_clean = body.email.lower().strip()
+    # 1. Cryptographically verify provider token / authorization code
+    verified = await social_auth_service.verify_identity(
+        provider=provider,
+        token=body.token,
+        code=body.code,
+        redirect_uri=body.redirect_uri,
+    )
+
+    # 2. Check if this exact provider identity already exists in user_identities
+    identity = (await db.execute(select(M.UserIdentity).where(
+        M.UserIdentity.provider == provider,
+        M.UserIdentity.provider_user_id == verified.provider_user_id,
+    ))).scalars().first()
+
+    if identity:
+        # Existing identity found - retrieve linked user
+        user = (await db.execute(select(M.User).where(M.User.id == identity.user_id))).scalars().first()
+        if not user:
+            raise AuthenticationError("Linked user account not found.")
+        if user.status != "active":
+            raise AuthenticationError("Account is not active.")
+
+        # Update identity metadata if provider info changed
+        identity.email = verified.email
+        identity.email_verified = verified.email_verified
+        identity.profile_data = verified.raw_claims
+        if not user.email_verified and verified.email_verified:
+            user.email_verified = True
     else:
-        defaults = {
-            "google": ("google.user@globaltalk.ai", "Google User"),
-            "github": ("github.developer@globaltalk.ai", "GitHub Developer"),
-            "apple": ("apple.id@privaterelay.appleid.com", "Apple User"),
-        }
-        email_clean, default_name = defaults[provider]
-        if not body.name:
-            body.name = default_name
+        # 3. Identity not yet linked. Look up if user exists with this verified email
+        clean_email = verified.email.lower().strip()
+        user = (await db.execute(select(M.User).where(M.User.email == clean_email))).scalars().first()
 
-    display_name = body.name or email_clean.split("@")[0].replace(".", " ").title()
+        if user:
+            # ACCOUNT TAKEOVER PROTECTION:
+            # We ONLY link to an existing user account if the provider asserts email_verified is TRUE!
+            if not verified.email_verified:
+                raise AuthenticationError(
+                    "Cannot link social account: identity provider has not verified this email address."
+                )
+            if user.status != "active":
+                raise AuthenticationError("Account is not active.")
 
-    user = (await db.execute(select(M.User).where(
-        M.User.email == email_clean))).scalars().first()
+            if not user.email_verified and verified.email_verified:
+                user.email_verified = True
 
-    if user is None:
-        log.info("Social login: auto-provisioning %s user %s", provider, email_clean)
-        random_pw = secrets.token_urlsafe(32)
-        user = M.User(
-            email=email_clean,
-            password_hash=hash_password(random_pw),
-            name=display_name,
-            locale="en",
-            speak_lang="en",
-            hear_lang="en",
-            email_verified=True,
-            is_platform_admin=False,
-        )
-        db.add(user)
-        await db.flush()
-
-        demo_org = (await db.execute(select(M.Organization).where(
-            M.Organization.slug == "demo-org"))).scalars().first()
-        if demo_org:
-            db.add(M.OrganizationMember(org_id=demo_org.id, user_id=user.id, role="member"))
-            await db.flush()
+            identity = M.UserIdentity(
+                user_id=user.id,
+                provider=provider,
+                provider_user_id=verified.provider_user_id,
+                email=clean_email,
+                email_verified=verified.email_verified,
+                profile_data=verified.raw_claims,
+            )
+            db.add(identity)
         else:
-            org_slug = _slugify(f"{display_name}-workspace")
-            new_org = M.Organization(name=f"{display_name}'s Workspace", slug=org_slug, plan="free")
-            db.add(new_org)
+            # 4. User does not exist - provision new user
+            display_name = verified.name or clean_email.split("@")[0]
+            random_pw = secrets.token_urlsafe(32)
+            user = M.User(
+                email=clean_email,
+                password_hash=hash_password(random_pw),
+                name=display_name,
+                locale="en",
+                speak_lang="en",
+                hear_lang="en",
+                email_verified=verified.email_verified,
+                is_platform_admin=False,
+            )
+            db.add(user)
             await db.flush()
-            db.add(M.OrganizationMember(org_id=new_org.id, user_id=user.id, role="owner"))
-            await db.flush()
-        await db.commit()
 
-    if user.status != "active":
-        raise AuthenticationError("Account is not active.")
+            demo_org = (await db.execute(select(M.Organization).where(
+                M.Organization.slug == "demo-org"))).scalars().first()
+            if demo_org:
+                db.add(M.OrganizationMember(org_id=demo_org.id, user_id=user.id, role="member"))
+                await db.flush()
+            else:
+                org_slug = _slugify(f"{display_name}-workspace")
+                new_org = M.Organization(name=f"{display_name}'s Workspace", slug=org_slug, plan="free")
+                db.add(new_org)
+                await db.flush()
+                db.add(M.OrganizationMember(org_id=new_org.id, user_id=user.id, role="owner"))
+                await db.flush()
 
+            identity = M.UserIdentity(
+                user_id=user.id,
+                provider=provider,
+                provider_user_id=verified.provider_user_id,
+                email=clean_email,
+                email_verified=verified.email_verified,
+                profile_data=verified.raw_claims,
+            )
+            db.add(identity)
+
+    # 5. Determine active organization
     member = (await db.execute(select(M.OrganizationMember).where(
         M.OrganizationMember.user_id == user.id,
         M.OrganizationMember.status == "active")
@@ -259,11 +324,18 @@ async def social_login(body: SocialLoginRequest, request: Request,
     org_id = member.org_id if member else None
 
     user.last_login_at = utcnow()
-    user.email_verified = True
     tokens = await _issue_tokens(db, user, request, org_id)
-    await audit_service.record(db, action="auth.social_login", actor_id=user.id,
-                               org_id=org_id, ip_hash=client_ip_hash(request),
-                               details={"provider": provider, "email": email_clean})
+    _set_refresh_cookie(response, tokens.refresh_token)
+    _set_csrf_cookie(response)
+
+    await audit_service.record(
+        db,
+        action="auth.social_login",
+        actor_id=user.id,
+        org_id=org_id,
+        ip_hash=client_ip_hash(request),
+        details={"provider": provider, "provider_sub": verified.provider_user_id, "email": verified.email},
+    )
     await db.commit()
     return {
         "user": UserOut.model_validate(user),
@@ -273,12 +345,44 @@ async def social_login(body: SocialLoginRequest, request: Request,
     }
 
 
+@router.get("/me/identities", response_model=list[UserIdentityOut])
+async def list_identities(principal: Principal = Depends(get_principal),
+                          db: AsyncSession = Depends(get_db)):
+    if principal.kind != "user" or not principal.user_id:
+        raise AuthenticationError("User authentication required.")
+    res = await db.execute(select(M.UserIdentity).where(M.UserIdentity.user_id == principal.user_id))
+    return [UserIdentityOut.model_validate(i) for i in res.scalars().all()]
+
+
+@router.delete("/me/identities/{provider}", status_code=204)
+async def unlink_identity(provider: str,
+                          principal: Principal = Depends(get_principal),
+                          db: AsyncSession = Depends(get_db)):
+    if principal.kind != "user" or not principal.user_id:
+        raise AuthenticationError("User authentication required.")
+    provider = provider.lower().strip()
+    identity = (await db.execute(select(M.UserIdentity).where(
+        M.UserIdentity.user_id == principal.user_id,
+        M.UserIdentity.provider == provider,
+    ))).scalars().first()
+    if not identity:
+        raise NotFoundError("Identity not linked.")
+    await db.delete(identity)
+    await audit_service.record(db, action="auth.identity_unlinked", actor_id=principal.user_id,
+                               org_id=principal.org_id, details={"provider": provider})
+    await db.commit()
+
+
 @router.post("/refresh", response_model=TokenPair)
-async def refresh(body: RefreshRequest, request: Request,
+async def refresh(body: RefreshRequest, request: Request, response: Response,
                   db: AsyncSession = Depends(get_db)):
-    payload = decode_token(body.refresh_token, "refresh")
+    raw_token = (body.refresh_token or "").strip() or request.cookies.get("refresh_token")
+    if not raw_token:
+        raise AuthenticationError("Refresh token missing.")
+
+    payload = decode_token(raw_token, "refresh")
     from app.security import hash_api_key
-    token_hash = hash_api_key(body.refresh_token)
+    token_hash = hash_api_key(raw_token)
     row = (await db.execute(select(M.RefreshToken).where(
         M.RefreshToken.jti == payload["jti"]))).scalars().first()
     if row is not None and row.revoked_at is not None and row.token_hash == token_hash:
@@ -293,6 +397,7 @@ async def refresh(body: RefreshRequest, request: Request,
                 tokens = await _issue_tokens(db, user, request,
                                              uuid.UUID(payload["org_id"]) if payload.get("org_id") else None,
                                              session_id=row.session_id)
+                _set_refresh_cookie(response, tokens.refresh_token)
                 await db.commit()
                 return tokens
 
@@ -321,13 +426,16 @@ async def refresh(body: RefreshRequest, request: Request,
     session = await db.get(M.Session, row.session_id)
     if session:
         session.last_seen_at = utcnow()
+    _set_refresh_cookie(response, tokens.refresh_token)
     await db.commit()
     return tokens
 
 
 @router.post("/logout", status_code=204)
-async def logout(request: Request, principal: Principal = Depends(get_principal),
+async def logout(request: Request, response: Response,
+                 principal: Principal = Depends(get_principal),
                  db: AsyncSession = Depends(get_db)):
+    _clear_refresh_cookie(response)
     auth = request.headers.get("authorization", "")
     if auth.startswith("Bearer "):
         try:
@@ -343,6 +451,26 @@ async def logout(request: Request, principal: Principal = Depends(get_principal)
                                        actor_id=principal.user.id,
                                        org_id=principal.org_id)
             await db.commit()
+
+
+@router.post("/logout-all", status_code=204)
+async def logout_all(response: Response,
+                     principal: Principal = Depends(get_principal),
+                     db: AsyncSession = Depends(get_db)):
+    _clear_refresh_cookie(response)
+    if principal.user:
+        await db.execute(update(M.RefreshToken).where(
+            M.RefreshToken.user_id == principal.user.id,
+            M.RefreshToken.revoked_at.is_(None))
+            .values(revoked_at=utcnow()))
+        await db.execute(update(M.Session).where(
+            M.Session.user_id == principal.user.id,
+            M.Session.revoked_at.is_(None))
+            .values(revoked_at=utcnow()))
+        await audit_service.record(db, action="auth.logout_all",
+                                   actor_id=principal.user.id,
+                                   org_id=principal.org_id)
+        await db.commit()
 
 
 @router.get("/me", response_model=dict)

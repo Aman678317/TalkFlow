@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy.orm import Session
 
 from globaltalk.core.audit import audit
@@ -28,6 +28,28 @@ from globaltalk.schemas import (AuthResponse, LoginRequest, MembershipOut, OrgOu
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 AUTH_LIMIT = Limit.parse(settings.rate_limit_auth)
+
+
+def _set_refresh_cookie(response: Response, refresh_token: str) -> None:
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        httponly=True,
+        secure=settings.app_env == "production",
+        samesite="lax",
+        path="/api/v1/auth",
+        max_age=settings.refresh_token_ttl_days * 86400,
+    )
+
+
+def _clear_refresh_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key="refresh_token",
+        path="/api/v1/auth",
+        httponly=True,
+        secure=settings.app_env == "production",
+        samesite="lax",
+    )
 
 
 def _slugify(name: str, fallback: str) -> str:
@@ -51,7 +73,7 @@ def _issue_tokens(db: Session, user: User, org: Organization | None, request: Re
 
 
 @router.post("/signup", response_model=AuthResponse, status_code=201)
-def signup(body: SignupRequest, request: Request, db: Session = Depends(get_db)):
+def signup(body: SignupRequest, request: Request, response: Response, db: Session = Depends(get_db)):
     check_rate_limit(f"signup:{request.client.host if request.client else 'x'}", AUTH_LIMIT)
     email = body.email.lower()
     if db.query(User).filter(User.email == email).first():
@@ -77,12 +99,13 @@ def signup(body: SignupRequest, request: Request, db: Session = Depends(get_db))
     tokens, _ = _issue_tokens(db, user, org, request,
                               request.headers.get("user-agent", ""),
                               request.client.host if request.client else "")
+    _set_refresh_cookie(response, tokens.refresh_token)
     return AuthResponse(tokens=tokens, user=UserOut.model_validate(user),
                         membership=MembershipOut(org=OrgOut.model_validate(org), role="owner"))
 
 
 @router.post("/login", response_model=AuthResponse)
-def login(body: LoginRequest, request: Request, db: Session = Depends(get_db)):
+def login(body: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)):
     check_rate_limit(f"login:{body.email.lower()}", AUTH_LIMIT)
     user = db.query(User).filter(User.email == body.email.lower()).first()
     # constant-time-ish: verify against a dummy hash when the user doesn't exist
@@ -103,6 +126,7 @@ def login(body: LoginRequest, request: Request, db: Session = Depends(get_db)):
           ip_address=request.client.host if request.client else "")
     tokens, _ = _issue_tokens(db, user, org, request, request.headers.get("user-agent", ""),
                               request.client.host if request.client else "")
+    _set_refresh_cookie(response, tokens.refresh_token)
     return AuthResponse(
         tokens=tokens, user=UserOut.model_validate(user),
         membership=MembershipOut(org=OrgOut.model_validate(org), role=membership[0].role)
@@ -110,11 +134,14 @@ def login(body: LoginRequest, request: Request, db: Session = Depends(get_db)):
 
 
 @router.post("/refresh", response_model=TokenPair)
-def refresh(body: RefreshRequest, request: Request, db: Session = Depends(get_db)):
+def refresh(body: RefreshRequest, request: Request, response: Response, db: Session = Depends(get_db)):
+    raw_token = (body.refresh_token or "").strip() or request.cookies.get("refresh_token")
+    if not raw_token:
+        raise UnauthorizedError("Refresh token missing", code="refresh_missing")
     from globaltalk.core.security import decode_token
-    payload = decode_token(body.refresh_token, "refresh")
+    payload = decode_token(raw_token, "refresh")
     row = (db.query(RefreshToken)
-           .filter(RefreshToken.token_hash == sha256(body.refresh_token),
+           .filter(RefreshToken.token_hash == sha256(raw_token),
                    RefreshToken.revoked.is_(False)).first())
     if not row or row.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
         raise UnauthorizedError("Refresh token revoked or expired", code="refresh_invalid")
@@ -136,22 +163,44 @@ def refresh(body: RefreshRequest, request: Request, db: Session = Depends(get_db
                         + timedelta(days=settings.refresh_token_ttl_days)))
     session.last_seen_at = datetime.now(timezone.utc)
     db.commit()
+    _set_refresh_cookie(response, new_refresh)
     return TokenPair(access_token=access, refresh_token=new_refresh,
                      expires_in=settings.access_token_ttl_minutes * 60)
 
 
 @router.post("/logout", status_code=204)
-def logout(body: RefreshRequest, principal: Principal = Depends(get_principal),
+def logout(request: Request, response: Response, body: RefreshRequest = None,
+           principal: Principal = Depends(get_principal),
            db: Session = Depends(get_db)):
-    row = (db.query(RefreshToken)
-           .filter(RefreshToken.token_hash == sha256(body.refresh_token)).first())
-    if row:
-        row.revoked = True
-        session = db.get(UserSession, row.session_id)
-        if session:
-            session.revoked = True
-        db.commit()
+    _clear_refresh_cookie(response)
+    raw_token = (body.refresh_token if body and body.refresh_token else "") or request.cookies.get("refresh_token")
+    if raw_token:
+        row = (db.query(RefreshToken)
+               .filter(RefreshToken.token_hash == sha256(raw_token)).first())
+        if row:
+            row.revoked = True
+            session = db.get(UserSession, row.session_id)
+            if session:
+                session.revoked = True
+            db.commit()
     audit(db, "auth.logout", org_id=principal.org_id if principal.org else None,
+          actor_user_id=principal.user_id)
+
+
+@router.post("/logout-all", status_code=204)
+def logout_all(request: Request, response: Response,
+               principal: Principal = Depends(get_principal),
+               db: Session = Depends(get_db)):
+    _clear_refresh_cookie(response)
+    if principal.user:
+        for rt in db.query(RefreshToken).filter(RefreshToken.user_id == principal.user.id,
+                                                RefreshToken.revoked.is_(False)).all():
+            rt.revoked = True
+        for us in db.query(UserSession).filter(UserSession.user_id == principal.user.id,
+                                              UserSession.revoked.is_(False)).all():
+            us.revoked = True
+        db.commit()
+    audit(db, "auth.logout_all", org_id=principal.org_id if principal.org else None,
           actor_user_id=principal.user_id)
 
 
@@ -187,8 +236,9 @@ def password_reset(body: PasswordResetRequest, db: Session = Depends(get_db)):
         user.password_reset_expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
         db.commit()
         audit(db, "auth.password_reset_requested", actor_user_id=user.id)
-        if settings.app_env != "production":
+        if settings.app_env == "test":
             resp["dev_token"] = token
+            resp["test_token"] = token
     return resp
 
 

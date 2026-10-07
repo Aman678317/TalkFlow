@@ -39,9 +39,21 @@ def generate_secret() -> str:
 async def register_endpoint(db: AsyncSession, org_id: uuid.UUID, url: str,
                             events: list[str],
                             created_by: uuid.UUID | None) -> M.WebhookEndpoint:
+    from app.errors import ValidationError
+    import urllib.parse
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValidationError("Webhook URL must use http or https scheme.")
+    if not parsed.hostname:
+        raise ValidationError("Invalid webhook URL host.")
+    if settings.is_production:
+        try:
+            await _assert_public_url(url)
+        except RuntimeError as exc:
+            raise ValidationError(str(exc))
+
     for e in events:
         if e not in EVENT_TYPES:
-            from app.errors import ValidationError
             raise ValidationError(f"Unknown event type '{e}'.",
                                   details={"allowed": EVENT_TYPES})
     ep = M.WebhookEndpoint(org_id=org_id, url=url,
@@ -104,6 +116,7 @@ async def deliver_job(payload: dict) -> None:
         headers = {
             "Content-Type": "application/json",
             "X-GlobalTalk-Signature": sig,
+            "GlobalTalk-Signature": f"t={ts},{sig}",
             "X-GlobalTalk-Timestamp": str(ts),
             "X-GlobalTalk-Event": delivery.event_type,
             "X-GlobalTalk-Delivery": str(delivery.id),
@@ -147,18 +160,47 @@ async def deliver_job(payload: dict) -> None:
         await db.commit()
 
 
-async def _assert_public_url(url: str) -> None:
+async def _assert_public_url(url: str, force_check: bool = False) -> None:
     """SSRF guard: resolve host and refuse private/link-local targets in prod."""
-    if not settings.is_production:
+    from app import config as _cfg
+    live_settings = getattr(_cfg, "settings", settings)
+    is_prod = getattr(live_settings, "is_production", False) or getattr(live_settings, "app_env", "") == "production"
+    if not is_prod and not force_check:
         return
     import urllib.parse
-    host = urllib.parse.urlparse(url).hostname or ""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.username or parsed.password:
+        raise RuntimeError("webhook URL must not contain credentials")
+    if parsed.scheme not in ("http", "https"):
+        raise RuntimeError("webhook URL must use http or https scheme")
+    host = parsed.hostname or ""
+    if not host:
+        raise RuntimeError("empty webhook host")
+
+    blocked_hosts = {
+        "localhost", "metadata.google.internal", "metadata", "instance-data",
+        "169.254.169.254"
+    }
+    if host.lower() in blocked_hosts or host.lower().endswith(".internal") or host.lower().endswith(".local"):
+        raise RuntimeError("webhook target resolves to a private address")
+
     try:
         infos = await asyncio.to_thread(socket.getaddrinfo, host, None)
     except socket.gaierror as e:
         raise RuntimeError(f"cannot resolve webhook host: {e}")
+    if not infos:
+        raise RuntimeError("cannot resolve webhook host")
+
     for info in infos:
-        ip = ipaddress.ip_address(info[4][0])
+        ip_str = info[4][0]
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            raise RuntimeError(f"invalid IP address resolved: {ip_str}")
+
+        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+            ip = ip.ipv4_mapped
+
         if (ip.is_private or ip.is_loopback or ip.is_link_local
-                or ip.is_reserved or ip.is_multicast):
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
             raise RuntimeError("webhook target resolves to a private address")

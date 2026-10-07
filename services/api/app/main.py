@@ -61,7 +61,8 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
         expose_headers=["X-Request-ID", "X-Trace-ID", "Retry-After"],
     )
-    from app.middleware import RequestContextMiddleware
+    from app.middleware import CSRFMiddleware, RequestContextMiddleware
+    app.add_middleware(CSRFMiddleware)
     app.add_middleware(RequestContextMiddleware)
     register_error_handlers(app)
 
@@ -98,6 +99,13 @@ def create_app() -> FastAPI:
               platform.integrations_router, platform.admin_router):
         app.include_router(r)
     app.include_router(ws_router)
+
+    try:
+        from app.agent import mount_copilotkit_agent
+        mount_copilotkit_agent(app, path="/api/copilotkit")
+        log.info("Mounted CopilotKit LangGraph agent at /api/copilotkit")
+    except Exception as exc:
+        log.warning("Could not mount CopilotKit agent: %s", exc)
 
     @app.get("/", include_in_schema=False)
     async def _root():
@@ -170,59 +178,31 @@ async def _lifespan_startup(app: FastAPI) -> None:
 
 async def _ensure_schema() -> None:
     """Dev/test convenience: create tables if migrations haven't run.
-    Production REQUIRES alembic upgrade head (schema drift fails loudly)."""
+    Production REQUIRES alembic upgrade head (schema drift fails closed)."""
     from sqlalchemy import inspect, text
     from app.db.session import engine
     from app.db.base import Base
     import app.db.models  # noqa: F401
+
     if not settings.is_production:
         async with engine().begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-            def _patch_schema(sync_conn):
-                insp = inspect(sync_conn)
-                tables = insp.get_table_names()
-                if "language_capabilities" in tables:
-                    l_cols = {c["name"] for c in insp.get_columns("language_capabilities")}
-                    col_defs = [
-                        ("script", "VARCHAR(16) DEFAULT 'Latn'"),
-                        ("rtl", "BOOLEAN DEFAULT 0"),
-                        ("translation_status", "VARCHAR(16) DEFAULT 'SUPPORTED'"),
-                        ("speech_input_status", "VARCHAR(16) DEFAULT 'EXPERIMENTAL'"),
-                        ("speech_output_status", "VARCHAR(16) DEFAULT 'EXPERIMENTAL'"),
-                        ("realtime_status", "VARCHAR(16) DEFAULT 'EXPERIMENTAL'"),
-                        ("document_status", "VARCHAR(16) DEFAULT 'SUPPORTED'"),
-                        ("wer_benchmark", "FLOAT"),
-                        ("mt_quality_score", "FLOAT"),
-                        ("speech_input_supported", "BOOLEAN DEFAULT 0"),
-                        ("speech_output_supported", "BOOLEAN DEFAULT 0"),
-                        ("translation_supported", "BOOLEAN DEFAULT 0"),
-                        ("realtime_supported", "BOOLEAN DEFAULT 0"),
-                        ("document_supported", "BOOLEAN DEFAULT 0"),
-                        ("stt_status", "VARCHAR(16) DEFAULT 'EXPERIMENTAL'"),
-                        ("tts_status", "VARCHAR(16) DEFAULT 'EXPERIMENTAL'"),
-                        ("mt_status", "VARCHAR(16) DEFAULT 'EXPERIMENTAL'"),
-                    ]
-                    for col_name, col_type in col_defs:
-                        if col_name not in l_cols:
-                            sync_conn.execute(text(f"ALTER TABLE language_capabilities ADD COLUMN {col_name} {col_type}"))
-                if "webhook_deliveries" in tables:
-                    cols = {c["name"] for c in insp.get_columns("webhook_deliveries")}
-                    if "endpoint_id" not in cols:
-                        sync_conn.execute(text("ALTER TABLE webhook_deliveries ADD COLUMN endpoint_id VARCHAR(36)"))
-                    if "payload_json" not in cols:
-                        sync_conn.execute(text("ALTER TABLE webhook_deliveries ADD COLUMN payload_json JSON"))
-                    if "last_status_code" not in cols:
-                        sync_conn.execute(text("ALTER TABLE webhook_deliveries ADD COLUMN last_status_code INTEGER"))
-                    if "next_retry_at" not in cols:
-                        sync_conn.execute(text("ALTER TABLE webhook_deliveries ADD COLUMN next_retry_at TIMESTAMP"))
-            await conn.run_sync(_patch_schema)
         return
+
+    # Production gate: Fail closed if migrations have not been applied up to head
     async with engine().connect() as conn:
-        tables = await conn.run_sync(
-            lambda sync_conn: inspect(sync_conn).get_table_names())
-    if "users" in tables:
-        return
-    raise RuntimeError("database schema missing — run `alembic upgrade head`")
+        tables = await conn.run_sync(lambda sync_conn: inspect(sync_conn).get_table_names())
+        if "alembic_version" not in tables or "users" not in tables:
+            raise RuntimeError("Database schema uninitialized. Run `alembic upgrade head` before booting production.")
+        
+        result = await conn.execute(text("SELECT version_num FROM alembic_version"))
+        current_rev = result.scalar_one_or_none()
+        EXPECTED_HEAD = "2202ca7dc080"
+        if current_rev != EXPECTED_HEAD:
+            raise RuntimeError(
+                f"Database migration version mismatch in production: found '{current_rev}', expected '{EXPECTED_HEAD}'. "
+                "Run `alembic upgrade head` to apply pending migrations."
+            )
 
 
 async def _lifespan_shutdown(app: FastAPI) -> None:
@@ -238,6 +218,8 @@ async def _lifespan_shutdown(app: FastAPI) -> None:
     from app.realtime.session_manager import manager
     for sid in list(manager._sessions.keys()):
         await manager.close_session(sid)
+    from app.queue import close_queue
+    await close_queue()
     from app.db.session import close_db
     await close_db()
 

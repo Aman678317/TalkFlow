@@ -32,15 +32,20 @@ bearer = HTTPBearer(auto_error=False)
 
 # permission -> API-key scope that grants it (developer platform keys have no
 # membership role; their scopes ARE their permissions)
-API_KEY_PERMISSION_SCOPES = {
-    "use_translate": "translate",
-    "manage_documents": "documents",
-    "export_document": "documents",
-    "use_voice": "voice",
-    "view_transcript": "voice",
-    "view_usage": "usage",
-    "manage_glossaries": "glossaries",
-    "manage_tm": "translation_memories",
+API_KEY_PERMISSION_SCOPES: dict[str, set[str] | str] = {
+    "use_translate": {"translate", "translate:write"},
+    "manage_documents": {"documents", "documents:write"},
+    "export_document": {"documents", "documents:read", "documents:write"},
+    "create_meeting": {"meetings", "meetings:write", "meetings:create"},
+    "delete_meeting": {"meetings", "meetings:write", "meetings:delete"},
+    "view_transcript": {"voice", "voice:read", "meetings", "meetings:read", "transcripts:read"},
+    "use_voice": {"voice", "voice:write"},
+    "view_usage": {"usage", "usage:read"},
+    "manage_glossaries": {"glossaries", "glossaries:write"},
+    "manage_tm": {"tm", "translation_memories", "tm:write"},
+    "manage_webhooks": {"webhooks", "webhooks:write"},
+    "manage_styles": {"styles", "styles:write"},
+    "manage_api_keys": {"api_keys", "api_keys:write"},
 }
 
 
@@ -73,11 +78,15 @@ class Principal:
             if "*" in scopes:
                 return
             needed = API_KEY_PERMISSION_SCOPES.get(permission)
-            if needed and needed in scopes:
-                return
+            if needed:
+                if isinstance(needed, set):
+                    if scopes & needed:
+                        return
+                elif needed in scopes:
+                    return
             raise AuthorizationError(
                 f"API key lacks permission '{permission}'.",
-                details={"required_scope": needed})
+                details={"required_scope": list(needed) if isinstance(needed, set) else needed})
         require_role(self.role, permission)
 
     @property
@@ -169,7 +178,7 @@ async def get_principal(
         request.state.principal = principal
         return principal
 
-    if token.startswith("gt_live_") or token.startswith("gt_test_"):
+    if token.startswith("gt_live_") or token.startswith("gt_test_") or token.startswith("gtk_"):
         raise AuthenticationError("Invalid or revoked API key.")
 
     # --- JWT path ---
@@ -187,9 +196,11 @@ async def get_principal(
         context.bind(tenant_id=str(org.id) if org else None, user_id=str(user.id))
         request.state.principal = principal
         return principal
-    except Exception:
-        # In non-production/development mode, allow mock / dev testing with any API key (e.g. Desi SDK tests)
-        if not settings.is_production:
+    except Exception as exc:
+        if isinstance(exc, AuthenticationError):
+            raise
+        # Allow test mock key strictly if non-production AND token is an explicit test SDK key
+        if not settings.is_production and (token.endswith(":fx") or token.startswith("test-key-")):
             res_org = await db.execute(select(M.Organization).where(M.Organization.status == "active"))
             org = res_org.scalars().first()
             res_user = await db.execute(select(M.User).where(M.User.status == "active"))
@@ -207,10 +218,15 @@ async def get_principal_optional(
     db: AsyncSession = Depends(get_db),
 ) -> Principal | None:
     """Optional principal for public/guest-friendly endpoints like meeting join."""
-    try:
-        return await get_principal(request, creds, db)
-    except Exception:
+    auth_present = (
+        (creds and creds.credentials)
+        or bool(request.headers.get("authorization"))
+        or bool(request.headers.get("x-api-key"))
+        or bool(request.query_params.get("auth_key"))
+    )
+    if not auth_present:
         return None
+    return await get_principal(request, creds, db)
 
 
 async def require_org_user(principal: Principal = Depends(get_principal)) -> Principal:
@@ -228,9 +244,10 @@ def require_permission(permission: str):
 
 # --- rate-limit dependencies ------------------------------------------------ #
 
-async def rl_translate(principal: Principal = Depends(get_principal)):
-    await check_rate_limit("translate", principal.identity_for_rate_limit,
-                           settings.rate_limit_translate)
+async def rl_translate(request: Request,
+                       principal: Principal | None = Depends(get_principal_optional)):
+    ident = principal.identity_for_rate_limit if principal else f"anon:{client_ip_hash(request)}"
+    await check_rate_limit("translate", ident, settings.rate_limit_translate)
     return principal
 
 

@@ -36,14 +36,26 @@ export default function Glossaries() {
   const invalidate = () => { qc.invalidateQueries({ queryKey: ["glossaries"] }); qc.invalidateQueries({ queryKey: ["glossary"] }); };
 
   const create = useMutation({
-    mutationFn: () => api("/api/v1/glossaries", { method: "POST", body: form }),
+    mutationFn: () => api("/api/v1/glossaries", {
+      method: "POST",
+      body: {
+        ...form,
+        source_lang: form.source_language,
+        target_lang: form.target_language,
+      },
+    }),
     onSuccess: (g: any) => { setCreateOpen(false); setSelected(g.id); invalidate(); },
     onError: (e: any) => push({ kind: "error", title: "Create failed", body: e.message }),
   });
   const addTerm = useMutation({
     mutationFn: () => api(`/api/v1/glossaries/${selected}/terms`, {
       method: "POST",
-      body: { ...term, spoken_variants: term.spoken_variants.split(",").map((s) => s.trim()).filter(Boolean) },
+      body: {
+        ...term,
+        source_text: term.source_term,
+        target_text: term.target_term,
+        spoken_variants: term.spoken_variants.split(",").map((s) => s.trim()).filter(Boolean),
+      },
     }),
     onSuccess: () => { setTermOpen(false); setTerm({ source_term: "", target_term: "", part_of_speech: "", do_not_translate: false, spoken_variants: "" }); invalidate(); },
   });
@@ -87,7 +99,7 @@ export default function Glossaries() {
                 <Badge tone={gl.status === "active" ? "good" : gl.status === "archived" ? "neutral" : "warn"}>{gl.status}</Badge>
               </div>
               <p className="mt-0.5 text-[11px] text-ink-400">
-                {gl.source_language} → {gl.target_language} · v{gl.version} · {gl.term_count} terms · {gl.domain}
+                {gl.source_language || (gl as any).source_lang} → {gl.target_language || (gl as any).target_lang} · v{gl.version} · {gl.term_count ?? (gl as any).terms?.length ?? 0} terms · {gl.domain}
               </p>
             </button>
           ))}
@@ -111,8 +123,8 @@ export default function Glossaries() {
             <table className="w-full text-left text-sm">
               <thead>
                 <tr className="border-b border-ink-100 text-[11px] uppercase tracking-wider text-ink-400">
-                  <th className="py-2 pr-2">Source ({g.source_language})</th>
-                  <th className="py-2 pr-2">Target ({g.target_language})</th>
+                  <th className="py-2 pr-2">Source ({g.source_language || (g as any).source_lang})</th>
+                  <th className="py-2 pr-2">Target ({g.target_language || (g as any).target_lang})</th>
                   <th className="py-2 pr-2">Spoken variants</th>
                   <th className="py-2" aria-label="Actions" />
                 </tr>
@@ -121,13 +133,13 @@ export default function Glossaries() {
                 {g.terms.map((t) => (
                   <tr key={t.id} className="border-b border-ink-50">
                     <td className="py-2 pr-2">
-                      {t.source_term}
+                      {t.source_term || (t as any).source_text}
                       {t.do_not_translate && <Badge tone="warn" title="Kept as-is in translations"> DNT</Badge>}
                     </td>
-                    <td className="py-2 pr-2 font-medium">{t.target_term}</td>
-                    <td className="py-2 pr-2 text-xs text-ink-400">{t.spoken_variants?.join(", ")}</td>
+                    <td className="py-2 pr-2 font-medium">{t.target_term || (t as any).target_text}</td>
+                    <td className="py-2 pr-2 text-xs text-ink-400">{(t.spoken_variants || (t as any).spoken_variants_json || []).join(", ")}</td>
                     <td className="py-2 text-right">
-                      <Button size="sm" variant="ghost" onClick={() => removeTerm.mutate(t.id)} aria-label={`Delete ${t.source_term}`}>✕</Button>
+                      <Button size="sm" variant="ghost" onClick={() => removeTerm.mutate(t.id)} aria-label={`Delete ${t.source_term || (t as any).source_text}`}>✕</Button>
                     </td>
                   </tr>
                 ))}

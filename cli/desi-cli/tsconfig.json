@@ -31,7 +31,8 @@
     "noImplicitOverride": true,
     "noPropertyAccessFromIndexSignature": true,
     "skipLibCheck": true,
-    "incremental": true
+    "incremental": true,
+    "types": ["node", "ws"]
   },
   "include": [
     "src/**/*"

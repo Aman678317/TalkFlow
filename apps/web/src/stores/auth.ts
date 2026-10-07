@@ -143,13 +143,11 @@ export const useAuth = create<AuthState>((set, get) => ({
 
   async logout() {
     try {
-      const refresh = localStorage.getItem("gt.refresh");
-      if (refresh && !refresh.startsWith("loc_")) {
-        await api("/api/v1/auth/logout", { method: "POST", body: { refresh_token: refresh }, timeoutMs: 2000 });
-      }
+      await api("/api/v1/auth/logout", { method: "POST", body: {}, timeoutMs: 3000 });
     } catch { /* best effort */ }
     setTokens(null, null);
-    persistTokens();
+    localStorage.removeItem("gt.access");
+    localStorage.removeItem("gt.refresh");
     localStorage.removeItem("gt.local_user");
     localStorage.removeItem("gt.local_org");
     set({
@@ -165,20 +163,6 @@ export const useAuth = create<AuthState>((set, get) => ({
 
   async refreshMe() {
     loadPersistedTokens();
-    const hasAccess = localStorage.getItem("gt.access");
-    const hasRefresh = localStorage.getItem("gt.refresh");
-    if (!hasAccess && !hasRefresh) {
-      set({
-        user: null,
-        org: null,
-        organizations: [],
-        role: null,
-        permissions: [],
-        initialized: true,
-        status: "unauthed",
-      });
-      return;
-    }
 
     setUnauthorizedHandler(() => {
       setTokens(null, null);
@@ -213,53 +197,44 @@ export const useAuth = create<AuthState>((set, get) => ({
         initialized: true,
         status: user ? "authed" : "unauthed",
       });
-    } catch (err: any) {
-      // If unauthorized (401), wipe tokens and logout
-      if (err?.status === 401) {
-        setTokens(null, null);
-        persistTokens();
-        localStorage.removeItem("gt.local_user");
-        localStorage.removeItem("gt.local_org");
-        set({
-          user: null,
-          org: null,
-          organizations: [],
-          role: null,
-          permissions: [],
-          initialized: true,
-          status: "unauthed",
-        });
-      } else {
-        // If temporary network failure, check if we have cached user to maintain session
-        const savedUserStr = localStorage.getItem("gt.local_user");
-        if (savedUserStr) {
-          try {
-            const user = JSON.parse(savedUserStr);
-            const savedOrgStr = localStorage.getItem("gt.local_org");
-            const org = savedOrgStr ? JSON.parse(savedOrgStr) : null;
-            set({
-              user,
-              org,
-              organizations: org ? [{ org, role: "owner" }] : [],
-              role: "owner",
-              initialized: true,
-              status: "authed",
-            });
-            return;
-          } catch {
-            /* ignore */
-          }
-        }
-        set({
-          user: null,
-          org: null,
-          organizations: [],
-          role: null,
-          permissions: [],
-          initialized: true,
-          status: "unauthed",
-        });
-      }
+    } catch {
+      // Prevent displaying stale cached identities when authentication fails
+      setTokens(null, null);
+      persistTokens();
+      localStorage.removeItem("gt.local_user");
+      localStorage.removeItem("gt.local_org");
+      set({
+        user: null,
+        org: null,
+        organizations: [],
+        role: null,
+        permissions: [],
+        initialized: true,
+        status: "unauthed",
+      });
     }
   },
 }));
+
+if (typeof window !== "undefined" && typeof BroadcastChannel !== "undefined") {
+  try {
+    const channel = new BroadcastChannel("talkflow_auth_channel");
+    channel.addEventListener("message", (event) => {
+      if (event.data?.type === "LOGOUT") {
+        useAuth.setState({
+          user: null,
+          org: null,
+          organizations: [],
+          role: null,
+          permissions: [],
+          initialized: true,
+          status: "unauthed",
+        });
+      } else if (event.data?.type === "LOGIN") {
+        void useAuth.getState().refreshMe();
+      }
+    });
+  } catch {
+    /* BroadcastChannel unsupported or restricted */
+  }
+}

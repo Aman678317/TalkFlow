@@ -22,6 +22,13 @@ class PCMCaptureProcessor extends AudioWorkletProcessor {
 registerProcessor('pcm-capture', PCMCaptureProcessor);
 `;
 
+export interface MicCaptureOptions {
+  deviceId?: string;
+  echoCancellation?: boolean;
+  noiseSuppression?: boolean;
+  autoGainControl?: boolean;
+}
+
 export class MicCapture {
   private ctx: AudioContext | null = null;
   private stream: MediaStream | null = null;
@@ -31,15 +38,23 @@ export class MicCapture {
     return this.stream;
   }
 
-  async start(targetSampleRate: number, onFrame: (pcm16: ArrayBuffer) => void): Promise<void> {
+  async start(
+    targetSampleRate: number,
+    onFrame: (pcm16: ArrayBuffer) => void,
+    options?: MicCaptureOptions
+  ): Promise<void> {
     this.ctx = new AudioContext({ sampleRate: targetSampleRate });
+    const audioConstraints: MediaTrackConstraints = {
+      channelCount: 1,
+      echoCancellation: options?.echoCancellation ?? true,
+      noiseSuppression: options?.noiseSuppression ?? true,
+      autoGainControl: options?.autoGainControl ?? true,
+    };
+    if (options?.deviceId) {
+      audioConstraints.deviceId = { exact: options.deviceId };
+    }
     this.stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        channelCount: 1,
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      },
+      audio: audioConstraints,
     });
     const blobUrl = URL.createObjectURL(
       new Blob([WORKLET_CODE], { type: "application/javascript" }),
@@ -102,6 +117,19 @@ export class AudioPlayer {
 
   async resumeContext() {
     if (this.ctx.state === "suspended") await this.ctx.resume();
+  }
+
+  /** Set speaker output device if supported by browser */
+  async setSinkId(deviceId: string): Promise<boolean> {
+    if ("setSinkId" in this.ctx && typeof (this.ctx as any).setSinkId === "function") {
+      try {
+        await (this.ctx as any).setSinkId(deviceId);
+        return true;
+      } catch (e) {
+        console.warn("setSinkId failed", e);
+      }
+    }
+    return false;
   }
 
   /** Enqueue decoded WAV bytes (TTS events). Replaces anything with the same tag. */

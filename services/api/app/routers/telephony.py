@@ -846,6 +846,8 @@ async def save_agent_prompt(
             )
         )
         agent_prompt = res.scalars().first()
+        if not agent_prompt:
+            raise NotFoundError("Agent prompt not found.")
 
     if not agent_prompt:
         agent_prompt = M.AgentPrompt(
@@ -965,7 +967,7 @@ async def activate_prompt_version(
 
     agent = await db.get(M.AgentPrompt, ver.agent_prompt_id)
     if not agent or agent.org_id != principal.org_id:
-        raise NotFoundError("Agent not found.")
+        raise NotFoundError("Prompt version not found.")
 
     ver.status = "active"
     agent.active_version_id = ver.id

@@ -54,11 +54,21 @@ def _org(p: Principal) -> M.Organization:
 # API keys
 # --------------------------------------------------------------------------- #
 
+ALLOWED_KEY_SCOPES = {
+    "*", "translate", "translate:write", "detect", "documents", "documents:read", "documents:write",
+    "voice", "voice:write", "languages", "usage", "usage:read", "glossaries", "glossaries:write",
+    "tm", "translation_memories", "meetings", "meetings:read", "meetings:write", "meetings:create",
+    "webhooks", "webhooks:write", "styles", "styles:write", "api_keys",
+}
+
 @keys_router.post("", response_model=ApiKeyCreated, status_code=201)
 async def create_api_key(body: ApiKeyCreate,
                          principal: Principal = Depends(require_org_user),
                          db: AsyncSession = Depends(get_db)):
     principal.require("manage_api_keys")
+    for s in (body.scopes or []):
+        if s not in ALLOWED_KEY_SCOPES:
+            raise ValidationError(f"Unknown API key scope '{s}'.", details={"allowed": sorted(ALLOWED_KEY_SCOPES)})
     plaintext, key_hash, prefix = generate_api_key()
     expires = (utcnow() + timedelta(days=body.expires_in_days)
                if body.expires_in_days else None)

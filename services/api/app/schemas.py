@@ -5,7 +5,10 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import (
+    BaseModel, ConfigDict, EmailStr, Field,
+    computed_field, field_validator, model_validator,
+)
 
 # --------------------------------------------------------------------------- #
 # Common
@@ -59,10 +62,20 @@ class SocialLoginRequest(BaseModel):
     provider: Literal["google", "github", "apple"]
     token: str | None = None
     code: str | None = None
+    redirect_uri: str | None = None
     email: str | None = None
     name: str | None = None
     avatar_url: str | None = None
     provider_user_id: str | None = None
+
+
+class UserIdentityOut(ORMModel):
+    id: uuid.UUID
+    provider: str
+    provider_user_id: str
+    email: str | None = None
+    email_verified: bool = False
+    created_at: datetime
 
 
 class TokenPair(BaseModel):
@@ -73,7 +86,7 @@ class TokenPair(BaseModel):
 
 
 class RefreshRequest(BaseModel):
-    refresh_token: str
+    refresh_token: str | None = None
 
 
 class UserOut(ORMModel):
@@ -286,10 +299,20 @@ class LanguageOut(ORMModel):
 
 class GlossaryCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
-    source_lang: str
-    target_lang: str
+    source_lang: str = "en"
+    target_lang: str = "hi"
     description: str = ""
     terms: list[dict] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _remap_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "source_language" in data and "source_lang" not in data:
+                data["source_lang"] = data["source_language"]
+            if "target_language" in data and "target_lang" not in data:
+                data["target_lang"] = data["target_language"]
+        return data
 
 
 class GlossaryTermIn(BaseModel):
@@ -299,6 +322,16 @@ class GlossaryTermIn(BaseModel):
     spoken_variants: list[str] = Field(default_factory=list)
     notes: str = ""
 
+    @model_validator(mode="before")
+    @classmethod
+    def _remap_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "source_term" in data and "source_text" not in data:
+                data["source_text"] = data["source_term"]
+            if "target_term" in data and "target_text" not in data:
+                data["target_text"] = data["target_term"]
+        return data
+
 
 class GlossaryTermOut(ORMModel):
     id: uuid.UUID
@@ -307,6 +340,16 @@ class GlossaryTermOut(ORMModel):
     case_sensitive: bool
     spoken_variants_json: list
     notes: str
+
+    @computed_field
+    @property
+    def source_term(self) -> str:
+        return self.source_text
+
+    @computed_field
+    @property
+    def target_term(self) -> str:
+        return self.target_text
 
 
 class GlossaryOut(ORMModel):
@@ -319,6 +362,21 @@ class GlossaryOut(ORMModel):
     description: str
     created_at: datetime
     terms: list[GlossaryTermOut] = []
+
+    @computed_field
+    @property
+    def source_language(self) -> str:
+        return self.source_lang
+
+    @computed_field
+    @property
+    def target_language(self) -> str:
+        return self.target_lang
+
+    @computed_field
+    @property
+    def term_count(self) -> int:
+        return len(self.terms)
 
 
 class TMCreate(BaseModel):

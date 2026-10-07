@@ -138,6 +138,7 @@ class Settings(BaseSettings):
     otel_endpoint: str = ""
     sentry_dsn: str = ""
     metrics_enabled: bool = True
+    metrics_token: str = ""
 
     # --- security ---
     clamav_host: str = ""
@@ -209,6 +210,18 @@ class Settings(BaseSettings):
             if self.jwt_secret in insecure_defaults or len(self.jwt_secret) < 32:
                 raise ValueError(
                     "Production environment requires a strong 'JWT_SECRET' (at least 32 characters, non-default)."
+                )
+            if not self.redis_url:
+                raise ValueError(
+                    "Production environment requires 'REDIS_URL' for distributed caching and queues."
+                )
+            if "sqlite" in self.database_url.lower():
+                raise ValueError(
+                    "Production environment requires a production PostgreSQL database ('DATABASE_URL'). SQLite is not permitted in production."
+                )
+            if any(o == "*" for o in self.cors_origins):
+                raise ValueError(
+                    "Production environment forbids wildcard '*' in 'cors_origins' when credentials are enabled."
                 )
         return self
 

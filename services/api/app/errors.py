@@ -172,5 +172,9 @@ def register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, exc: Exception) -> JSONResponse:
         import logging
+        from app.config import get_settings
+        settings = get_settings()
         logging.getLogger("app.errors").exception("unhandled error", exc_info=exc)
-        return _envelope("internal_error", "Internal server error", False, None, 500)
+        msg = f"Internal server error: {exc}" if not getattr(settings, "is_production", False) else "Internal server error"
+        details = {"exception": str(exc), "type": type(exc).__name__} if not getattr(settings, "is_production", False) else None
+        return _envelope("internal_error", msg, False, details, 500)

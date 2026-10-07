@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import time
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 from app.config import settings
 
@@ -32,11 +32,13 @@ async def health():
 async def ready():
     from app.cache import cache
     from app.db.session import healthcheck as db_health
+    from app.queue import queue
     from app.storage import storage
 
     checks = {
         "database": await db_health(),
         "cache": await cache().ping(),
+        "queue": await queue().ping(),
         "storage": await storage().ping(),
     }
     if settings.livekit_enabled:
@@ -71,6 +73,16 @@ def _ai_info() -> dict:
 
 
 @router.get("/metrics")
-async def metrics():
+async def metrics(request: Request):
+    if not settings.metrics_enabled:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Metrics endpoint is disabled.")
+    if settings.is_production and settings.metrics_token:
+        import secrets
+        auth = request.headers.get("Authorization", "")
+        token = auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else request.headers.get("X-Metrics-Token", "")
+        if not secrets.compare_digest(token, settings.metrics_token):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=401, detail="Unauthorized metrics access.")
     from app.metrics import metrics_response
     return metrics_response()

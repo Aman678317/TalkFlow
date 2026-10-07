@@ -23,6 +23,8 @@ def _normalize_db_url(url: str) -> str:
         return url.replace("sqlite://", "sqlite+aiosqlite://", 1)
     if url.startswith("postgresql://") and not url.startswith("postgresql+"):
         return url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    if url.startswith("postgresql+psycopg://"):
+        return url.replace("postgresql+psycopg://", "postgresql+asyncpg://", 1)
     return url
 
 

@@ -94,10 +94,10 @@ def decode_token(token: str, expected_type: TokenType) -> dict[str, Any]:
 # API keys — gt_live_<40 hex>; only SHA-256 hash + prefix stored
 # --------------------------------------------------------------------------- #
 
-def generate_api_key() -> tuple[str, str, str]:
+def generate_api_key(prefix: str = "gt_live_") -> tuple[str, str, str]:
     """Returns (plaintext_key, key_hash, prefix). Plaintext shown once."""
-    raw = secrets.token_hex(20)
-    key = f"gt_live_{raw}"
+    raw = secrets.token_hex(24)
+    key = f"{prefix}{raw}"
     return key, hash_api_key(key), key[:12]
 
 
@@ -121,10 +121,17 @@ def sign_webhook_payload(secret: str, timestamp: int, body: bytes) -> str:
 
 def verify_webhook_signature(secret: str, timestamp: int, body: bytes,
                              signature: str, tolerance_s: int = 300) -> bool:
-    expected = sign_webhook_payload(secret, timestamp, body)
     if abs(time.time() - timestamp) > tolerance_s:
         return False
-    return hmac.compare_digest(expected, signature)
+    sig_hash = signature.strip()
+    if "," in sig_hash:
+        for part in sig_hash.split(","):
+            part = part.strip()
+            if part.startswith("v1="):
+                sig_hash = part
+                break
+    expected = sign_webhook_payload(secret, timestamp, body)
+    return hmac.compare_digest(expected, sig_hash)
 
 
 # --------------------------------------------------------------------------- #
@@ -154,9 +161,30 @@ def create_session_ticket(session_id: str, participant_id: str,
     return token
 
 
-def verify_session_ticket(ticket: str) -> tuple[str, str]:
-    """Returns (session_id, participant_id)."""
+_CONSUMED_RT_TICKETS: dict[str, float] = {}  # jti -> expires_at
+
+
+def verify_session_ticket(ticket: str, consume: bool = True) -> tuple[str, str]:
+    """Returns (session_id, participant_id).
+    Enforces replay protection: each ticket's unique jti is marked consumed.
+    """
+    now = time.time()
+    expired = [k for k, exp in _CONSUMED_RT_TICKETS.items() if exp < now]
+    for k in expired:
+        _CONSUMED_RT_TICKETS.pop(k, None)
+
     payload = decode_token(ticket, "access")
     if payload.get("purpose") != "rt_ticket":
         raise AuthenticationError("Invalid realtime ticket.")
+
+    jti = payload.get("jti")
+    if not jti:
+        raise AuthenticationError("Realtime ticket missing token ID.")
+
+    if jti in _CONSUMED_RT_TICKETS:
+        raise AuthenticationError("Realtime ticket has already been used (replay detected).")
+
+    if consume:
+        _CONSUMED_RT_TICKETS[jti] = float(payload.get("exp", now + 120))
+
     return payload["sub"], payload["pid"]

@@ -212,6 +212,16 @@ export class MeetingSocket {
     this.setState("closed");
   }
 
+  reconnectNow() {
+    this.closedByUser = false;
+    this.attempt = 0;
+    this.stopHeartbeat();
+    try {
+      this.ws?.close();
+    } catch {}
+    this.open();
+  }
+
   get currentSequence() {
     return this.lastSequence;
   }

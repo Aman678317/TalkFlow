@@ -6,6 +6,7 @@ import {
   CameraOff,
   Check,
   Copy,
+  Download,
   FileText,
   Globe,
   Info,
@@ -20,6 +21,7 @@ import {
   Sparkles,
   Subtitles,
   Users,
+  Volume2,
   X,
 } from "lucide-react";
 import { api } from "../lib/api";
@@ -33,6 +35,14 @@ import { VideoTile } from "../components/meeting/VideoTile";
 import { toast } from "../stores/toasts";
 import { useAuth } from "../stores/auth";
 import { createVirtualCameraStream } from "../lib/virtualCamera";
+import {
+  formatAsTxt,
+  formatAsJson,
+  formatAsSrt,
+  formatAsVtt,
+  downloadFile,
+  type ExportTranscriptItem,
+} from "../lib/transcriptExporter";
 
 interface CaptionLine {
   id: string;
@@ -84,13 +94,35 @@ export default function MeetingRoom() {
     caption_mode: "both",
     latency_mode: "balanced",
   });
-  const [, setSocketState] = React.useState<SocketState>("connecting");
+  const [socketState, setSocketState] = React.useState<SocketState>("connecting");
+  const [isOnline, setIsOnline] = React.useState(typeof navigator !== "undefined" ? navigator.onLine : true);
+  const [isDegradedNetwork, setIsDegradedNetwork] = React.useState(false);
+  const [translationStatus, setTranslationStatus] = React.useState<"normal" | "delayed" | "unavailable">("normal");
+  const [translationMessage, setTranslationMessage] = React.useState<string | null>(null);
+
   const [micOn, setMicOn] = React.useState(false);
+  const [micPermissionBlocked, setMicPermissionBlocked] = React.useState(false);
+  const [showMicGuide, setShowMicGuide] = React.useState(false);
+
   const [cameraOn, setCameraOn] = React.useState(false);
   const [usingVirtualCamera, setUsingVirtualCamera] = React.useState(false);
   const [cameraPermissionBlocked, setCameraPermissionBlocked] = React.useState(false);
   const [showChromeGuide, setShowChromeGuide] = React.useState(false);
   const virtualCameraCleanupRef = React.useRef<(() => void) | null>(null);
+
+  // Audio & Hardware device selection + DSP
+  const [availableMics, setAvailableMics] = React.useState<MediaDeviceInfo[]>([]);
+  const [availableSpeakers, setAvailableSpeakers] = React.useState<MediaDeviceInfo[]>([]);
+  const [availableCameras, setAvailableCameras] = React.useState<MediaDeviceInfo[]>([]);
+  const [selectedMicId, setSelectedMicId] = React.useState<string>("");
+  const [selectedSpeakerId, setSelectedSpeakerId] = React.useState<string>("");
+  const [selectedCameraId, setSelectedCameraId] = React.useState<string>("");
+  const [dspSettings, setDspSettings] = React.useState({
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+  });
+
   const [screenOn, setScreenOn] = React.useState(false);
   const [speakingNow, setSpeakingNow] = React.useState<string | null>(null);
   const [captions, setCaptions] = React.useState<CaptionLine[]>([]);
@@ -98,11 +130,12 @@ export default function MeetingRoom() {
   const [chat, setChat] = React.useState<ChatLine[]>([]);
   const [chatDraft, setChatDraft] = React.useState("");
   const [chatDisplay, setChatDisplay] = React.useState<"original" | "mine" | "both">("both");
-  
+
   // Google Meet Side Drawer State
   const [drawerOpen, setDrawerOpen] = React.useState(false);
   const [drawerTab, setDrawerTab] = React.useState<"info" | "people" | "chat" | "captions" | "summary">("chat");
   const [settingsOpen, setSettingsOpen] = React.useState(false);
+  const [settingsTab, setSettingsTab] = React.useState<"translation" | "devices">("translation");
 
   const [notice, setNotice] = React.useState<string | null>(null);
   const [summary, setSummary] = React.useState<any>(null);
@@ -110,6 +143,45 @@ export default function MeetingRoom() {
   const [displayName, setDisplayName] = React.useState(user?.full_name || "Guest");
   const [inviteCopied, setInviteCopied] = React.useState(false);
   const [callTime, setCallTime] = React.useState("00:00");
+  const [currentLatencyMs, setCurrentLatencyMs] = React.useState<number | null>(null);
+
+  const handleExportTranscript = React.useCallback(
+    (format: "txt" | "srt" | "vtt" | "json") => {
+      if (captions.length === 0) {
+        toast.info("No transcripts yet", "Transcripts will be available as soon as someone speaks.");
+        return;
+      }
+      const exportItems: ExportTranscriptItem[] = captions.map((c, i) => ({
+        id: c.id || `cap-${i}`,
+        speakerName: c.speaker || "Speaker",
+        originalText: c.original || "",
+        sourceLang: c.language || "en",
+        translatedText: c.translated || c.original || "",
+        targetLang: c.translatedLang || prefs.listening_language || "en",
+        timestamp: callTime || "00:00",
+      }));
+
+      const dateStr = new Date().toISOString().slice(0, 10);
+      const baseName = `meeting-transcript-${id.slice(0, 8)}-${dateStr}`;
+
+      switch (format) {
+        case "txt":
+          downloadFile(formatAsTxt(exportItems), `${baseName}.txt`, "text/plain");
+          break;
+        case "srt":
+          downloadFile(formatAsSrt(exportItems), `${baseName}.srt`, "application/x-subrip");
+          break;
+        case "vtt":
+          downloadFile(formatAsVtt(exportItems), `${baseName}.vtt`, "text/vtt");
+          break;
+        case "json":
+          downloadFile(formatAsJson(exportItems), `${baseName}.json`, "application/json");
+          break;
+      }
+      toast.success("Transcript exported", `Saved as .${format.toUpperCase()}`);
+    },
+    [captions, id, prefs.listening_language, callTime]
+  );
 
   // Call timer effect
   React.useEffect(() => {
@@ -122,6 +194,56 @@ export default function MeetingRoom() {
     }, 1000);
     return () => clearInterval(interval);
   }, []);
+
+  // Device enumeration
+  const refreshDevices = React.useCallback(async () => {
+    if (!navigator.mediaDevices?.enumerateDevices) return;
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      setAvailableMics(devices.filter((d) => d.kind === "audioinput"));
+      setAvailableSpeakers(devices.filter((d) => d.kind === "audiooutput"));
+      setAvailableCameras(devices.filter((d) => d.kind === "videoinput"));
+    } catch (e) {
+      console.warn("Device enumeration failed", e);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    void refreshDevices();
+    navigator.mediaDevices?.addEventListener("devicechange", refreshDevices);
+    return () => {
+      navigator.mediaDevices?.removeEventListener("devicechange", refreshDevices);
+    };
+  }, [refreshDevices]);
+
+  // Network & sleep/wake listeners
+  React.useEffect(() => {
+    function handleOnline() {
+      setIsOnline(true);
+      setNotice(null);
+      toast.success("Network restored", "Reconnecting session...");
+      socketRef.current?.reconnectNow();
+    }
+    function handleOffline() {
+      setIsOnline(false);
+      setNotice("You are offline. Reconnecting as soon as network is restored.");
+    }
+    function handleVisibility() {
+      if (document.visibilityState === "visible") {
+        if (socketState === "closed" || socketState === "error" || socketState === "reconnecting") {
+          socketRef.current?.reconnectNow();
+        }
+      }
+    }
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, [socketState]);
 
   const mediaRoom = useLiveKitRoom({
     enabled: meetingQ.data?.transport === "livekit" && !!meetingQ.data.livekit_url,
@@ -266,6 +388,12 @@ export default function MeetingRoom() {
         break;
       }
       case "translation.final": {
+        if (evt.latency_ms) setCurrentLatencyMs(Math.round(evt.latency_ms as number));
+        if (translationStatus !== "normal") {
+          setTranslationStatus("normal");
+          setTranslationMessage(null);
+        }
+        if (isDegradedNetwork) setIsDegradedNetwork(false);
         if (evt.target_language !== prefsRef.current.listening_language) break;
         if (prefsRef.current.caption_mode === "original") break;
         const seg = evt.segment_id as string;
@@ -277,11 +405,11 @@ export default function MeetingRoom() {
             return prev.map((c, i) =>
               i === existingIdx
                 ? {
-                    ...c,
-                    translated: evt.text as string,
-                    translatedLang: evt.target_language as string,
-                    latencyMs: (evt.latency_ms as number) || c.latencyMs,
-                  }
+                  ...c,
+                  translated: evt.text as string,
+                  translatedLang: evt.target_language as string,
+                  latencyMs: (evt.latency_ms as number) || c.latencyMs,
+                }
                 : c
             );
           }
@@ -323,22 +451,24 @@ export default function MeetingRoom() {
       }
       case "translation.failed": {
         if (evt.target_language !== prefsRef.current.listening_language) break;
+        setTranslationStatus("unavailable");
+        setTranslationMessage((evt.user_message as string) ?? "Translation unavailable. Original audio is active.");
         setNotice((evt.user_message as string) ?? "Translation delayed. The original audio is still active.");
         const seg = evt.segment_id as string;
         setCaptions((prev) =>
           prev.some((c) => c.id === `fail:${seg}`)
             ? prev
             : [
-                ...prev.slice(-80),
-                {
-                  id: `fail:${seg}`,
-                  speaker: namesRef.current.get(evt.speaker_id as string) || "Speaker",
-                  language: "",
-                  originalFinal: true,
-                  partial: false,
-                  failed: (evt.user_message as string) ?? "Translation unavailable",
-                },
-              ]
+              ...prev.slice(-80),
+              {
+                id: `fail:${seg}`,
+                speaker: namesRef.current.get(evt.speaker_id as string) || "Speaker",
+                language: "",
+                originalFinal: true,
+                partial: false,
+                failed: (evt.user_message as string) ?? "Translation unavailable",
+              },
+            ]
         );
         break;
       }
@@ -368,17 +498,34 @@ export default function MeetingRoom() {
         break;
       }
       case "quality.degraded":
+        setIsDegradedNetwork(true);
+        setTranslationStatus("delayed");
+        setTranslationMessage((evt.user_message as string) ?? "Live translation is experiencing latency degradation.");
         setNotice((evt.user_message as string) ?? "Live translation is temporarily degraded.");
         break;
       case "quality.latency": {
+        const ms = (evt.total_e2e_latency_ms as number) || 0;
+        if (ms > 0) setCurrentLatencyMs(Math.round(ms));
+        if (ms > 2000) {
+          setIsDegradedNetwork(true);
+          setTranslationStatus("delayed");
+          setTranslationMessage(`High translation latency (~${Math.round(ms)}ms). Audio prioritized.`);
+        }
         if (evt.target_language !== prefsRef.current.listening_language) break;
-        const ms = evt.total_e2e_latency_ms as number;
         setCaptions((prev) => {
           const idx = [...prev].reverse().findIndex((c) => c.translated && !c.latencyMs);
           if (idx === -1) return prev;
           const target = prev[prev.length - 1 - idx];
           return prev.map((c) => (c === target ? { ...c, latencyMs: ms } : c));
         });
+        break;
+      }
+      case "error": {
+        const errCode = (evt as any).code;
+        if (errCode === "tts_unavailable" || errCode === "stt_unavailable") {
+          setTranslationStatus("unavailable");
+          setTranslationMessage((evt as any).message ?? "Speech translation is currently unavailable.");
+        }
         break;
       }
       case "chat.message":
@@ -415,7 +562,7 @@ export default function MeetingRoom() {
     if (micOn) {
       const track = micRef.current?.mediaStream?.getAudioTracks()[0];
       if (track && mediaRoom.state === "connected") {
-        void mediaRoom.unpublishMicrophone(track).catch(() => {});
+        void mediaRoom.unpublishMicrophone(track).catch(() => { });
       }
       micRef.current?.stop();
       micRef.current = null;
@@ -428,30 +575,121 @@ export default function MeetingRoom() {
       if (mediaRoom.state === "connected") {
         try {
           await mediaRoom.unlockAudio();
-        } catch {}
+        } catch { }
       }
       const mic = new MicCapture();
-      await mic.start(SAMPLE_RATE, (frame) => socketRef.current?.sendAudio(frame));
+      await mic.start(
+        SAMPLE_RATE,
+        (frame) => socketRef.current?.sendAudio(frame),
+        {
+          deviceId: selectedMicId || undefined,
+          echoCancellation: dspSettings.echoCancellation,
+          noiseSuppression: dspSettings.noiseSuppression,
+          autoGainControl: dspSettings.autoGainControl,
+        }
+      );
       micRef.current = mic;
       const track = mic.mediaStream?.getAudioTracks()[0];
       if (track && mediaRoom.state === "connected") {
         try {
           await mediaRoom.publishMicrophone(track);
-        } catch {}
+        } catch { }
       }
       setMicOn(true);
+      setMicPermissionBlocked(false);
       toast.success(
         "Microphone active",
         "Speaking in " +
-          (prefs.speaking_language === "AUTO"
-            ? "auto-detected language"
-            : languageLabel(caps, prefs.speaking_language))
+        (prefs.speaking_language === "AUTO"
+          ? "auto-detected language"
+          : languageLabel(caps, prefs.speaking_language))
       );
-    } catch {
+    } catch (err: any) {
       micRef.current?.stop();
       micRef.current = null;
       setMicOn(false);
-      toast.error("Microphone unavailable", "Grant microphone permission to speak in this meeting.");
+      const isPermissionDenied =
+        err?.name === "NotAllowedError" ||
+        err?.name === "PermissionDeniedError" ||
+        err?.message?.toLowerCase().includes("permission") ||
+        err?.message?.toLowerCase().includes("denied");
+      if (isPermissionDenied) {
+        setMicPermissionBlocked(true);
+      }
+      toast.error(
+        "Microphone unavailable",
+        isPermissionDenied
+          ? "Microphone access blocked. Click 'How to Unblock' to enable audio."
+          : "Could not access microphone hardware."
+      );
+    }
+  }
+
+  async function retryPhysicalMic() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((t) => t.stop());
+      setMicPermissionBlocked(false);
+      setShowMicGuide(false);
+      await toggleMic();
+    } catch {
+      toast.error("Microphone still blocked", "Follow the browser guide below to allow microphone access.");
+      setShowMicGuide(true);
+    }
+  }
+
+  async function handleSpeakerChange(deviceId: string) {
+    setSelectedSpeakerId(deviceId);
+    if (playerRef.current) {
+      await playerRef.current.setSinkId(deviceId);
+    }
+    if (mediaRoom.audioContainerRef.current) {
+      const audios = mediaRoom.audioContainerRef.current.querySelectorAll("audio");
+      for (const el of Array.from(audios)) {
+        if ("setSinkId" in el && typeof (el as any).setSinkId === "function") {
+          try {
+            await (el as any).setSinkId(deviceId);
+          } catch { }
+        }
+      }
+    }
+    toast.success("Speaker updated", "Audio playback routed to selected device.");
+  }
+
+  async function restartMicWithSettings(options: {
+    micId?: string;
+    dsp?: { echoCancellation: boolean; noiseSuppression: boolean; autoGainControl: boolean };
+  }) {
+    if (!micOn) return;
+    try {
+      const activeDsp = options.dsp ?? dspSettings;
+      const activeMicId = options.micId ?? selectedMicId;
+      const track = micRef.current?.mediaStream?.getAudioTracks()[0];
+      if (track && mediaRoom.state === "connected") {
+        void mediaRoom.unpublishMicrophone(track).catch(() => { });
+      }
+      micRef.current?.stop();
+      const mic = new MicCapture();
+      await mic.start(
+        SAMPLE_RATE,
+        (frame) => socketRef.current?.sendAudio(frame),
+        {
+          deviceId: activeMicId || undefined,
+          echoCancellation: activeDsp.echoCancellation,
+          noiseSuppression: activeDsp.noiseSuppression,
+          autoGainControl: activeDsp.autoGainControl,
+        }
+      );
+      micRef.current = mic;
+      const newTrack = mic.mediaStream?.getAudioTracks()[0];
+      if (newTrack && mediaRoom.state === "connected") {
+        try {
+          await mediaRoom.publishMicrophone(newTrack);
+        } catch { }
+      }
+      toast.success("Audio settings updated", "Microphone DSP and input updated.");
+    } catch (err: any) {
+      console.warn("Could not restart mic with new settings", err);
     }
   }
 
@@ -468,7 +706,7 @@ export default function MeetingRoom() {
       if (mediaRoom.state === "connected") {
         try {
           await mediaRoom.setCameraEnabled(false);
-        } catch {}
+        } catch { }
       }
       setCameraOn(false);
       setUsingVirtualCamera(false);
@@ -483,8 +721,16 @@ export default function MeetingRoom() {
         setCameraPermissionBlocked(false);
         toast.success("Camera active", "Hardware webcam feed is live");
       } else {
+        const videoConstraints: MediaTrackConstraints = {
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          facingMode: "user",
+        };
+        if (selectedCameraId) {
+          videoConstraints.deviceId = { exact: selectedCameraId };
+        }
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
+          video: videoConstraints,
           audio: false,
         });
         setLocalVideoStream(stream);
@@ -529,8 +775,16 @@ export default function MeetingRoom() {
 
   async function retryPhysicalCamera() {
     try {
+      const videoConstraints: MediaTrackConstraints = {
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+        facingMode: "user",
+      };
+      if (selectedCameraId) {
+        videoConstraints.deviceId = { exact: selectedCameraId };
+      }
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
+        video: videoConstraints,
         audio: false,
       });
       // Stop virtual camera
@@ -558,7 +812,7 @@ export default function MeetingRoom() {
       if (mediaRoom.state === "connected") {
         try {
           await mediaRoom.setScreenShareEnabled(false);
-        } catch {}
+        } catch { }
       }
       setScreenOn(false);
       return;
@@ -613,9 +867,21 @@ export default function MeetingRoom() {
 
   // ---------------- render calculations ----------------
   if (meetingQ.isError) {
+    const err = meetingQ.error as any;
     return (
-      <div className="p-6 bg-slate-900 min-h-screen text-white flex items-center justify-center">
-        <ErrorState title={(meetingQ.error as any).message} detail={(meetingQ.error as any).code} />
+      <div className="p-6 bg-slate-900 min-h-screen text-white flex flex-col items-center justify-center gap-4">
+        <ErrorState
+          title={err?.message || "Meeting Not Found or Inaccessible"}
+          detail={err?.code || "The meeting session could not be retrieved. Please verify your connection or join link."}
+        />
+        <div className="flex items-center gap-3 mt-2">
+          <Button variant="secondary" onClick={() => nav("/meetings")}>
+            ← Back to Meetings
+          </Button>
+          <Button variant="primary" onClick={() => meetingQ.refetch()}>
+            Retry Connection
+          </Button>
+        </div>
       </div>
     );
   }
@@ -626,58 +892,108 @@ export default function MeetingRoom() {
   const callTiles =
     mediaRoom.state === "connected"
       ? mediaRoom.peers.map((peer) => {
-          const participant = participantsById.get(peer.id);
-          const speakingLanguage = participant?.speaking_language ?? (peer.self ? prefs.speaking_language : "AUTO");
-          const listeningLanguage = participant?.listening_language ?? (peer.self ? prefs.listening_language : "en");
-          return {
-            id: peer.id,
-            name: peer.name,
-            stream: peer.self ? peer.stream || localVideoStream : peer.stream,
-            isScreenShare: peer.isScreenShare,
-            self: peer.self,
-            speakingLanguage,
-            listeningLanguage,
-            speaking: speakingNow === peer.id || (peer.self && micOn && !!speakingNow),
-            muted: peer.self ? !micOn : !peer.microphoneOn,
-            isVirtualCamera: peer.self ? usingVirtualCamera : false,
-          };
-        })
+        const participant = participantsById.get(peer.id);
+        const speakingLanguage = participant?.speaking_language ?? (peer.self ? prefs.speaking_language : "AUTO");
+        const listeningLanguage = participant?.listening_language ?? (peer.self ? prefs.listening_language : "en");
+        return {
+          id: peer.id,
+          name: peer.name,
+          stream: peer.self ? peer.stream || localVideoStream : peer.stream,
+          isScreenShare: peer.isScreenShare,
+          self: peer.self,
+          speakingLanguage,
+          listeningLanguage,
+          speaking: speakingNow === peer.id || (peer.self && micOn && !!speakingNow),
+          muted: peer.self ? !micOn : !peer.microphoneOn,
+          isVirtualCamera: peer.self ? usingVirtualCamera : false,
+        };
+      })
       : participants.map((participant) => {
-          const isSelf = participant.id === myParticipantId;
-          return {
-            id: participant.id,
-            name: participant.display_name,
-            stream: isSelf ? localVideoStream : null,
-            isScreenShare: false,
-            self: isSelf,
-            speakingLanguage: participant.speaking_language,
-            listeningLanguage: participant.listening_language,
-            speaking: speakingNow === participant.id || (isSelf && micOn && !!speakingNow),
-            muted: isSelf ? !micOn : true,
-            isVirtualCamera: isSelf ? usingVirtualCamera : false,
-          };
-        });
+        const isSelf = participant.id === myParticipantId;
+        return {
+          id: participant.id,
+          name: participant.display_name,
+          stream: isSelf ? localVideoStream : null,
+          isScreenShare: false,
+          self: isSelf,
+          speakingLanguage: participant.speaking_language,
+          listeningLanguage: participant.listening_language,
+          speaking: speakingNow === participant.id || (isSelf && micOn && !!speakingNow),
+          muted: isSelf ? !micOn : true,
+          isVirtualCamera: isSelf ? usingVirtualCamera : false,
+        };
+      });
 
   const hasSelfTile = callTiles.some((t) => t.self);
   const finalTiles = hasSelfTile
     ? callTiles
     : [
-        {
-          id: myParticipantId || "me",
-          name: displayName + " (You)",
-          stream: localVideoStream,
-          isScreenShare: screenOn,
-          self: true,
-          speakingLanguage: prefs.speaking_language,
-          listeningLanguage: prefs.listening_language,
-          speaking: micOn && !!speakingNow,
-          muted: !micOn,
-          isVirtualCamera: usingVirtualCamera,
-        },
-        ...callTiles,
-      ];
+      {
+        id: myParticipantId || "me",
+        name: displayName + " (You)",
+        stream: localVideoStream,
+        isScreenShare: screenOn,
+        self: true,
+        speakingLanguage: prefs.speaking_language,
+        listeningLanguage: prefs.listening_language,
+        speaking: micOn && !!speakingNow,
+        muted: !micOn,
+        isVirtualCamera: usingVirtualCamera,
+      },
+      ...callTiles,
+    ];
 
   const latestCaption = captions.length > 0 ? captions[captions.length - 1] : null;
+
+  const connectionInfo = React.useMemo(() => {
+    if (!isOnline) {
+      return {
+        label: "Offline · Network interrupted",
+        dotClass: "bg-red-500",
+        canRetry: true,
+      };
+    }
+    if (socketState === "error" || mediaRoom.state === "error") {
+      return {
+        label: mediaRoom.error || "Connection error · Click to reconnect",
+        dotClass: "bg-red-500",
+        canRetry: true,
+      };
+    }
+    if (socketState === "reconnecting" || mediaRoom.state === "reconnecting") {
+      return {
+        label: "Reconnecting… Audio & transcript preserved",
+        dotClass: "bg-amber-400 animate-pulse",
+        canRetry: false,
+      };
+    }
+    if (socketState === "connecting" || mediaRoom.state === "connecting") {
+      return {
+        label: "Connecting to secure meeting session…",
+        dotClass: "bg-amber-400 animate-pulse",
+        canRetry: false,
+      };
+    }
+    if (isDegradedNetwork) {
+      return {
+        label: "Degraded Network · Audio prioritized, latency optimized",
+        dotClass: "bg-amber-400",
+        canRetry: false,
+      };
+    }
+    if (mediaRoom.state === "connected" || socketState === "joined") {
+      return {
+        label: "Connected · Realtime Translation Active",
+        dotClass: "bg-emerald-400",
+        canRetry: false,
+      };
+    }
+    return {
+      label: "Connecting audio & video room…",
+      dotClass: "bg-amber-400 animate-pulse",
+      canRetry: false,
+    };
+  }, [isOnline, socketState, mediaRoom.state, mediaRoom.error, isDegradedNetwork]);
 
   return (
     <div className="flex h-screen w-full flex-col overflow-hidden bg-[#131314] text-white select-none">
@@ -727,7 +1043,7 @@ export default function MeetingRoom() {
               I speak: {languageLabel(caps, prefs.speaking_language)} ➔ Hear: {languageLabel(caps, prefs.listening_language)}
             </span>
             <span className="text-[10px] text-emerald-400 font-mono bg-emerald-950/60 border border-emerald-800/40 px-1.5 py-0.2 rounded-full">
-              &lt; 350ms
+              {currentLatencyMs != null ? `⚡ ~${currentLatencyMs}ms` : "< 350ms"}
             </span>
           </button>
         </div>
@@ -776,23 +1092,129 @@ export default function MeetingRoom() {
         <div className="flex flex-1 flex-col min-w-0 p-3 sm:p-5 relative justify-between overflow-y-auto">
           {/* Connection Status Pill Banner */}
           <div className="mx-auto mb-3 flex items-center gap-2 rounded-full border border-white/10 bg-[#1E1F22]/90 backdrop-blur-md px-3.5 py-1 text-xs text-slate-300 shadow-sm" role="status">
-            <span
-              className={`h-2 w-2 shrink-0 rounded-full ${
-                mediaRoom.state === "connected"
-                  ? "bg-emerald-400"
-                  : mediaRoom.state === "error"
-                  ? "bg-red-400"
-                  : "bg-amber-400 animate-pulse"
-              }`}
-            />
-            <span>
-              {mediaRoom.state === "connected" && "Neural audio & camera stream connected"}
-              {mediaRoom.state === "connecting" && "Connecting audio & video room…"}
-              {mediaRoom.state === "reconnecting" && "Reconnecting to media server…"}
-              {mediaRoom.state === "error" && (mediaRoom.error ?? "Failed to connect to video room")}
-              {mediaRoom.state === "unavailable" && "WebRTC mesh active · Live translation ready"}
-            </span>
+            <span className={`h-2 w-2 shrink-0 rounded-full ${connectionInfo.dotClass}`} />
+            <span>{connectionInfo.label}</span>
+            {connectionInfo.canRetry && (
+              <button
+                type="button"
+                onClick={() => socketRef.current?.reconnectNow()}
+                className="ml-1 text-xs font-semibold text-amber-300 hover:text-white underline"
+              >
+                Reconnect
+              </button>
+            )}
           </div>
+
+          {/* Translation Delayed / Unavailable Degradation Banner */}
+          {translationStatus !== "normal" && (
+            <div
+              className={`mx-auto mb-3 w-full max-w-4xl rounded-2xl border p-3 shadow-lg backdrop-blur-md flex items-center justify-between gap-3 ${translationStatus === "delayed"
+                ? "border-amber-500/30 bg-amber-950/70 text-amber-200"
+                : "border-red-500/30 bg-red-950/70 text-red-200"
+                }`}
+              role="status"
+            >
+              <div className="flex items-center gap-3">
+                <span className="text-base" aria-hidden>
+                  {translationStatus === "delayed" ? "⏱" : "⚠️"}
+                </span>
+                <div className="text-xs">
+                  <span className="font-semibold">
+                    {translationStatus === "delayed" ? "Translation Delayed" : "Translation Unavailable"}
+                  </span>
+                  <span className="mx-1.5 opacity-60">·</span>
+                  <span>
+                    {translationMessage ||
+                      (translationStatus === "delayed"
+                        ? "Neural translation is experiencing latency. Original audio remains active without interruption."
+                        : "Realtime translation is temporarily unavailable. Captions fallback is active.")}
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setTranslationStatus("normal");
+                  setTranslationMessage(null);
+                }}
+                className="text-xs underline hover:text-white shrink-0 font-medium"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+
+          {/* Microphone Permission Blocked Banner */}
+          {micPermissionBlocked && (
+            <div className="mx-auto mb-3 w-full max-w-4xl rounded-2xl border border-red-500/30 bg-gradient-to-r from-red-950/80 via-slate-900/90 to-red-950/80 p-3.5 shadow-xl backdrop-blur-md">
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-red-500/20 text-red-400 border border-red-500/30">
+                    <MicOff className="h-4.5 w-4.5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-semibold text-white">Browser Microphone Permission Blocked</span>
+                      <span className="rounded-full bg-red-500/20 border border-red-500/30 px-2 py-0.5 text-[10px] font-medium text-red-300">
+                        Action Required
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-300 mt-0.5">
+                      Microphone access was denied. To speak and have your speech translated in real time, unblock the microphone.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setShowMicGuide((v) => !v)}
+                    className="text-xs text-red-300 hover:text-white hover:bg-red-500/20 h-8 px-2.5 rounded-lg border border-red-500/30"
+                  >
+                    <Info className="h-3.5 w-3.5 mr-1" />
+                    How to Unblock
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={() => void retryPhysicalMic()}
+                    className="bg-red-500 hover:bg-red-600 text-white font-semibold text-xs h-8 px-3 rounded-lg shadow-sm"
+                  >
+                    <Mic className="h-3.5 w-3.5 mr-1" />
+                    Retry Microphone
+                  </Button>
+                  <button
+                    type="button"
+                    onClick={() => setMicPermissionBlocked(false)}
+                    className="h-8 w-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/10"
+                    aria-label="Dismiss banner"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+
+              {showMicGuide && (
+                <div className="mt-3 pt-3 border-t border-red-500/20 text-xs text-slate-300 animate-fadeIn">
+                  <p className="font-semibold text-red-200 mb-2">To enable your microphone in the browser:</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-[11px]">
+                    <div className="bg-black/40 border border-white/10 rounded-xl p-2.5">
+                      <span className="font-bold text-red-300 block mb-1">Step 1: Address Bar Icon</span>
+                      Click the <strong>lock / site settings icon</strong> or <strong>microphone icon with red cross</strong> next to the URL.
+                    </div>
+                    <div className="bg-black/40 border border-white/10 rounded-xl p-2.5">
+                      <span className="font-bold text-red-300 block mb-1">Step 2: Allow Microphone</span>
+                      Change the <strong>Microphone</strong> permission from Blocked to <strong>Allow</strong>.
+                    </div>
+                    <div className="bg-black/40 border border-white/10 rounded-xl p-2.5">
+                      <span className="font-bold text-red-300 block mb-1">Step 3: Click Retry</span>
+                      Click <strong>Retry Microphone</strong> above to start speaking immediately.
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Camera Permission Denied / Virtual Camera Notification Banner */}
           {cameraPermissionBlocked && (
@@ -869,15 +1291,14 @@ export default function MeetingRoom() {
 
           {/* Dynamic Video Grid (Responsive 1-tile, 2-tile, or multi-peer) */}
           <div
-            className={`grid flex-1 items-center justify-center gap-3 sm:gap-4 w-full max-w-6xl mx-auto my-auto ${
-              finalTiles.length === 1
-                ? "grid-cols-1 max-w-3xl"
-                : finalTiles.length === 2
+            className={`grid flex-1 items-center justify-center gap-3 sm:gap-4 w-full max-w-6xl mx-auto my-auto ${finalTiles.length === 1
+              ? "grid-cols-1 max-w-3xl"
+              : finalTiles.length === 2
                 ? "grid-cols-1 md:grid-cols-2"
                 : finalTiles.length <= 4
-                ? "grid-cols-1 sm:grid-cols-2"
-                : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3"
-            }`}
+                  ? "grid-cols-1 sm:grid-cols-2"
+                  : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3"
+              }`}
           >
             {finalTiles.map((tile) => (
               <VideoTile
@@ -896,6 +1317,32 @@ export default function MeetingRoom() {
               />
             ))}
           </div>
+
+          {/* Participant Waiting Card (Visible State 9) */}
+          {finalTiles.length <= 1 && (
+            <div className="mx-auto my-3 w-full max-w-lg rounded-2xl border border-white/10 bg-[#1E1F22]/90 backdrop-blur-md p-5 text-center shadow-lg">
+              <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-dl-blue/15 text-dl-blue">
+                <Users className="h-6 w-6" />
+              </div>
+              <h3 className="text-sm font-semibold text-white">Waiting for others to join</h3>
+              <p className="mt-1 text-xs text-slate-300">
+                Share this meeting link with your team or participants. Realtime multilingual translation and live captions activate automatically as participants speak.
+              </p>
+              <div className="mt-4 flex items-center justify-center gap-2">
+                <Button
+                  size="sm"
+                  onClick={() => void copyInviteLink()}
+                  className="bg-dl-blue hover:bg-dl-blue-hover text-white text-xs h-8 px-3.5 rounded-lg font-medium shadow-sm gap-1.5"
+                >
+                  {inviteCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                  {inviteCopied ? "Link Copied!" : "Copy Invite Link"}
+                </Button>
+                <span className="text-[11px] font-mono text-slate-400 bg-white/10 px-2.5 py-1.5 rounded-lg border border-white/10">
+                  {meetingQ.data?.room_name || id.slice(0, 8)}
+                </span>
+              </div>
+            </div>
+          )}
 
           <div ref={mediaRoom.audioContainerRef} className="sr-only" aria-hidden="true" />
 
@@ -950,12 +1397,12 @@ export default function MeetingRoom() {
                   {drawerTab === "chat"
                     ? "In-call Messages"
                     : drawerTab === "people"
-                    ? `People (${finalTiles.length})`
-                    : drawerTab === "captions"
-                    ? "Live Captions & Transcripts"
-                    : drawerTab === "summary"
-                    ? "AI Meeting Summary"
-                    : "Meeting Details"}
+                      ? `People (${finalTiles.length})`
+                      : drawerTab === "captions"
+                        ? "Live Captions & Transcripts"
+                        : drawerTab === "summary"
+                          ? "AI Meeting Summary"
+                          : "Meeting Details"}
                 </h2>
               </div>
 
@@ -975,11 +1422,10 @@ export default function MeetingRoom() {
                 <button
                   key={tb}
                   onClick={() => setDrawerTab(tb)}
-                  className={`flex-1 py-2.5 text-center capitalize transition border-b-2 ${
-                    drawerTab === tb
-                      ? "border-dl-blue text-white font-semibold"
-                      : "border-transparent text-slate-400 hover:text-slate-200"
-                  }`}
+                  className={`flex-1 py-2.5 text-center capitalize transition border-b-2 ${drawerTab === tb
+                    ? "border-dl-blue text-white font-semibold"
+                    : "border-transparent text-slate-400 hover:text-slate-200"
+                    }`}
                 >
                   {tb === "captions" ? "Captions" : tb}
                 </button>
@@ -1009,9 +1455,8 @@ export default function MeetingRoom() {
                     {chat.map((m) => (
                       <div
                         key={m.id}
-                        className={`rounded-xl p-3 text-xs ${
-                          m.mine ? "ml-6 bg-dl-blue/20 border border-dl-blue/30 text-white" : "mr-6 bg-white/5 border border-white/10 text-slate-200"
-                        }`}
+                        className={`rounded-xl p-3 text-xs ${m.mine ? "ml-6 bg-dl-blue/20 border border-dl-blue/30 text-white" : "mr-6 bg-white/5 border border-white/10 text-slate-200"
+                          }`}
                       >
                         <div className="flex items-center justify-between mb-1 text-[10px] text-slate-400">
                           <span className="font-semibold text-slate-300">{m.sender}</span>
@@ -1070,25 +1515,63 @@ export default function MeetingRoom() {
 
                   <div className="space-y-2">
                     {finalTiles.map((t) => (
-                      <div key={t.id} className="flex items-center justify-between p-2.5 rounded-xl bg-white/5 border border-white/10">
-                        <div className="flex items-center gap-2.5 min-w-0">
-                          <div className="h-8 w-8 rounded-full bg-dl-blue/30 border border-dl-blue/40 flex items-center justify-center font-bold text-xs text-white">
-                            {t.name.charAt(0).toUpperCase()}
+                      <div key={t.id} className="p-2.5 rounded-xl bg-white/5 border border-white/10 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <div className="h-8 w-8 rounded-full bg-dl-blue/30 border border-dl-blue/40 flex items-center justify-center font-bold text-xs text-white">
+                              {t.name.charAt(0).toUpperCase()}
+                            </div>
+                            <div className="min-w-0">
+                              <p className="text-xs font-semibold text-white truncate">
+                                {t.name} {t.self && <span className="text-dl-blue font-normal">(You)</span>}
+                              </p>
+                              <p className="text-[10px] text-slate-400 truncate">
+                                Speaks: {t.speakingLanguage === "AUTO" ? "Auto-detect" : languageLabel(caps, t.speakingLanguage)} · Hears: {languageLabel(caps, t.listeningLanguage)}
+                              </p>
+                            </div>
                           </div>
-                          <div className="min-w-0">
-                            <p className="text-xs font-semibold text-white truncate">{t.name}</p>
-                            <p className="text-[10px] text-slate-400 truncate">
-                              Speaks: {t.speakingLanguage} · Hears: {t.listeningLanguage}
-                            </p>
+                          <div>
+                            {t.muted ? (
+                              <MicOff className="h-3.5 w-3.5 text-slate-500" />
+                            ) : (
+                              <Mic className="h-3.5 w-3.5 text-emerald-400" />
+                            )}
                           </div>
                         </div>
-                        <div>
-                          {t.muted ? (
-                            <MicOff className="h-3.5 w-3.5 text-slate-500" />
-                          ) : (
-                            <Mic className="h-3.5 w-3.5 text-emerald-400" />
-                          )}
-                        </div>
+
+                        {t.self && (
+                          <div className="grid grid-cols-2 gap-2 pt-2 border-t border-white/5">
+                            <div>
+                              <label className="text-[10px] text-slate-400 block mb-1">I speak</label>
+                              <select
+                                value={prefs.speaking_language}
+                                onChange={(e) => updatePrefs({ speaking_language: e.target.value })}
+                                className="w-full text-xs rounded-lg bg-black/40 border border-white/10 px-2 py-1 text-white focus:outline-none focus:border-dl-blue"
+                              >
+                                <option value="AUTO">Auto-detect</option>
+                                {caps.map((c) => (
+                                  <option key={c.code} value={c.code}>
+                                    {c.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            <div>
+                              <label className="text-[10px] text-slate-400 block mb-1">Translate to</label>
+                              <select
+                                value={prefs.listening_language}
+                                onChange={(e) => updatePrefs({ listening_language: e.target.value })}
+                                className="w-full text-xs rounded-lg bg-black/40 border border-white/10 px-2 py-1 text-white focus:outline-none focus:border-dl-blue"
+                              >
+                                {caps.map((c) => (
+                                  <option key={c.code} value={c.code}>
+                                    {c.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -1098,19 +1581,63 @@ export default function MeetingRoom() {
               {/* TAB 3: CAPTIONS & TRANSCRIPTS */}
               {drawerTab === "captions" && (
                 <div className="space-y-3">
-                  <div className="flex items-center justify-between pb-2 border-b border-white/10">
-                    <span className="text-xs font-semibold text-slate-300">Live Multilingual Transcript</span>
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      className="h-7 text-xs rounded-lg"
-                      onClick={() => window.open(`/api/v1/meetings/${id}/transcript/export?fmt=csv`, "_blank")}
-                    >
-                      Export CSV
-                    </Button>
+                  <div className="flex flex-col gap-2 pb-2 border-b border-white/10">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-slate-300">Live Multilingual Transcript</span>
+                      <button
+                        type="button"
+                        onClick={() => setShowCaptionsOverlay((prev) => !prev)}
+                        className={`text-[10px] px-2 py-0.5 rounded border transition-colors ${
+                          showCaptionsOverlay
+                            ? "bg-dl-blue/20 border-dl-blue/40 text-dl-blue font-medium"
+                            : "bg-white/5 border-white/10 text-slate-400"
+                        }`}
+                      >
+                        Overlay: {showCaptionsOverlay ? "ON" : "OFF"}
+                      </button>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="text-[10px] text-slate-400">Mode:</span>
+                      <div className="flex items-center gap-1 bg-white/5 p-0.5 rounded-lg border border-white/10">
+                        {(["both", "translated", "original"] as const).map((m) => (
+                          <button
+                            key={m}
+                            type="button"
+                            onClick={() => updatePrefs({ caption_mode: m })}
+                            className={`px-2 py-0.5 text-[10px] rounded capitalize transition-all ${
+                              prefs.caption_mode === m
+                                ? "bg-dl-blue text-white font-medium"
+                                : "text-slate-400 hover:text-white"
+                            }`}
+                          >
+                            {m === "translated" ? "My language" : m}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 pt-1">
+                      <span className="text-[10px] text-slate-400 flex items-center gap-1">
+                        <Download className="h-3 w-3" /> Export:
+                      </span>
+                      <div className="flex items-center gap-1 ml-auto">
+                        {(["srt", "vtt", "txt", "json"] as const).map((fmt) => (
+                          <Button
+                            key={fmt}
+                            size="sm"
+                            variant="secondary"
+                            className="h-6 px-2 text-[10px] uppercase rounded-md bg-white/5 hover:bg-white/10 text-slate-200 border border-white/10"
+                            onClick={() => handleExportTranscript(fmt)}
+                          >
+                            {fmt}
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
                   </div>
 
-                  <div className="space-y-2.5">
+                  <div className="space-y-2.5 max-h-[calc(100vh-280px)] overflow-y-auto pr-1">
                     {captions.map((c) => (
                       <div key={c.id} className="rounded-xl border border-white/10 bg-white/5 p-3 text-xs space-y-1">
                         <div className="flex items-center justify-between text-[10px] text-slate-400">
@@ -1230,11 +1757,10 @@ export default function MeetingRoom() {
           <button
             type="button"
             onClick={toggleMic}
-            className={`h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center transition-all ${
-              micOn
-                ? "bg-[#3C4043] hover:bg-[#434649] text-white"
-                : "bg-red-600 hover:bg-red-700 text-white ring-2 ring-red-500/30"
-            }`}
+            className={`h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center transition-all ${micOn
+              ? "bg-[#3C4043] hover:bg-[#434649] text-white"
+              : "bg-red-600 hover:bg-red-700 text-white ring-2 ring-red-500/30"
+              }`}
             aria-label={micOn ? "Mute microphone" : "Start microphone"}
             title={micOn ? "Mute microphone" : "Start microphone"}
           >
@@ -1245,13 +1771,12 @@ export default function MeetingRoom() {
           <button
             type="button"
             onClick={toggleCamera}
-            className={`h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center transition-all relative ${
-              cameraOn
-                ? usingVirtualCamera
-                  ? "bg-sky-600 hover:bg-sky-500 text-white ring-2 ring-sky-400/50 shadow-md shadow-sky-600/30"
-                  : "bg-[#3C4043] hover:bg-[#434649] text-white"
-                : "bg-red-600 hover:bg-red-700 text-white ring-2 ring-red-500/30"
-            }`}
+            className={`h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center transition-all relative ${cameraOn
+              ? usingVirtualCamera
+                ? "bg-sky-600 hover:bg-sky-500 text-white ring-2 ring-sky-400/50 shadow-md shadow-sky-600/30"
+                : "bg-[#3C4043] hover:bg-[#434649] text-white"
+              : "bg-red-600 hover:bg-red-700 text-white ring-2 ring-red-500/30"
+              }`}
             aria-label={cameraOn ? (usingVirtualCamera ? "Stop virtual camera" : "Stop camera") : "Start camera"}
             title={
               cameraOn
@@ -1276,11 +1801,10 @@ export default function MeetingRoom() {
           <button
             type="button"
             onClick={() => setShowCaptionsOverlay((prev) => !prev)}
-            className={`h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center transition-all ${
-              showCaptionsOverlay
-                ? "bg-dl-blue text-white shadow-md shadow-dl-blue/30"
-                : "bg-[#3C4043] hover:bg-[#434649] text-white"
-            }`}
+            className={`h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center transition-all ${showCaptionsOverlay
+              ? "bg-dl-blue text-white shadow-md shadow-dl-blue/30"
+              : "bg-[#3C4043] hover:bg-[#434649] text-white"
+              }`}
             aria-label={showCaptionsOverlay ? "Turn off captions" : "Turn on captions"}
             title="Toggle live multilingual captions on screen"
           >
@@ -1291,11 +1815,10 @@ export default function MeetingRoom() {
           <button
             type="button"
             onClick={toggleScreen}
-            className={`h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center transition-all ${
-              screenOn
-                ? "bg-dl-blue text-white shadow-md shadow-dl-blue/30"
-                : "bg-[#3C4043] hover:bg-[#434649] text-white"
-            }`}
+            className={`h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center transition-all ${screenOn
+              ? "bg-dl-blue text-white shadow-md shadow-dl-blue/30"
+              : "bg-[#3C4043] hover:bg-[#434649] text-white"
+              }`}
             aria-label={screenOn ? "Stop sharing" : "Share screen"}
             title="Share your screen"
           >
@@ -1337,9 +1860,8 @@ export default function MeetingRoom() {
           <button
             type="button"
             onClick={() => toggleDrawer("info")}
-            className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors ${
-              drawerOpen && drawerTab === "info" ? "bg-dl-blue text-white" : "text-slate-300 hover:bg-white/10"
-            }`}
+            className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors ${drawerOpen && drawerTab === "info" ? "bg-dl-blue text-white" : "text-slate-300 hover:bg-white/10"
+              }`}
             title="Meeting details"
             aria-label="Meeting details"
           >
@@ -1349,9 +1871,8 @@ export default function MeetingRoom() {
           <button
             type="button"
             onClick={() => toggleDrawer("people")}
-            className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors relative ${
-              drawerOpen && drawerTab === "people" ? "bg-dl-blue text-white" : "text-slate-300 hover:bg-white/10"
-            }`}
+            className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors relative ${drawerOpen && drawerTab === "people" ? "bg-dl-blue text-white" : "text-slate-300 hover:bg-white/10"
+              }`}
             title="People"
             aria-label="People"
           >
@@ -1364,9 +1885,8 @@ export default function MeetingRoom() {
           <button
             type="button"
             onClick={() => toggleDrawer("chat")}
-            className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors ${
-              drawerOpen && drawerTab === "chat" ? "bg-dl-blue text-white" : "text-slate-300 hover:bg-white/10"
-            }`}
+            className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors ${drawerOpen && drawerTab === "chat" ? "bg-dl-blue text-white" : "text-slate-300 hover:bg-white/10"
+              }`}
             title="In-call chat"
             aria-label="In-call chat"
           >
@@ -1376,9 +1896,8 @@ export default function MeetingRoom() {
           <button
             type="button"
             onClick={() => toggleDrawer("captions")}
-            className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors ${
-              drawerOpen && drawerTab === "captions" ? "bg-dl-blue text-white" : "text-slate-300 hover:bg-white/10"
-            }`}
+            className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors ${drawerOpen && drawerTab === "captions" ? "bg-dl-blue text-white" : "text-slate-300 hover:bg-white/10"
+              }`}
             title="Captions & Transcripts"
             aria-label="Captions & Transcripts"
           >
@@ -1388,9 +1907,8 @@ export default function MeetingRoom() {
           <button
             type="button"
             onClick={() => toggleDrawer("summary")}
-            className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors ${
-              drawerOpen && drawerTab === "summary" ? "bg-dl-blue text-white" : "text-slate-300 hover:bg-white/10"
-            }`}
+            className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors ${drawerOpen && drawerTab === "summary" ? "bg-dl-blue text-white" : "text-slate-300 hover:bg-white/10"
+              }`}
             title="AI Summary"
             aria-label="AI Summary"
           >
@@ -1419,89 +1937,247 @@ export default function MeetingRoom() {
               </button>
             </div>
 
-            <div className="space-y-4 text-xs">
-              {/* I speak */}
-              <div>
-                <label className="block mb-1.5 font-semibold uppercase tracking-wider text-slate-300 text-[11px]">
-                  I speak (My native language)
-                </label>
-                <Select
-                  aria-label="I speak"
-                  className="!bg-[#282A2D] !text-white !border-white/15 w-full rounded-xl"
-                  value={prefs.speaking_language}
-                  onChange={(e) => updatePrefs({ speaking_language: e.target.value })}
-                >
-                  <option value="AUTO">Auto detect</option>
-                  {caps
-                    .filter((c) => c.speech_input_supported)
-                    .map((c) => (
-                      <option key={c.code} value={c.code}>
-                        {c.name} ({c.native_name})
-                      </option>
-                    ))}
-                </Select>
-              </div>
-
-              {/* I want to hear */}
-              <div>
-                <label className="block mb-1.5 font-semibold uppercase tracking-wider text-slate-300 text-[11px]">
-                  I want to hear (Translate incoming audio into)
-                </label>
-                <Select
-                  aria-label="I want to hear"
-                  className="!bg-[#282A2D] !text-white !border-white/15 w-full rounded-xl"
-                  value={prefs.listening_language}
-                  onChange={(e) => updatePrefs({ listening_language: e.target.value })}
-                >
-                  {caps
-                    .filter((c) => c.translation_supported || c.speech_input_supported)
-                    .map((c) => (
-                      <option key={c.code} value={c.code}>
-                        {c.name} ({c.native_name})
-                        {c.speech_output_supported ? "" : " — captions only"}
-                      </option>
-                    ))}
-                </Select>
-              </div>
-
-              {/* Audio Routing Mode */}
-              <div>
-                <label className="block mb-1.5 font-semibold uppercase tracking-wider text-slate-300 text-[11px]">
-                  Audio Playback Mode
-                </label>
-                <SegmentedControl
-                  ariaLabel="Audio mode"
-                  value={prefs.audio_mode}
-                  onChange={(v) => updatePrefs({ audio_mode: v })}
-                  options={[
-                    { value: "original", label: "Original", title: "Only the speakers' original voices" },
-                    {
-                      value: "translated",
-                      label: "Translated",
-                      title: "Translated voice; original when you understand the source",
-                    },
-                    { value: "mixed", label: "Mixed", title: "Original and translated voices together" },
-                  ]}
-                />
-              </div>
-
-              {/* Caption display */}
-              <div>
-                <label className="block mb-1.5 font-semibold uppercase tracking-wider text-slate-300 text-[11px]">
-                  Captions Mode
-                </label>
-                <SegmentedControl
-                  ariaLabel="Caption mode"
-                  value={prefs.caption_mode}
-                  onChange={(v) => updatePrefs({ caption_mode: v })}
-                  options={[
-                    { value: "original", label: "Original" },
-                    { value: "translated", label: "My language" },
-                    { value: "both", label: "Both" },
-                  ]}
-                />
-              </div>
+            {/* Settings Tab Selector */}
+            <div className="flex border-b border-white/10 text-xs font-medium bg-[#1A1B1D] rounded-lg p-0.5">
+              <button
+                type="button"
+                onClick={() => setSettingsTab("translation")}
+                className={`flex-1 py-1.5 text-center rounded-md transition ${settingsTab === "translation"
+                  ? "bg-dl-blue text-white font-semibold shadow-xs"
+                  : "text-slate-400 hover:text-slate-200"
+                  }`}
+              >
+                Translation & Languages
+              </button>
+              <button
+                type="button"
+                onClick={() => setSettingsTab("devices")}
+                className={`flex-1 py-1.5 text-center rounded-md transition ${settingsTab === "devices"
+                  ? "bg-dl-blue text-white font-semibold shadow-xs"
+                  : "text-slate-400 hover:text-slate-200"
+                  }`}
+              >
+                Audio, Video & Devices
+              </button>
             </div>
+
+            {settingsTab === "translation" ? (
+              <div className="space-y-4 text-xs">
+                {/* I speak */}
+                <div>
+                  <label className="block mb-1.5 font-semibold uppercase tracking-wider text-slate-300 text-[11px]">
+                    I speak (My native language)
+                  </label>
+                  <Select
+                    aria-label="I speak"
+                    className="!bg-[#282A2D] !text-white !border-white/15 w-full rounded-xl"
+                    value={prefs.speaking_language}
+                    onChange={(e) => updatePrefs({ speaking_language: e.target.value })}
+                  >
+                    <option value="AUTO">Auto detect</option>
+                    {caps
+                      .filter((c) => c.speech_input_supported)
+                      .map((c) => (
+                        <option key={c.code} value={c.code}>
+                          {c.name} ({c.native_name})
+                        </option>
+                      ))}
+                  </Select>
+                </div>
+
+                {/* I want to hear */}
+                <div>
+                  <label className="block mb-1.5 font-semibold uppercase tracking-wider text-slate-300 text-[11px]">
+                    I want to hear (Translate incoming audio into)
+                  </label>
+                  <Select
+                    aria-label="I want to hear"
+                    className="!bg-[#282A2D] !text-white !border-white/15 w-full rounded-xl"
+                    value={prefs.listening_language}
+                    onChange={(e) => updatePrefs({ listening_language: e.target.value })}
+                  >
+                    {caps
+                      .filter((c) => c.translation_supported || c.speech_input_supported)
+                      .map((c) => (
+                        <option key={c.code} value={c.code}>
+                          {c.name} ({c.native_name})
+                          {c.speech_output_supported ? "" : " — captions only"}
+                        </option>
+                      ))}
+                  </Select>
+                </div>
+
+                {/* Audio Routing Mode */}
+                <div>
+                  <label className="block mb-1.5 font-semibold uppercase tracking-wider text-slate-300 text-[11px]">
+                    Audio Playback Mode
+                  </label>
+                  <SegmentedControl
+                    ariaLabel="Audio mode"
+                    value={prefs.audio_mode}
+                    onChange={(v) => updatePrefs({ audio_mode: v })}
+                    options={[
+                      { value: "original", label: "Original", title: "Only the speakers' original voices" },
+                      {
+                        value: "translated",
+                        label: "Translated",
+                        title: "Translated voice; original when you understand the source",
+                      },
+                      { value: "mixed", label: "Mixed", title: "Original and translated voices together" },
+                    ]}
+                  />
+                </div>
+
+                {/* Caption display */}
+                <div>
+                  <label className="block mb-1.5 font-semibold uppercase tracking-wider text-slate-300 text-[11px]">
+                    Captions Mode
+                  </label>
+                  <SegmentedControl
+                    ariaLabel="Caption mode"
+                    value={prefs.caption_mode}
+                    onChange={(v) => updatePrefs({ caption_mode: v })}
+                    options={[
+                      { value: "original", label: "Original" },
+                      { value: "translated", label: "My language" },
+                      { value: "both", label: "Both" },
+                    ]}
+                  />
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-4 text-xs">
+                {/* Microphone Selection */}
+                <div>
+                  <label className="block mb-1.5 font-semibold uppercase tracking-wider text-slate-300 text-[11px] flex items-center gap-1.5">
+                    <Mic className="h-3.5 w-3.5 text-dl-blue" />
+                    Microphone Input
+                  </label>
+                  <Select
+                    aria-label="Microphone input"
+                    className="!bg-[#282A2D] !text-white !border-white/15 w-full rounded-xl"
+                    value={selectedMicId}
+                    onChange={(e) => {
+                      const newId = e.target.value;
+                      setSelectedMicId(newId);
+                      void restartMicWithSettings({ micId: newId });
+                    }}
+                  >
+                    <option value="">Default System Microphone</option>
+                    {availableMics.map((mic, idx) => (
+                      <option key={mic.deviceId || idx} value={mic.deviceId}>
+                        {mic.label || `Microphone ${idx + 1}`}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+
+                {/* Speaker Selection */}
+                <div>
+                  <label className="block mb-1.5 font-semibold uppercase tracking-wider text-slate-300 text-[11px] flex items-center gap-1.5">
+                    <Volume2 className="h-3.5 w-3.5 text-dl-blue" />
+                    Speaker Output (Hardware Playback)
+                  </label>
+                  <Select
+                    aria-label="Speaker output"
+                    className="!bg-[#282A2D] !text-white !border-white/15 w-full rounded-xl"
+                    value={selectedSpeakerId}
+                    onChange={(e) => void handleSpeakerChange(e.target.value)}
+                  >
+                    <option value="">Default System Speaker</option>
+                    {availableSpeakers.map((spk, idx) => (
+                      <option key={spk.deviceId || idx} value={spk.deviceId}>
+                        {spk.label || `Speaker ${idx + 1}`}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+
+                {/* Camera Selection */}
+                <div>
+                  <label className="block mb-1.5 font-semibold uppercase tracking-wider text-slate-300 text-[11px] flex items-center gap-1.5">
+                    <Camera className="h-3.5 w-3.5 text-dl-blue" />
+                    Camera Video Input
+                  </label>
+                  <Select
+                    aria-label="Camera video input"
+                    className="!bg-[#282A2D] !text-white !border-white/15 w-full rounded-xl"
+                    value={selectedCameraId}
+                    onChange={(e) => {
+                      setSelectedCameraId(e.target.value);
+                      if (cameraOn && !usingVirtualCamera) {
+                        void retryPhysicalCamera();
+                      }
+                    }}
+                  >
+                    <option value="">Default System Camera</option>
+                    {availableCameras.map((cam, idx) => (
+                      <option key={cam.deviceId || idx} value={cam.deviceId}>
+                        {cam.label || `Camera ${idx + 1}`}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+
+                {/* Audio Signal Processing (DSP) Toggles */}
+                <div className="pt-2 border-t border-white/10 space-y-2">
+                  <span className="block font-semibold uppercase tracking-wider text-slate-300 text-[11px]">
+                    Audio Signal Processing (DSP)
+                  </span>
+
+                  <label className="flex items-center justify-between p-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 cursor-pointer">
+                    <div>
+                      <span className="font-medium text-white block text-xs">Acoustic Echo Cancellation</span>
+                      <span className="text-[11px] text-slate-400">Prevents speaker audio echoing into microphone</span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={dspSettings.echoCancellation}
+                      onChange={(e) => {
+                        const updated = { ...dspSettings, echoCancellation: e.target.checked };
+                        setDspSettings(updated);
+                        void restartMicWithSettings({ dsp: updated });
+                      }}
+                      className="h-4 w-4 rounded accent-dl-blue"
+                    />
+                  </label>
+
+                  <label className="flex items-center justify-between p-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 cursor-pointer">
+                    <div>
+                      <span className="font-medium text-white block text-xs">Background Noise Suppression</span>
+                      <span className="text-[11px] text-slate-400">Reduces background fans, typing, and room hum</span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={dspSettings.noiseSuppression}
+                      onChange={(e) => {
+                        const updated = { ...dspSettings, noiseSuppression: e.target.checked };
+                        setDspSettings(updated);
+                        void restartMicWithSettings({ dsp: updated });
+                      }}
+                      className="h-4 w-4 rounded accent-dl-blue"
+                    />
+                  </label>
+
+                  <label className="flex items-center justify-between p-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 cursor-pointer">
+                    <div>
+                      <span className="font-medium text-white block text-xs">Automatic Gain Control (AGC)</span>
+                      <span className="text-[11px] text-slate-400">Stabilizes microphone volume levels</span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={dspSettings.autoGainControl}
+                      onChange={(e) => {
+                        const updated = { ...dspSettings, autoGainControl: e.target.checked };
+                        setDspSettings(updated);
+                        void restartMicWithSettings({ dsp: updated });
+                      }}
+                      className="h-4 w-4 rounded accent-dl-blue"
+                    />
+                  </label>
+                </div>
+              </div>
+            )}
 
             <div className="flex justify-end pt-3 border-t border-white/10">
               <Button

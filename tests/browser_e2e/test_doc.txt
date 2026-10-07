@@ -1,0 +1,2 @@
+GlobalTalk AI Quarterly Product Report.
+Realtime translation is operating with low latency.

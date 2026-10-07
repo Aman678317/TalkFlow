@@ -41,6 +41,7 @@ class RtParticipant:
     audio_mode: str = "translated"   # original|translated|mixed|captions_only
     captions_enabled: bool = True
     ws: WebSocket | None = None
+    ws_task: asyncio.Task | None = None
     connected: bool = False
     last_seq_seen: int = 0
     joined_at: float = field(default_factory=time.time)
@@ -124,18 +125,25 @@ class SessionManager:
             met.ACTIVE_PARTICIPANTS.dec()
 
     def attach_ws(self, session: RtSession, participant_id: uuid.UUID,
-                  ws: WebSocket) -> RtParticipant | None:
+                  ws: WebSocket) -> tuple[RtParticipant | None, WebSocket | None]:
         p = session.participants.get(str(participant_id))
+        old_ws = None
         if p:
+            if p.connected and p.ws is not None and p.ws != ws:
+                old_ws = p.ws
             p.ws = ws
             p.connected = True
-        return p
+        return p, old_ws
 
-    def detach_ws(self, session: RtSession, participant_id: uuid.UUID) -> None:
+    def detach_ws(self, session: RtSession, participant_id: uuid.UUID,
+                  ws: WebSocket | None = None) -> None:
         p = session.participants.get(str(participant_id))
         if p:
+            if ws is not None and p.ws != ws:
+                return  # do not detach a newer superseded socket
             p.connected = False
             p.ws = None
+            p.ws_task = None
 
     def listeners_for_language(self, session: RtSession, target_lang: str,
                                *, want_audio: bool) -> list[RtParticipant]:
@@ -229,14 +237,12 @@ class SessionManager:
 
     async def relay_audio(self, session: RtSession, from_pid, pcm: bytes) -> None:
         """Original-audio relay (WS transport): listeners in original/mixed
-        mode hear the real speaker. Binary frame = [16B speaker uuid][PCM16].
+        mode hear the real speaker. Binary frame = [0x4F][16B shortId][PCM16].
         In LiveKit mode the SFU handles this and relay is skipped."""
         if session.mode == "livekit":
             return
-        header = getattr(from_pid, "bytes", None)
-        if header is None:
-            return
-        payload = header + pcm
+        short_id = str(from_pid).replace("-", "")[:16].ljust(16, "\x00").encode("utf-8")
+        payload = b"\x4f" + short_id + pcm
         for p in session.participants.values():
             if (p.connected and p.ws is not None and p.participant_id != from_pid
                     and p.audio_mode in ("original", "mixed")):

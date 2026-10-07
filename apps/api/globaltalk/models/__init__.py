@@ -54,6 +54,26 @@ class User(Base, TimestampMixin):
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     memberships: Mapped[list["OrganizationMember"]] = relationship(back_populates="user")
+    identities: Mapped[list["UserIdentity"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+
+
+class UserIdentity(Base, TimestampMixin):
+    """External OAuth / Social identity linked to a User account (PDD Phase 2)."""
+    __tablename__ = "user_identities"
+    __table_args__ = (
+        UniqueConstraint("provider", "provider_user_id", name="uq_provider_user"),
+        Index("ix_user_identities_user_provider", "user_id", "provider"),
+    )
+
+    id: Mapped[str] = mapped_column(GUID(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(GUID(36), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), index=True, nullable=False)  # google|github|apple
+    provider_user_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    email_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    profile_data: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+
+    user: Mapped[User] = relationship(back_populates="identities")
 
 
 class Organization(Base, TimestampMixin):

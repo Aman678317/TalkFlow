@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -87,12 +87,13 @@ async def _detail(db: AsyncSession, meeting: M.Meeting,
             participant=ParticipantOut.model_validate(p),
             preference=PreferenceOut.model_validate(pref) if pref else None)
         for p, pref in participants]
-    if meeting.mode == "livekit" and livekit_bridge.enabled():
-        identity = f"{principal.user_id if principal else 'guest'}"
-        display_name = principal.user.name if (principal and principal.user) else "Guest"
-        base.livekit = livekit_bridge.join_token(
-            meeting.room_name, identity, display_name,
-            {"org_id": str(meeting.org_id), "meeting_id": str(meeting.id)})
+    if meeting.mode == "livekit" and livekit_bridge.enabled() and principal and principal.user_id:
+        my_p = next((p for p, _ in participants if p.user_id == principal.user_id), None)
+        if my_p:
+            base.livekit = livekit_bridge.join_token(
+                meeting.room_name, my_p.livekit_identity or str(my_p.id),
+                my_p.display_name or (principal.user.name if principal.user else "Participant"),
+                {"participant_id": str(my_p.id), "org_id": str(meeting.org_id), "meeting_id": str(meeting.id)})
     return base
 
 
@@ -101,8 +102,21 @@ async def get_meeting(meeting_id: uuid.UUID,
                       principal: Principal | None = Depends(get_principal_optional),
                       db: AsyncSession = Depends(get_db)):
     meeting = await db.get(M.Meeting, meeting_id)
-    if meeting is None or (meeting.status == "ended" and not (principal and principal.org_id == meeting.org_id)):
+    if meeting is None:
         raise NotFoundError("Meeting not found.")
+    
+    # Cross-tenant isolation check: if principal is authenticated, enforce tenant ownership or participation
+    participants = await meeting_service.list_participants(db, meeting.id)
+    is_org_member = bool(principal and principal.org_id and principal.org_id == meeting.org_id)
+    is_participant = bool(principal and principal.user_id and any(p.user_id == principal.user_id for p, _ in participants))
+
+    if principal and principal.org_id and not (is_org_member or is_participant):
+        # A member of another org cannot view this meeting unless explicitly added
+        raise NotFoundError("Meeting not found.")
+
+    if meeting.status == "ended" and not is_org_member:
+        raise NotFoundError("Meeting not found.")
+
     return await _detail(db, meeting, principal)
 
 
@@ -111,9 +125,11 @@ async def join_meeting(meeting_id: uuid.UUID, body: JoinMeetingRequest,
                        principal: Principal | None = Depends(get_principal_optional),
                        db: AsyncSession = Depends(get_db)):
     meeting = await db.get(M.Meeting, meeting_id)
-    if meeting is None or meeting.status not in ("scheduled", "live"):
+    if meeting is None:
+        raise NotFoundError("Meeting not found.")
+    if meeting.status not in ("scheduled", "live"):
         raise ValidationError("Meeting is not joinable.",
-                              details={"status": meeting.status if meeting else "not_found"})
+                              details={"status": meeting.status})
     from app.services.translation_service import validate_pair
     await validate_pair(db, "en", body.hear_lang, need_realtime=True)
 
@@ -149,6 +165,47 @@ async def join_meeting(meeting_id: uuid.UUID, body: JoinMeetingRequest,
     except Exception:
         log.debug("webhook dispatch skipped")
     return resp
+
+
+@router.get("/meetings/{meeting_id}/participants", response_model=list[dict])
+async def get_participants(request: Request,
+                           meeting_id: uuid.UUID,
+                           principal: Principal | None = Depends(get_principal_optional),
+                           db: AsyncSession = Depends(get_db)):
+    """List participants for a meeting with their preferences."""
+    meeting = await db.get(M.Meeting, meeting_id)
+    if meeting is None:
+        raise NotFoundError("Meeting not found.")
+    participants = await meeting_service.list_participants(db, meeting.id)
+
+    # BOLA protection: verify caller has legitimate membership or participation in this meeting
+    is_org_member = bool(principal and principal.org_id and principal.org_id == meeting.org_id)
+    is_participant = bool(principal and principal.user_id and any(p.user_id == principal.user_id for p, _ in participants))
+
+    p_header = request.headers.get("x-participant-id") or request.query_params.get("participant_id")
+    is_guest = False
+    if p_header:
+        try:
+            p_uuid = uuid.UUID(p_header)
+            is_guest = any(p.id == p_uuid for p, _ in participants)
+        except ValueError:
+            pass
+
+    if not (is_org_member or is_participant or is_guest):
+        raise NotFoundError("Meeting not found.")
+
+    out = []
+    for p, pref in participants:
+        out.append({
+            "id": str(p.id),
+            "display_name": p.display_name or "Participant",
+            "status": p.status or "joined",
+            "speaking_language": pref.speak_lang if pref else "auto",
+            "listening_language": pref.hear_lang if pref else "en",
+            "audio_mode": pref.audio_mode if pref else "translated",
+            "caption_mode": getattr(pref, "caption_mode", "both") or "both",
+        })
+    return out
 
 
 @router.post("/meetings/{meeting_id}/tokens", response_model=dict)

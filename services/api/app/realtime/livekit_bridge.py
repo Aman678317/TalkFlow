@@ -68,7 +68,7 @@ def _service_token(room_name: str) -> str:
     return pyjwt.encode(payload, settings.livekit_api_secret, algorithm="HS256")
 
 
-def join_token(room_name: str, identity: str, name: str, metadata: dict) -> dict | None:
+def join_token(room_name: str, identity: str, name: str, metadata: dict, ttl_seconds: int = 1800) -> dict | None:
     if not enabled():
         return None
     import time as _t
@@ -78,7 +78,7 @@ def join_token(room_name: str, identity: str, name: str, metadata: dict) -> dict
     payload = {
         "iss": settings.livekit_api_key, "sub": identity, "name": name,
         "metadata": json.dumps(metadata),
-        "nbf": now - 10, "exp": now + 6 * 3600, "jti": secrets.token_hex(8),
+        "nbf": now - 10, "exp": now + ttl_seconds, "jti": secrets.token_hex(8),
         "video": {"roomJoin": True, "room": room_name, "canPublish": True,
                   "canSubscribe": True},
     }
