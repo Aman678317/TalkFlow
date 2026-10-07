@@ -1,7 +1,6 @@
 """Unit tests: security, RBAC, rate limiting, protocol frames, billing config, parsers,
 embeddings, glossary post-processing, memory-class invariants."""
 import json
-import math
 import struct
 
 import pytest
@@ -14,7 +13,7 @@ from globaltalk.core.security import (create_access_token, create_refresh_token,
                                       verify_password, webhook_signature)
 from globaltalk.realtime.protocol import BinaryFrame, make_event
 from globaltalk.services.document_parsers import is_translatable, sniff_mime
-from globaltalk.services.translation import apply_glossary_post, normalize_for_match, tm_hash
+from globaltalk.services.translation import apply_glossary_post, tm_hash
 
 
 # ------------------------------------------------------------------ security
@@ -208,11 +207,13 @@ def test_production_secret_guard():
         Settings(app_env="production", secret_key="dev-secret-key", jwt_secret="dev-jwt-secret")
     assert "Production environment requires a strong 'SECRET_KEY'" in str(exc.value)
 
-    # 32+ char custom keys must succeed in production
+    # 32+ char custom keys with production redis and postgres must succeed in production
     valid_settings = Settings(
         app_env="production",
         secret_key="x" * 32,
         jwt_secret="y" * 32,
+        redis_url="redis://localhost:6379/0",
+        database_url="postgresql+asyncpg://user:pass@localhost:5432/globaltalk",
     )
     assert valid_settings.is_production
 
@@ -224,8 +225,6 @@ def test_production_telephony_failsafe():
     if services_path not in sys.path:
         sys.path.insert(0, services_path)
 
-    from app.config import Settings
-    from app.errors import ProviderError
     from app.telephony.service import TelephonyService
 
     ts = TelephonyService()

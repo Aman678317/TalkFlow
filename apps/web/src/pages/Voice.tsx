@@ -265,12 +265,21 @@ export default function Voice() {
 
   // Refs
   const recognitionRef = useRef<any>(null);
+  const micStreamRef = useRef<MediaStream | null>(null);
   const liveFinalOriginalRef = useRef("");
   const liveFinalTranslatedRef = useRef("");
   const interimDebounceRef = useRef<any>(null);
   const isSimulatingRef = useRef(false);
   const isLiveListeningRef = useRef(false);
   const transcriptBottomRef = useRef<HTMLDivElement>(null);
+  const [quickInputText, setQuickInputText] = useState("");
+  const [isSpeakingTts, setIsSpeakingTts] = useState<boolean>(false);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const audioProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const backendPcmBufferRef = useRef<Float32Array[]>([]);
+  const isBackendTranscribingRef = useRef<boolean>(false);
+  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+  const webSpeechFailedRef = useRef<boolean>(false);
 
   // Spacebar toggle listener for Live Voice
   useEffect(() => {
@@ -297,19 +306,77 @@ export default function Voice() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [activeTab]);
 
-  // Text-To-Speech Playback
-  const speakUtterance = (text: string, langCode: string) => {
-    if (!("speechSynthesis" in window)) return;
+  // High-Fidelity Text-To-Speech Playback (Neural Audio with WebSpeech Fallback)
+  const speakUtterance = async (text: string, langCode: string) => {
+    const clean = text?.trim();
+    if (!clean) return;
+
+    // 1. Try backend high-fidelity TTS (synthesizes natural speech for all languages including Hindi/German/Spanish)
     try {
-      window.speechSynthesis.cancel();
-      window.speechSynthesis.resume();
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = toBCP47(langCode);
-      utterance.rate = 1.0;
-      utterance.pitch = 1.0;
-      window.speechSynthesis.speak(utterance);
-    } catch (e) {
-      console.warn("TTS playback error:", e);
+      const res = await api<{ audio_base64?: string; format?: string }>("/api/v1/voice/tts", {
+        method: "POST",
+        body: {
+          text: clean,
+          language: langCode,
+        },
+        timeoutMs: 9000,
+      });
+
+      if (res?.audio_base64) {
+        if (currentAudioRef.current) {
+          try {
+            currentAudioRef.current.pause();
+            currentAudioRef.current.currentTime = 0;
+          } catch { }
+        }
+
+        const mime = res.format === "wav" ? "audio/wav" : "audio/mp3";
+        const audio = new Audio(`data:${mime};base64,${res.audio_base64}`);
+        currentAudioRef.current = audio;
+        setIsSpeakingTts(true);
+
+        audio.onended = () => {
+          setIsSpeakingTts(false);
+          currentAudioRef.current = null;
+        };
+        audio.onerror = () => {
+          setIsSpeakingTts(false);
+          currentAudioRef.current = null;
+        };
+
+        await audio.play();
+        return;
+      }
+    } catch (err) {
+      console.warn("Backend neural TTS notice, trying browser synthesis fallback:", err);
+    }
+
+    // 2. Safe Fallback: Browser Web SpeechSynthesis
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      try {
+        window.speechSynthesis.resume();
+        const utterance = new SpeechSynthesisUtterance(clean);
+        utterance.lang = toBCP47(langCode);
+        utterance.rate = 1.0;
+        utterance.pitch = 1.0;
+
+        const voices = window.speechSynthesis.getVoices();
+        const bcp47 = toBCP47(langCode).toLowerCase();
+        const shortLang = langCode.toLowerCase().split("-")[0];
+        const match = voices.find(
+          (v) => v.lang.toLowerCase() === bcp47 || v.lang.toLowerCase().startsWith(shortLang)
+        );
+        if (match) utterance.voice = match;
+
+        utterance.onstart = () => setIsSpeakingTts(true);
+        utterance.onend = () => setIsSpeakingTts(false);
+        utterance.onerror = () => setIsSpeakingTts(false);
+
+        window.speechSynthesis.speak(utterance);
+      } catch (e) {
+        console.warn("Browser SpeechSynthesis playback error:", e);
+        setIsSpeakingTts(false);
+      }
     }
   };
 
@@ -329,29 +396,192 @@ export default function Voice() {
     liveFinalTranslatedRef.current = orig;
   };
 
+  // Backend PCM Audio Capture Fallback (Ensures voice recognition is available 100% of the time)
+  const flushBackendPcmTranscription = async (chunks: Float32Array[]) => {
+    if (chunks.length === 0 || !isLiveListeningRef.current) return;
+    try {
+      isBackendTranscribingRef.current = true;
+      let totalLen = 0;
+      for (const c of chunks) totalLen += c.length;
+      const merged = new Float32Array(totalLen);
+      let offset = 0;
+      for (const c of chunks) {
+        merged.set(c, offset);
+        offset += c.length;
+      }
+
+      // Convert Float32 to 16-bit PCM
+      const int16 = new Int16Array(merged.length);
+      for (let i = 0; i < merged.length; i++) {
+        const s = Math.max(-1, Math.min(1, merged[i]));
+        int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+      }
+
+      const bytes = new Uint8Array(int16.buffer);
+      let binary = "";
+      const len = bytes.byteLength;
+      for (let i = 0; i < len; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      const b64 = btoa(binary);
+
+      const res = await api<{ text?: string; language?: string }>("/api/v1/voice/transcribe", {
+        method: "POST",
+        body: {
+          audio_base64: b64,
+          sample_rate: 16000,
+          language: liveSourceLang === "auto" ? undefined : liveSourceLang,
+        },
+      });
+
+      if (res?.text && res.text.trim()) {
+        const chunk = res.text.trim();
+        const updatedOriginal = liveFinalOriginalRef.current
+          ? `${liveFinalOriginalRef.current} ${chunk}`
+          : chunk;
+        liveFinalOriginalRef.current = updatedOriginal;
+        setLiveOriginalText(updatedOriginal);
+        setLiveInterimOriginal("");
+
+        setIsLiveTranslating(true);
+        const translatedChunk = await translateLiveText(chunk, liveSourceLang, liveTargetLang);
+        const updatedTranslated = liveFinalTranslatedRef.current
+          ? `${liveFinalTranslatedRef.current} ${translatedChunk}`
+          : translatedChunk;
+        liveFinalTranslatedRef.current = updatedTranslated;
+        setLiveTranslatedText(updatedTranslated);
+        setLiveInterimTranslated("");
+        setIsLiveTranslating(false);
+
+        if (autoPlayLiveAudio && translatedChunk) {
+          void speakUtterance(translatedChunk, liveTargetLang);
+        }
+      }
+    } catch (e) {
+      console.warn("Backend audio transcription notice:", e);
+    } finally {
+      isBackendTranscribingRef.current = false;
+    }
+  };
+
+  const startBackendPcmCapture = (stream: MediaStream) => {
+    try {
+      if (audioProcessorRef.current) {
+        try {
+          audioProcessorRef.current.disconnect();
+        } catch { }
+        audioProcessorRef.current = null;
+      }
+      if (audioContextRef.current) {
+        try {
+          audioContextRef.current.close().catch(() => { });
+        } catch { }
+        audioContextRef.current = null;
+      }
+
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx({ sampleRate: 16000 });
+      if (ctx.state === "suspended") {
+        ctx.resume().catch(() => { });
+      }
+      audioContextRef.current = ctx;
+
+      const source = ctx.createMediaStreamSource(stream);
+      const processor = ctx.createScriptProcessor(4096, 1, 1);
+      audioProcessorRef.current = processor;
+      backendPcmBufferRef.current = [];
+
+      let silenceCount = 0;
+      let hasSpeech = false;
+
+      processor.onaudioprocess = (e) => {
+        if (!isLiveListeningRef.current) return;
+        const channel = e.inputBuffer.getChannelData(0);
+        const copy = new Float32Array(channel.length);
+        copy.set(channel);
+        backendPcmBufferRef.current.push(copy);
+
+        // VAD root mean square calculation
+        let sum = 0;
+        for (let i = 0; i < copy.length; i++) {
+          sum += copy[i] * copy[i];
+        }
+        const rms = Math.sqrt(sum / copy.length);
+
+        // Sensitive threshold suitable for laptop and headset microphones
+        if (rms > 0.003) {
+          hasSpeech = true;
+          silenceCount = 0;
+        } else if (hasSpeech) {
+          silenceCount++;
+        }
+
+        // Flush on speech pause (~0.6s silence) or max buffer duration (~3s)
+        if (
+          hasSpeech &&
+          (silenceCount >= 2 || backendPcmBufferRef.current.length >= 12) &&
+          !isBackendTranscribingRef.current
+        ) {
+          hasSpeech = false;
+          silenceCount = 0;
+          const chunks = backendPcmBufferRef.current;
+          backendPcmBufferRef.current = [];
+          void flushBackendPcmTranscription(chunks);
+        }
+      };
+
+      // Mute gain node so microphone audio is not routed back to the speakers/headphones
+      const muteGain = ctx.createGain();
+      muteGain.gain.setValueAtTime(0, ctx.currentTime);
+      source.connect(processor);
+      processor.connect(muteGain);
+      muteGain.connect(ctx.destination);
+    } catch (err) {
+      console.warn("Direct microphone PCM capture note:", err);
+    }
+  };
+
   // START LIVE STREAMING SPEECH RECOGNITION (Live Voice Mode)
-  const startLiveListening = () => {
+  const startLiveListening = async () => {
+    webSpeechFailedRef.current = false;
     const SpeechRecognition =
       (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-
-    if (!SpeechRecognition) {
-      toast.warning(
-        "Microphone speech recognition is not supported in this browser. Running interactive sample demo instead!"
-      );
-      runSampleSimulation();
-      return;
-    }
 
     if (recognitionRef.current) {
       try {
         recognitionRef.current.abort();
-      } catch {}
+      } catch { }
       recognitionRef.current = null;
+    }
+
+    // Acquire microphone stream cleanly
+    let micStream = micStreamRef.current;
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      try {
+        micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        micStreamRef.current = micStream;
+      } catch (err) {
+        console.warn("Direct microphone stream note:", err);
+      }
+    }
+
+    isLiveListeningRef.current = true;
+    setIsLiveListening(true);
+
+    // Start background PCM capture from microphone as guaranteed STT fallback
+    if (micStream) {
+      startBackendPcmCapture(micStream);
+    }
+
+    if (!SpeechRecognition) {
+      // Browser does not have WebSpeech, backend PCM capture is already active
+      return;
     }
 
     try {
       const recognition = new SpeechRecognition();
-      recognition.continuous = true;
+      recognition.continuous = false;
       recognition.interimResults = true;
       recognition.maxAlternatives = 1;
       recognition.lang = toBCP47(liveSourceLang === "auto" ? "en" : liveSourceLang);
@@ -376,6 +606,8 @@ export default function Voice() {
 
         // Handle finalized chunk
         if (newFinalText.trim()) {
+          // Clear backend PCM buffer to prevent duplicate transcription
+          backendPcmBufferRef.current = [];
           const chunk = newFinalText.trim();
           const updatedOriginal = liveFinalOriginalRef.current
             ? `${liveFinalOriginalRef.current} ${chunk}`
@@ -395,7 +627,7 @@ export default function Voice() {
           setIsLiveTranslating(false);
 
           if (autoPlayLiveAudio && translatedChunk) {
-            speakUtterance(translatedChunk, liveTargetLang);
+            void speakUtterance(translatedChunk, liveTargetLang);
           }
         }
 
@@ -421,42 +653,32 @@ export default function Voice() {
       };
 
       recognition.onerror = (event: any) => {
-        console.warn("Live speech recognition notice:", event.error);
         if (event.error === "not-allowed") {
           toast.error("Microphone access denied", "Please allow microphone permissions in your browser URL bar.");
           setIsLiveListening(false);
           isLiveListeningRef.current = false;
-        } else if (event.error === "no-speech") {
-          // Normal pause in speaking, do not terminate session
         } else if (event.error === "network") {
-          toast.info("Browser speech network notice: click 'Try sample' to test instant translation.");
-          setIsLiveListening(false);
-          isLiveListeningRef.current = false;
+          // Browser cloud speech recognition is unreachable;
+          // Mark WebSpeech as failed so it doesn't repeatedly loop,
+          // while backend PCM audio transcription seamlessly captures everything.
+          webSpeechFailedRef.current = true;
+          console.info("Browser Speech network notice; maintaining live recognition via backend neural audio processing.");
         }
       };
 
       recognition.onend = () => {
-        // If user hasn't explicitly stopped, keep listening across natural pauses
-        if (isLiveListeningRef.current && recognitionRef.current) {
+        if (isLiveListeningRef.current && recognitionRef.current && !webSpeechFailedRef.current) {
           try {
             recognition.start();
-            return;
-          } catch (e) {
-            console.warn("Speech recognition restart notice:", e);
-          }
+          } catch { }
         }
-        setIsLiveListening(false);
-        isLiveListeningRef.current = false;
       };
 
-      isLiveListeningRef.current = true;
-      setIsLiveListening(true);
       recognition.start();
       recognitionRef.current = recognition;
     } catch (err: any) {
-      toast.error("Microphone access failed", err?.message ?? String(err));
-      setIsLiveListening(false);
-      isLiveListeningRef.current = false;
+      console.warn("Speech recognition notice:", err);
+      // Backend audio capture is already running
     }
   };
 
@@ -468,12 +690,67 @@ export default function Voice() {
     if (recognitionRef.current) {
       try {
         recognitionRef.current.stop();
-      } catch {}
+      } catch { }
       recognitionRef.current = null;
     }
+    if (audioProcessorRef.current) {
+      try {
+        audioProcessorRef.current.disconnect();
+      } catch { }
+      audioProcessorRef.current = null;
+    }
+    if (audioContextRef.current) {
+      try {
+        audioContextRef.current.close().catch(() => { });
+      } catch { }
+      audioContextRef.current = null;
+    }
+    backendPcmBufferRef.current = [];
+    if (micStreamRef.current) {
+      try {
+        micStreamRef.current.getTracks().forEach((track) => track.stop());
+      } catch { }
+      micStreamRef.current = null;
+    }
+    if (currentAudioRef.current) {
+      try {
+        currentAudioRef.current.pause();
+        currentAudioRef.current.currentTime = 0;
+      } catch { }
+      currentAudioRef.current = null;
+    }
+    setIsSpeakingTts(false);
     setIsLiveListening(false);
     setLiveInterimOriginal("");
     setLiveInterimTranslated("");
+  };
+
+  // Instant Translation for Quick Dictation & Phrase Prompts
+  const handleTranslateInput = async (inputText: string) => {
+    const trimmed = inputText.trim();
+    if (!trimmed) return;
+    setQuickInputText("");
+
+    const updatedOriginal = liveFinalOriginalRef.current
+      ? `${liveFinalOriginalRef.current} ${trimmed}`
+      : trimmed;
+    liveFinalOriginalRef.current = updatedOriginal;
+    setLiveOriginalText(updatedOriginal);
+    setLiveInterimOriginal("");
+
+    setIsLiveTranslating(true);
+    const translatedChunk = await translateLiveText(trimmed, liveSourceLang, liveTargetLang);
+    const updatedTranslated = liveFinalTranslatedRef.current
+      ? `${liveFinalTranslatedRef.current} ${translatedChunk}`
+      : translatedChunk;
+    liveFinalTranslatedRef.current = updatedTranslated;
+    setLiveTranslatedText(updatedTranslated);
+    setLiveInterimTranslated("");
+    setIsLiveTranslating(false);
+
+    if (autoPlayLiveAudio && translatedChunk) {
+      void speakUtterance(translatedChunk, liveTargetLang);
+    }
   };
 
   // SIMULATE NATURAL SPEECH (English -> German demo)
@@ -536,7 +813,7 @@ export default function Voice() {
       setLiveInterimTranslated("");
 
       if (autoPlayLiveAudio) {
-        speakUtterance(item.de, "de");
+        void speakUtterance(item.de, "de");
       }
 
       await new Promise((r) => setTimeout(r, 600));
@@ -593,7 +870,7 @@ export default function Voice() {
     if (recognitionRef.current) {
       try {
         recognitionRef.current.abort();
-      } catch {}
+      } catch { }
     }
 
     try {
@@ -645,7 +922,7 @@ export default function Voice() {
     if (recognitionRef.current) {
       try {
         recognitionRef.current.stop();
-      } catch {}
+      } catch { }
       recognitionRef.current = null;
     }
     setActiveMic(null);
@@ -673,7 +950,7 @@ export default function Voice() {
       setTranscripts((prev) => [...prev, newItem]);
 
       if (autoPlayAudio) {
-        speakUtterance(translated, targetLang);
+        void speakUtterance(translated, targetLang);
       }
     } catch (err: any) {
       toast.error("Live translation error", err?.message ?? String(err));
@@ -744,11 +1021,10 @@ export default function Voice() {
               stopListening();
               setActiveTab("live");
             }}
-            className={`flex items-center gap-2 rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-all ${
-              activeTab === "live"
-                ? "bg-white text-slate-900 shadow-xs"
-                : "text-slate-600 hover:text-slate-900"
-            }`}
+            className={`flex items-center gap-2 rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-all ${activeTab === "live"
+              ? "bg-white text-slate-900 shadow-xs"
+              : "text-slate-600 hover:text-slate-900"
+              }`}
           >
             <Sparkles className="h-3.5 w-3.5 text-dl-blue" />
             Live Voice
@@ -759,11 +1035,10 @@ export default function Voice() {
               stopLiveListening();
               setActiveTab("facetoface");
             }}
-            className={`flex items-center gap-2 rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-all ${
-              activeTab === "facetoface"
-                ? "bg-white text-slate-900 shadow-xs"
-                : "text-slate-600 hover:text-slate-900"
-            }`}
+            className={`flex items-center gap-2 rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-all ${activeTab === "facetoface"
+              ? "bg-white text-slate-900 shadow-xs"
+              : "text-slate-600 hover:text-slate-900"
+              }`}
           >
             <Users className="h-3.5 w-3.5 text-dl-blue" />
             Face-to-Face Mode
@@ -775,11 +1050,10 @@ export default function Voice() {
               stopListening();
               setActiveTab("phone");
             }}
-            className={`flex items-center gap-2 rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-all ${
-              activeTab === "phone"
-                ? "bg-white text-slate-900 shadow-xs"
-                : "text-slate-600 hover:text-slate-900"
-            }`}
+            className={`flex items-center gap-2 rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-all ${activeTab === "phone"
+              ? "bg-white text-slate-900 shadow-xs"
+              : "text-slate-600 hover:text-slate-900"
+              }`}
           >
             <Phone className="h-3.5 w-3.5 text-emerald-600" />
             International Call
@@ -791,11 +1065,10 @@ export default function Voice() {
               stopListening();
               setActiveTab("meeting");
             }}
-            className={`flex items-center gap-2 rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-all ${
-              activeTab === "meeting"
-                ? "bg-white text-slate-900 shadow-xs"
-                : "text-slate-600 hover:text-slate-900"
-            }`}
+            className={`flex items-center gap-2 rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-all ${activeTab === "meeting"
+              ? "bg-white text-slate-900 shadow-xs"
+              : "text-slate-600 hover:text-slate-900"
+              }`}
           >
             <Video className="h-3.5 w-3.5 text-dl-blue" />
             Virtual Meeting
@@ -874,11 +1147,10 @@ export default function Voice() {
                 <button
                   type="button"
                   onClick={() => setAutoPlayLiveAudio(!autoPlayLiveAudio)}
-                  className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-semibold shadow-2xs transition-all active:scale-95 ${
-                    autoPlayLiveAudio
-                      ? "border-blue-200 bg-blue-50 text-dl-blue hover:bg-blue-100/70"
-                      : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
-                  }`}
+                  className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-semibold shadow-2xs transition-all active:scale-95 ${autoPlayLiveAudio
+                    ? "border-blue-200 bg-blue-50 text-dl-blue hover:bg-blue-100/70"
+                    : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                    }`}
                   aria-pressed={autoPlayLiveAudio}
                 >
                   {autoPlayLiveAudio ? (
@@ -961,6 +1233,54 @@ export default function Voice() {
                       </div>
                     )}
                   </div>
+
+                  {/* Interactive Quick Dictation & Phrase Prompts */}
+                  <div className="mt-4 pt-3 border-t border-slate-100/80">
+                    <div className="flex items-center gap-2 mb-2">
+                      <input
+                        type="text"
+                        value={quickInputText}
+                        onChange={(e) => setQuickInputText(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            handleTranslateInput(quickInputText);
+                          }
+                        }}
+                        placeholder="Type or dictate a sentence to translate (e.g. Hello, what are you doing?)..."
+                        className="flex-1 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs text-slate-800 placeholder-slate-400 focus:border-dl-blue focus:outline-none focus:ring-1 focus:ring-dl-blue shadow-2xs transition-all"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleTranslateInput(quickInputText)}
+                        disabled={!quickInputText.trim()}
+                        className="rounded-xl bg-dl-blue px-3.5 py-2 text-xs font-semibold text-white hover:bg-dl-blue-hover disabled:opacity-40 transition-all shadow-2xs shrink-0 active:scale-95"
+                      >
+                        Translate
+                      </button>
+                    </div>
+
+                    {/* Quick test chips */}
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="text-[11px] font-semibold text-slate-400 mr-0.5">Quick phrases:</span>
+                      {[
+                        "Hello, my name is Alex.",
+                        "What are you doing?",
+                        "Today is my great day.",
+                        "Where is the train station?",
+                        "Nice to meet you!",
+                      ].map((phrase) => (
+                        <button
+                          key={phrase}
+                          type="button"
+                          onClick={() => handleTranslateInput(phrase)}
+                          className="rounded-lg border border-slate-200/90 bg-slate-50/80 px-2 py-1 text-[11px] font-medium text-slate-600 hover:bg-blue-50 hover:border-blue-200 hover:text-dl-blue transition-all active:scale-95 shadow-2xs"
+                        >
+                          {phrase}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 </div>
 
                 <div className="pt-4 flex items-center justify-between text-xs text-slate-400 border-t border-slate-100">
@@ -992,12 +1312,14 @@ export default function Voice() {
                         <>
                           <button
                             type="button"
-                            onClick={() => speakUtterance(liveTranslatedText, liveTargetLang)}
+                            onClick={() => void speakUtterance(liveTranslatedText, liveTargetLang)}
                             className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-800"
                             title="Speak translation"
                           >
-                            <Volume2 className="h-3.5 w-3.5" />
-                            <span>Listen</span>
+                            <Volume2 className={`h-3.5 w-3.5 ${isSpeakingTts ? "text-dl-blue animate-pulse" : ""}`} />
+                            <span className={isSpeakingTts ? "text-dl-blue font-semibold" : ""}>
+                              {isSpeakingTts ? "Playing..." : "Listen"}
+                            </span>
                           </button>
                           <button
                             type="button"
@@ -1116,11 +1438,10 @@ export default function Voice() {
           <div className="grid gap-6 md:grid-cols-2">
             {/* SPEAKER 1 CONSOLE */}
             <div
-              className={`relative flex flex-col justify-between rounded-2xl border bg-white p-6 shadow-xs transition-all ${
-                activeMic === "speaker1"
-                  ? "border-dl-blue ring-4 ring-dl-blue/15 shadow-md"
-                  : "border-slate-200 hover:border-slate-300"
-              }`}
+              className={`relative flex flex-col justify-between rounded-2xl border bg-white p-6 shadow-xs transition-all ${activeMic === "speaker1"
+                ? "border-dl-blue ring-4 ring-dl-blue/15 shadow-md"
+                : "border-slate-200 hover:border-slate-300"
+                }`}
             >
               <div>
                 <div className="flex items-center justify-between pb-4 border-b border-slate-100">
@@ -1152,11 +1473,10 @@ export default function Voice() {
                     <button
                       type="button"
                       onClick={() => startListening("speaker1")}
-                      className={`relative flex h-20 w-20 items-center justify-center rounded-full shadow-lg transition-all transform active:scale-95 ${
-                        activeMic === "speaker1"
-                          ? "bg-rose-500 text-white ring-8 ring-rose-200/70 animate-pulse"
-                          : "bg-dl-blue text-white hover:bg-dl-blue-hover hover:shadow-xl hover:scale-105"
-                      }`}
+                      className={`relative flex h-20 w-20 items-center justify-center rounded-full shadow-lg transition-all transform active:scale-95 ${activeMic === "speaker1"
+                        ? "bg-rose-500 text-white ring-8 ring-rose-200/70 animate-pulse"
+                        : "bg-dl-blue text-white hover:bg-dl-blue-hover hover:shadow-xl hover:scale-105"
+                        }`}
                       title={activeMic === "speaker1" ? "Stop recording" : "Click to speak"}
                     >
                       {activeMic === "speaker1" ? (
@@ -1170,10 +1490,9 @@ export default function Voice() {
                   <p className="text-sm font-semibold text-slate-900">
                     {activeMic === "speaker1"
                       ? "Listening to your voice…"
-                      : `Click to speak in ${
-                          VOICE_LANGUAGES.find((l) => l.code === speaker1Lang)?.name ||
-                          speaker1Lang
-                        }`}
+                      : `Click to speak in ${VOICE_LANGUAGES.find((l) => l.code === speaker1Lang)?.name ||
+                      speaker1Lang
+                      }`}
                   </p>
                   <p className="mt-1 text-xs text-slate-500">
                     Utterance will translate and play back in {speaker2Name}'s language.
@@ -1191,11 +1510,10 @@ export default function Voice() {
 
             {/* SPEAKER 2 CONSOLE */}
             <div
-              className={`relative flex flex-col justify-between rounded-2xl border bg-white p-6 shadow-xs transition-all ${
-                activeMic === "speaker2"
-                  ? "border-emerald-600 ring-4 ring-emerald-600/15 shadow-md"
-                  : "border-slate-200 hover:border-slate-300"
-              }`}
+              className={`relative flex flex-col justify-between rounded-2xl border bg-white p-6 shadow-xs transition-all ${activeMic === "speaker2"
+                ? "border-emerald-600 ring-4 ring-emerald-600/15 shadow-md"
+                : "border-slate-200 hover:border-slate-300"
+                }`}
             >
               <div>
                 <div className="flex items-center justify-between pb-4 border-b border-slate-100">
@@ -1227,11 +1545,10 @@ export default function Voice() {
                     <button
                       type="button"
                       onClick={() => startListening("speaker2")}
-                      className={`relative flex h-20 w-20 items-center justify-center rounded-full shadow-lg transition-all transform active:scale-95 ${
-                        activeMic === "speaker2"
-                          ? "bg-rose-500 text-white ring-8 ring-rose-200/70 animate-pulse"
-                          : "bg-emerald-600 text-white hover:bg-emerald-700 hover:shadow-xl hover:scale-105"
-                      }`}
+                      className={`relative flex h-20 w-20 items-center justify-center rounded-full shadow-lg transition-all transform active:scale-95 ${activeMic === "speaker2"
+                        ? "bg-rose-500 text-white ring-8 ring-rose-200/70 animate-pulse"
+                        : "bg-emerald-600 text-white hover:bg-emerald-700 hover:shadow-xl hover:scale-105"
+                        }`}
                       title={activeMic === "speaker2" ? "Stop recording" : "Click to speak"}
                     >
                       {activeMic === "speaker2" ? (
@@ -1245,10 +1562,9 @@ export default function Voice() {
                   <p className="text-sm font-semibold text-slate-900">
                     {activeMic === "speaker2"
                       ? "Listening to partner's voice…"
-                      : `Click to speak in ${
-                          VOICE_LANGUAGES.find((l) => l.code === speaker2Lang)?.name ||
-                          speaker2Lang
-                        }`}
+                      : `Click to speak in ${VOICE_LANGUAGES.find((l) => l.code === speaker2Lang)?.name ||
+                      speaker2Lang
+                      }`}
                   </p>
                   <p className="mt-1 text-xs text-slate-500">
                     Utterance will translate and play back in {speaker1Name}'s language.
@@ -1274,14 +1590,12 @@ export default function Voice() {
                 className="flex items-center gap-2.5 cursor-pointer select-none font-semibold text-slate-700 focus:outline-none"
               >
                 <div
-                  className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out ${
-                    autoPlayAudio ? "bg-dl-blue" : "bg-slate-300"
-                  }`}
+                  className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out ${autoPlayAudio ? "bg-dl-blue" : "bg-slate-300"
+                    }`}
                 >
                   <span
-                    className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
-                      autoPlayAudio ? "translate-x-4" : "translate-x-0"
-                    }`}
+                    className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${autoPlayAudio ? "translate-x-4" : "translate-x-0"
+                      }`}
                   />
                 </div>
                 {autoPlayAudio ? (
@@ -1351,18 +1665,16 @@ export default function Voice() {
                 transcripts.map((t) => (
                   <div
                     key={t.id}
-                    className={`rounded-xl p-3.5 border transition-all ${
-                      t.speaker === "speaker1"
-                        ? "bg-blue-50/40 border-blue-100 ml-0 mr-8"
-                        : "bg-emerald-50/40 border-emerald-100 ml-8 mr-0"
-                    }`}
+                    className={`rounded-xl p-3.5 border transition-all ${t.speaker === "speaker1"
+                      ? "bg-blue-50/40 border-blue-100 ml-0 mr-8"
+                      : "bg-emerald-50/40 border-emerald-100 ml-8 mr-0"
+                      }`}
                   >
                     <div className="flex items-center justify-between text-xs text-slate-500 mb-1.5">
                       <div className="flex items-center gap-2">
                         <span
-                          className={`font-bold ${
-                            t.speaker === "speaker1" ? "text-dl-blue" : "text-emerald-700"
-                          }`}
+                          className={`font-bold ${t.speaker === "speaker1" ? "text-dl-blue" : "text-emerald-700"
+                            }`}
                         >
                           {t.speakerName}
                         </span>

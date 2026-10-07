@@ -169,6 +169,104 @@ OFFLINE_PATTERNS: list[tuple[re.Pattern, dict[str, str]]] = [
             "ja": "ありがとうございます",
         },
     ),
+    (
+        re.compile(r"^(?:नमस्ते|नमस्कार)[\s!.,]*$", re.I),
+        {
+            "en": "Hello",
+            "de": "Hallo",
+            "es": "Hola",
+            "fr": "Bonjour",
+            "it": "Ciao",
+            "pt": "Olá",
+            "ru": "Здравствуйте",
+            "zh": "你好",
+            "ja": "こんにちは",
+        },
+    ),
+    (
+        re.compile(r"^(?:नमस्ते दुनिया|नमस्कार दुनिया)[\s!.,]*$", re.I),
+        {
+            "en": "Hello world",
+            "de": "Hallo Welt",
+            "es": "Hola Mundo",
+            "fr": "Bonjour le monde",
+            "it": "Ciao mondo",
+            "pt": "Olá mundo",
+            "ru": "Привет, мир",
+            "zh": "你好，世界",
+            "ja": "こんにちは世界",
+        },
+    ),
+    (
+        re.compile(r"^(?:शुभ प्रभात)[\s!.,]*$", re.I),
+        {
+            "en": "Good morning",
+            "de": "Guten Morgen",
+            "es": "Buenos días",
+            "fr": "Bonjour",
+            "it": "Buongiorno",
+            "pt": "Bom dia",
+            "ru": "Доброе утро",
+            "zh": "早上好",
+            "ja": "おはようございます",
+        },
+    ),
+    (
+        re.compile(r"^(?:आप कैसे हैं|आप कैसे हो)[\s?.,]*$", re.I),
+        {
+            "en": "How are you?",
+            "de": "Wie geht es Ihnen?",
+            "es": "¿Cómo estás?",
+            "fr": "Comment allez-vous ?",
+            "it": "Come stai?",
+            "pt": "Como você está?",
+            "ru": "Как дела?",
+            "zh": "你好吗？",
+            "ja": "お元気ですか？",
+        },
+    ),
+    (
+        re.compile(r"^(?:धन्यवाद|बहुत बहुत धन्यवाद|शुक्रिया)[\s!.,]*$", re.I),
+        {
+            "en": "Thank you very much",
+            "de": "Vielen Dank",
+            "es": "Muchas gracias",
+            "fr": "Merci beaucoup",
+            "it": "Grazie mille",
+            "pt": "Muito obrigado",
+            "ru": "Большое спасибо",
+            "zh": "非常感谢",
+            "ja": "ありがとうございます",
+        },
+    ),
+    (
+        re.compile(r"^(?:मेरा नाम\s+(.+)\s+है)[\s!.,]*$", re.I),
+        {
+            "en": "My name is {0}",
+            "de": "Mein Name ist {0}",
+            "es": "Mi nombre es {0}",
+            "fr": "Je m'appelle {0}",
+            "it": "Mi chiamo {0}",
+            "pt": "Meu nome é {0}",
+            "ru": "Меня зовут {0}",
+            "zh": "我的名字是{0}",
+            "ja": "私の名前は{0}です",
+        },
+    ),
+    (
+        re.compile(r"^(?:स्वागत है|आपका स्वागत है)[\s!.,]*$", re.I),
+        {
+            "en": "Welcome",
+            "de": "Willkommen",
+            "es": "Bienvenido",
+            "fr": "Bienvenue",
+            "it": "Benvenuto",
+            "pt": "Bem-vindo",
+            "ru": "Добро пожаловать",
+            "zh": "欢迎",
+            "ja": "ようこそ",
+        },
+    ),
 ]
 
 
@@ -271,23 +369,42 @@ async def query_google_web(
     src_lang: str,
     tgt_lang: str,
 ) -> tuple[str, list[str]]:
-    """Query Google Web translation endpoint."""
+    """Query Google Web translation endpoint with multi-endpoint fallback."""
     src = (src_lang or "auto").lower().split("-")[0]
     tgt = (tgt_lang or "de").lower().split("-")[0]
-    url = "https://translate.googleapis.com/translate_a/single"
-    params = {
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+    }
+
+    # Endpoint 1: clients5 client=dict-chrome-ex (highly reliable, no 429)
+    try:
+        url1 = "https://clients5.google.com/translate_a/t"
+        params1 = {"client": "dict-chrome-ex", "sl": src, "tl": tgt, "q": text}
+        async with httpx.AsyncClient(timeout=8.0, headers=headers) as client:
+            res1 = await client.get(url1, params=params1)
+            if res1.status_code == 200:
+                data1 = res1.json()
+                if isinstance(data1, list) and len(data1) > 0:
+                    translated1 = "".join(str(s) for s in data1 if s)
+                    if translated1.strip():
+                        return translated1.strip(), []
+                elif isinstance(data1, str) and data1.strip():
+                    return data1.strip(), []
+    except Exception as e:
+        log.warning("Google clients5 endpoint failed: %s; trying gtx fallback", e)
+
+    # Endpoint 2: translate.googleapis.com gtx
+    url2 = "https://translate.googleapis.com/translate_a/single"
+    params2 = {
         "client": "gtx",
         "sl": src,
         "tl": tgt,
         "dt": "t",
         "q": text,
     }
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
 
-    async with httpx.AsyncClient(timeout=10.0, headers=headers) as client:
-        res = await client.get(url, params=params)
+    async with httpx.AsyncClient(timeout=8.0, headers=headers) as client:
+        res = await client.get(url2, params=params2)
         res.raise_for_status()
         data = res.json()
         sentences = data[0] if isinstance(data, list) and len(data) > 0 else []

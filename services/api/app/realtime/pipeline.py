@@ -164,10 +164,10 @@ class MeetingPipeline:
         except Exception:
             log.exception("speaker loop crashed for %s", p.participant_id)
         finally:
-            # flush any in-flight speech on disconnect
-            if u.in_speech and len(u.buffer) > 3200:
+            # flush any in-flight speech on disconnect if session not closed
+            if not self._closed and u.in_speech and len(u.buffer) > 3200:
                 try:
-                    await self._finalize_utterance(p, u, forced=True)
+                    await asyncio.shield(self._finalize_utterance(p, u, forced=True))
                 except Exception:
                     log.exception("flush on disconnect failed")
 
@@ -208,7 +208,8 @@ class MeetingPipeline:
         try:
             chunk, decision = await ai.transcribe(audio, 16000,
                                                   lang_hint=self._lang_hint(p))
-        except AppError:
+        except (AppError, Exception) as ex:
+            log.warning("STT transcription unavailable/failed for %s: %s", p.participant_id, ex)
             await manager.broadcast(
                 self.session, ServerEventType.ERROR,
                 {"code": "stt_unavailable", "message":
@@ -305,8 +306,10 @@ class MeetingPipeline:
             {"timestamp_ms": start_ms}, speaker_id=str(p.participant_id))
         await manager.broadcast(
             session, ServerEventType.TRANSCRIPT_FINAL,
-            {"segment_id": str(segment_id), "seq": seq,
-             "speaker_name": p.display_name, "language": source_lang,
+            {"segment_id": str(segment_id), "utterance_id": str(segment_id),
+             "seq": seq, "speaker_id": str(p.participant_id),
+             "speaker_name": p.display_name, "display_name": p.display_name,
+             "language": source_lang, "source_lang": source_lang, "source_language": source_lang,
              "text": text, "is_final": True, "confidence": confidence,
              "stt_model": stt_model,
              "latency": {"audio_capture_ms": capture_ms, "stt_final_ms": stt_ms}},
@@ -369,7 +372,11 @@ class MeetingPipeline:
         # --- translation.final to caption listeners (language-agnostic UI) ---
         await manager.broadcast(
             session, ServerEventType.TRANSLATION_FINAL,
-            {"segment_id": str(segment_id), "seq": seq, "target_lang": target_lang,
+            {"segment_id": str(segment_id), "utterance_id": str(segment_id),
+             "seq": seq, "target_lang": target_lang, "target_language": target_lang,
+             "source_lang": source_lang, "source_language": source_lang,
+             "speaker_id": str(speaker.participant_id),
+             "display_name": speaker.display_name, "speaker_name": speaker.display_name,
              "text": translated, "model": out.result.model,
              "quality_flags": out.result.quality_flags,
              "latency_ms": out.result.latency_ms},
@@ -389,13 +396,18 @@ class MeetingPipeline:
             return
         await manager.broadcast(
             session, ServerEventType.TTS_STARTED,
-            {"segment_id": str(segment_id), "seq": seq, "target_lang": target_lang},
+            {"segment_id": str(segment_id), "utterance_id": str(segment_id),
+             "seq": seq, "target_lang": target_lang, "target_language": target_lang},
             to=audio_listeners, speaker_id=str(speaker.participant_id))
         t_tts = time.perf_counter()
         first = True
         try:
             stream, decision = await ai.synthesize_stream(translated, target_lang)
             chunk_idx = 0
+            short_id_bytes = str(segment_id).replace("-", "")[:16].ljust(16, "\x00").encode("utf-8")
+            lang_bytes = target_lang.encode("utf-8")
+            bin_header = b"\x54" + short_id_bytes + bytes([len(lang_bytes)]) + lang_bytes
+
             async for audio in stream:
                 if self._is_stale(speaker.participant_id, seq):
                     trace.stale_dropped = True
@@ -409,24 +421,35 @@ class MeetingPipeline:
                 b64 = base64.b64encode(audio.data).decode()
                 await manager.broadcast(
                     session, ServerEventType.TTS_CHUNK,
-                    {"segment_id": str(segment_id), "seq": seq,
-                     "target_lang": target_lang, "chunk_index": chunk_idx,
-                     "audio_base64": b64, "format": audio.format,
+                    {"segment_id": str(segment_id), "utterance_id": str(segment_id),
+                     "seq": seq, "target_lang": target_lang, "target_language": target_lang,
+                     "chunk_index": chunk_idx, "audio_base64": b64, "format": audio.format,
                      "sample_rate": audio.sample_rate,
                      "is_dev": audio.is_dev, "model": audio.model},
                     to=audio_listeners, speaker_id=str(speaker.participant_id))
+
+                # Binary frame delivery for lowest-latency audio playback
+                bin_frame = bin_header + audio.data
+                for p in audio_listeners:
+                    if p.connected and p.ws is not None:
+                        try:
+                            await p.ws.send_bytes(bin_frame)
+                        except Exception:
+                            pass
+
                 chunk_idx += 1
             await manager.broadcast(
                 session, ServerEventType.TTS_COMPLETED,
-                {"segment_id": str(segment_id), "seq": seq,
-                 "target_lang": target_lang, "chunks": chunk_idx,
-                 "stale_dropped": trace.stale_dropped},
+                {"segment_id": str(segment_id), "utterance_id": str(segment_id),
+                 "seq": seq, "target_lang": target_lang, "target_language": target_lang,
+                 "chunks": chunk_idx, "stale_dropped": trace.stale_dropped},
                 to=audio_listeners, speaker_id=str(speaker.participant_id))
             # LiveKit mode: publish synthetic track (bridge no-ops in ws mode)
             from app.realtime import livekit_bridge
             await livekit_bridge.publish_translated_audio(
                 session, target_lang, translated, str(segment_id), seq)
-        except AppError:
+        except (AppError, Exception) as ex:
+            log.warning("TTS fan-out failed for target %s: %s", target_lang, ex)
             await manager.broadcast(
                 session, ServerEventType.ERROR,
                 {"code": "tts_unavailable",
@@ -434,8 +457,6 @@ class MeetingPipeline:
                             "Translated captions remain active.",
                  "recoverable": True, "target_lang": target_lang},
                 to=audio_listeners, speaker_id=str(speaker.participant_id))
-        except Exception:
-            log.exception("TTS fan-out crashed")
         trace.delivery_ms = (time.perf_counter() - t0) * 1000
         trace.total_e2e_latency_ms = capture_ms + stt_ms + trace.delivery_ms
         met.E2E_LATENCY.labels(src=source_lang, tgt=target_lang).observe(

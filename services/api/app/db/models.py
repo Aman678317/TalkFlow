@@ -32,7 +32,7 @@ class User(Base, UUIDPkMixin, TimestampMixin):
 
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
-    name: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    name: Mapped[str] = mapped_column(String(200), nullable=False, default="", server_default="")
     locale: Mapped[str] = mapped_column(String(16), default="en", nullable=False)
     speak_lang: Mapped[str] = mapped_column(String(16), default="en", nullable=False)
     hear_lang: Mapped[str] = mapped_column(String(16), default="en", nullable=False)
@@ -46,6 +46,27 @@ class User(Base, UUIDPkMixin, TimestampMixin):
 
     memberships: Mapped[list["OrganizationMember"]] = relationship(
         back_populates="user", cascade="all, delete-orphan", lazy="selectin")
+    identities: Mapped[list["UserIdentity"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan", lazy="selectin")
+
+
+class UserIdentity(Base, UUIDPkMixin, TimestampMixin):
+    """External OAuth / Social identity linked to a User account (PDD Phase 2)."""
+    __tablename__ = "user_identities"
+    __table_args__ = (
+        UniqueConstraint("provider", "provider_user_id", name="uq_provider_user"),
+        Index("ix_user_identities_user_provider", "user_id", "provider"),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), index=True, nullable=False)  # google|github|apple
+    provider_user_id: Mapped[str] = mapped_column(String(255), nullable=False)     # sub / external ID
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    email_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    profile_data: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+
+    user: Mapped[User] = relationship(back_populates="identities", lazy="selectin")
 
 
 class Organization(Base, UUIDPkMixin, TimestampMixin):

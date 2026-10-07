@@ -66,7 +66,8 @@ describe('RealtimeClient', () => {
   it('delivers events and tracks the highest sequence', () => {
     const events: ServerEvent[] = [];
     const client = new RealtimeClient({
-      url: '/ws/realtime?ticket=x', onEvent: (e) => events.push(e) });
+      url: '/ws/realtime?ticket=x', onEvent: (e) => events.push(e)
+    });
     client.connect();
     const ws = MockWebSocket.instances[0];
     ws.simulateOpen();
@@ -79,7 +80,8 @@ describe('RealtimeClient', () => {
   it('dedupes replayed sequences (idempotent resume)', () => {
     const events: ServerEvent[] = [];
     const client = new RealtimeClient({
-      url: '/ws/realtime?ticket=x', onEvent: (e) => events.push(e) });
+      url: '/ws/realtime?ticket=x', onEvent: (e) => events.push(e)
+    });
     client.connect();
     const ws = MockWebSocket.instances[0];
     ws.simulateOpen();
@@ -92,7 +94,8 @@ describe('RealtimeClient', () => {
   it('sends session.resume with last sequence after reconnect', () => {
     vi.useFakeTimers();
     const client = new RealtimeClient({
-      url: '/ws/realtime?ticket=x', onEvent: () => {} });
+      url: '/ws/realtime?ticket=x', onEvent: () => { }
+    });
     client.connect();
     const ws1 = MockWebSocket.instances[0];
     ws1.simulateOpen();
@@ -113,7 +116,8 @@ describe('RealtimeClient', () => {
   it('does not retry on auth rejection (4401)', () => {
     vi.useFakeTimers();
     const client = new RealtimeClient({
-      url: '/ws/realtime?ticket=bad', onEvent: () => {} });
+      url: '/ws/realtime?ticket=bad', onEvent: () => { }
+    });
     client.connect();
     MockWebSocket.instances[0].simulateDrop(4401);
     expect(client.getStatus()).toBe('failed');
@@ -125,7 +129,8 @@ describe('RealtimeClient', () => {
   it('sends heartbeat pings while open', () => {
     vi.useFakeTimers();
     const client = new RealtimeClient({
-      url: '/ws/realtime?ticket=x', onEvent: () => {} });
+      url: '/ws/realtime?ticket=x', onEvent: () => { }
+    });
     client.connect();
     const ws = MockWebSocket.instances[0];
     ws.simulateOpen();
@@ -166,14 +171,14 @@ describe('UI components', () => {
   });
 
   it('Modal not rendered when closed', () => {
-    render(<Modal open={false} onClose={() => {}} title="X"><p /></Modal>);
+    render(<Modal open={false} onClose={() => { }} title="X"><p /></Modal>);
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
   it('Tabs switches with keyboard arrows', () => {
     const onChange = vi.fn();
     render(<Tabs active="a" onChange={onChange}
-                 tabs={[{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }]} />);
+      tabs={[{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }]} />);
     const active = screen.getByRole('tab', { selected: true });
     fireEvent.keyDown(active, { key: 'ArrowRight' });
     expect(onChange).toHaveBeenCalledWith('b');
@@ -188,7 +193,7 @@ describe('UI components', () => {
   it('lets a user sign in with the demo account in one click', async () => {
     mockLogin.mockResolvedValue(undefined);
     render(
-      <MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <Login />
       </MemoryRouter>
     );

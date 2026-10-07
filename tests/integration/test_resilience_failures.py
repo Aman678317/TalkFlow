@@ -8,7 +8,6 @@ Validates that system failure scenarios are safely handled:
 5. Online translation raises ProviderUnavailable on complete upstream failure.
 6. Webhook retry honors scheduled backoff delay.
 """
-import asyncio
 import time
 import uuid
 from datetime import timedelta
@@ -51,8 +50,7 @@ async def test_worker_queue_requeue_is_non_blocking():
     assert elapsed < 0.1, f"requeue blocked the calling loop for {elapsed:.3f}s!"
 
 
-@pytest.mark.asyncio
-async def test_refresh_token_concurrent_grace_window(services_app_client, user):
+def test_refresh_token_concurrent_grace_window(services_app_client, user):
     """Verify that near-simultaneous refresh requests within 15s grace window do not revoke session."""
     refresh_token = user["refresh"]
 
@@ -100,39 +98,48 @@ async def test_webhook_backoff_timing_rescheduling():
     org_id = uuid.uuid4()
 
     async with db_session() as db:
-        org = M.Organization(id=org_id, name="Test Org", slug=f"test-{uuid.uuid4().hex[:8]}")
-        db.add(org)
-        await db.flush()
-        ep = M.WebhookEndpoint(
-            id=endpoint_id,
-            org_id=org_id,
-            url="https://example.com/test-webhook",
-            events=["test.event"],
-            secret="whsec_test_secret_12345",
-            status="active",
-        )
-        db.add(ep)
-        await db.flush()
-        delivery = M.WebhookDelivery(
-            id=delivery_id,
-            endpoint_id=endpoint_id,
-            event_type="test.event",
-            payload_json={"test": True},
-            status="pending",
-            attempts=1,
-            next_retry_at=utcnow() + timedelta(seconds=60),  # scheduled 60s in future
-        )
-        db.add(delivery)
-        await db.commit()
+        try:
+            org = M.Organization(id=org_id, name="Test Org", slug=f"test-{uuid.uuid4().hex[:8]}")
+            db.add(org)
+            await db.flush()
+            ep = M.WebhookEndpoint(
+                id=endpoint_id,
+                org_id=org_id,
+                url="https://example.com/test-webhook",
+                events=["test.event"],
+                secret="whsec_test_secret_12345",
+                status="active",
+            )
+            db.add(ep)
+            await db.flush()
+            delivery = M.WebhookDelivery(
+                id=delivery_id,
+                endpoint_id=endpoint_id,
+                event_type="test.event",
+                payload_json={"test": True},
+                status="pending",
+                attempts=1,
+                next_retry_at=utcnow() + timedelta(seconds=60),  # scheduled 60s in future
+            )
+            db.add(delivery)
+            await db.commit()
 
-    with patch("app.services.webhook_service.queue") as mock_queue_fn, \
-         patch("app.services.webhook_service._assert_public_url") as mock_url_check:
-        mock_q = AsyncMock()
-        mock_queue_fn.return_value = mock_q
+            with patch("app.services.webhook_service.queue") as mock_queue_fn, \
+                 patch("app.services.webhook_service._assert_public_url") as mock_url_check:
+                mock_q = AsyncMock()
+                mock_queue_fn.return_value = mock_q
 
-        await deliver_job({"delivery_id": str(delivery_id)})
+                await deliver_job({"delivery_id": str(delivery_id)})
 
-        # It must NOT attempt HTTP delivery since next_retry_at is in future
-        mock_url_check.assert_not_called()
-        # It must requeue with remaining delay
-        assert mock_q.requeue.called or mock_queue_fn.called
+                # It must NOT attempt HTTP delivery since next_retry_at is in future
+                mock_url_check.assert_not_called()
+                # It must requeue with remaining delay
+                assert mock_q.requeue.called or mock_queue_fn.called
+        finally:
+            try:
+                await db.delete(delivery)
+                await db.delete(ep)
+                await db.delete(org)
+                await db.commit()
+            except Exception:
+                await db.rollback()

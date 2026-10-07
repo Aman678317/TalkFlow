@@ -3,19 +3,18 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
-import uuid
-from datetime import timedelta
 
 from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import models as M
-from app.db.base import utcnow
 from app.db.session import get_db
 from app.deps import Principal, require_scope, rl_translate
-from app.errors import NotFoundError, ValidationError
+from app.errors import AuthenticationError, AuthorizationError, NotFoundError, ValidationError
 from app.schemas import (
     DetectRequest, DetectResponse, LanguageOut, TranslateRequest,
     TranslateResponse, TranslationOut,
@@ -28,10 +27,11 @@ log = logging.getLogger("app.routers.translate")
 router = APIRouter(prefix="/api/v1", tags=["translation"])
 
 
-def _ctx(principal: Principal, body: TranslateRequest, product: str = "text") -> TranslateContext:
+def _ctx(principal: Principal | None, body: TranslateRequest, product: str = "text") -> TranslateContext:
     return TranslateContext(
-        org_id=principal.org_id, user_id=principal.user_id,
-        api_key_id=principal.api_key.id if principal.api_key else None,
+        org_id=principal.org_id if principal else None,
+        user_id=principal.user_id if principal else None,
+        api_key_id=principal.api_key.id if (principal and principal.api_key) else None,
         glossary_id=body.glossary_id, style_profile_id=body.style_profile_id,
         tm_id=body.translation_memory_id, domain=body.domain,
         intent=body.intent, formality=body.formality, product=product)
@@ -39,16 +39,35 @@ def _ctx(principal: Principal, body: TranslateRequest, product: str = "text") ->
 
 @router.post("/translate", response_model=TranslateResponse)
 async def translate(body: TranslateRequest,
-                    principal: Principal = Depends(rl_translate),
-                    _scope=Depends(require_scope("translate")),
+                    principal: Principal | None = Depends(rl_translate),
                     db: AsyncSession = Depends(get_db)):
+    if principal is None:
+        raise AuthenticationError("Authentication required.")
+    if principal.kind == "api_key" and principal.api_key is not None:
+        scopes = principal.api_key.scopes or []
+        if "translate" not in scopes and "*" not in scopes:
+            raise AuthorizationError("API key lacks scope 'translate'.")
     principal.require("use_translate")
     texts = body.text if isinstance(body.text, list) else [body.text]
     if len(texts) > 1 and not body.batch:
         raise ValidationError("Multiple texts require batch=true.")
+    # Cross-tenant validation: ensure referenced resources belong to caller's org
+    if principal and principal.org_id:
+        if body.style_profile_id:
+            sp = await db.get(M.StyleProfile, body.style_profile_id)
+            if not sp or sp.org_id != principal.org_id:
+                raise NotFoundError("Style profile not found.")
+        if body.glossary_id:
+            gl = await db.get(M.Glossary, body.glossary_id)
+            if not gl or gl.org_id != principal.org_id:
+                raise NotFoundError("Glossary not found.")
+        if body.translation_memory_id:
+            tm = await db.get(M.TranslationMemory, body.translation_memory_id)
+            if not tm or tm.org_id != principal.org_id:
+                raise NotFoundError("Translation memory not found.")
     # quota pre-check on characters
     from app.services import usage_service
-    if principal.org_id:
+    if principal and principal.org_id:
         await usage_service.check_quota(
             db, principal.org_id, "characters", sum(len(t) for t in texts))
     ctx = _ctx(principal, body)
@@ -91,7 +110,7 @@ async def detect_language(body: DetectRequest,
             metadata={"endpoint": "detect-language", "detected": det.language})
         await db.commit()
     return DetectResponse(language=det.language, confidence=round(det.confidence, 4),
-                          alternatives=[(l, round(c, 4)) for l, c in det.alternatives],
+                          alternatives=[(lang, round(c, 4)) for lang, c in det.alternatives],
                           provider=det.provider)
 
 
@@ -184,3 +203,133 @@ async def clear_history(principal: Principal = Depends(rl_translate),
     await audit_service.record(db, action="history.cleared", org_id=principal.org_id,
                                actor_id=principal.user_id)
     await db.commit()
+
+
+# ---- Local Whisper STT Endpoint ----
+class VoiceTranscribeRequest(BaseModel):
+    audio_base64: str = Field(..., description="Base64 encoded 16-bit PCM audio")
+    sample_rate: int = Field(default=16000, description="Audio sample rate in Hz")
+    language: str | None = Field(default=None, description="Optional language code")
+
+class VoiceTranscribeResponse(BaseModel):
+    text: str
+    language: str
+
+_whisper_lock = asyncio.Lock()
+_whisper_instance = None
+
+def _get_whisper_model():
+    global _whisper_instance
+    if _whisper_instance is None:
+        from faster_whisper import WhisperModel
+        _whisper_instance = WhisperModel("tiny", device="cpu", compute_type="int8")
+    return _whisper_instance
+
+@router.post("/voice/transcribe", response_model=VoiceTranscribeResponse)
+async def voice_transcribe(body: VoiceTranscribeRequest):
+    import base64
+    import numpy as np
+    try:
+        raw_bytes = base64.b64decode(body.audio_base64)
+    except Exception as e:
+        raise ValidationError(f"Invalid base64 audio data: {e}")
+
+    if not raw_bytes or len(raw_bytes) < 320: # less than 10ms of audio
+        return VoiceTranscribeResponse(text="", language=body.language or "en")
+
+    try:
+        pcm = np.frombuffer(raw_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+        if body.sample_rate != 16000 and len(pcm) > 0:
+            n_out = int(len(pcm) * 16000 / body.sample_rate)
+            x_old = np.linspace(0, 1, len(pcm))
+            x_new = np.linspace(0, 1, n_out)
+            pcm = np.interp(x_new, x_old, pcm).astype(np.float32)
+
+        async with _whisper_lock:
+            try:
+                model = await asyncio.to_thread(_get_whisper_model)
+                lang = body.language if body.language and body.language != "auto" else None
+                
+                def _run():
+                    segments, info = model.transcribe(pcm, language=lang, beam_size=1)
+                    texts = [seg.text for seg in segments]
+                    return "".join(texts).strip(), (info.language if info else None)
+
+                text, detected_lang = await asyncio.to_thread(_run)
+                return VoiceTranscribeResponse(text=text, language=detected_lang or body.language or "en")
+            except Exception as w_err:
+                log.warning("Local faster-whisper unavailable (%s), trying AIFacade fallback", w_err)
+                from app.ai import ai
+                chunk, _decision = await ai.transcribe(raw_bytes, body.sample_rate, lang_hint=body.language)
+                return VoiceTranscribeResponse(text=chunk.text or "", language=chunk.language or body.language or "en")
+    except Exception as e:
+        log.error("Voice transcription error: %s", e)
+        return VoiceTranscribeResponse(text="", language=body.language or "en")
+
+
+# ---- High-Fidelity Voice TTS Endpoint ----
+class VoiceTtsRequest(BaseModel):
+    text: str = Field(..., description="Text to synthesize")
+    language: str = Field(default="en", description="Target language code (e.g. en, hi, de, es, fr)")
+    voice: str | None = Field(default=None, description="Optional voice name")
+
+class VoiceTtsResponse(BaseModel):
+    audio_base64: str
+    format: str = "mp3"
+    sample_rate: int = 24000
+
+@router.post("/voice/tts", response_model=VoiceTtsResponse)
+async def voice_tts(body: VoiceTtsRequest):
+    import base64
+    import io
+
+    clean_text = body.text.strip()
+    if not clean_text:
+        return VoiceTtsResponse(audio_base64="", format="mp3", sample_rate=24000)
+
+    # Normalize lang (e.g., "hi-IN" -> "hi", "de-DE" -> "de")
+    lang = body.language.split("-")[0].lower() if body.language else "en"
+
+    # Tier 1: Try natural neural gTTS (handles Hindi, German, Spanish, French, English, etc.)
+    from app.config import settings
+    if settings.app_env != "test":
+        try:
+            import gtts
+            def _synth_gtts():
+                tts_obj = gtts.gTTS(text=clean_text, lang=lang)
+                buf = io.BytesIO()
+                tts_obj.write_to_fp(buf)
+                return buf.getvalue()
+
+            mp3_bytes = await asyncio.wait_for(asyncio.to_thread(_synth_gtts), timeout=3.5)
+            if mp3_bytes and len(mp3_bytes) > 100:
+                b64 = base64.b64encode(mp3_bytes).decode("ascii")
+                return VoiceTtsResponse(audio_base64=b64, format="mp3", sample_rate=24000)
+        except Exception as g_err:
+            log.warning("gTTS synthesis unavailable (%s), trying AIFacade", g_err)
+
+    # Tier 2: AIFacade / local engine (Kokoro / Piper / tts_http)
+    try:
+        from app.ai import ai
+        chunk, _decision = await ai.synthesize(clean_text, lang, voice=body.voice)
+        audio_bytes = chunk.data
+        fmt = chunk.format or "wav"
+        if not audio_bytes.startswith(b"RIFF") and fmt == "wav":
+            from gt_ai.audio_utils import pcm16_to_wav
+            audio_bytes = pcm16_to_wav(audio_bytes, sample_rate=chunk.sample_rate)
+        b64 = base64.b64encode(audio_bytes).decode("ascii")
+        return VoiceTtsResponse(audio_base64=b64, format=fmt, sample_rate=chunk.sample_rate)
+    except Exception as ai_err:
+        log.warning("AIFacade synthesis failed (%s), trying dev_tone", ai_err)
+
+    # Tier 3: DevTone fallback
+    try:
+        from gt_ai.tts.dev_tone import DevToneProvider
+        provider = DevToneProvider()
+        chunk = await provider.synthesize(clean_text, lang, voice=body.voice)
+        b64 = base64.b64encode(chunk.data).decode("ascii")
+        return VoiceTtsResponse(audio_base64=b64, format="wav", sample_rate=chunk.sample_rate)
+    except Exception as dev_err:
+        log.error("All TTS options failed: %s", dev_err)
+        return VoiceTtsResponse(audio_base64="", format="mp3", sample_rate=24000)
+

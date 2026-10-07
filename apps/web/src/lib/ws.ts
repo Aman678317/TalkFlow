@@ -70,8 +70,23 @@ export class MeetingSocket {
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const params = new URLSearchParams();
     const jwt = getAccessToken();
-    if (jwt) params.set("token", jwt);
-    if (this.opts.joinToken) params.set("join_token", this.opts.joinToken);
+    if (jwt) {
+      params.set("token", jwt);
+    } else {
+      let jt = this.opts.joinToken;
+      if (!jt) {
+        try {
+          jt = sessionStorage.getItem(`gt_guest_${this.opts.meetingId}`) || undefined;
+          if (!jt) {
+            jt = `guest-${Math.random().toString(36).substring(2, 10)}${Date.now().toString(36)}`;
+            sessionStorage.setItem(`gt_guest_${this.opts.meetingId}`, jt);
+          }
+        } catch {
+          // ignore storage errors
+        }
+      }
+      if (jt) params.set("join_token", jt);
+    }
     const q = params.toString();
     return `${proto}://${location.host}/ws/meetings/${this.opts.meetingId}${q ? `?${q}` : ""}`;
   }
@@ -195,6 +210,16 @@ export class MeetingSocket {
     this.stopHeartbeat();
     this.ws?.close(1000);
     this.setState("closed");
+  }
+
+  reconnectNow() {
+    this.closedByUser = false;
+    this.attempt = 0;
+    this.stopHeartbeat();
+    try {
+      this.ws?.close();
+    } catch {}
+    this.open();
   }
 
   get currentSequence() {

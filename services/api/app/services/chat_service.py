@@ -72,6 +72,9 @@ async def translate_existing(db: AsyncSession, msg_id: uuid.UUID,
     msg = await db.get(M.ChatMessage, msg_id)
     if msg is None:
         raise NotFoundError("Message not found.")
+    meeting = await db.get(M.Meeting, msg.meeting_id)
+    if meeting is None or (org_id is not None and meeting.org_id != org_id):
+        raise NotFoundError("Message not found.")
     existing = dict(msg.translations_json or {})
     if target_lang in existing and existing[target_lang].get("text"):
         return msg

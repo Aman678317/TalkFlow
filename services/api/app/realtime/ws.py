@@ -42,28 +42,120 @@ HEARTBEAT_INTERVAL_S = 25
 RECEIVE_TIMEOUT_S = 90
 
 
+@router.websocket("/ws/meetings/{meeting_id}")
 @router.websocket("/ws/realtime")
 async def realtime_ws(
     ws: WebSocket,
+    meeting_id: str = "",
     ticket: str = Query(default=""),
-    meeting_id: str = Query(default=""),
+    token: str = Query(default=""),
+    join_token: str = Query(default=""),
 ):
-    # ---- authenticate via ticket --------------------------------------- #
-    try:
-        session_id_hint, participant_id = _auth(ticket, meeting_id)
-    except AuthenticationError as e:
-        await ws.close(code=4401, reason=e.message)
+    # ---- authenticate via ticket, JWT access token, or join_token ------- #
+    user_id: uuid.UUID | None = None
+    participant_id: uuid.UUID | None = None
+    target_meeting_id: uuid.UUID | None = None
+
+    if meeting_id:
+        try:
+            target_meeting_id = uuid.UUID(meeting_id)
+        except Exception:
+            await ws.close(code=4404, reason="invalid meeting id")
+            return
+
+    ticket_room: str | None = None
+    if ticket:
+        try:
+            ticket_room, pid = verify_session_ticket(ticket, consume=True)
+            participant_id = uuid.UUID(pid)
+        except AuthenticationError as e:
+            await ws.close(code=4401, reason=e.message)
+            return
+        except Exception as e:
+            await ws.close(code=4401, reason=f"Invalid ticket: {e}")
+            return
+    elif token:
+        try:
+            from app.security import decode_token
+            claims = decode_token(token, "access")
+            user_id = uuid.UUID(claims["sub"])
+        except Exception as e:
+            await ws.close(code=4401, reason=f"Invalid token: {e}")
+            return
+    elif join_token:
+        # Proceed to validate existing participant with matching guest_key
+        pass
+    else:
+        await ws.close(code=4401, reason="Authentication required (valid ticket, token, or join_token required)")
         return
 
     async with db_session() as db:
-        participant = await db.get(M.Participant, participant_id)
+        participant: M.Participant | None = None
+        if participant_id is not None:
+            participant = await db.get(M.Participant, participant_id)
+        elif user_id is not None and target_meeting_id is not None:
+            res = await db.execute(
+                select(M.Participant).where(
+                    M.Participant.meeting_id == target_meeting_id,
+                    M.Participant.user_id == user_id,
+                )
+            )
+            participant = res.scalars().first()
+            if participant is None:
+                meeting = await db.get(M.Meeting, target_meeting_id)
+                if meeting is None:
+                    await ws.close(code=4404, reason="meeting not found")
+                    return
+                # Verify user belongs to the meeting's organization or is platform admin
+                mem_res = await db.execute(
+                    select(M.OrganizationMember).where(
+                        M.OrganizationMember.org_id == meeting.org_id,
+                        M.OrganizationMember.user_id == user_id,
+                        M.OrganizationMember.status == "active",
+                    )
+                )
+                user = await db.get(M.User, user_id)
+                if not mem_res.scalars().first() and not (user and user.is_platform_admin):
+                    await ws.close(code=4403, reason="Forbidden: not a member of the meeting organization")
+                    return
+                dname = (user.name if user and user.name else (user.email.split("@")[0] if user else "Participant"))
+                from app.services import meeting_service
+                participant, _, _ = await meeting_service.join_meeting(
+                    db, meeting, user_id=user_id, display_name=dname,
+                    speak_lang="auto", hear_lang="en", audio_mode="translated"
+                )
+        elif join_token and target_meeting_id is not None:
+            res = await db.execute(
+                select(M.Participant).where(
+                    M.Participant.meeting_id == target_meeting_id,
+                    M.Participant.guest_key == join_token,
+                )
+            )
+            participant = res.scalars().first()
+            if participant is None:
+                await ws.close(code=4401, reason="Invalid guest join token. Please join meeting via REST join endpoint first.")
+                return
+
         if participant is None:
             await ws.close(code=4404, reason="participant not found")
             return
+
+        if target_meeting_id is not None and participant.meeting_id != target_meeting_id:
+            await ws.close(code=4403, reason="Forbidden: credential not valid for this meeting")
+            return
+
         meeting = await db.get(M.Meeting, participant.meeting_id)
         if meeting is None or meeting.status not in ("scheduled", "live"):
             await ws.close(code=4410, reason="meeting not joinable")
             return
+
+        if ticket and ticket_room and ticket_room not in (meeting.room_name, str(meeting.id)):
+            await ws.close(code=4403, reason="Ticket room mismatch")
+            return
+        if meeting is None or meeting.status not in ("scheduled", "live"):
+            await ws.close(code=4410, reason="meeting not joinable")
+            return
+
         pref = (await db.execute(select(M.ParticipantPreference).where(
             M.ParticipantPreference.participant_id == participant.id))).scalars().first()
         meeting_id_uuid = meeting.id
@@ -85,6 +177,26 @@ async def realtime_ws(
     await ws.accept()
     met.WS_CONNECTIONS.inc()
 
+    from app import context
+    ws_headers = dict(ws.headers) if hasattr(ws, "headers") else {}
+    tp = ws_headers.get("traceparent")
+    ws_trace_id = None
+    if tp:
+        parts = tp.split("-")
+        if len(parts) >= 2 and len(parts[1]) == 32:
+            ws_trace_id = parts[1]
+    if not ws_trace_id:
+        ws_trace_id = ws_headers.get("x-trace-id") or ws.query_params.get("trace_id") or uuid.uuid4().hex
+
+    ws_req_id = ws_headers.get("x-request-id") or ws.query_params.get("request_id") or uuid.uuid4().hex[:16]
+    context.new_ctx(
+        request_id=ws_req_id,
+        trace_id=ws_trace_id,
+        tenant_id=str(org_id) if org_id else None,
+        user_id=str(p_data["user_id"]) if p_data.get("user_id") else None,
+        meeting_id=str(meeting_id_uuid),
+    )
+
     # ---- session bootstrap ---------------------------------------------- #
     session = manager.get_session_for_meeting(meeting_id_uuid)
     resumed = False
@@ -97,10 +209,21 @@ async def realtime_ws(
 
     rp = RtParticipant(**p_data)
     existing = session.participants.get(str(rp.participant_id))
+    old_ws: WebSocket | None = None
+    old_task: asyncio.Task | None = None
     if existing is not None:
         rp.last_seq_seen = existing.last_seq_seen  # preserve resume position
+        if existing.connected and existing.ws is not None and existing.ws != ws:
+            old_ws = existing.ws
+            old_task = existing.ws_task
     manager.add_participant(session, rp)
     manager.attach_ws(session, rp.participant_id, ws)
+    rp.ws_task = asyncio.current_task()
+    if old_ws is not None:
+        with contextlib.suppress(Exception):
+            await old_ws.close(code=4409, reason="duplicate_connection_superseded")
+    if old_task is not None and not old_task.done():
+        old_task.cancel()
     pl.get_pipeline(session).start_speaker(rp)
 
     await manager.send_to(rp, session, ServerEventType.SESSION_CREATED, {
@@ -182,28 +305,23 @@ async def realtime_ws(
                 log.exception("event handling failed: %s", event.type)
                 await _send_error(ws, "internal_error", str(e)[:200],
                                   recoverable=True)
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, asyncio.CancelledError):
         pass
     except Exception:
         log.exception("realtime ws crashed")
     finally:
         met.WS_CONNECTIONS.dec()
-        manager.detach_ws(session, rp.participant_id)
-        still_connected = any(p.connected for k, p in session.participants.items()
-                              if k != str(rp.participant_id))
-        if not still_connected:
-            # keep session state for grace-period reconnects (PDD §38);
-            # a sweeper closes long-dead sessions.
-            rp.connected = False
+        manager.detach_ws(session, rp.participant_id, ws=ws)
         rp_in_session = session.participants.get(str(rp.participant_id))
-        if rp_in_session is not None:
-            rp_in_session.connected = False
-            rp_in_session.ws = None
-        with contextlib.suppress(Exception):
-            await manager.broadcast(
-                session, ServerEventType.PARTICIPANT_LEFT,
-                {"participant_id": str(rp.participant_id)},
-                to=[v for v in session.participants.values() if v.connected])
+        if rp_in_session is None or not rp_in_session.connected or rp_in_session.ws == ws:
+            if rp_in_session is not None and rp_in_session.ws == ws:
+                rp_in_session.connected = False
+                rp_in_session.ws = None
+            with contextlib.suppress(Exception):
+                await manager.broadcast(
+                    session, ServerEventType.PARTICIPANT_LEFT,
+                    {"participant_id": str(rp.participant_id)},
+                    to=[v for v in session.participants.values() if v.connected])
         log.info("ws closed for participant %s (session %s)", rp.participant_id,
                  session.session_id)
 
@@ -212,7 +330,7 @@ def _auth(ticket: str, meeting_id: str) -> tuple[str, uuid.UUID]:
     if not ticket:
         raise AuthenticationError("Missing realtime ticket.")
     try:
-        sid, pid = verify_session_ticket(ticket)
+        sid, pid = verify_session_ticket(ticket, consume=True)
         return sid, uuid.UUID(pid)
     except AuthenticationError:
         raise
@@ -257,6 +375,32 @@ async def _handle_event(ws: WebSocket, session, rp: RtParticipant, event) -> Non
             "session_id": session.session_id,
             "data": {"client_ts": data.get("ts"), "server_ts": time.time() * 1000},
             "sequence": 0}))
+
+    elif event.type == ClientEventType.SESSION_JOIN:
+        if "speaking_language" in data:
+            rp.speak_lang = data["speaking_language"]
+        elif "speak_lang" in data:
+            rp.speak_lang = data["speak_lang"]
+        if "listening_language" in data:
+            rp.hear_lang = data["listening_language"]
+        elif "hear_lang" in data:
+            rp.hear_lang = data["hear_lang"]
+        if "audio_mode" in data:
+            rp.audio_mode = data["audio_mode"]
+        if "display_name" in data and data["display_name"]:
+            rp.display_name = data["display_name"]
+
+        last_seq = int(data.get("last_sequence", 0))
+        if last_seq > 0:
+            missed = manager.replay_since(session, last_seq)
+            await ws.send_text(json.dumps({
+                "version": 1, "type": ServerEventType.SESSION_RESUMED,
+                "session_id": session.session_id,
+                "data": {"resumed_from": last_seq, "replayed": len(missed),
+                         "server_sequence": session.sequence}}))
+            for raw in missed:
+                await ws.send_text(raw)
+            met.RECONNECTS.inc()
 
     elif event.type == ClientEventType.SESSION_RESUME:
         last_seq = int(data.get("last_sequence", 0))
@@ -305,8 +449,8 @@ async def _handle_event(ws: WebSocket, session, rp: RtParticipant, event) -> Non
             await _send_error(ws, "inject_disabled", str(e)[:200])
 
     elif event.type == ClientEventType.PREFERENCES_UPDATE:
-        speak = data.get("speak_lang")
-        hear = data.get("hear_lang")
+        speak = data.get("speak_lang") or data.get("speaking_language")
+        hear = data.get("hear_lang") or data.get("listening_language")
         audio_mode = data.get("audio_mode")
         captions = data.get("captions_enabled")
         async with db_session() as db:

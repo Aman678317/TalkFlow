@@ -202,7 +202,7 @@ def livekit_join_token(room_name: str, identity: str, name: str,
     at = at.with_identity(identity).with_name(name).with_metadata(
         __import__("json").dumps(metadata)
     ).with_grants(lk_api.VideoGrants(room_join=True, room=room_name))  # type: ignore[attr-defined]
-    at.ttl = _td(hours=6)
+    at.ttl = _td(seconds=1800)
     return {"url": settings.livekit_url, "token": at.to_jwt()}
 
 
@@ -219,7 +219,7 @@ def _manual_livekit_token(room_name: str, identity: str, name: str,
         "name": name,
         "metadata": json.dumps(metadata),
         "nbf": now - 10,
-        "exp": now + 6 * 3600,
+        "exp": now + 1800,
         "video": {"roomJoin": True, "room": room_name},
         "jti": secrets.token_hex(8),
     }

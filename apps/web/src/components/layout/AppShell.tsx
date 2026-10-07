@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/stores/auth';
+import ErrorBoundary from '@/components/common/ErrorBoundary';
 
 const NAV = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -44,9 +45,9 @@ export default function AppShell() {
   return (
     <div className="flex h-screen overflow-hidden">
       <aside className="hidden w-60 shrink-0 flex-col border-r border-slate-200 bg-white md:flex"
-             aria-label="Main navigation">
+        aria-label="Main navigation">
         <button className="flex items-center gap-2.5 px-5 py-5 text-left"
-                onClick={() => navigate(user ? '/dashboard' : '/')}>
+          onClick={() => navigate(user ? '/dashboard' : '/')}>
           <Logo />
           <div>
             <div className="text-sm font-bold tracking-tight text-slate-900">GlobalTalk AI</div>
@@ -74,8 +75,8 @@ export default function AppShell() {
                 <div className="truncate text-xs text-slate-500">{org?.name ?? '—'}</div>
               </div>
               <button onClick={() => { void logout(); navigate('/'); }}
-                      className="text-xs font-medium text-slate-400 hover:text-rose-600"
-                      aria-label="Sign out">
+                className="text-xs font-medium text-slate-400 hover:text-rose-600"
+                aria-label="Sign out">
                 Sign out
               </button>
             </div>
@@ -100,8 +101,8 @@ export default function AppShell() {
             <span className="text-sm font-bold">GlobalTalk AI</span>
           </button>
           <select aria-label="Navigate"
-                  className="rounded-lg border border-slate-300 px-2 py-1 text-sm"
-                  onChange={(e) => navigate(e.target.value)} defaultValue="">
+            className="rounded-lg border border-slate-300 px-2 py-1 text-sm"
+            onChange={(e) => navigate(e.target.value)} defaultValue="">
             <option value="" disabled>Menu…</option>
             {[...NAV, ...CUSTOMIZE, ...PLATFORM].map((i) => (
               <option key={i.to} value={i.to}>{i.label}</option>
@@ -109,7 +110,9 @@ export default function AppShell() {
           </select>
         </header>
         <main className="min-w-0 flex-1 overflow-y-auto" id="main-content">
-          <Outlet />
+          <ErrorBoundary sectionName="PageOutlet">
+            <Outlet />
+          </ErrorBoundary>
         </main>
       </div>
     </div>

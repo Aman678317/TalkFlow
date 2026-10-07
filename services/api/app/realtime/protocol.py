@@ -77,7 +77,18 @@ class ServerEvent(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
 
     def to_json(self) -> str:
-        return self.model_dump_json(exclude_none=False)
+        payload = self.model_dump(exclude_none=False)
+        data = payload.get("data") or {}
+        merged = {**data, **payload, "data": data}
+        if "segment_id" in merged and "utterance_id" not in merged:
+            merged["utterance_id"] = merged["segment_id"]
+        if "speaker_name" in merged and "display_name" not in merged:
+            merged["display_name"] = merged["speaker_name"]
+        if "source_lang" in merged and "source_language" not in merged:
+            merged["source_language"] = merged["source_lang"]
+        if "target_lang" in merged and "target_language" not in merged:
+            merged["target_language"] = merged["target_lang"]
+        return json.dumps(merged)
 
 
 class ClientEvent(BaseModel):
@@ -93,6 +104,17 @@ def parse_client_event(raw: str | bytes) -> ClientEvent:
     if isinstance(raw, bytes):
         raw = raw.decode("utf-8", errors="replace")
     payload = json.loads(raw)
+    if not isinstance(payload, dict):
+        raise ValueError("Invalid client event: must be JSON object.")
+    if "data" not in payload or not isinstance(payload["data"], dict):
+        payload["data"] = {
+            k: v for k, v in payload.items()
+            if k not in ("version", "type", "session_id", "sequence", "timestamp")
+        }
+    else:
+        for k, v in payload.items():
+            if k not in ("version", "type", "session_id", "sequence", "timestamp", "data") and k not in payload["data"]:
+                payload["data"][k] = v
     return ClientEvent.model_validate(payload)
 
 

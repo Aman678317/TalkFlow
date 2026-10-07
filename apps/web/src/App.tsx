@@ -1,5 +1,8 @@
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { CopilotKit, CopilotSidebar } from '@copilotkit/react-core/v2';
+import '@copilotkit/react-core/v2/styles.css';
 import { useAuth } from './stores/auth';
+import ErrorBoundary from './components/common/ErrorBoundary';
 import AppShell from './components/layout/AppShell';
 import Toaster from './components/layout/Toaster';
 import Landing from './pages/Landing';
@@ -43,44 +46,50 @@ function RequireAuth({ children }: { children: JSX.Element }) {
 }
 
 export default function App() {
+  const runtimeUrl = import.meta.env.VITE_COPILOTKIT_RUNTIME_URL || 'http://localhost:8000/api/copilotkit';
+  const publicLicenseKey = import.meta.env.VITE_CPK_INTELLIGENCE_API_KEY || 'cpk-8093_7ThsaDD2_NmHGMwCATGmNJYKt6tcpd5HH';
+
   return (
-    <>
-      <Routes>
-        <Route path="/" element={<Landing />} />
-        <Route path="/login" element={<Login />} />
-        <Route path="/signup" element={<Signup />} />
-        <Route path="/meeting/:id" element={<MeetingRoom />} />
-        {/* Public join page — other person opens this link on their phone (NO login required) */}
-        <Route path="/join/:roomId" element={<JoinCall />} />
+    <CopilotKit runtimeUrl={runtimeUrl} publicLicenseKey={publicLicenseKey}>
+      <ErrorBoundary sectionName="AppRoot">
+        <Routes>
+          <Route path="/" element={<Landing />} />
+          <Route path="/login" element={<Login />} />
+          <Route path="/signup" element={<Signup />} />
+          <Route path="/meeting/:id" element={<MeetingRoom />} />
+          {/* Public join page — other person opens this link on their phone (NO login required) */}
+          <Route path="/join/:roomId" element={<JoinCall />} />
 
-        <Route element={<AppShell />}>
-          <Route path="/translate" element={<Translate />} />
-          <Route path="/write" element={<WritePage />} />
-          <Route path="/docs" element={<DocsPage />} />
-          <Route path="/api/docs" element={<DocsPage />} />
-        </Route>
+          <Route element={<AppShell />}>
+            <Route path="/translate" element={<Translate />} />
+            <Route path="/write" element={<WritePage />} />
+            <Route path="/docs" element={<DocsPage />} />
+            <Route path="/api/docs" element={<DocsPage />} />
+          </Route>
 
-        {/* Protected app shell routes: requires user authentication */}
-        <Route element={<RequireAuth><AppShell /></RequireAuth>}>
-          <Route path="/dashboard" element={<Dashboard />} />
-          <Route path="/documents" element={<Documents />} />
-          <Route path="/voice" element={<Voice />} />
-          <Route path="/meetings" element={<Meetings />} />
-          <Route path="/chat" element={<ChatPage />} />
-          <Route path="/history" element={<History />} />
-          <Route path="/glossaries" element={<Glossaries />} />
-          <Route path="/translation-memory" element={<TranslationMemory />} />
-          <Route path="/style-profiles" element={<StyleProfiles />} />
-          <Route path="/api" element={<ApiKeysPage />} />
-          <Route path="/usage" element={<Usage />} />
-          <Route path="/billing" element={<Billing />} />
-          <Route path="/settings" element={<Settings />} />
-          <Route path="/team" element={<Team />} />
-          <Route path="/admin" element={<Admin />} />
-        </Route>
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+          {/* Protected app shell routes: requires user authentication */}
+          <Route element={<RequireAuth><AppShell /></RequireAuth>}>
+            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/documents" element={<Documents />} />
+            <Route path="/voice" element={<Voice />} />
+            <Route path="/meetings" element={<Meetings />} />
+            <Route path="/chat" element={<ChatPage />} />
+            <Route path="/history" element={<History />} />
+            <Route path="/glossaries" element={<Glossaries />} />
+            <Route path="/translation-memory" element={<TranslationMemory />} />
+            <Route path="/style-profiles" element={<StyleProfiles />} />
+            <Route path="/api" element={<ApiKeysPage />} />
+            <Route path="/usage" element={<Usage />} />
+            <Route path="/billing" element={<Billing />} />
+            <Route path="/settings" element={<Settings />} />
+            <Route path="/team" element={<Team />} />
+            <Route path="/admin" element={<Admin />} />
+          </Route>
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </ErrorBoundary>
       <Toaster />
-    </>
+      <CopilotSidebar defaultOpen={false} />
+    </CopilotKit>
   );
 }

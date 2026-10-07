@@ -302,6 +302,9 @@ async function fetchNeuralTranslation(
     }
   }
 
+  let modelName = "neural-mymemory-v1";
+
+  // 1. Try MyMemory API
   if (!primary) {
     try {
       const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${src}|${tgt}`;
@@ -311,6 +314,7 @@ async function fetchNeuralTranslation(
         const raw = data?.responseData?.translatedText;
         if (raw && !raw.startsWith("MYMEMORY WARNING")) {
           primary = raw;
+          modelName = "neural-mymemory-v1";
           if (Array.isArray(data?.matches)) {
             const seen = new Set([primary.toLowerCase()]);
             for (const m of data.matches) {
@@ -326,6 +330,51 @@ async function fetchNeuralTranslation(
       }
     } catch (e) {
       console.warn("MyMemory fetch error:", e);
+    }
+  }
+
+  // 2. Try Google Web MT if MyMemory is rate-limited or failed
+  if (!primary) {
+    try {
+      const gUrl = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${src}&tl=${tgt}&dt=t&q=${encodeURIComponent(text)}`;
+      const gRes = await fetch(gUrl);
+      if (gRes.ok) {
+        const gData = await gRes.json();
+        if (Array.isArray(gData) && Array.isArray(gData[0])) {
+          const joined = gData[0].map((chunk: any) => chunk[0]).filter(Boolean).join("").trim();
+          if (joined) {
+            primary = joined;
+            modelName = "google-nmt-web";
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Google Web MT fetch error:", e);
+    }
+  }
+
+  // 3. Try Client Phrase Dictionary for common phrases
+  if (!primary) {
+    const norm = cleanQueryText.toLowerCase().trim().replace(/[?!.,]+$/, "");
+    const COMMON_CLIENT_TRANSLATIONS: Record<string, Record<string, string>> = {
+      "hello": { es: "Hola", de: "Hallo", fr: "Bonjour", hi: "नमस्ते", it: "Ciao", pt: "Olá" },
+      "hello world": { es: "Hola Mundo", de: "Hallo Welt", fr: "Bonjour le monde", hi: "नमस्ते दुनिया", it: "Ciao mondo", pt: "Olá mundo" },
+      "hello, how are you today": { es: "Hola, ¿cómo estás hoy?", de: "Hallo, wie geht es Ihnen heute?", fr: "Bonjour, comment allez-vous aujourd'hui ?", hi: "नमस्ते, आज आप कैसे हैं?", it: "Ciao, come stai oggi?", pt: "Olá, como você está hoje?" },
+      "how are you": { es: "¿Cómo estás?", de: "Wie geht es Ihnen?", fr: "Comment allez-vous ?", hi: "आप कैसे हैं?", it: "Come stai?", pt: "Como você está?" },
+      "how are you today": { es: "¿Cómo estás hoy?", de: "Wie geht es Ihnen heute?", fr: "Comment allez-vous aujourd'hui ?", hi: "आज आप कैसे हैं?", it: "Come stai oggi?", pt: "Como você está hoje?" },
+      "good morning": { es: "Buenos días", de: "Guten Morgen", fr: "Bonjour", hi: "शुभ प्रभात", it: "Buongiorno", pt: "Bom dia" },
+      "thank you": { es: "Gracias", de: "Danke", fr: "Merci", hi: "धन्यवाद", it: "Grazie", pt: "Obrigado" },
+      "thank you very much": { es: "Muchas gracias", de: "Vielen Dank", fr: "Merci beaucoup", hi: "बहुत बहुत धन्यवाद", it: "Grazie mille", pt: "Muito obrigado" },
+      "welcome": { es: "Bienvenido", de: "Willkommen", fr: "Bienvenue", hi: "स्वागत है", it: "Benvenuto", pt: "Bem-vindo" },
+      "नमस्ते": { en: "Hello", es: "Hola", de: "Hallo", fr: "Bonjour" },
+      "नमस्ते दुनिया": { en: "Hello world", es: "Hola Mundo", de: "Hallo Welt", fr: "Bonjour le monde" },
+      "आप कैसे हैं": { en: "How are you?", es: "¿Cómo estás?", de: "Wie geht es Ihnen?", fr: "Comment allez-vous ?" },
+      "शुभ प्रभात": { en: "Good morning", es: "Buenos días", de: "Guten Morgen", fr: "Bonjour" },
+      "धन्यवाद": { en: "Thank you", es: "Gracias", de: "Danke", fr: "Merci" },
+    };
+    if (COMMON_CLIENT_TRANSLATIONS[norm]?.[tgt]) {
+      primary = COMMON_CLIENT_TRANSLATIONS[norm][tgt];
+      modelName = "linguistic-dictionary-v1";
     }
   }
 
@@ -347,18 +396,20 @@ async function fetchNeuralTranslation(
     }
   }
 
+  const isUntranslated = !primary || (primary.trim() === text.trim() && src !== tgt);
+
   return {
-    translation_id: "neural-" + Date.now(),
+    translation_id: isUntranslated ? "fallback-" + Date.now() : "neural-" + Date.now(),
     source_language: src,
     target_language: tgt,
     source_text: text,
     translated_text: primary || text,
-    model: "neural-mymemory-v1",
-    provider: "neural_online",
+    model: isUntranslated ? "untranslated-fallback" : modelName,
+    provider: isUntranslated ? "source_fallback" : "neural_online",
     latency_ms: Math.round(performance.now() - t0),
-    quality_flags: ["neural_mt", "high_quality"],
+    quality_flags: isUntranslated ? ["untranslated_fallback"] : ["neural_mt", "high_quality"],
     from_translation_memory: false,
-    detected_confidence: 0.98,
+    detected_confidence: isUntranslated ? 0.0 : 0.98,
     alternatives: alts,
   };
 }
@@ -861,6 +912,11 @@ export default function TranslatePage() {
               />
             ) : result ? (
               <div className="space-y-4">
+                {result.quality_flags?.includes("untranslated_fallback") && (
+                  <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
+                    Translation service temporarily offline. Original text displayed without modification.
+                  </div>
+                )}
                 <p className="whitespace-pre-wrap select-text text-base leading-relaxed text-dl-navy">{result.translated_text}</p>
                 {result.from_translation_memory && (
                   <Badge tone="good">Matched in translation memory (100%)</Badge>

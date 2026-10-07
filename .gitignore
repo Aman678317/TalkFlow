@@ -2,7 +2,8 @@ __pycache__/
 *.pyc
 data/
 .env
-/.env.*
+.env.*
+*.env
 !/.env.example
 !/.env.*.example
 .venv/
@@ -19,5 +20,8 @@ coverage/
 services/api/storage/
 build/
 *.egg-info/
-
-
+.copilotkit/
+apps/photo-organizer/
+my-project/
+.agents/
+apps/web/.agents/

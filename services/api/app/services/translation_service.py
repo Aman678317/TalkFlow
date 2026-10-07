@@ -17,6 +17,7 @@ business logic (PDD §72).
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import re
@@ -272,9 +273,16 @@ async def translate_text(
         intent=Intent(ctx.intent),
         glossary=glossary_terms or None,
         style=style_cfg,
-        tenant_private_only=ctx.intent == "private_only",
     )
     result, decision = await ai.translate(req)
+
+    import app.metrics as met
+    with contextlib.suppress(Exception):
+        met.TRANSLATION_LATENCY.labels(
+            src=detected or "auto",
+            tgt=target_language or "unknown",
+            provider=decision.provider if decision else "unknown",
+        ).observe(result.latency_ms)
 
     # 6) post-QA: glossary enforcement + protected span checks are applied
     #    inside providers; re-run cross-provider checks here for uniformity.
@@ -305,47 +313,49 @@ async def _persist(db: AsyncSession, source_text: str, result: TranslationResult
                    tm_entry_id: uuid.UUID | None = None,
                    glossary: M.Glossary | None) -> TranslateOutput:
     translation_id = uuid.uuid4()
-    if ctx.persist:
-        db.add(M.TranslationSegment(
-            id=translation_id,
-            segment_id=ctx.segment_id,
-            meeting_id=ctx.meeting_id,
-            org_id=ctx.org_id,
-            product=ctx.product,
-            source_lang=result.source_lang,
-            target_lang=result.target_lang,
-            source_text=source_text,
-            target_text=result.text,
-            domain=ctx.domain,
-            intent=ctx.intent,
-            model=result.model,
-            provider=result.provider,
-            latency_ms=result.latency_ms,
-            quality_flags_json=result.quality_flags,
-            glossary_id=glossary.id if glossary else ctx.glossary_id,
-            glossary_version=glossary.version if glossary else None,
-            style_profile_id=ctx.style_profile_id,
-            tm_id=ctx.tm_id if tm_match else None,
-            tm_match_type=tm_match,
-            created_by=ctx.user_id,
-            char_count=len(source_text),
-        ))
-    else:
-        translation_id = uuid.uuid4()
-    if ctx.meter and ctx.org_id:
-        await usage_service.record_usage(
-            db, org_id=ctx.org_id, product=ctx.product, unit_type="characters",
-            units=len(source_text), user_id=ctx.user_id, api_key_id=ctx.api_key_id,
-            model_version=result.model, source_lang=result.source_lang,
-            target_lang=result.target_lang,
-            metadata={"provider": result.provider, "tm_match": tm_match,
-                      "flags": result.quality_flags})
-        await usage_service.record_usage(
-            db, org_id=ctx.org_id, product=ctx.product,
-            unit_type="translation_requests", units=1,
-            user_id=ctx.user_id, api_key_id=ctx.api_key_id,
-            source_lang=result.source_lang, target_lang=result.target_lang)
-    await db.commit()
+    try:
+        if ctx.persist:
+            db.add(M.TranslationSegment(
+                id=translation_id,
+                segment_id=ctx.segment_id,
+                meeting_id=ctx.meeting_id,
+                org_id=ctx.org_id,
+                product=ctx.product,
+                source_lang=result.source_lang,
+                target_lang=result.target_lang,
+                source_text=source_text,
+                target_text=result.text,
+                domain=ctx.domain,
+                intent=ctx.intent,
+                model=result.model,
+                provider=result.provider,
+                latency_ms=result.latency_ms,
+                quality_flags_json=result.quality_flags,
+                glossary_id=glossary.id if glossary else ctx.glossary_id,
+                glossary_version=glossary.version if glossary else None,
+                style_profile_id=ctx.style_profile_id,
+                tm_id=ctx.tm_id if tm_match else None,
+                tm_match_type=tm_match,
+                created_by=ctx.user_id,
+                char_count=len(source_text),
+            ))
+        if ctx.meter and ctx.org_id:
+            await usage_service.record_usage(
+                db, org_id=ctx.org_id, product=ctx.product, unit_type="characters",
+                units=len(source_text), user_id=ctx.user_id, api_key_id=ctx.api_key_id,
+                model_version=result.model, source_lang=result.source_lang,
+                target_lang=result.target_lang,
+                metadata={"provider": result.provider, "tm_match": tm_match,
+                          "flags": result.quality_flags})
+            await usage_service.record_usage(
+                db, org_id=ctx.org_id, product=ctx.product,
+                unit_type="translation_requests", units=1,
+                user_id=ctx.user_id, api_key_id=ctx.api_key_id,
+                source_lang=result.source_lang, target_lang=result.target_lang)
+        await db.commit()
+    except Exception as e:
+        log.warning("failed to persist translation segment or record usage: %s", e)
+        await db.rollback()
     return TranslateOutput(result=result, translation_id=translation_id,
                            tm_match=tm_match, source_lang=result.source_lang)
 

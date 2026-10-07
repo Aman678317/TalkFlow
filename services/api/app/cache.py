@@ -116,6 +116,20 @@ _backend: CacheBackend | None = None
 async def init_cache(settings) -> CacheBackend:
     """auto = try redis, fall back to memory with a loud warning (non-prod only)."""
     global _backend
+
+    if getattr(settings, "is_production", False):
+        if not getattr(settings, "redis_url", ""):
+            raise RuntimeError("Production requires REDIS_URL to be configured for distributed cache.")
+        try:
+            rc = RedisCache(settings.redis_url)
+            if await rc.ping():
+                _backend = rc
+                log.info("cache backend: redis (production)")
+                return rc
+            raise RuntimeError(f"Redis ping failed at {settings.redis_url}")
+        except Exception as e:
+            raise RuntimeError(f"Production requires a healthy Redis connection for cache: {e}") from e
+
     mode = getattr(settings, "cache_backend", "auto")
     if mode == "memory" or not getattr(settings, "redis_url", ""):
         _backend = MemoryCache()
@@ -131,12 +145,10 @@ async def init_cache(settings) -> CacheBackend:
                 return rc
             raise RuntimeError("redis ping failed")
         except Exception as e:
-            if settings.is_production or (mode == "redis" and getattr(settings, "app_env", "") != "test"):
+            if mode == "redis" and getattr(settings, "app_env", "") != "test":
                 raise
-            log.warning("redis unavailable (%s) — falling back to in-memory cache. "
-                        "NOT for production: state is per-process.", e)
-    if settings.is_production and mode == "redis":
-        raise RuntimeError("production requires redis")
+            log.warning("redis unavailable (%s) — falling back to in-memory cache.", e)
+
     _backend = MemoryCache()
     log.info("cache backend: memory")
     return _backend

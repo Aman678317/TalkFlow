@@ -889,11 +889,17 @@ async def v2_glossary_language_pairs():
 # 5. v2 Monolingual Glossaries (/v2/glossaries)
 # --------------------------------------------------------------------------- #
 
+
+def _caller_org(principal: Principal | None) -> str:
+    if principal and principal.org_id:
+        return str(principal.org_id)
+    return "anonymous"
+
 _GLOSSARIES_STORE: dict[str, dict[str, Any]] = {}
 
 
 @router.post("/v2/glossaries")
-async def v2_create_glossary(request: Request):
+async def v2_create_glossary(request: Request, principal: Principal | None = Depends(get_principal_optional)):
     """Create a new monolingual translation glossary."""
     payload = await _extract_request_data(request)
     name = payload.get("name")
@@ -915,8 +921,10 @@ async def v2_create_glossary(request: Request):
             terms[parts[0].strip()] = parts[1].strip()
 
     gid = str(uuid.uuid4())
+    org = _caller_org(principal)
     record = {
         "glossary_id": gid,
+        "org_id": org,
         "name": name,
         "ready": True,
         "source_lang": str(source_lang).upper(),
@@ -940,10 +948,13 @@ async def v2_create_glossary(request: Request):
 
 
 @router.get("/v2/glossaries")
-async def v2_list_glossaries():
+async def v2_list_glossaries(principal: Principal | None = Depends(get_principal_optional)):
     """List all v2 stored glossaries."""
+    org = _caller_org(principal)
     glossaries = []
     for g in _GLOSSARIES_STORE.values():
+        if g.get("org_id") != org:
+            continue
         glossaries.append({
             "glossary_id": g["glossary_id"],
             "name": g["name"],
@@ -957,10 +968,11 @@ async def v2_list_glossaries():
 
 
 @router.get("/v2/glossaries/{glossary_id}")
-async def v2_get_glossary(glossary_id: str):
+async def v2_get_glossary(glossary_id: str, principal: Principal | None = Depends(get_principal_optional)):
     """Retrieve metadata for a specific v2 glossary."""
+    org = _caller_org(principal)
     g = _GLOSSARIES_STORE.get(glossary_id)
-    if not g:
+    if not g or g.get("org_id") != org:
         raise HTTPException(status_code=404, detail="Glossary not found")
     return {
         "glossary_id": g["glossary_id"],
@@ -974,10 +986,11 @@ async def v2_get_glossary(glossary_id: str):
 
 
 @router.get("/v2/glossaries/{glossary_id}/entries")
-async def v2_get_glossary_entries(glossary_id: str):
+async def v2_get_glossary_entries(glossary_id: str, principal: Principal | None = Depends(get_principal_optional)):
     """Retrieve glossary entries in TSV format."""
+    org = _caller_org(principal)
     g = _GLOSSARIES_STORE.get(glossary_id)
-    if not g:
+    if not g or g.get("org_id") != org:
         raise HTTPException(status_code=404, detail="Glossary not found")
     tsv_lines = [f"{s}\t{t}" for s, t in g.get("terms", {}).items()]
     content = "\n".join(tsv_lines)
@@ -985,9 +998,11 @@ async def v2_get_glossary_entries(glossary_id: str):
 
 
 @router.delete("/v2/glossaries/{glossary_id}", status_code=204)
-async def v2_delete_glossary(glossary_id: str):
+async def v2_delete_glossary(glossary_id: str, principal: Principal | None = Depends(get_principal_optional)):
     """Delete a v2 glossary."""
-    if glossary_id not in _GLOSSARIES_STORE:
+    org = _caller_org(principal)
+    g = _GLOSSARIES_STORE.get(glossary_id)
+    if not g or g.get("org_id") != org:
         raise HTTPException(status_code=404, detail="Glossary not found")
     del _GLOSSARIES_STORE[glossary_id]
     return Response(status_code=204)
@@ -1693,14 +1708,17 @@ async def v2_upload_document(
     translation_memory: str | None = Form(default=None),
     translation_memory_id: str | None = Form(default=None),
     translation_memory_threshold: int | None = Form(default=None),
+    principal: Principal | None = Depends(get_principal_optional),
 ):
     """Upload and translate a document (DOCX, PPTX, XLSX, PDF, TXT, HTML)."""
     doc_id = str(uuid.uuid4())
     doc_key = uuid.uuid4().hex + uuid.uuid4().hex
     content = await file.read()
+    org = _caller_org(principal)
 
     _DOCUMENTS_STORE[doc_id] = {
         "document_id": doc_id,
+        "org_id": org,
         "document_key": doc_key,
         "filename": file.filename or "document.txt",
         "target_lang": target_lang,
@@ -1722,16 +1740,13 @@ async def v2_upload_document(
 async def v2_check_document_status(
     document_id: str,
     request: Request,
+    principal: Principal | None = Depends(get_principal_optional),
 ):
     """Check the status of a document translation job."""
     doc = _DOCUMENTS_STORE.get(document_id)
-    if not doc:
-        return {
-            "document_id": document_id,
-            "status": "done",
-            "seconds_remaining": 0,
-            "billed_characters": 250,
-        }
+    org = _caller_org(principal)
+    if not doc or doc.get("org_id") != org:
+        raise HTTPException(status_code=404, detail="Document not found")
     return {
         "document_id": doc["document_id"],
         "status": doc["status"],
@@ -1745,11 +1760,15 @@ async def v2_check_document_status(
 async def v2_download_document_result(
     document_id: str,
     request: Request,
+    principal: Principal | None = Depends(get_principal_optional),
 ):
     """Download the translated document file."""
     doc = _DOCUMENTS_STORE.get(document_id)
-    filename = doc["filename"] if doc else "translated_document.txt"
-    content = doc["content"] if doc else b"GlobalTalk AI translated document content."
+    org = _caller_org(principal)
+    if not doc or doc.get("org_id") != org:
+        raise HTTPException(status_code=404, detail="Document not found")
+    filename = doc["filename"]
+    content = doc["content"]
 
     return Response(
         content=content,

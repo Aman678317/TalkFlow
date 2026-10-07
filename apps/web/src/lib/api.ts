@@ -26,45 +26,117 @@ export class ApiError extends Error {
 
 let accessToken: string | null = null;
 let refreshToken: string | null = null;
-let onUnauthorized: () => void = () => {};
+let onUnauthorized: () => void = () => { };
 let refreshInFlight: Promise<boolean> | null = null;
+let lastRefreshSuccess = 0;
+const REFRESH_DEDUPE_MS = 3000;
+
+export const authChannel = typeof window !== "undefined" && typeof BroadcastChannel !== "undefined"
+  ? new BroadcastChannel("talkflow_auth_channel")
+  : null;
+
+if (authChannel) {
+  authChannel.onmessage = (event) => {
+    if (event.data?.type === "LOGOUT") {
+      accessToken = null;
+      refreshToken = null;
+      onUnauthorized();
+    } else if (event.data?.type === "TOKEN_REFRESHED" && event.data?.accessToken) {
+      accessToken = event.data.accessToken;
+      if (event.data?.timestamp) {
+        lastRefreshSuccess = event.data.timestamp;
+      }
+    } else if (event.data?.type === "LOGIN" && event.data?.accessToken) {
+      accessToken = event.data.accessToken;
+    }
+  };
+}
 
 export function setTokens(access: string | null, refresh: string | null) {
   accessToken = access;
   refreshToken = refresh;
+  if (access && authChannel) {
+    authChannel.postMessage({ type: "TOKEN_REFRESHED", accessToken: access, timestamp: Date.now() });
+  }
 }
+
+export function broadcastLogout() {
+  accessToken = null;
+  refreshToken = null;
+  if (authChannel) {
+    authChannel.postMessage({ type: "LOGOUT" });
+  }
+  onUnauthorized();
+}
+
 export function setUnauthorizedHandler(fn: () => void) {
   onUnauthorized = fn;
 }
+
 export function getAccessToken() {
   return accessToken;
 }
 
 const BASE = ""; // same-origin via Vite proxy in dev; reverse proxy in prod
 
-async function tryRefresh(): Promise<boolean> {
-  if (!refreshToken) return false;
-  if (!refreshInFlight) {
-    refreshInFlight = (async () => {
-      try {
-        const r = await fetch(`${BASE}/api/v1/auth/refresh`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ refresh_token: refreshToken }),
-        });
-        if (!r.ok) return false;
-        const data = await r.json();
-        accessToken = data.access_token;
-        refreshToken = data.refresh_token;
-        persistTokens();
-        return true;
-      } catch {
-        return false;
-      } finally {
-        refreshInFlight = null;
-      }
-    })();
+async function doRefreshRequest(): Promise<boolean> {
+  // If another tab just refreshed within the dedupe window and we have an accessToken, reuse it
+  if (Date.now() - lastRefreshSuccess < REFRESH_DEDUPE_MS && accessToken) {
+    return true;
   }
+
+  try {
+    const bodyPayload = refreshToken ? { refresh_token: refreshToken } : {};
+    const r = await fetch(`${BASE}/api/v1/auth/refresh`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      credentials: "include", // transport HttpOnly SameSite cookie
+      body: JSON.stringify(bodyPayload),
+    });
+    if (!r.ok) {
+      if (r.status === 401) {
+        broadcastLogout();
+      }
+      return false;
+    }
+    const data = await r.json();
+    accessToken = data.access_token || null;
+    if (data.refresh_token) {
+      refreshToken = data.refresh_token;
+    }
+    lastRefreshSuccess = Date.now();
+    if (accessToken && authChannel) {
+      authChannel.postMessage({
+        type: "TOKEN_REFRESHED",
+        accessToken,
+        timestamp: lastRefreshSuccess,
+      });
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function tryRefresh(): Promise<boolean> {
+  if (refreshInFlight) {
+    return refreshInFlight;
+  }
+
+  refreshInFlight = (async () => {
+    try {
+      if (typeof navigator !== "undefined" && "locks" in navigator && typeof navigator.locks?.request === "function") {
+        return await navigator.locks.request("talkflow_refresh_lock", async () => {
+          return await doRefreshRequest();
+        });
+      } else {
+        return await doRefreshRequest();
+      }
+    } finally {
+      refreshInFlight = null;
+    }
+  })();
+
   return refreshInFlight;
 }
 
@@ -75,7 +147,7 @@ export function persistTokens() {
     if (refreshToken) localStorage.setItem("gt.refresh", refreshToken);
     else localStorage.removeItem("gt.refresh");
   } catch {
-    /* private mode */
+    /* private mode / localStorage disabled */
   }
 }
 
@@ -113,7 +185,8 @@ export async function api<T = any>(path: string, opts: RequestOptions = {}): Pro
       method,
       signal,
       headers,
-      body: opts.form ?? (opts.body !== undefined ? JSON.stringify(opts.body) : undefined),
+      credentials: "include",
+      body: opts.form ?? (opts.body !== undefined ? (typeof opts.body === "string" ? opts.body : JSON.stringify(opts.body)) : undefined),
     }).finally(() => clearTimeout(timeoutId));
   };
 
@@ -126,7 +199,7 @@ export async function api<T = any>(path: string, opts: RequestOptions = {}): Pro
     }
     throw err;
   }
-  if (res.status === 401 && refreshToken) {
+  if (res.status === 401 && !path.includes("/auth/login") && !path.includes("/auth/signup") && !path.includes("/auth/refresh")) {
     if (await tryRefresh()) {
       headers.set("Authorization", `Bearer ${accessToken}`);
       try {

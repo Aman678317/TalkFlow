@@ -21,7 +21,10 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-db_url = os.environ.get("DATABASE_URL", settings.database_url)
+from app.db.session import _normalize_db_url
+
+target_url = config.get_main_option("sqlalchemy.url") or os.environ.get("DATABASE_URL", settings.database_url)
+db_url = _normalize_db_url(target_url)
 config.set_main_option("sqlalchemy.url", db_url)
 
 target_metadata = Base.metadata
@@ -52,7 +55,14 @@ async def run_async_migrations() -> None:
 
 
 def run_migrations_online() -> None:
-    asyncio.run(run_async_migrations())
+    try:
+        asyncio.get_running_loop()
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(asyncio.run, run_async_migrations())
+            future.result()
+    except RuntimeError:
+        asyncio.run(run_async_migrations())
 
 
 if context.is_offline_mode():

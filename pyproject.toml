@@ -1,7 +1,11 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["services/api", "apps/api", "ai", "."]
-filterwarnings = ["ignore::DeprecationWarning"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore:.*starlette.testclient.*",
+    "ignore:.*httpx.*:Warning",
+]
 asyncio_mode = "auto"
 markers = ["model: tests that require downloaded AI model weights", "realtime: end-to-end realtime golden call test"]
 
