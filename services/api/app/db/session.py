@@ -2,11 +2,10 @@
 from __future__ import annotations
 
 import logging
-import uuid
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 
-from sqlalchemy import event, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine)
 
@@ -32,9 +31,13 @@ def _make_engine(url: str) -> AsyncEngine:
     url = _normalize_db_url(url)
     kwargs: dict = {"echo": settings.db_echo, "future": True}
     if "postgresql" in url:
-        kwargs.update(pool_size=settings.db_pool_size,
-                      max_overflow=settings.db_max_overflow,
-                      pool_pre_ping=True, pool_recycle=1800)
+        if settings.app_env == "test":
+            from sqlalchemy.pool import NullPool
+            kwargs.update(poolclass=NullPool)
+        else:
+            kwargs.update(pool_size=settings.db_pool_size,
+                          max_overflow=settings.db_max_overflow,
+                          pool_pre_ping=True, pool_recycle=1800)
     return create_async_engine(url, **kwargs)
 
 

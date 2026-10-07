@@ -17,7 +17,6 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import context
-from app.cache import cache
 from app.config import settings
 from app.db import models as M
 from app.db.session import get_db
@@ -195,16 +194,23 @@ async def get_principal(
             user = M.User(id=uuid.uuid4(), email="test@desi.local", name="Test User", password_hash="dummy", status="active")
             db.add(user)
             await db.flush()
-        mock_api_key = M.ApiKey(
-            id=uuid.uuid4(),
-            org_id=org.id,
-            name="Test Desi Key",
-            key_hash=hash_api_key(token),
-            prefix="test-key",
-            scopes=["*"],
-            status="active",
-        )
-        principal = Principal(kind="api_key", user=user, org=org, member=None, api_key=mock_api_key)
+        kh = hash_api_key(token)
+        res_key = await db.execute(select(M.ApiKey).where(M.ApiKey.key_hash == kh))
+        api_key = res_key.scalars().first()
+        if not api_key:
+            api_key = M.ApiKey(
+                id=uuid.uuid4(),
+                org_id=org.id,
+                name="Test Desi Key",
+                key_hash=kh,
+                prefix="test-key",
+                scopes=["*"],
+                status="active",
+            )
+            db.add(api_key)
+            await db.flush()
+        await db.commit()
+        principal = Principal(kind="api_key", user=user, org=org, member=None, api_key=api_key)
         context.bind(tenant_id=str(org.id) if org else None, user_id=str(user.id) if user else None)
         request.state.principal = principal
         return principal
