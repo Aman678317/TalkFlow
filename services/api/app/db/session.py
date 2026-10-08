@@ -18,12 +18,24 @@ _sessionmaker: async_sessionmaker[AsyncSession] | None = None
 
 
 def _normalize_db_url(url: str) -> str:
+    if not url:
+        return url
     if url.startswith("sqlite://") and not url.startswith("sqlite+"):
         return url.replace("sqlite://", "sqlite+aiosqlite://", 1)
-    if url.startswith("postgresql://") and not url.startswith("postgresql+"):
-        return url.replace("postgresql://", "postgresql+asyncpg://", 1)
-    if url.startswith("postgresql+psycopg://"):
-        return url.replace("postgresql+psycopg://", "postgresql+asyncpg://", 1)
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql+asyncpg://", 1)
+    elif url.startswith("postgresql://") and not url.startswith("postgresql+"):
+        url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    elif url.startswith("postgresql+psycopg://"):
+        url = url.replace("postgresql+psycopg://", "postgresql+asyncpg://", 1)
+    elif url.startswith("postgresql+psycopg2://"):
+        url = url.replace("postgresql+psycopg2://", "postgresql+asyncpg://", 1)
+
+    # Supabase / cloud PG often includes sslmode=require which asyncpg rejects as unknown keyword
+    if "asyncpg" in url:
+        url = url.replace("sslmode=require", "ssl=require")
+        url = url.replace("sslmode=prefer", "ssl=prefer")
+        url = url.replace("sslmode=disable", "ssl=disable")
     return url
 
 
@@ -31,13 +43,23 @@ def _make_engine(url: str) -> AsyncEngine:
     url = _normalize_db_url(url)
     kwargs: dict = {"echo": settings.db_echo, "future": True}
     if "postgresql" in url:
+        connect_args: dict = {}
+        # Supabase transaction pooler (port 6543) or pgBouncer requires disabling statement cache
+        if ":6543" in url or "pooler.supabase.com" in url or "pgbouncer" in url.lower():
+            connect_args.update({
+                "statement_cache_size": 0,
+                "prepared_statement_cache_size": 0,
+            })
+        if connect_args:
+            kwargs["connect_args"] = connect_args
+
         if settings.app_env == "test":
             from sqlalchemy.pool import NullPool
             kwargs.update(poolclass=NullPool)
         else:
             kwargs.update(pool_size=settings.db_pool_size,
                           max_overflow=settings.db_max_overflow,
-                          pool_pre_ping=True, pool_recycle=1800)
+                          pool_pre_ping=True, pool_recycle=300)
     return create_async_engine(url, **kwargs)
 
 

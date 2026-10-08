@@ -47,6 +47,13 @@ class ServerEventType(StrEnum):
     SIGNAL = "signal"
     PONG = "pong"
     ERROR = "error"
+    # Prompt event contract aliases
+    TRANSLATION_TRANSCRIPT_PARTIAL = "translation.transcript.partial"
+    TRANSLATION_TRANSCRIPT_FINAL = "translation.transcript.final"
+    TRANSLATION_SEGMENT_TRANSLATED = "translation.segment.translated"
+    TRANSLATION_TTS_READY = "translation.tts.ready"
+    TRANSLATION_STATUS = "translation.status"
+    TRANSLATION_ERROR = "translation.error"
 
 
 class ClientEventType(StrEnum):

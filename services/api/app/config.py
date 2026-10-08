@@ -68,6 +68,12 @@ class Settings(BaseSettings):
     redis_url: str = ""
     cache_backend: str = "auto"  # auto | redis | memory
 
+    # --- supabase ---
+    supabase_url: str = ""
+    supabase_anon_key: str = ""
+    supabase_service_role_key: str = ""
+    supabase_jwt_secret: str = ""
+
     # --- storage ---
     s3_enabled: bool = False
     s3_endpoint: str = ""

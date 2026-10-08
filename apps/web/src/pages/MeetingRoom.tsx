@@ -565,12 +565,14 @@ export default function MeetingRoom() {
           playerRef.current?.cancelTag(`orig-${(evt.utterance_id as string).slice(0, 16)}`);
         break;
       case "transcript.partial":
-      case "transcript.final": {
+      case "transcript.final":
+      case "translation.transcript.partial":
+      case "translation.transcript.final": {
         const uid = evt.utterance_id as string;
         if (typeof uid === "string") utterLangRef.current.set(uid.slice(0, 16), evt.language as string);
         const mine =
           prefsRef.current.caption_mode !== "translated" || evt.language === prefsRef.current.listening_language;
-        if (!mine && t === "transcript.partial") break;
+        if (!mine && (t === "transcript.partial" || t === "translation.transcript.partial")) break;
         setCaptions((prev) => {
           const line = prev.find((c) => c.id === uid);
           const data: CaptionLine = line ?? {
@@ -582,14 +584,15 @@ export default function MeetingRoom() {
           };
           if (mine) {
             data.original = evt.text as string;
-            data.originalFinal = t === "transcript.final";
+            data.originalFinal = t === "transcript.final" || t === "translation.transcript.final";
           }
-          data.partial = t === "transcript.partial";
+          data.partial = t === "transcript.partial" || t === "translation.transcript.partial";
           return line ? prev.map((c) => (c.id === uid ? { ...data } : c)) : [...prev.slice(-80), data];
         });
         break;
       }
-      case "translation.final": {
+      case "translation.final":
+      case "translation.segment.translated": {
         if (evt.latency_ms) setCurrentLatencyMs(Math.round(evt.latency_ms as number));
         if (translationStatus !== "normal") {
           setTranslationStatus("normal");
@@ -652,8 +655,9 @@ export default function MeetingRoom() {
         });
         break;
       }
-      case "translation.failed": {
-        if (evt.target_language !== prefsRef.current.listening_language) break;
+      case "translation.failed":
+      case "translation.error": {
+        if (evt.target_language && evt.target_language !== prefsRef.current.listening_language) break;
         setTranslationStatus("unavailable");
         setTranslationMessage((evt.user_message as string) ?? "Translation unavailable. Original audio is active.");
         setNotice((evt.user_message as string) ?? "Translation delayed. The original audio is still active.");
@@ -675,7 +679,8 @@ export default function MeetingRoom() {
         );
         break;
       }
-      case "tts.chunk": {
+      case "tts.chunk":
+      case "translation.tts.ready": {
         if (evt.target_language !== prefsRef.current.listening_language) break;
         const mode = prefsRef.current.audio_mode;
         if (mode !== "translated" && mode !== "mixed") break;
