@@ -26,3 +26,4 @@ apps/photo-organizer/
 my-project/
 .agents/
 apps/web/.agents/
+.vercel
