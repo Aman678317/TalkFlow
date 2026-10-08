@@ -1,0 +1,20 @@
+{"id": "hi_en_001", "source_lang": "hi", "target_lang": "en", "domain": "general", "source": "नमस्ते, आप कैसे हैं?", "reference": "Hello, how are you?"}
+{"id": "hi_en_002", "source_lang": "hi", "target_lang": "en", "domain": "general", "source": "हमारी टीम कल दोपहर 3 बजे मिलेगी।", "reference": "Our team will meet tomorrow at 3 PM."}
+{"id": "hi_en_003", "source_lang": "hi", "target_lang": "en", "domain": "finance", "source": "इस तिमाही में राजस्व ₹12,50,000 था।", "reference": "Revenue this quarter was ₹12,50,000."}
+{"id": "hi_en_004", "source_lang": "hi", "target_lang": "en", "domain": "general", "source": "मुंबई से पुणे का सफर लगभग 150 किलोमीटर है।", "reference": "The journey from Mumbai to Pune is about 150 kilometers."}
+{"id": "hi_en_005", "source_lang": "hi", "target_lang": "en", "domain": "tech", "source": "कृपया deployment pipeline का log check करें।", "reference": "Please check the deployment pipeline log.", "glossary": {"deployment pipeline": "deployment pipeline"}}
+{"id": "en_hi_001", "source_lang": "en", "target_lang": "hi", "domain": "general", "source": "Hello, how are you?", "reference": "नमस्ते, आप कैसे हैं?"}
+{"id": "en_hi_002", "source_lang": "en", "target_lang": "hi", "domain": "tech", "source": "The server restart completed successfully at 10:30.", "reference": "सर्वर रीस्टार्ट सुबह 10:30 बजे सफलतापूर्वक पूरा हुआ।"}
+{"id": "en_hi_003", "source_lang": "en", "target_lang": "hi", "domain": "finance", "source": "The invoice total is $4,250.75 due by Friday.", "reference": "चालान का कुल योग $4,250.75 है जो शुक्रवार तक देय है।"}
+{"id": "mr_en_001", "source_lang": "mr", "target_lang": "en", "domain": "general", "source": "नमस्कार, तुम्ही कसे आहात?", "reference": "Hello, how are you?"}
+{"id": "mr_en_002", "source_lang": "mr", "target_lang": "en", "domain": "general", "source": "आमची बैठक उद्या सकाळी १० वाजता आहे.", "reference": "Our meeting is tomorrow at 10 AM."}
+{"id": "en_mr_001", "source_lang": "en", "target_lang": "mr", "domain": "general", "source": "We will send the report by Monday.", "reference": "आम्ही सोमवारपर्यंत अहवाल पाठवू."}
+{"id": "hi_en_cs_001", "source_lang": "hi", "target_lang": "en", "domain": "tech", "source": "Meeting का time change हो गया है, अब 4 बजे होगी।", "reference": "The meeting time has changed, now it will be at 4 o'clock.", "notes": "code-switching"}
+{"id": "mr_en_cs_001", "source_lang": "mr", "target_lang": "en", "domain": "tech", "source": "माझा laptop update नंतर slow झाला आहे.", "reference": "My laptop has become slow after the update.", "notes": "code-switching"}
+{"id": "hi_ja_001", "source_lang": "hi", "target_lang": "ja", "domain": "general", "source": "शुभ प्रभात, आज का दिन अच्छा रहे।", "reference": "おはようございます、今日も良い一日になりますように。"}
+{"id": "ja_hi_001", "source_lang": "ja", "target_lang": "hi", "domain": "general", "source": "おはようございます。本日の会議は午後2時です。", "reference": "सुप्रभात। आज की बैठक दोपहर 2 बजे है।"}
+{"id": "en_ja_001", "source_lang": "en", "target_lang": "ja", "domain": "general", "source": "Thank you for joining the meeting today.", "reference": "本日は会議にご参加いただきありがとうございます。"}
+{"id": "hi_en_legal_001", "source_lang": "hi", "target_lang": "en", "domain": "legal", "source": "यह अनुबंध दोनों पक्षों की सहमति से 1 जनवरी 2026 से प्रभावी होगा।", "reference": "This contract shall become effective from 1 January 2026 with the consent of both parties."}
+{"id": "bn_en_001", "source_lang": "bn", "target_lang": "en", "domain": "general", "source": "শুভ সকাল, আপনি কেমন আছেন?", "reference": "Good morning, how are you?"}
+{"id": "ta_en_001", "source_lang": "ta", "target_lang": "en", "domain": "general", "source": "வணக்கம், நீங்கள் எப்படி இருக்கிறீர்கள்?", "reference": "Hello, how are you?"}
+{"id": "te_en_001", "source_lang": "te", "target_lang": "en", "domain": "general", "source": "నమస్కారం, మీరు ఎలా ఉన్నారు?", "reference": "Hello, how are you?"}

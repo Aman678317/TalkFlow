@@ -9,7 +9,7 @@
       "root": "services/api",
       "framework": "fastapi",
       "entrypoint": "app.main:app",
-      "installCommand": "pip install -r requirements.txt && pip install -e ../../ai"
+      "installCommand": "pip install -r requirements.txt && pip install ../../ai && python -c \"import shutil; shutil.copytree('../../ai/gt_ai', './gt_ai', dirs_exist_ok=True)\""
     },
     "connect": {
       "root": "apps/amazon-connect-v2v/webapp",
