@@ -53,3 +53,22 @@ def test_services_do_not_define_unneeded_bindings():
 
     for service in services.values():
         assert "bindings" not in service
+
+
+def test_vercel_serverless_settings_use_tmp_paths(monkeypatch):
+    monkeypatch.setenv("VERCEL", "1")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("LOCAL_STORAGE_PATH", raising=False)
+    monkeypatch.delenv("MODEL_CACHE_PATH", raising=False)
+    import sys
+    sys.path.insert(0, str(Path("services/api").resolve()))
+    from app.config import Settings
+
+    s = Settings(database_url="sqlite+aiosqlite:///./data/globaltalk.db")
+    assert "/tmp/" in s.database_url
+    assert s.local_storage_path.startswith("/tmp")
+    assert s.model_cache_path.startswith("/tmp")
+    # Calling ensure_dirs must not raise even in serverless
+    s.ensure_dirs()
+
+

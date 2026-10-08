@@ -27,6 +27,14 @@ def _find_env_file() -> str | None:
     return None
 
 
+def _is_serverless() -> bool:
+    return bool(
+        os.environ.get("VERCEL")
+        or os.environ.get("AWS_LAMBDA_FUNCTION_NAME")
+        or os.environ.get("LAMBDA_TASK_ROOT")
+    )
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=_find_env_file(), env_file_encoding="utf-8", extra="ignore"
@@ -48,7 +56,11 @@ class Settings(BaseSettings):
     bcrypt_rounds: int = 12
 
     # --- datastores ---
-    database_url: str = "sqlite+aiosqlite:///./data/globaltalk.db"
+    database_url: str = (
+        "sqlite+aiosqlite:////tmp/globaltalk.db"
+        if _is_serverless()
+        else "sqlite+aiosqlite:///./data/globaltalk.db"
+    )
     fallback_database_url: str = ""
     db_pool_size: int = 10
     db_max_overflow: int = 20
@@ -63,7 +75,7 @@ class Settings(BaseSettings):
     s3_access_key: str = ""
     s3_secret_key: str = ""
     s3_region: str = "us-east-1"
-    local_storage_path: str = "./data/storage"
+    local_storage_path: str = "/tmp/storage" if _is_serverless() else "./data/storage"
     max_upload_mb: int = 50
 
     # --- livekit ---
@@ -109,7 +121,7 @@ class Settings(BaseSettings):
     llm_model: str = "local-llm"
     embedding_provider: str = "hash_tfidf"
     embedding_model: str = ""
-    model_cache_path: str = "./model_cache"
+    model_cache_path: str = "/tmp/model_cache" if _is_serverless() else "./model_cache"
     vad_provider: str = "webrtc_energy"
     gpu_available: bool = False
 
@@ -225,17 +237,34 @@ class Settings(BaseSettings):
                 )
         return self
 
+    @model_validator(mode="after")
+    def _adjust_serverless_paths(self) -> Settings:
+        if _is_serverless():
+            if "./data/" in self.database_url:
+                self.database_url = self.database_url.replace("./data/", "/tmp/")
+            if self.local_storage_path.startswith("./data"):
+                self.local_storage_path = "/tmp/storage"
+            if self.model_cache_path.startswith("./model_cache"):
+                self.model_cache_path = "/tmp/model_cache"
+        return self
+
     @property
     def resolved_database_url(self) -> str:
         return self.database_url
 
     def ensure_dirs(self) -> None:
-        Path(self.local_storage_path).mkdir(parents=True, exist_ok=True)
-        Path(self.model_cache_path).mkdir(parents=True, exist_ok=True)
+        for p in (self.local_storage_path, self.model_cache_path):
+            try:
+                Path(p).mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass
         db_url = self.database_url
         if db_url.startswith("sqlite"):
-            db_path = db_url.split("///")[-1]
-            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+            try:
+                db_path = db_url.split("///")[-1]
+                Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass
 
 
 @lru_cache

@@ -279,11 +279,16 @@ async def get_voice_access_token(
 # --------------------------------------------------------------------------- #
 
 import json
+import os
 from pathlib import Path
 
 _peer_rooms: dict[str, dict[str, Any]] = {}
 _peer_sockets: dict[str, dict[str, WebSocket]] = {}
-_PEER_ROOMS_FILE = Path(__file__).resolve().parent.parent.parent / "storage" / "peer_rooms.json"
+_PEER_ROOMS_FILE = (
+    Path("/tmp/peer_rooms.json")
+    if (os.environ.get("VERCEL") or os.environ.get("AWS_LAMBDA_FUNCTION_NAME") or os.environ.get("LAMBDA_TASK_ROOT"))
+    else Path(__file__).resolve().parent.parent.parent / "storage" / "peer_rooms.json"
+)
 
 
 def _set_peer_socket(room_id: str, role: str, ws: WebSocket | None) -> None:
