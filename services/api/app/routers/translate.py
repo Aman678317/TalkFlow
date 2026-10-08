@@ -221,8 +221,11 @@ _whisper_instance = None
 def _get_whisper_model():
     global _whisper_instance
     if _whisper_instance is None:
-        from faster_whisper import WhisperModel
-        _whisper_instance = WhisperModel("tiny", device="cpu", compute_type="int8")
+        try:
+            from faster_whisper import WhisperModel
+            _whisper_instance = WhisperModel("tiny", device="cpu", compute_type="int8")
+        except Exception:
+            return None
     return _whisper_instance
 
 @router.post("/voice/transcribe", response_model=VoiceTranscribeResponse)
@@ -248,6 +251,8 @@ async def voice_transcribe(body: VoiceTranscribeRequest):
         async with _whisper_lock:
             try:
                 model = await asyncio.to_thread(_get_whisper_model)
+                if model is None:
+                    raise RuntimeError("faster_whisper is not installed or available")
                 lang = body.language if body.language and body.language != "auto" else None
                 
                 def _run():

@@ -135,7 +135,10 @@ class StorageBackend(ABC):
 class LocalStorage(StorageBackend):
     def __init__(self, root: str) -> None:
         self.root = Path(root)
-        self.root.mkdir(parents=True, exist_ok=True)
+        try:
+            self.root.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
 
     def _p(self, key: str) -> Path:
         # traversal guard
@@ -147,7 +150,10 @@ class LocalStorage(StorageBackend):
     async def put(self, key: str, data: bytes, content_type: str = "application/octet-stream") -> None:
         def _do():
             p = self._p(key)
-            p.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                p.parent.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass
             tmp = p.with_suffix(".tmp")
             tmp.write_bytes(data)
             tmp.replace(p)

@@ -27,3 +27,4 @@ my-project/
 .agents/
 apps/web/.agents/
 .vercel
+.vercel/
