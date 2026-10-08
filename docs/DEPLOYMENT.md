@@ -54,45 +54,26 @@ termination; set `X-Forwarded-Proto` and trust proxy headers for audit IPs.
 
 ## Vercel multi-service deployment
 
-The root `vercel.json` deploys three independently built services in one Vercel
-project:
+The repository can run as three Vercel services behind a single domain:
 
-| Service | Root | Public routes |
-| --- | --- | --- |
-| `web` | `apps/web` | `/` and paths not matched by the API or Connect routes |
-| `api` | `services/api` | `/api/*`, `/api-docs`, `/v2/*`, `/v3/*`, `/ws/*`, `/health`, `/healthz`, `/ready`, `/readyz`, `/metrics` |
-| `connect` | `apps/amazon-connect-v2v/webapp` | `/connect` and `/connect/*` |
+- `web` root: `apps/web` — the main React app, catch-all frontend service.
+- `api` root: `services/api` — the FastAPI API service with `app.main:app` as the entrypoint.
+- `connect` root: `apps/amazon-connect-v2v/webapp` — the Amazon Connect V2V frontend mounted under `/connect/`.
 
-The Connect frontend is built with `/connect/` as its Vite base so its assets
-resolve beneath the public prefix. Configure `VITE_GET_LANGUAGES_PROXY` and
-`VITE_REQUEST_SESSION_PROXY` as build-time environment variables for the Connect
-service when those external AWS Lambda endpoints are used. The web frontend
-defaults its CopilotKit runtime to the public same-origin `/api/copilotkit` route;
-set `VITE_COPILOTKIT_RUNTIME_URL` at build time only when using a different
-runtime URL. No Vercel service bindings are required.
+Public routing is intentionally specific-first:
 
-Configure these runtime environment variables for the API service in Vercel:
+- `/api/*`, `/api-docs`, `/v2/*`, `/v3/*`, `/ws/*`, `/health`, `/healthz`, `/ready`, `/readyz`, `/metrics` → `api`
+- `/connect` and `/connect/:path*` → `connect` while keeping the browser-visible URL prefix `/connect/`
+- all remaining requests → `web`
 
-- `APP_ENV=production`
-- `SECRET_KEY` and `JWT_SECRET`: distinct, randomly generated secrets of at
-  least 32 characters each
-- `DATABASE_URL`: a managed PostgreSQL URL; SQLite is rejected in production
-- `REDIS_URL`: a managed Redis URL; Redis is required for production queues
+The API service installs the repository-local AI package as part of its Python dependency setup instead of deploying `ai` as a separate service. No service bindings are required for this configuration; browser code should stay on same-origin public API routes and the Connect app should receive external AWS Lambda proxy URLs via Vercel build-time environment variables.
 
-The API refuses to start in production with missing or development-default
-secrets, SQLite, or no Redis URL. Provision the database and Redis separately,
-and apply the API's Alembic migrations before deploying. Set `OPENAI_API_KEY`
-as an API runtime secret if the CopilotKit agent should use OpenAI; without it,
-the endpoint returns its built-in fallback response.
+Required environment variables for the Connect app in Vercel:
 
-For local routing and build verification, use a current Vercel CLI version:
+- `VITE_GET_LANGUAGES_PROXY` = the AWS Lambda URL used to fetch available languages.
+- `VITE_REQUEST_SESSION_PROXY` = the AWS Lambda URL used to request a translation session.
 
-```bash
-npx vercel@latest dev
-```
-
-The Vercel Python runtime requires Python 3.12 or newer. The API's `gt-ai`
-dependency is resolved from the repository's local `ai` package via UV.
+These values are deployment configuration, not Vercel service bindings.
 
 ## Release process
 

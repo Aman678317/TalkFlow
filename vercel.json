@@ -1,106 +1,42 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "services": {
-    "web": {
+  "version": 2,
+  "services": [
+    {
+      "name": "web",
       "root": "apps/web",
+      "src": "apps/web",
       "framework": "vite"
     },
-    "api": {
+    {
+      "name": "api",
       "root": "services/api",
+      "src": "services/api",
       "framework": "fastapi",
-      "entrypoint": "app.main:app"
+      "entrypoint": "app.main:app",
+      "installCommand": "pip install -r requirements.txt && pip install -e ../../ai"
     },
-    "connect": {
+    {
+      "name": "connect",
       "root": "apps/amazon-connect-v2v/webapp",
+      "src": "apps/amazon-connect-v2v/webapp",
       "framework": "vite"
     }
-  },
-  "rewrites": [
-    {
-      "source": "/api/(.*)",
-      "destination": {
-        "service": "api"
-      }
-    },
-    {
-      "source": "/api",
-      "destination": {
-        "service": "api"
-      }
-    },
-    {
-      "source": "/api-docs",
-      "destination": {
-        "service": "api"
-      }
-    },
-    {
-      "source": "/v2/(.*)",
-      "destination": {
-        "service": "api"
-      }
-    },
-    {
-      "source": "/v3/(.*)",
-      "destination": {
-        "service": "api"
-      }
-    },
-    {
-      "source": "/ws/(.*)",
-      "destination": {
-        "service": "api"
-      }
-    },
-    {
-      "source": "/health",
-      "destination": {
-        "service": "api"
-      }
-    },
-    {
-      "source": "/healthz",
-      "destination": {
-        "service": "api"
-      }
-    },
-    {
-      "source": "/ready",
-      "destination": {
-        "service": "api"
-      }
-    },
-    {
-      "source": "/readyz",
-      "destination": {
-        "service": "api"
-      }
-    },
-    {
-      "source": "/metrics",
-      "destination": {
-        "service": "api"
-      }
-    },
-    {
-      "source": "/connect",
-      "destination": {
-        "service": "connect",
-        "path": "/"
-      }
-    },
-    {
-      "source": "/connect/:path*",
-      "destination": {
-        "service": "connect",
-        "path": "/:path*"
-      }
-    },
-    {
-      "source": "/(.*)",
-      "destination": {
-        "service": "web"
-      }
-    }
+  ],
+  "routes": [
+    { "src": "/api-docs", "dest": "https://api/api-docs" },
+    { "src": "/api", "dest": "https://api/api" },
+    { "src": "/api/:path*", "dest": "https://api/:path*" },
+    { "src": "/v2/:path*", "dest": "https://api/:path*" },
+    { "src": "/v3/:path*", "dest": "https://api/:path*" },
+    { "src": "/ws/:path*", "dest": "https://api/:path*" },
+    { "src": "/health", "dest": "https://api/health" },
+    { "src": "/healthz", "dest": "https://api/healthz" },
+    { "src": "/ready", "dest": "https://api/ready" },
+    { "src": "/readyz", "dest": "https://api/readyz" },
+    { "src": "/metrics", "dest": "https://api/metrics" },
+    { "src": "/connect", "dest": "https://connect" },
+    { "src": "/connect/:path*", "dest": "https://connect/:path*" },
+    { "src": "/(.*)", "dest": "https://web/$1" }
   ]
 }
