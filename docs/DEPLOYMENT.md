@@ -52,6 +52,48 @@ termination; set `X-Forwarded-Proto` and trust proxy headers for audit IPs.
 (copy → fill secrets; never commit real values). Feature flags ship dark
 (`agent_bridge`, `voice_preservation`, `enterprise_sso`, `seamless_research` off).
 
+## Vercel multi-service deployment
+
+The root `vercel.json` deploys three independently built services in one Vercel
+project:
+
+| Service | Root | Public routes |
+| --- | --- | --- |
+| `web` | `apps/web` | `/` and paths not matched by the API or Connect routes |
+| `api` | `services/api` | `/api/*`, `/api-docs`, `/v2/*`, `/v3/*`, `/ws/*`, `/health`, `/healthz`, `/ready`, `/readyz`, `/metrics` |
+| `connect` | `apps/amazon-connect-v2v/webapp` | `/connect` and `/connect/*` |
+
+The Connect frontend is built with `/connect/` as its Vite base so its assets
+resolve beneath the public prefix. Configure `VITE_GET_LANGUAGES_PROXY` and
+`VITE_REQUEST_SESSION_PROXY` as build-time environment variables for the Connect
+service when those external AWS Lambda endpoints are used. The web frontend
+defaults its CopilotKit runtime to the public same-origin `/api/copilotkit` route;
+set `VITE_COPILOTKIT_RUNTIME_URL` at build time only when using a different
+runtime URL. No Vercel service bindings are required.
+
+Configure these runtime environment variables for the API service in Vercel:
+
+- `APP_ENV=production`
+- `SECRET_KEY` and `JWT_SECRET`: distinct, randomly generated secrets of at
+  least 32 characters each
+- `DATABASE_URL`: a managed PostgreSQL URL; SQLite is rejected in production
+- `REDIS_URL`: a managed Redis URL; Redis is required for production queues
+
+The API refuses to start in production with missing or development-default
+secrets, SQLite, or no Redis URL. Provision the database and Redis separately,
+and apply the API's Alembic migrations before deploying. Set `OPENAI_API_KEY`
+as an API runtime secret if the CopilotKit agent should use OpenAI; without it,
+the endpoint returns its built-in fallback response.
+
+For local routing and build verification, use a current Vercel CLI version:
+
+```bash
+npx vercel@latest dev
+```
+
+The Vercel Python runtime requires Python 3.12 or newer. The API's `gt-ai`
+dependency is resolved from the repository's local `ai` package via UV.
+
 ## Release process
 
 CI (GitHub Actions): backend tests (SQLite + Postgres/pgvector/Redis lanes), realtime
