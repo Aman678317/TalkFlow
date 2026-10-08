@@ -25,6 +25,9 @@ not independent network services and should not appear as services.
 
 Top-level rewrites send API routes to `api`, `/connect/*` to `connect`, then
 all remaining paths to `web`. More-specific rewrites precede the catch-all.
+The `/connect/:path*` rewrite selects `/:path*` inside the static service so
+Vercel can find files at the service root while the browser-visible URL keeps
+the `/connect/` prefix.
 The API route list includes legacy `/v2` and `/v3` endpoints and websocket
 routes in addition to `/api`, since the FastAPI app exposes all of those at
 their current root-level paths.
