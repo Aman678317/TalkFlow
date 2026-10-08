@@ -26,6 +26,9 @@ dependencies = [
     "prometheus-client>=0.20",
     "python-dateutil>=2.9",
     "gt-ai",
+    "langchain-core>=0.3",
+    "langchain-openai>=0.3",
+    "langgraph>=0.2",
 ]
 
 [project.optional-dependencies]
@@ -36,6 +39,9 @@ dev = ["pytest", "pytest-asyncio", "ruff"]
 
 [tool.setuptools.packages.find]
 include = ["app*"]
+
+[tool.uv.sources]
+gt-ai = { path = "../../ai" }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
