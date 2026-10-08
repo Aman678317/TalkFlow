@@ -1,0 +1,7 @@
+# GlobalTalk AI — Local development & offline model dependencies
+-r requirements.txt
+faster-whisper>=1.0.0
+argostranslate>=1.9.0
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+pytest-cov>=5.0.0
