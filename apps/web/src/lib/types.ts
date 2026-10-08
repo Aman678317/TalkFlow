@@ -47,6 +47,22 @@ export interface Meeting {
   livekit_url?: string | null;
 }
 
+export interface JoinMeetingRequest {
+  display_name?: string;
+  speak_lang: string;
+  hear_lang: string;
+  audio_mode?: AudioMode;
+  guest_key?: string;
+}
+
+export interface JoinMeetingResponse {
+  meeting_id: string;
+  participant_id: string;
+  session_key: string;
+  rt_url: string;
+  livekit?: string | null;
+}
+
 export interface ParticipantInfo {
   id: string;
   display_name: string;
@@ -95,7 +111,7 @@ export type RealtimeEventType =
   | "caption.updated" | "language.changed"
   | "chat.message" | "chat.translation"
   | "quality.degraded" | "quality.latency" | "translation.failed"
-  | "reconnect.required" | "error" | "pong";
+  | "reconnect.required" | "error" | "pong" | "signal";
 
 export interface RealtimeEvent {
   version: number;

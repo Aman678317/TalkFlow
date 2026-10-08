@@ -22,6 +22,7 @@ type BinListener = (frame: BinaryFrame) => void;
 export interface MeetingSocketOptions {
   meetingId: string;
   joinToken?: string;
+  ticket?: string;
   displayName: string;
   preferences: Preferences;
   participantId?: string;
@@ -69,23 +70,27 @@ export class MeetingSocket {
   private wsUrl(): string {
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const params = new URLSearchParams();
-    const jwt = getAccessToken();
-    if (jwt) {
-      params.set("token", jwt);
+    if (this.opts.ticket) {
+      params.set("ticket", this.opts.ticket);
     } else {
-      let jt = this.opts.joinToken;
-      if (!jt) {
-        try {
-          jt = sessionStorage.getItem(`gt_guest_${this.opts.meetingId}`) || undefined;
-          if (!jt) {
-            jt = `guest-${Math.random().toString(36).substring(2, 10)}${Date.now().toString(36)}`;
-            sessionStorage.setItem(`gt_guest_${this.opts.meetingId}`, jt);
+      const jwt = getAccessToken();
+      if (jwt) {
+        params.set("token", jwt);
+      } else {
+        let jt = this.opts.joinToken;
+        if (!jt) {
+          try {
+            jt = sessionStorage.getItem(`gt_guest_${this.opts.meetingId}`) || undefined;
+            if (!jt) {
+              jt = `guest-${Math.random().toString(36).substring(2, 10)}${Date.now().toString(36)}`;
+              sessionStorage.setItem(`gt_guest_${this.opts.meetingId}`, jt);
+            }
+          } catch {
+            // ignore storage errors
           }
-        } catch {
-          // ignore storage errors
         }
+        if (jt) params.set("join_token", jt);
       }
-      if (jt) params.set("join_token", jt);
     }
     const q = params.toString();
     return `${proto}://${location.host}/ws/meetings/${this.opts.meetingId}${q ? `?${q}` : ""}`;
@@ -134,7 +139,7 @@ export class MeetingSocket {
         this.utteranceSpeakers.set(String(evt.utterance_id ?? ""), evt.speaker_id);
       }
       if (evt.type === "session.created" || evt.type === "session.updated" ||
-          evt.type === "session.resumed") {
+        evt.type === "session.resumed") {
         this.everJoined = true;
         this.attempt = 0;
         this.setState("joined");
@@ -218,7 +223,7 @@ export class MeetingSocket {
     this.stopHeartbeat();
     try {
       this.ws?.close();
-    } catch {}
+    } catch { }
     this.open();
   }
 

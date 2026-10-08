@@ -32,7 +32,7 @@ from app.realtime import pipeline as pl
 from app.realtime.protocol import ClientEventType, ServerEventType, parse_client_event
 from app.realtime.session_manager import RtParticipant, manager
 from app.security import verify_session_ticket
-from app.services import chat_service
+from app.services import chat_service, meeting_service
 
 log = logging.getLogger("app.realtime.ws")
 
@@ -322,6 +322,10 @@ async def realtime_ws(
                     session, ServerEventType.PARTICIPANT_LEFT,
                     {"participant_id": str(rp.participant_id)},
                     to=[v for v in session.participants.values() if v.connected])
+            # Mark participant status as left in database so GET /participants stays clean
+            with contextlib.suppress(Exception):
+                async with db_session() as db:
+                    await meeting_service.leave_participant(db, rp.participant_id)
         log.info("ws closed for participant %s (session %s)", rp.participant_id,
                  session.session_id)
 

@@ -21,7 +21,9 @@ services/api/storage/
 build/
 *.egg-info/
 .copilotkit/
+.worktrees/
 apps/photo-organizer/
 my-project/
 .agents/
 apps/web/.agents/
+.vercel
