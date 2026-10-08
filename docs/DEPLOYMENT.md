@@ -66,6 +66,8 @@ Public routing is intentionally specific-first:
 - `/connect` and `/connect/:path*` → `connect` while keeping the browser-visible URL prefix `/connect/`
 - all remaining requests → `web`
 
+`vercel.json` declares services as a map keyed by service name and routes them with top-level rewrites using `{ "service": "<name>" }` destinations. The Connect rewrite uses a service path for static-file lookup under the service root.
+
 The API service installs the repository-local AI package as part of its Python dependency setup instead of deploying `ai` as a separate service. No service bindings are required for this configuration; browser code should stay on same-origin public API routes and the Connect app should receive external AWS Lambda proxy URLs via Vercel build-time environment variables.
 
 Required environment variables for the Connect app in Vercel:

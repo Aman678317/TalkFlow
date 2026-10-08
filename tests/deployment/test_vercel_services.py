@@ -6,34 +6,25 @@ def _config():
     return json.loads(Path("vercel.json").read_text())
 
 
-def test_vercel_services_have_expected_roots_and_frameworks():
-    config = _config()
-    services = config["services"]
-    service_names = [service["name"] for service in services]
+def test_vercel_services_use_named_service_configuration():
+    services = _config()["services"]
 
-    assert service_names == ["web", "api", "connect"]
-
-    by_name = {service["name"]: service for service in services}
-
-    assert by_name["web"]["root"] == "apps/web"
-    assert by_name["web"]["framework"] == "vite"
-
-    assert by_name["api"]["root"] == "services/api"
-    assert by_name["api"]["framework"] == "fastapi"
-    assert by_name["api"]["entrypoint"] == "app.main:app"
-    assert "../../ai" in by_name["api"]["installCommand"]
-
-    assert by_name["connect"]["root"] == "apps/amazon-connect-v2v/webapp"
-    assert by_name["connect"]["framework"] == "vite"
+    assert set(services) == {"web", "api", "connect"}
+    assert services["web"]["root"] == "apps/web"
+    assert services["web"]["framework"] == "vite"
+    assert services["api"]["root"] == "services/api"
+    assert services["api"]["framework"] == "fastapi"
+    assert services["api"]["entrypoint"] == "app.main:app"
+    assert "../../ai" in services["api"]["installCommand"]
+    assert services["connect"]["root"] == "apps/amazon-connect-v2v/webapp"
+    assert services["connect"]["framework"] == "vite"
 
 
-def test_vercel_rewrites_route_specific_paths_before_web_catchall():
-    config = _config()
-    routes = config["routes"]
+def test_vercel_rewrites_route_api_and_connect_before_the_web_catchall():
+    rewrites = _config()["rewrites"]
+    rewrite_map = {rewrite["source"]: rewrite["destination"] for rewrite in rewrites}
 
-    route_map = {route["src"]: route for route in routes}
-
-    for src in [
+    for source in [
         "/api-docs",
         "/api",
         "/api/:path*",
@@ -46,19 +37,19 @@ def test_vercel_rewrites_route_specific_paths_before_web_catchall():
         "/readyz",
         "/metrics",
     ]:
-        assert src in route_map
-        assert route_map[src]["dest"].startswith("https://api")
+        assert rewrite_map[source] == {"service": "api"}
 
-    assert route_map["/connect"]["dest"].startswith("https://connect")
-    assert route_map["/connect/:path*"]["dest"].startswith("https://connect")
-    assert route_map["/connect/:path*"]["dest"].endswith("/:path*")
-    assert route_map["/(.*)"]["dest"].startswith("https://web")
+    assert rewrite_map["/connect"] == {"service": "connect", "path": "/"}
+    assert rewrite_map["/connect/:path*"] == {
+        "service": "connect",
+        "path": "/:path*",
+    }
+    assert rewrite_map["/(.*)"] == {"service": "web"}
+    assert rewrites[-1]["source"] == "/(.*)"
 
 
 def test_services_do_not_define_unneeded_bindings():
-    config = _config()
-    services = config["services"]
+    services = _config()["services"]
 
-    for service in services:
-        assert "serviceBinding" not in service
+    for service in services.values():
         assert "bindings" not in service
