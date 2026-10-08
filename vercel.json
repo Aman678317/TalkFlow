@@ -1,0 +1,42 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "version": 2,
+  "services": [
+    {
+      "name": "web",
+      "root": "apps/web",
+      "src": "apps/web",
+      "framework": "vite"
+    },
+    {
+      "name": "api",
+      "root": "services/api",
+      "src": "services/api",
+      "framework": "fastapi",
+      "entrypoint": "app.main:app",
+      "installCommand": "pip install -r requirements.txt && pip install -e ../../ai"
+    },
+    {
+      "name": "connect",
+      "root": "apps/amazon-connect-v2v/webapp",
+      "src": "apps/amazon-connect-v2v/webapp",
+      "framework": "vite"
+    }
+  ],
+  "routes": [
+    { "src": "/api-docs", "dest": "https://api/api-docs" },
+    { "src": "/api", "dest": "https://api/api" },
+    { "src": "/api/:path*", "dest": "https://api/:path*" },
+    { "src": "/v2/:path*", "dest": "https://api/:path*" },
+    { "src": "/v3/:path*", "dest": "https://api/:path*" },
+    { "src": "/ws/:path*", "dest": "https://api/:path*" },
+    { "src": "/health", "dest": "https://api/health" },
+    { "src": "/healthz", "dest": "https://api/healthz" },
+    { "src": "/ready", "dest": "https://api/ready" },
+    { "src": "/readyz", "dest": "https://api/readyz" },
+    { "src": "/metrics", "dest": "https://api/metrics" },
+    { "src": "/connect", "dest": "https://connect" },
+    { "src": "/connect/:path*", "dest": "https://connect/:path*" },
+    { "src": "/(.*)", "dest": "https://web/$1" }
+  ]
+}

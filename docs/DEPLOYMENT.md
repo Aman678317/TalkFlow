@@ -52,6 +52,29 @@ termination; set `X-Forwarded-Proto` and trust proxy headers for audit IPs.
 (copy → fill secrets; never commit real values). Feature flags ship dark
 (`agent_bridge`, `voice_preservation`, `enterprise_sso`, `seamless_research` off).
 
+## Vercel multi-service deployment
+
+The repository can run as three Vercel services behind a single domain:
+
+- `web` root: `apps/web` — the main React app, catch-all frontend service.
+- `api` root: `services/api` — the FastAPI API service with `app.main:app` as the entrypoint.
+- `connect` root: `apps/amazon-connect-v2v/webapp` — the Amazon Connect V2V frontend mounted under `/connect/`.
+
+Public routing is intentionally specific-first:
+
+- `/api/*`, `/api-docs`, `/v2/*`, `/v3/*`, `/ws/*`, `/health`, `/healthz`, `/ready`, `/readyz`, `/metrics` → `api`
+- `/connect` and `/connect/:path*` → `connect` while keeping the browser-visible URL prefix `/connect/`
+- all remaining requests → `web`
+
+The API service installs the repository-local AI package as part of its Python dependency setup instead of deploying `ai` as a separate service. No service bindings are required for this configuration; browser code should stay on same-origin public API routes and the Connect app should receive external AWS Lambda proxy URLs via Vercel build-time environment variables.
+
+Required environment variables for the Connect app in Vercel:
+
+- `VITE_GET_LANGUAGES_PROXY` = the AWS Lambda URL used to fetch available languages.
+- `VITE_REQUEST_SESSION_PROXY` = the AWS Lambda URL used to request a translation session.
+
+These values are deployment configuration, not Vercel service bindings.
+
 ## Release process
 
 CI (GitHub Actions): backend tests (SQLite + Postgres/pgvector/Redis lanes), realtime
