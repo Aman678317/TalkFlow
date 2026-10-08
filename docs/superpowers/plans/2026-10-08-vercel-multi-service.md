@@ -70,7 +70,7 @@ Run: `npx --yes vercel@latest dev --yes`
 Expected: Vercel builds the three configured services; API paths reach FastAPI, `/connect/` serves the Connect app, and an ordinary root path reaches the main web app. Record any environment values required by the local API rather than substituting public defaults.
 Observed: the CLI parsed all three services, but its local Vite services did not start because the isolated worktree's generated Node/Rollup install was incomplete; live rewrite routing remains unverified. The API app was independently verified to register its CopilotKit routes.
 
-- [ ] **Step 6: Commit the service configuration**
+- [x] **Step 6: Commit the service configuration**
 
 ```bash
 git add vercel.json tests/deployment/test_vercel_services.py
@@ -95,7 +95,7 @@ Set the Vite `base` option to `/connect/`, preserving the existing plugins, deve
 Run: `npm --prefix apps/amazon-connect-v2v/webapp run build`
 Expected: PASS; `dist/index.html` references built assets under `/connect/`, and copied public assets remain present.
 
-- [ ] **Step 3: Commit the Connect path change**
+- [x] **Step 3: Commit the Connect path change**
 
 ```bash
 git add apps/amazon-connect-v2v/webapp/vite.config.js
@@ -123,7 +123,7 @@ Run:
 `npm --prefix apps/amazon-connect-v2v/webapp run build`
 Expected: all tests and builds pass; API tests that require external services or secrets must report their precise unmet prerequisites.
 
-- [ ] **Step 3: Commit deployment documentation**
+- [x] **Step 3: Commit deployment documentation**
 
 ```bash
 git add docs/DEPLOYMENT.md
