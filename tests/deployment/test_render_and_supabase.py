@@ -28,12 +28,13 @@ def test_render_yaml_configuration():
 
 
 def test_supabase_db_url_normalization():
-    # 1. postgres:// prefix -> postgresql+asyncpg://
-    raw_supabase = "postgres://postgres.abc123xyz:secretpassword@aws-0-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+    # 1. postgres:// prefix -> postgresql+asyncpg:// with pgbouncer stripping
+    raw_supabase = "postgres://postgres.abc123xyz:secretpassword@aws-0-us-east-1.pooler.supabase.com:6543/postgres?pgbouncer=true&sslmode=require"
     normalized = _normalize_db_url(raw_supabase)
     assert normalized.startswith("postgresql+asyncpg://")
     assert "ssl=require" in normalized
     assert "sslmode=" not in normalized
+    assert "pgbouncer" not in normalized
 
     # 2. direct connection
     direct_supabase = "postgresql://postgres:secretpassword@db.abc123xyz.supabase.co:5432/postgres?sslmode=require"
@@ -48,15 +49,14 @@ def test_supabase_db_url_normalization():
 
 
 def test_supabase_engine_disables_statement_cache_for_pgbouncer():
-    pooler_url = "postgresql://postgres.abc123xyz:secretpassword@aws-0-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+    pooler_url = "postgresql://postgres.abc123xyz:secretpassword@aws-0-us-east-1.pooler.supabase.com:6543/postgres?pgbouncer=true&sslmode=require"
     engine = _make_engine(pooler_url)
-    # Check that connect_args statement_cache_size is set to 0 for pgbouncer
-    connect_args = engine.url.query.copy() if hasattr(engine.url, "query") else {}
-    # The asyncpg connect args are stored in engine.dialect.connect_args
-    dialect_args = getattr(engine.dialect, "connect_args", {})
-    # Engine was created without crashing
     assert engine is not None
     assert engine.dialect.name == "postgresql"
+    # Verify dialect create_connect_args does NOT include pgbouncer which causes TypeError in asyncpg
+    cargs, cparams = engine.dialect.create_connect_args(engine.url)
+    assert "pgbouncer" not in cparams
+    assert cparams.get("ssl") == "require"
 
 
 def test_realtime_protocol_event_contract_aliases():

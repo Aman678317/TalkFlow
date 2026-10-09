@@ -36,16 +36,27 @@ def _normalize_db_url(url: str) -> str:
         url = url.replace("sslmode=require", "ssl=require")
         url = url.replace("sslmode=prefer", "ssl=prefer")
         url = url.replace("sslmode=disable", "ssl=disable")
+        # asyncpg does not accept 'pgbouncer' as a keyword argument (Prisma-specific query param)
+        if "pgbouncer" in url.lower():
+            from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+            parts = urlsplit(url)
+            filtered_params = [
+                (k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
+                if k.lower() != "pgbouncer"
+            ]
+            new_query = urlencode(filtered_params)
+            url = urlunsplit((parts.scheme, parts.netloc, parts.path, new_query, parts.fragment))
     return url
 
 
 def _make_engine(url: str) -> AsyncEngine:
+    is_pooler = ":6543" in url or "pooler.supabase.com" in url or "pgbouncer" in url.lower()
     url = _normalize_db_url(url)
     kwargs: dict = {"echo": settings.db_echo, "future": True}
     if "postgresql" in url:
         connect_args: dict = {}
         # Supabase transaction pooler (port 6543) or pgBouncer requires disabling statement cache
-        if ":6543" in url or "pooler.supabase.com" in url or "pgbouncer" in url.lower():
+        if is_pooler or ":6543" in url or "pooler.supabase.com" in url:
             connect_args.update({
                 "statement_cache_size": 0,
                 "prepared_statement_cache_size": 0,

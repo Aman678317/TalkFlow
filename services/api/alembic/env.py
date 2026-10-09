@@ -28,6 +28,11 @@ target_url = (
     or os.environ.get("DIRECT_URL")
     or os.environ.get("DATABASE_URL", settings.database_url)
 )
+is_pooler = (
+    ":6543" in (target_url or "")
+    or "pooler.supabase.com" in (target_url or "")
+    or "pgbouncer" in (target_url or "").lower()
+)
 db_url = _normalize_db_url(target_url)
 # Escape % to %% because Alembic's ConfigParser interprets % as interpolation syntax
 config.set_main_option("sqlalchemy.url", db_url.replace("%", "%%"))
@@ -52,7 +57,7 @@ def do_run_migrations(connection: Connection) -> None:
 
 async def run_async_migrations() -> None:
     connect_args = {}
-    if "pooler.supabase.com" in db_url or ":6543" in db_url or "pgbouncer" in db_url.lower():
+    if is_pooler or "pooler.supabase.com" in db_url or ":6543" in db_url:
         connect_args = {
             "statement_cache_size": 0,
             "prepared_statement_cache_size": 0,
