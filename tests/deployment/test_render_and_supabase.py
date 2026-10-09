@@ -73,3 +73,19 @@ def test_realtime_protocol_event_contract_aliases():
     assert ServerEventType.TRANSLATION_TTS_READY == "translation.tts.ready"
     assert ServerEventType.TRANSLATION_STATUS == "translation.status"
     assert ServerEventType.TRANSLATION_ERROR == "translation.error"
+
+
+def test_alembic_config_handles_url_with_percent_encoding():
+    from alembic.config import Config
+    ini_path = Path("services/api/alembic.ini")
+    assert ini_path.exists()
+    cfg = Config(str(ini_path))
+    supabase_url = (
+        "postgresql+asyncpg://postgres.ekjjuakznsmgeqiawplo:Shandilya%40p25"
+        "@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres?pgbouncer=true"
+    )
+    # Must not raise ValueError: invalid interpolation syntax
+    cfg.set_main_option("sqlalchemy.url", supabase_url.replace("%", "%%"))
+    retrieved = cfg.get_main_option("sqlalchemy.url")
+    assert retrieved == supabase_url
+

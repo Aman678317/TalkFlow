@@ -9,7 +9,7 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
-from sqlalchemy.ext.asyncio import async_engine_from_config
+from sqlalchemy.ext.asyncio import async_engine_from_config, create_async_engine
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -29,7 +29,8 @@ target_url = (
     or os.environ.get("DATABASE_URL", settings.database_url)
 )
 db_url = _normalize_db_url(target_url)
-config.set_main_option("sqlalchemy.url", db_url)
+# Escape % to %% because Alembic's ConfigParser interprets % as interpolation syntax
+config.set_main_option("sqlalchemy.url", db_url.replace("%", "%%"))
 
 target_metadata = Base.metadata
 
@@ -57,14 +58,13 @@ async def run_async_migrations() -> None:
             "prepared_statement_cache_size": 0,
         }
     engine_kwargs = {
-        "prefix": "sqlalchemy.",
         "poolclass": pool.NullPool,
     }
     if connect_args:
         engine_kwargs["connect_args"] = connect_args
 
-    connectable = async_engine_from_config(
-        config.get_section(config.config_ini_section, {}),
+    connectable = create_async_engine(
+        db_url,
         **engine_kwargs,
     )
     async with connectable.connect() as connection:

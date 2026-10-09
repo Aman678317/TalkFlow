@@ -33,7 +33,7 @@ ALEMBIC_INI_PATH = str(REPO_ROOT / "services" / "api" / "alembic.ini")
 
 def get_alembic_config(db_url: str) -> Config:
     cfg = Config(ALEMBIC_INI_PATH)
-    cfg.set_main_option("sqlalchemy.url", db_url)
+    cfg.set_main_option("sqlalchemy.url", db_url.replace("%", "%%"))
     return cfg
 
 

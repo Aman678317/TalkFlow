@@ -14,7 +14,7 @@ config = context.config
 _url = settings.database_url
 if _url.startswith("sqlite:///") and not _url.startswith("sqlite:////"):
     _url = f"sqlite:///{settings.resolve(_url[len('sqlite:///'):])}"
-config.set_main_option("sqlalchemy.url", _url)
+config.set_main_option("sqlalchemy.url", _url.replace("%", "%%"))
 target_metadata = Base.metadata
 
 
