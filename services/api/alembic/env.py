@@ -23,7 +23,11 @@ if config.config_file_name is not None:
 
 from app.db.session import _normalize_db_url
 
-target_url = config.get_main_option("sqlalchemy.url") or os.environ.get("DATABASE_URL", settings.database_url)
+target_url = (
+    config.get_main_option("sqlalchemy.url")
+    or os.environ.get("DIRECT_URL")
+    or os.environ.get("DATABASE_URL", settings.database_url)
+)
 db_url = _normalize_db_url(target_url)
 config.set_main_option("sqlalchemy.url", db_url)
 
@@ -46,9 +50,23 @@ def do_run_migrations(connection: Connection) -> None:
 
 
 async def run_async_migrations() -> None:
+    connect_args = {}
+    if "pooler.supabase.com" in db_url or ":6543" in db_url or "pgbouncer" in db_url.lower():
+        connect_args = {
+            "statement_cache_size": 0,
+            "prepared_statement_cache_size": 0,
+        }
+    engine_kwargs = {
+        "prefix": "sqlalchemy.",
+        "poolclass": pool.NullPool,
+    }
+    if connect_args:
+        engine_kwargs["connect_args"] = connect_args
+
     connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.", poolclass=pool.NullPool)
+        **engine_kwargs,
+    )
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)
     await connectable.dispose()
