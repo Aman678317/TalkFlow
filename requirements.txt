@@ -1,0 +1,2 @@
+# Root requirements pointing to services/api
+-r services/api/requirements.txt
