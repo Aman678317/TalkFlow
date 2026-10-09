@@ -166,7 +166,24 @@ class MeetingPipeline:
                 if u.in_speech:
                     u.buffer.extend(chunk)
                     now = time.perf_counter()
-                    if now - u.last_partial_at >= PARTIAL_INTERVAL_S and len(u.buffer) > 16000 * 2 * 0.8:
+                    # Phase 2 bounded segment enforcement: split long monologues at 15s to prevent runaway buffering
+                    if (now - u.capture_started) >= 15.0 and len(u.buffer) >= 16000 * 2 * 10:
+                        audio_payload = bytes(u.buffer)
+                        u.buffer = bytearray()
+                        start_ms = u.started_at_ms
+                        cap_start = u.capture_started
+                        u.capture_started = now
+                        u.last_partial_at = now
+                        u.started_at_ms = getattr(vad, "clock_ms", int(now * 1000))
+                        u.partial_text = ""
+                        asyncio.create_task(
+                            self._finalize_utterance(
+                                p, u, forced=False, audio_bytes=audio_payload,
+                                start_ms=start_ms, capture_started=cap_start
+                            ),
+                            name=f"split-finalize-{p.participant_id}-{start_ms}"
+                        )
+                    elif now - u.last_partial_at >= PARTIAL_INTERVAL_S and len(u.buffer) > 16000 * 2 * 0.8:
                         u.last_partial_at = now
                         await self._emit_partial(p, u)
         except asyncio.CancelledError:
