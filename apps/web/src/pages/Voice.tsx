@@ -131,6 +131,19 @@ async function translateLiveText(
     if (result !== trimmed) return result;
   }
 
+  // Special match for greeting & introduction phrases in Hindi
+  if (src === "en" && tgt === "hi") {
+    let result = trimmed;
+    result = result.replace(/\bhello\b[!,.]?/gi, "नमस्ते,");
+    result = result.replace(/\bmy name is ([a-z0-9\s]+?)(?=[.!?]|$)/gi, "मेरा नाम $1 है.");
+    result = result.replace(/\bwhat are you doing\??/gi, "आप क्या कर रहे हैं?");
+    result = result.replace(/\btoday is my great day[.]?/gi, "आज मेरा बहुत अच्छा दिन है.");
+    result = result.replace(/\btoday is (?:the|a) great day[.]?/gi, "आज एक महान दिन है.");
+    result = result.replace(/\bnice to meet you[.]?/gi, "आपसे मिलकर खुशी हुई.");
+    result = result.replace(/\s+([.,!?])/g, "$1 ").replace(/\s{2,}/g, " ").trim();
+    if (result !== trimmed) return result;
+  }
+
   // Common quick phrase book
   const phraseBook: Record<string, Record<string, string>> = {
     "hello": { de: "Hallo", es: "Hola", fr: "Bonjour", hi: "नमस्ते", it: "Ciao", ja: "こんにちは", zh: "你好" },
@@ -606,6 +619,10 @@ export default function Voice() {
 
         // Handle finalized chunk
         if (newFinalText.trim()) {
+          // Prevent acoustic feedback loop while text-to-speech is playing through speakers
+          if (isSpeakingTts) {
+            return;
+          }
           // Clear backend PCM buffer to prevent duplicate transcription
           backendPcmBufferRef.current = [];
           const chunk = newFinalText.trim();
@@ -633,6 +650,7 @@ export default function Voice() {
 
         // Handle interim live speech chunk (debounced live translation)
         if (interimText.trim()) {
+          if (isSpeakingTts) return;
           const interim = interimText.trim();
           setLiveInterimOriginal(interim);
 
@@ -657,20 +675,22 @@ export default function Voice() {
           toast.error("Microphone access denied", "Please allow microphone permissions in your browser URL bar.");
           setIsLiveListening(false);
           isLiveListeningRef.current = false;
+        } else if (event.error === "no-speech") {
+          // Expected silence between utterances, maintain active listening
         } else if (event.error === "network") {
-          // Browser cloud speech recognition is unreachable;
-          // Mark WebSpeech as failed so it doesn't repeatedly loop,
-          // while backend PCM audio transcription seamlessly captures everything.
-          webSpeechFailedRef.current = true;
-          console.info("Browser Speech network notice; maintaining live recognition via backend neural audio processing.");
+          console.info("Speech recognition network blip, keeping session active.");
         }
       };
 
       recognition.onend = () => {
-        if (isLiveListeningRef.current && recognitionRef.current && !webSpeechFailedRef.current) {
-          try {
-            recognition.start();
-          } catch { }
+        if (isLiveListeningRef.current) {
+          setTimeout(() => {
+            if (isLiveListeningRef.current && recognitionRef.current) {
+              try {
+                recognition.start();
+              } catch { }
+            }
+          }, 150);
         }
       };
 
@@ -843,13 +863,43 @@ export default function Voice() {
   };
 
   const clearLiveSession = () => {
-    stopLiveListening();
+    if (isSimulatingRef.current) {
+      isSimulatingRef.current = false;
+    }
     setLiveOriginalText("");
     setLiveTranslatedText("");
     setLiveInterimOriginal("");
     setLiveInterimTranslated("");
     liveFinalOriginalRef.current = "";
     liveFinalTranslatedRef.current = "";
+    toast.info("Transcript cleared");
+  };
+
+  const handleTargetLangChange = async (newTarget: string) => {
+    setLiveTargetLang(newTarget);
+    const existing = liveFinalOriginalRef.current || liveOriginalText;
+    if (existing.trim()) {
+      setIsLiveTranslating(true);
+      const retranslated = await translateLiveText(existing.trim(), liveSourceLang, newTarget);
+      liveFinalTranslatedRef.current = retranslated;
+      setLiveTranslatedText(retranslated);
+      setIsLiveTranslating(false);
+      if (autoPlayLiveAudio && retranslated) {
+        void speakUtterance(retranslated, newTarget);
+      }
+    } else {
+      liveFinalTranslatedRef.current = "";
+      setLiveTranslatedText("");
+    }
+  };
+
+  const handleSourceLangChange = (newSource: string) => {
+    setLiveSourceLang(newSource);
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.lang = toBCP47(newSource === "auto" ? "en" : newSource);
+      } catch { }
+    }
   };
 
   // === FACE-TO-FACE SPEECH RECOGNITION (Two-Speaker Mode) ===
@@ -1099,9 +1149,8 @@ export default function Voice() {
                   <select
                     aria-label="Source Language"
                     value={liveSourceLang}
-                    onChange={(e) => setLiveSourceLang(e.target.value)}
-                    disabled={isLiveListening}
-                    className="cursor-pointer border-0 bg-transparent py-0 pl-1 pr-6 text-xs font-bold text-slate-800 focus:outline-none focus:ring-0 disabled:opacity-50"
+                    onChange={(e) => handleSourceLangChange(e.target.value)}
+                    className="cursor-pointer border-0 bg-transparent py-0 pl-1 pr-6 text-xs font-bold text-slate-800 focus:outline-none focus:ring-0"
                   >
                     <option value="auto">Auto-detect ({currentSourceLangObj.name})</option>
                     {VOICE_LANGUAGES.map((l) => (
@@ -1116,7 +1165,7 @@ export default function Voice() {
                 <button
                   type="button"
                   onClick={swapLiveLanguages}
-                  disabled={isLiveListening || liveSourceLang === "auto"}
+                  disabled={liveSourceLang === "auto"}
                   className="rounded-xl border border-slate-200 bg-white p-2 text-slate-500 shadow-2xs hover:bg-slate-50 hover:text-slate-800 disabled:opacity-30 transition-all active:scale-95"
                   title="Swap languages"
                 >
@@ -1129,9 +1178,8 @@ export default function Voice() {
                   <select
                     aria-label="Target Language"
                     value={liveTargetLang}
-                    onChange={(e) => setLiveTargetLang(e.target.value)}
-                    disabled={isLiveListening}
-                    className="cursor-pointer border-0 bg-transparent py-0 pl-1 pr-6 text-xs font-bold text-slate-800 focus:outline-none focus:ring-0 disabled:opacity-50"
+                    onChange={(e) => void handleTargetLangChange(e.target.value)}
+                    className="cursor-pointer border-0 bg-transparent py-0 pl-1 pr-6 text-xs font-bold text-slate-800 focus:outline-none focus:ring-0"
                   >
                     {VOICE_LANGUAGES.map((l) => (
                       <option key={l.code} value={l.code}>
