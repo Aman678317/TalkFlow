@@ -95,7 +95,18 @@ export default function Login() {
               variant="secondary"
               className="w-full justify-center text-xs"
               disabled={busy}
-              onClick={() => login("demo@globaltalk.local", "demo1234")}
+              onClick={async () => {
+                setBusy(true);
+                setError("");
+                try {
+                  await login("demo@globaltalk.local", "demo1234");
+                  nav(loc.state?.from ?? "/dashboard", { replace: true });
+                } catch (err: any) {
+                  setError(err instanceof ApiError ? err.message : (err?.message || "Login failed. Please check your credentials."));
+                } finally {
+                  setBusy(false);
+                }
+              }}
             >
               Use demo account
             </Button>

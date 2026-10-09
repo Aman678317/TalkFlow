@@ -31,6 +31,16 @@ let refreshInFlight: Promise<boolean> | null = null;
 let lastRefreshSuccess = 0;
 const REFRESH_DEDUPE_MS = 3000;
 
+// Eagerly restore tokens from localStorage at module load time
+if (typeof localStorage !== "undefined") {
+  try {
+    accessToken = localStorage.getItem("gt.access");
+    refreshToken = localStorage.getItem("gt.refresh");
+  } catch {
+    /* ignore */
+  }
+}
+
 export const authChannel = typeof window !== "undefined" && typeof BroadcastChannel !== "undefined"
   ? new BroadcastChannel("talkflow_auth_channel")
   : null;
@@ -168,6 +178,9 @@ export interface RequestOptions extends Omit<RequestInit, "body"> {
 }
 
 export async function api<T = any>(path: string, opts: RequestOptions = {}): Promise<T> {
+  if (!accessToken && typeof localStorage !== "undefined") {
+    loadPersistedTokens();
+  }
   const headers = new Headers(opts.headers);
   if (accessToken && !headers.has("Authorization"))
     headers.set("Authorization", `Bearer ${accessToken}`);
@@ -199,7 +212,8 @@ export async function api<T = any>(path: string, opts: RequestOptions = {}): Pro
     }
     throw err;
   }
-  if (res.status === 401 && !path.includes("/auth/login") && !path.includes("/auth/signup") && !path.includes("/auth/refresh")) {
+  const isAuthRoute = path.includes("/auth/login") || path.includes("/auth/signup") || path.includes("/auth/refresh");
+  if (res.status === 401 && !isAuthRoute) {
     if (await tryRefresh()) {
       headers.set("Authorization", `Bearer ${accessToken}`);
       try {
@@ -212,7 +226,7 @@ export async function api<T = any>(path: string, opts: RequestOptions = {}): Pro
       }
     }
   }
-  if (res.status === 401) {
+  if (res.status === 401 && !isAuthRoute) {
     onUnauthorized();
   }
   if (opts.raw) {

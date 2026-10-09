@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { api, setTokens, setUnauthorizedHandler, persistTokens, loadPersistedTokens } from "../lib/api";
+import { api, ApiError, setTokens, setUnauthorizedHandler, persistTokens, loadPersistedTokens } from "../lib/api";
 
 export interface AuthUser {
   id: string;
@@ -51,14 +51,32 @@ function normalizeUser(u: any): AuthUser | null {
   };
 }
 
+function getInitialAuth() {
+  try {
+    if (typeof localStorage === "undefined") {
+      return { user: null, org: null, authed: false };
+    }
+    const rawUser = localStorage.getItem("gt.local_user");
+    const rawOrg = localStorage.getItem("gt.local_org");
+    const hasTokens = Boolean(localStorage.getItem("gt.access") || localStorage.getItem("gt.refresh"));
+    const user = rawUser && hasTokens ? JSON.parse(rawUser) : null;
+    const org = rawOrg && hasTokens ? JSON.parse(rawOrg) : null;
+    return { user, org, authed: Boolean(user && hasTokens) };
+  } catch {
+    return { user: null, org: null, authed: false };
+  }
+}
+
+const initialAuth = getInitialAuth();
+
 export const useAuth = create<AuthState>((set, get) => ({
-  user: null,
-  org: null,
-  organizations: [],
-  role: null,
+  user: initialAuth.user,
+  org: initialAuth.org,
+  organizations: initialAuth.org ? [{ org: initialAuth.org, role: "owner" }] : [],
+  role: "owner",
   permissions: [],
-  initialized: false,
-  status: "loading",
+  initialized: initialAuth.authed,
+  status: initialAuth.authed ? "authed" : "loading",
 
   async login(email, password) {
     const r = await api("/api/v1/auth/login", {
@@ -80,11 +98,7 @@ export const useAuth = create<AuthState>((set, get) => ({
       initialized: true,
       status: user ? "authed" : "unauthed",
     });
-    try {
-      await get().refreshMe();
-    } catch {
-      /* ignore */
-    }
+    void get().refreshMe().catch(() => {});
   },
 
   async socialLogin(provider, details) {
@@ -107,11 +121,7 @@ export const useAuth = create<AuthState>((set, get) => ({
       initialized: true,
       status: user ? "authed" : "unauthed",
     });
-    try {
-      await get().refreshMe();
-    } catch {
-      /* ignore */
-    }
+    void get().refreshMe().catch(() => {});
   },
 
   async signup(data) {
@@ -197,21 +207,29 @@ export const useAuth = create<AuthState>((set, get) => ({
         initialized: true,
         status: user ? "authed" : "unauthed",
       });
-    } catch {
-      // Prevent displaying stale cached identities when authentication fails
-      setTokens(null, null);
-      persistTokens();
-      localStorage.removeItem("gt.local_user");
-      localStorage.removeItem("gt.local_org");
-      set({
-        user: null,
-        org: null,
-        organizations: [],
-        role: null,
-        permissions: [],
-        initialized: true,
-        status: "unauthed",
-      });
+    } catch (err: any) {
+      if (err instanceof ApiError && err.status === 401) {
+        // Prevent displaying stale cached identities when authentication fails
+        setTokens(null, null);
+        persistTokens();
+        localStorage.removeItem("gt.local_user");
+        localStorage.removeItem("gt.local_org");
+        set({
+          user: null,
+          org: null,
+          organizations: [],
+          role: null,
+          permissions: [],
+          initialized: true,
+          status: "unauthed",
+        });
+      } else {
+        // Network timeout / transient error: do not wipe active session
+        set((state) => ({
+          initialized: true,
+          status: state.user ? "authed" : "unauthed",
+        }));
+      }
     }
   },
 }));
