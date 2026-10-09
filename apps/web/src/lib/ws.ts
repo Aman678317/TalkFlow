@@ -93,7 +93,19 @@ export class MeetingSocket {
       }
     }
     const q = params.toString();
-    return `${proto}://${location.host}/ws/meetings/${this.opts.meetingId}${q ? `?${q}` : ""}`;
+    const rawBase = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() || (import.meta.env.PROD ? "https://talkflow-csbw.onrender.com" : "");
+    let host = location.host;
+    let customProto = proto;
+    if (rawBase) {
+      try {
+        const parsed = new URL(rawBase);
+        host = parsed.host;
+        customProto = parsed.protocol === "https:" ? "wss" : "ws";
+      } catch {
+        host = rawBase.replace(/^https?:\/\//, "").replace(/\/+$/, "");
+      }
+    }
+    return `${customProto}://${host}/ws/meetings/${this.opts.meetingId}${q ? `?${q}` : ""}`;
   }
 
   private setState(s: SocketState) {

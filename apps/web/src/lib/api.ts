@@ -87,7 +87,18 @@ export function getAccessToken() {
   return accessToken;
 }
 
-const BASE = ""; // same-origin via Vite proxy in dev; reverse proxy in prod
+export const getApiBaseUrl = (): string => {
+  const envUrl = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim();
+  if (envUrl) {
+    return envUrl.replace(/\/+$/, "");
+  }
+  if (import.meta.env.PROD) {
+    return "https://talkflow-csbw.onrender.com";
+  }
+  return "";
+};
+
+const BASE = getApiBaseUrl();
 
 async function doRefreshRequest(): Promise<boolean> {
   // If another tab just refreshed within the dedupe window and we have an accessToken, reuse it

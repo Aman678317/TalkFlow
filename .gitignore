@@ -6,6 +6,7 @@ data/
 *.env
 !/.env.example
 !/.env.*.example
+!/apps/web/.env.production
 .venv/
 *.db
 *.tsbuildinfo

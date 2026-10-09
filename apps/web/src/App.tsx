@@ -46,7 +46,8 @@ function RequireAuth({ children }: { children: JSX.Element }) {
 }
 
 export default function App() {
-  const runtimeUrl = import.meta.env.VITE_COPILOTKIT_RUNTIME_URL || '/api/copilotkit';
+  const baseApi = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/+$/, "") || "";
+  const runtimeUrl = import.meta.env.VITE_COPILOTKIT_RUNTIME_URL || (baseApi ? `${baseApi}/api/copilotkit` : '/api/copilotkit');
   const publicLicenseKey = import.meta.env.VITE_CPK_INTELLIGENCE_API_KEY || 'cpk-8093_7ThsaDD2_NmHGMwCATGmNJYKt6tcpd5HH';
 
   return (

@@ -31,7 +31,7 @@ services:
       - key: JWT_SECRET
         generateValue: true
       - key: CORS_ORIGINS
-        value: https://globaltalk-ai.vercel.app,http://localhost:5173
+        value: https://globaltalk-ai.vercel.app,https://feat-vercel-multi-service.vercel.app,http://localhost:5173
       - key: TRANSLATION_PROVIDER
         value: auto
       - key: STT_PROVIDER
