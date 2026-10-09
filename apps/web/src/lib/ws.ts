@@ -192,8 +192,41 @@ export class MeetingSocket {
     this.pingTimer = undefined;
   }
 
+  private droppedAudioFrames = 0;
+  private backpressureActive = false;
+
   sendAudio(pcm16: ArrayBuffer) {
-    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(pcm16);
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+
+    // Phase 2 backpressure: drop frames if socket buffer exceeds 64KB (~2s audio)
+    const MAX_BUFFERED_BYTES = 64 * 1024;
+    if (this.ws.bufferedAmount > MAX_BUFFERED_BYTES) {
+      this.droppedAudioFrames++;
+      if (!this.backpressureActive) {
+        this.backpressureActive = true;
+        this.opts.onEvent({
+          version: 1,
+          type: "quality.degraded",
+          session_id: "",
+          conversation_id: "",
+          sequence: null,
+          timestamp: new Date().toISOString(),
+          data: {
+            reason: "client_audio_backpressure",
+            message: "Local network congestion: audio frames dropped to preserve real-time latency.",
+            recoverable: true,
+          },
+          user_message: "Local network congestion: audio frames dropped to preserve real-time latency.",
+        });
+      }
+      return;
+    }
+
+    if (this.backpressureActive && this.ws.bufferedAmount < 16 * 1024) {
+      this.backpressureActive = false;
+    }
+
+    this.ws.send(pcm16);
   }
 
   sendJson(evt: Record<string, unknown>) {

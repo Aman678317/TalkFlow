@@ -48,6 +48,7 @@ PARTIAL_INTERVAL_S = 1.2       # run partial STT cadence during speech
 class UtteranceState:
     """Per-speaker in-flight utterance tracking."""
     participant_id: uuid.UUID
+    utterance_id: uuid.UUID = field(default_factory=uuid.uuid4)
     buffer: bytearray = field(default_factory=bytearray)
     started_at_ms: int = 0
     capture_started: float = 0.0
@@ -55,6 +56,7 @@ class UtteranceState:
     partial_text: str = ""
     seq: int = 0
     in_speech: bool = False
+    locked_language: str | None = None
 
 
 class MeetingPipeline:
@@ -67,6 +69,7 @@ class MeetingPipeline:
         self.translation_tasks: dict[tuple[int, str], asyncio.Task] = {}
         self._closed = False
         self._latest_final_seq: dict[uuid.UUID, int] = {}
+        self._last_final_text: dict[uuid.UUID, str] = {}
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -88,6 +91,7 @@ class MeetingPipeline:
         self.audio_queues.pop(participant_id, None)
         self.vads.pop(participant_id, None)
         self.utterances.pop(participant_id, None)
+        self._last_final_text.pop(participant_id, None)
         if task:
             task.cancel()
 
@@ -139,14 +143,23 @@ class MeetingPipeline:
                 for ev in events:
                     if ev.state == VadState.SPEECH:
                         u.in_speech = True
+                        u.utterance_id = uuid.uuid4()
+                        u.seq += 1
                         u.buffer = bytearray(chunk)
                         u.started_at_ms = ev.timestamp_ms
                         u.capture_started = time.perf_counter()
                         u.last_partial_at = time.perf_counter()
                         u.partial_text = ""
+                        now_ms = int(time.time() * 1000)
                         await manager.broadcast(
                             self.session, ServerEventType.SPEECH_STARTED,
-                            {"timestamp_ms": ev.timestamp_ms},
+                            {"timestamp_ms": ev.timestamp_ms,
+                             "utterance_id": str(u.utterance_id),
+                             "utteranceId": str(u.utterance_id),
+                             "sequence": u.seq,
+                             "seq": u.seq,
+                             "created_at": now_ms,
+                             "createdAt": now_ms},
                             speaker_id=str(p.participant_id))
                     else:  # SPEECH ended
                         if u.in_speech:
@@ -156,17 +169,42 @@ class MeetingPipeline:
                             u.buffer = bytearray()
                             start_ms = u.started_at_ms
                             cap_start = u.capture_started
+                            curr_uid = u.utterance_id
+                            curr_seq = u.seq
                             asyncio.create_task(
                                 self._finalize_utterance(
                                     p, u, forced=False, audio_bytes=audio_payload,
-                                    start_ms=start_ms, capture_started=cap_start
+                                    start_ms=start_ms, capture_started=cap_start,
+                                    utterance_id=curr_uid, seq=curr_seq
                                 ),
                                 name=f"finalize-{p.participant_id}-{start_ms}"
                             )
                 if u.in_speech:
                     u.buffer.extend(chunk)
                     now = time.perf_counter()
-                    if now - u.last_partial_at >= PARTIAL_INTERVAL_S and len(u.buffer) > 16000 * 2 * 0.8:
+                    # Phase 2 bounded segment enforcement: split long monologues at 15s to prevent runaway buffering
+                    if (now - u.capture_started) >= 15.0 and len(u.buffer) >= 16000 * 2 * 10:
+                        audio_payload = bytes(u.buffer)
+                        u.buffer = bytearray()
+                        start_ms = u.started_at_ms
+                        cap_start = u.capture_started
+                        curr_uid = u.utterance_id
+                        curr_seq = u.seq
+                        u.utterance_id = uuid.uuid4()
+                        u.seq += 1
+                        u.capture_started = now
+                        u.last_partial_at = now
+                        u.started_at_ms = getattr(vad, "clock_ms", int(now * 1000))
+                        u.partial_text = ""
+                        asyncio.create_task(
+                            self._finalize_utterance(
+                                p, u, forced=False, audio_bytes=audio_payload,
+                                start_ms=start_ms, capture_started=cap_start,
+                                utterance_id=curr_uid, seq=curr_seq
+                            ),
+                            name=f"split-finalize-{p.participant_id}-{start_ms}"
+                        )
+                    elif now - u.last_partial_at >= PARTIAL_INTERVAL_S and len(u.buffer) > 16000 * 2 * 0.8:
                         u.last_partial_at = now
                         await self._emit_partial(p, u)
         except asyncio.CancelledError:
@@ -177,17 +215,26 @@ class MeetingPipeline:
             # flush any in-flight speech on disconnect if session not closed
             if not self._closed and u.in_speech and len(u.buffer) > 3200:
                 try:
-                    await asyncio.shield(self._finalize_utterance(p, u, forced=True))
+                    await asyncio.shield(self._finalize_utterance(p, u, forced=True,
+                                                                 utterance_id=u.utterance_id,
+                                                                 seq=u.seq))
                 except Exception:
                     log.exception("flush on disconnect failed")
 
     # ------------------------------------------------------------------ #
     # STT: partial + final
     # ------------------------------------------------------------------ #
+    def _lang_hint(self, p: RtParticipant, u: UtteranceState | None = None) -> str | None:
+        if p.speak_lang not in ("auto", ""):
+            return p.speak_lang
+        if u and u.locked_language:
+            return u.locked_language
+        return None
+
     async def _emit_partial(self, p: RtParticipant, u: UtteranceState) -> None:
         try:
             chunk, _decision = await ai.transcribe(bytes(u.buffer), 16000,
-                                                   lang_hint=self._lang_hint(p))
+                                                   lang_hint=self._lang_hint(p, u))
         except AppError as e:
             log.debug("partial STT unavailable: %s", e.message)
             return
@@ -196,26 +243,43 @@ class MeetingPipeline:
             return
         if chunk.text and chunk.text != u.partial_text:
             u.partial_text = chunk.text
-            lang = chunk.language or self._lang_hint(p) or "auto"
+            # Phase 3 language locking: lock detected language once confidence threshold is reached
+            if not u.locked_language and chunk.language and (chunk.confidence or 0.0) >= 0.70:
+                u.locked_language = chunk.language
+            lang = u.locked_language or chunk.language or self._lang_hint(p, u) or "auto"
+            now_ms = int(time.time() * 1000)
             await manager.broadcast(
                 self.session, ServerEventType.TRANSCRIPT_PARTIAL,
-                {"speaker_name": p.display_name, "language": lang,
-                 "text": chunk.text, "is_final": False,
-                 "utterance_started_ms": u.started_at_ms},
+                {"speaker_name": p.display_name,
+                 "display_name": p.display_name,
+                 "speaker_id": str(p.participant_id),
+                 "speakerId": str(p.participant_id),
+                 "session_id": str(self.session.meeting_id),
+                 "sessionId": str(self.session.meeting_id),
+                 "language": lang,
+                 "text": chunk.text,
+                 "is_final": False,
+                 "utterance_started_ms": u.started_at_ms,
+                 "utterance_id": str(u.utterance_id),
+                 "utteranceId": str(u.utterance_id),
+                 "sequence": u.seq,
+                 "seq": u.seq,
+                 "created_at": now_ms,
+                 "createdAt": now_ms},
                 speaker_id=str(p.participant_id))
-
-    def _lang_hint(self, p: RtParticipant) -> str | None:
-        return None if p.speak_lang in ("auto", "") else p.speak_lang
 
     async def _finalize_utterance(self, p: RtParticipant, u: UtteranceState,
                                   forced: bool = False,
                                   audio_bytes: bytes | None = None,
                                   start_ms: int | None = None,
-                                  capture_started: float | None = None) -> None:
+                                  capture_started: float | None = None,
+                                  utterance_id: uuid.UUID | None = None,
+                                  seq: int | None = None) -> None:
         audio = audio_bytes if audio_bytes is not None else bytes(u.buffer)
         if audio_bytes is None:
             u.buffer = bytearray()
         if len(audio) < 1600:  # <50ms — noise blip
+            u.locked_language = None
             return
         cap_start = capture_started if capture_started is not None else u.capture_started
         capture_ms = (time.perf_counter() - cap_start) * 1000
@@ -223,7 +287,7 @@ class MeetingPipeline:
         t_stt = time.perf_counter()
         try:
             chunk, decision = await ai.transcribe(audio, 16000,
-                                                   lang_hint=self._lang_hint(p))
+                                                   lang_hint=self._lang_hint(p, u))
         except (AppError, Exception) as ex:
             log.warning("STT transcription unavailable/failed for %s: %s", p.participant_id, ex)
             await manager.broadcast(
@@ -232,6 +296,7 @@ class MeetingPipeline:
                     "Speech recognition is temporarily unavailable. Captions and "
                     "the original audio continue to work.",
                  "recoverable": True}, speaker_id=str(p.participant_id))
+            u.locked_language = None
             return
         stt_ms = (time.perf_counter() - t_stt) * 1000
         met.STT_LATENCY.labels(provider=decision.provider).observe(stt_ms)
@@ -240,16 +305,20 @@ class MeetingPipeline:
             await manager.broadcast(
                 self.session, ServerEventType.SPEECH_ENDED,
                 {"empty": True}, speaker_id=str(p.participant_id))
+            u.locked_language = None
             return
-        source_lang = chunk.language or self._lang_hint(p) or "auto"
+        source_lang = u.locked_language or chunk.language or self._lang_hint(p, u) or "auto"
         if source_lang == "auto":
             det = await ai.detect_language(text)
             source_lang = det.language
+        u.locked_language = None  # Reset locked language for the next speech segment
         await self._commit_segment(
             p, text=text, source_lang=source_lang, audio=audio,
             confidence=chunk.confidence, stt_model=chunk.model or decision.model,
             stt_provider=decision.provider, stt_ms=stt_ms, capture_ms=capture_ms,
-            start_ms=started_at_ms)
+            start_ms=started_at_ms,
+            utterance_id=utterance_id or u.utterance_id,
+            seq_num=seq or u.seq)
 
     # ------------------------------------------------------------------ #
     # Dev/test text injection (guarded; STT stage marked 'injected')
@@ -280,7 +349,9 @@ class MeetingPipeline:
                               source_lang: str, audio: bytes,
                               confidence: float | None, stt_model: str,
                               stt_provider: str, stt_ms: float,
-                              capture_ms: float, start_ms: int) -> None:
+                              capture_ms: float, start_ms: int,
+                              utterance_id: uuid.UUID | None = None,
+                              seq_num: int | None = None) -> None:
         session = self.session
         # --- persist canonical source (immutable) ---
         async with db_session() as db:
@@ -317,18 +388,30 @@ class MeetingPipeline:
             except Exception:
                 log.exception("audio artifact storage failed (non-fatal)")
 
+        now_ms = int(time.time() * 1000)
+        u_id = str(utterance_id) if utterance_id is not None else str(segment_id)
         await manager.broadcast(
             session, ServerEventType.SPEECH_ENDED,
-            {"timestamp_ms": start_ms}, speaker_id=str(p.participant_id))
+            {"timestamp_ms": start_ms, "utterance_id": u_id, "utteranceId": u_id,
+             "sequence": seq, "seq": seq},
+            speaker_id=str(p.participant_id))
         await manager.broadcast(
             session, ServerEventType.TRANSCRIPT_FINAL,
-            {"segment_id": str(segment_id), "utterance_id": str(segment_id),
-             "seq": seq, "speaker_id": str(p.participant_id),
+            {"segment_id": str(segment_id), "utterance_id": u_id,
+             "utteranceId": u_id,
+             "seq": seq, "sequence": seq,
+             "speaker_id": str(p.participant_id), "speakerId": str(p.participant_id),
              "speaker_name": p.display_name, "display_name": p.display_name,
-             "language": source_lang, "source_lang": source_lang, "source_language": source_lang,
-             "text": text, "is_final": True, "confidence": confidence,
+             "session_id": str(session.meeting_id), "sessionId": str(session.meeting_id),
+             "language": source_lang, "source_lang": source_lang,
+             "source_language": source_lang, "sourceLanguage": source_lang,
+             "text": text, "source_text": text, "sourceText": text,
+             "is_final": True, "confidence": confidence,
              "stt_model": stt_model,
-             "latency": {"audio_capture_ms": capture_ms, "stt_final_ms": stt_ms}},
+             "latency": {"audio_capture_ms": capture_ms, "stt_final_ms": stt_ms},
+             "created_at": now_ms, "createdAt": now_ms,
+             "dedup_key": f"{session.meeting_id}:{p.participant_id}:{seq}",
+             "dedupKey": f"{session.meeting_id}:{p.participant_id}:{seq}"},
             speaker_id=str(p.participant_id))
         self._latest_final_seq[p.participant_id] = seq
         if session.quality_degraded:
@@ -337,6 +420,8 @@ class MeetingPipeline:
         # --- compute deduplicated target set & fan out ---
         targets = manager.required_target_languages(
             session, source_lang, exclude_speaker=str(p.participant_id))
+        prev_context = self._last_final_text.get(p.participant_id, "")
+        self._last_final_text[p.participant_id] = text
         if not targets:
             return
         for target_lang in sorted(targets):
@@ -345,7 +430,8 @@ class MeetingPipeline:
                 self._translate_and_synthesize(
                     segment_id=segment_id, seq=seq, speaker=p, text=text,
                     source_lang=source_lang, target_lang=target_lang,
-                    stt_ms=stt_ms, capture_ms=capture_ms),
+                    stt_ms=stt_ms, capture_ms=capture_ms,
+                    prev_context=prev_context, utterance_id=u_id),
                 name=f"fanout-{seq}-{target_lang}")
             self.translation_tasks[key] = task
             task.add_done_callback(lambda _t, k=key: self.translation_tasks.pop(k, None))
@@ -353,7 +439,9 @@ class MeetingPipeline:
     async def _translate_and_synthesize(self, *, segment_id: uuid.UUID, seq: int,
                                         speaker: RtParticipant, text: str,
                                         source_lang: str, target_lang: str,
-                                        stt_ms: float, capture_ms: float) -> None:
+                                        stt_ms: float, capture_ms: float,
+                                        prev_context: str = "",
+                                        utterance_id: str | None = None) -> None:
         session = self.session
         trace = LatencyTrace(segment_id=str(segment_id), seq=seq,
                              source_lang=source_lang, target_lang=target_lang,
@@ -364,9 +452,13 @@ class MeetingPipeline:
             trace.stale_dropped = True
             met.STALE_AUDIO_DROPPED.labels(reason="pre_translation").inc()
             return
+        u_id = utterance_id or str(segment_id)
+        now_ms = int(time.time() * 1000)
         await manager.broadcast(
             session, ServerEventType.TRANSLATION_STARTED,
-            {"segment_id": str(segment_id), "seq": seq, "target_lang": target_lang},
+            {"segment_id": str(segment_id), "utterance_id": u_id, "utteranceId": u_id,
+             "seq": seq, "sequence": seq, "target_lang": target_lang, "target_language": target_lang,
+             "created_at": now_ms, "createdAt": now_ms},
             speaker_id=str(speaker.participant_id))
         try:
             async with db_session() as db:
@@ -376,6 +468,7 @@ class MeetingPipeline:
                         org_id=session.org_id, user_id=speaker.user_id,
                         product="realtime", meeting_id=session.meeting_id,
                         segment_id=segment_id, intent="latency_optimized",
+                        context=prev_context,
                         persist=True, meter=True))
         except AppError as e:
             await self._translation_failed(segment_id, seq, target_lang, e)
@@ -386,18 +479,48 @@ class MeetingPipeline:
             return
         trace.translation_ms = (time.perf_counter() - t0) * 1000
         translated = out.result.text
+        now_ms = int(time.time() * 1000)
 
-        # --- translation.final to caption listeners (language-agnostic UI) ---
+        # --- Phase 5 translation.segment.final + translation.final contract ---
+        final_translation_event = {
+            "type": "translation.segment.final",
+            "session_id": str(session.meeting_id),
+            "sessionId": str(session.meeting_id),
+            "speaker_id": str(speaker.participant_id),
+            "speakerId": str(speaker.participant_id),
+            "sequence": seq,
+            "seq": seq,
+            "utterance_id": u_id,
+            "utteranceId": u_id,
+            "segment_id": str(segment_id),
+            "source_lang": source_lang,
+            "source_language": source_lang,
+            "sourceLanguage": source_lang,
+            "target_lang": target_lang,
+            "target_language": target_lang,
+            "targetLanguage": target_lang,
+            "source_text": text,
+            "sourceText": text,
+            "text": translated,
+            "translated_text": translated,
+            "translatedText": translated,
+            "display_name": speaker.display_name,
+            "speaker_name": speaker.display_name,
+            "model": out.result.model,
+            "quality_flags": out.result.quality_flags,
+            "latency_ms": out.result.latency_ms,
+            "created_at": now_ms,
+            "createdAt": now_ms,
+            "dedup_key": f"{session.meeting_id}:{speaker.participant_id}:{seq}:{target_lang}",
+            "dedupKey": f"{session.meeting_id}:{speaker.participant_id}:{seq}:{target_lang}",
+        }
         await manager.broadcast(
             session, ServerEventType.TRANSLATION_FINAL,
-            {"segment_id": str(segment_id), "utterance_id": str(segment_id),
-             "seq": seq, "target_lang": target_lang, "target_language": target_lang,
-             "source_lang": source_lang, "source_language": source_lang,
-             "speaker_id": str(speaker.participant_id),
-             "display_name": speaker.display_name, "speaker_name": speaker.display_name,
-             "text": translated, "model": out.result.model,
-             "quality_flags": out.result.quality_flags,
-             "latency_ms": out.result.latency_ms},
+            final_translation_event,
+            speaker_id=str(speaker.participant_id))
+        await manager.broadcast(
+            session, ServerEventType.TRANSLATION_SEGMENT_FINAL,
+            final_translation_event,
             speaker_id=str(speaker.participant_id))
 
         if self._is_stale(speaker.participant_id, seq):
@@ -414,8 +537,9 @@ class MeetingPipeline:
             return
         await manager.broadcast(
             session, ServerEventType.TTS_STARTED,
-            {"segment_id": str(segment_id), "utterance_id": str(segment_id),
-             "seq": seq, "target_lang": target_lang, "target_language": target_lang},
+            {"segment_id": str(segment_id), "utterance_id": u_id, "utteranceId": u_id,
+             "seq": seq, "sequence": seq, "target_lang": target_lang, "target_language": target_lang,
+             "created_at": now_ms, "createdAt": now_ms},
             to=audio_listeners, speaker_id=str(speaker.participant_id))
         t_tts = time.perf_counter()
         first = True
@@ -439,11 +563,13 @@ class MeetingPipeline:
                 b64 = base64.b64encode(audio.data).decode()
                 await manager.broadcast(
                     session, ServerEventType.TTS_CHUNK,
-                    {"segment_id": str(segment_id), "utterance_id": str(segment_id),
-                     "seq": seq, "target_lang": target_lang, "target_language": target_lang,
-                     "chunk_index": chunk_idx, "audio_base64": b64, "format": audio.format,
+                    {"segment_id": str(segment_id), "utterance_id": u_id, "utteranceId": u_id,
+                     "seq": seq, "sequence": seq, "target_lang": target_lang, "target_language": target_lang,
+                     "chunk_index": chunk_idx, "chunkIndex": chunk_idx,
+                     "audio_base64": b64, "format": audio.format,
                      "sample_rate": audio.sample_rate,
-                     "is_dev": audio.is_dev, "model": audio.model},
+                     "is_dev": audio.is_dev, "model": audio.model,
+                     "created_at": now_ms, "createdAt": now_ms},
                     to=audio_listeners, speaker_id=str(speaker.participant_id))
 
                 # Binary frame delivery for lowest-latency audio playback

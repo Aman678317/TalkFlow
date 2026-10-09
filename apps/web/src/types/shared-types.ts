@@ -16,7 +16,7 @@ export type ServerEventType =
   | 'audio.started' | 'audio.stopped'
   | 'speech.started' | 'speech.ended'
   | 'transcript.partial' | 'transcript.final'
-  | 'translation.started' | 'translation.partial' | 'translation.final'
+  | 'translation.started' | 'translation.partial' | 'translation.final' | 'translation.segment.final'
   | 'tts.started' | 'tts.chunk' | 'tts.completed'
   | 'audio.published' | 'caption.updated' | 'language.changed'
   | 'quality.degraded' | 'translation.failed' | 'reconnect.required'

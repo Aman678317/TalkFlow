@@ -64,6 +64,7 @@ class TranslateContext:
     persist: bool = True
     meter: bool = True
     tm_writeback: bool = False     # store model result into TM (approved flows)
+    context: str | list[str] | None = None  # optional previous segment context (capped to 250 chars)
     extra_flags: list[str] = field(default_factory=list)
 
 
@@ -265,12 +266,22 @@ async def translate_text(
         style_cfg["formality"] = ctx.formality
 
     # 5) translate via router ---------------------------------------------- #
+    context_list: list[str] = []
+    if ctx.context:
+        if isinstance(ctx.context, str):
+            c_str = ctx.context.strip()
+            if c_str:
+                context_list = [c_str[-250:].strip()]
+        elif isinstance(ctx.context, list):
+            context_list = [str(c)[-250:].strip() for c in ctx.context if c]
+
     req = TranslationRequest(
         text=normalize_unicode(text),
         source_lang=detected,
         target_lang=target_language,
         domain=ctx.domain,
         intent=Intent(ctx.intent),
+        context=context_list,
         glossary=glossary_terms or None,
         style=style_cfg,
     )

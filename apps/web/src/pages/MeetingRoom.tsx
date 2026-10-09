@@ -353,6 +353,8 @@ export default function MeetingRoom() {
   /** utterance short-id → language (to decide original-relay playback) */
   const utterLangRef = React.useRef<Map<string, string>>(new Map());
   const namesRef = React.useRef<Map<string, string>>(new Map());
+  /** Phase 5: highest sequence number seen per speaker to prevent stale overwrites on reconnect */
+  const highestSeqPerSpeaker = React.useRef<Map<string, number>>(new Map());
 
   React.useEffect(() => {
     const self = mediaRoom.peers.find((peer) => peer.self);
@@ -565,31 +567,56 @@ export default function MeetingRoom() {
           playerRef.current?.cancelTag(`orig-${(evt.utterance_id as string).slice(0, 16)}`);
         break;
       case "transcript.partial":
-      case "transcript.final": {
-        const uid = evt.utterance_id as string;
+      case "transcript.final":
+      case "translation.transcript.partial":
+      case "translation.transcript.final": {
+        const uid =
+          (evt.utterance_id as string) || (evt.utteranceId as string) || (evt.segment_id as string);
         if (typeof uid === "string") utterLangRef.current.set(uid.slice(0, 16), evt.language as string);
+        const speakerKey = (evt.speaker_id as string) || (evt.speakerId as string) || "";
+        const seqNum = (evt.sequence as number) ?? (evt.seq as number) ?? 0;
+        const isFinal = t === "transcript.final" || t === "translation.transcript.final";
+
+        if (speakerKey && seqNum > 0) {
+          const currentHigh = highestSeqPerSpeaker.current.get(speakerKey) ?? 0;
+          if (isFinal) {
+            if (seqNum < currentHigh) {
+              // Stale final segment from prior reconnect or network lag: do not overwrite newer state
+              break;
+            }
+            highestSeqPerSpeaker.current.set(speakerKey, Math.max(currentHigh, seqNum));
+          } else {
+            // Discard flutter if speaker already has a newer finalized utterance
+            if (seqNum < currentHigh) {
+              break;
+            }
+          }
+        }
+
         const mine =
           prefsRef.current.caption_mode !== "translated" || evt.language === prefsRef.current.listening_language;
-        if (!mine && t === "transcript.partial") break;
+        if (!mine && (t === "transcript.partial" || t === "translation.transcript.partial")) break;
         setCaptions((prev) => {
           const line = prev.find((c) => c.id === uid);
           const data: CaptionLine = line ?? {
             id: uid,
-            speaker: (evt.display_name as string) || namesRef.current.get(evt.speaker_id as string) || "Speaker",
+            speaker: (evt.display_name as string) || namesRef.current.get(speakerKey) || "Speaker",
             language: evt.language as string,
             originalFinal: false,
             partial: true,
           };
           if (mine) {
-            data.original = evt.text as string;
-            data.originalFinal = t === "transcript.final";
+            data.original = (evt.source_text as string) || (evt.text as string);
+            data.originalFinal = isFinal;
           }
-          data.partial = t === "transcript.partial";
+          data.partial = !isFinal;
           return line ? prev.map((c) => (c.id === uid ? { ...data } : c)) : [...prev.slice(-80), data];
         });
         break;
       }
-      case "translation.final": {
+      case "translation.final":
+      case "translation.segment.final":
+      case "translation.segment.translated": {
         if (evt.latency_ms) setCurrentLatencyMs(Math.round(evt.latency_ms as number));
         if (translationStatus !== "normal") {
           setTranslationStatus("normal");
@@ -597,20 +624,43 @@ export default function MeetingRoom() {
         }
         if (isDegradedNetwork) setIsDegradedNetwork(false);
         setNotice((prev) => (prev && (prev.includes("degraded") || prev.includes("latency") || prev.includes("falling behind")) ? null : prev));
-        if (evt.target_language !== prefsRef.current.listening_language) break;
+
+        const targetLang =
+          (evt.target_language as string) || (evt.targetLanguage as string) || (evt.target_lang as string);
+        if (targetLang !== prefsRef.current.listening_language) break;
         if (prefsRef.current.caption_mode === "original") break;
-        const seg = evt.segment_id as string;
+
+        const speakerKey = (evt.speaker_id as string) || (evt.speakerId as string) || "";
+        const seqNum = (evt.sequence as number) ?? (evt.seq as number) ?? 0;
+        if (speakerKey && seqNum > 0) {
+          const currentHigh = highestSeqPerSpeaker.current.get(speakerKey) ?? 0;
+          if (seqNum < currentHigh) {
+            // Reconnection guard: older segment cannot overwrite newer translated caption
+            break;
+          }
+          highestSeqPerSpeaker.current.set(speakerKey, Math.max(currentHigh, seqNum));
+        }
+
+        const seg =
+          (evt.segment_id as string) || (evt.utterance_id as string) || (evt.utteranceId as string);
+        const dedupId =
+          (evt.dedup_key as string) || (evt.dedupKey as string) || `tr:${seg}:${targetLang}`;
+        const translatedText =
+          (evt.translated_text as string) || (evt.translatedText as string) || (evt.text as string);
+        const sourceLang =
+          (evt.source_language as string) || (evt.sourceLanguage as string) || (evt.source_lang as string);
+
         setCaptions((prev) => {
           const existingIdx = prev.findIndex(
-            (c) => c.id === `tr:${seg}:${evt.target_language}` || (c.id === seg && c.translated)
+            (c) => c.id === dedupId || c.id === `tr:${seg}:${targetLang}` || (c.id === seg && c.translated)
           );
           if (existingIdx !== -1) {
             return prev.map((c, i) =>
               i === existingIdx
                 ? {
                   ...c,
-                  translated: evt.text as string,
-                  translatedLang: evt.target_language as string,
+                  translated: translatedText,
+                  translatedLang: targetLang,
                   latencyMs: (evt.latency_ms as number) || c.latencyMs,
                 }
                 : c
@@ -621,20 +671,20 @@ export default function MeetingRoom() {
             .findIndex(
               (c) =>
                 (c.id === seg ||
-                  c.speaker === ((evt.display_name as string) || namesRef.current.get(evt.speaker_id as string))) &&
+                  c.speaker === ((evt.display_name as string) || namesRef.current.get(speakerKey))) &&
                 !c.translated &&
                 !c.id.startsWith("tr:") &&
-                (!c.language || c.language === evt.source_language)
+                (!c.language || c.language === sourceLang)
             );
           if (idx === -1) {
             return [
               ...prev.slice(-80),
               {
-                id: `tr:${seg}:${evt.target_language}`,
-                speaker: (evt.display_name as string) || namesRef.current.get(evt.speaker_id as string) || "Speaker",
-                language: evt.source_language as string,
-                translated: evt.text as string,
-                translatedLang: evt.target_language as string,
+                id: dedupId,
+                speaker: (evt.display_name as string) || namesRef.current.get(speakerKey) || "Speaker",
+                language: sourceLang,
+                translated: translatedText,
+                translatedLang: targetLang,
                 originalFinal: true,
                 partial: false,
                 latencyMs: evt.latency_ms as number,
@@ -644,16 +694,17 @@ export default function MeetingRoom() {
           const target = prev[prev.length - 1 - idx];
           const updated = {
             ...target,
-            translated: evt.text as string,
-            translatedLang: evt.target_language as string,
+            translated: translatedText,
+            translatedLang: targetLang,
             latencyMs: evt.latency_ms as number,
           };
           return prev.map((c) => (c === target ? updated : c));
         });
         break;
       }
-      case "translation.failed": {
-        if (evt.target_language !== prefsRef.current.listening_language) break;
+      case "translation.failed":
+      case "translation.error": {
+        if (evt.target_language && evt.target_language !== prefsRef.current.listening_language) break;
         setTranslationStatus("unavailable");
         setTranslationMessage((evt.user_message as string) ?? "Translation unavailable. Original audio is active.");
         setNotice((evt.user_message as string) ?? "Translation delayed. The original audio is still active.");
@@ -675,28 +726,46 @@ export default function MeetingRoom() {
         );
         break;
       }
-      case "tts.chunk": {
-        if (evt.target_language !== prefsRef.current.listening_language) break;
+      case "tts.chunk":
+      case "translation.tts.ready": {
+        const targetLang =
+          (evt.target_language as string) || (evt.targetLanguage as string) || (evt.target_lang as string);
+        if (targetLang !== prefsRef.current.listening_language) break;
         const mode = prefsRef.current.audio_mode;
         if (mode !== "translated" && mode !== "mixed") break;
         const audio = (evt.audio_base64 as string) || (evt.audio as string);
         if (!audio) break;
         const uid =
           (evt.utterance_id as string | undefined)?.slice(0, 16) ?? (evt.segment_id as string)?.slice(0, 16);
+        const seq = (evt.sequence as number) ?? (evt.seq as number) ?? 0;
+        const chunkIdx = (evt.chunk_index as number) ?? (evt.chunkIndex as number) ?? 0;
+        const speakerId = (evt.speaker_id as string) || (evt.speakerId as string) || "";
         void playerRef.current?.resumeContext();
-        void playerRef.current?.enqueueWav(b64ToBytes(audio), `tts-${uid}`);
+        void playerRef.current?.enqueueWav(
+          b64ToBytes(audio),
+          `tts-${uid}-${chunkIdx}`,
+          { sequence: seq, chunkIndex: chunkIdx, utteranceId: uid, speakerId }
+        );
         break;
       }
       case "tts.completed": {
-        if (evt.target_language !== prefsRef.current.listening_language) break;
+        const targetLang =
+          (evt.target_language as string) || (evt.targetLanguage as string) || (evt.target_lang as string);
+        if (targetLang !== prefsRef.current.listening_language) break;
         const mode = prefsRef.current.audio_mode;
         if (mode !== "translated" && mode !== "mixed") break;
         const audio = evt.audio as string;
         if (audio) {
           const uid =
             (evt.utterance_id as string | undefined)?.slice(0, 16) ?? (evt.segment_id as string)?.slice(0, 16);
+          const seq = (evt.sequence as number) ?? (evt.seq as number) ?? 0;
+          const speakerId = (evt.speaker_id as string) || (evt.speakerId as string) || "";
           void playerRef.current?.resumeContext();
-          void playerRef.current?.enqueueWav(b64ToBytes(audio), `tts-${uid}`);
+          void playerRef.current?.enqueueWav(
+            b64ToBytes(audio),
+            `tts-${uid}-final`,
+            { sequence: seq, chunkIndex: 9999, utteranceId: uid, speakerId }
+          );
         }
         break;
       }

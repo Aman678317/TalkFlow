@@ -10,12 +10,61 @@
 
 const WORKLET_CODE = `
 class PCMCaptureProcessor extends AudioWorkletProcessor {
+  constructor(options) {
+    super();
+    this.targetSampleRate = (options && options.processorOptions && options.processorOptions.targetSampleRate) || 16000;
+    // 50ms frames at 16000 Hz = 800 samples = 1600 bytes PCM16
+    this.frameSize = (options && options.processorOptions && options.processorOptions.frameSize) || 800;
+    this.resampleRatio = sampleRate / this.targetSampleRate;
+    this.accBuffer = new Float32Array(4096);
+    this.accLen = 0;
+    this.fraction = 0;
+  }
+
   process(inputs) {
     const input = inputs[0];
     if (!input || input.length === 0) return true;
-    const ch = input[0];
-    // forward Float32 100ms-ish blocks; downsampling done on main thread
-    this.port.postMessage(ch.slice(0));
+    const channel = input[0];
+    if (!channel || channel.length === 0) return true;
+
+    // Resample incoming audio block in audio rendering thread (off main UI thread)
+    const ratio = this.resampleRatio;
+    let pos = this.fraction;
+    const chLen = channel.length;
+
+    while (pos < chLen) {
+      const idx0 = Math.floor(pos);
+      const idx1 = Math.min(idx0 + 1, chLen - 1);
+      const frac = pos - idx0;
+      const sample = channel[idx0] * (1 - frac) + channel[idx1] * frac;
+
+      if (this.accLen >= this.accBuffer.length) {
+        const next = new Float32Array(this.accBuffer.length * 2);
+        next.set(this.accBuffer);
+        this.accBuffer = next;
+      }
+      this.accBuffer[this.accLen++] = sample;
+      pos += ratio;
+
+      // When accumulated a complete frame (e.g. 50ms = 800 samples at 16kHz)
+      if (this.accLen >= this.frameSize) {
+        const pcm16 = new Int16Array(this.frameSize);
+        for (let i = 0; i < this.frameSize; i++) {
+          const s = Math.max(-1, Math.min(1, this.accBuffer[i]));
+          pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+        }
+        // Transfer ArrayBuffer to main thread (zero-copy memory transfer)
+        this.port.postMessage(pcm16.buffer, [pcm16.buffer]);
+
+        // Shift remaining samples in accumulator
+        const remaining = this.accLen - this.frameSize;
+        if (remaining > 0) {
+          this.accBuffer.copyWithin(0, this.frameSize, this.accLen);
+        }
+        this.accLen = remaining;
+      }
+    }
+    this.fraction = pos - chLen;
     return true;
   }
 }
@@ -33,9 +82,14 @@ export class MicCapture {
   private ctx: AudioContext | null = null;
   private stream: MediaStream | null = null;
   private node: AudioWorkletNode | null = null;
+  private isClonedTrack = false;
 
   get mediaStream(): MediaStream | null {
     return this.stream;
+  }
+
+  get isCloned(): boolean {
+    return this.isClonedTrack;
   }
 
   async start(
@@ -43,7 +97,6 @@ export class MicCapture {
     onFrame: (pcm16: ArrayBuffer) => void,
     options?: MicCaptureOptions
   ): Promise<void> {
-    this.ctx = new AudioContext({ sampleRate: targetSampleRate });
     const audioConstraints: MediaTrackConstraints = {
       channelCount: 1,
       echoCancellation: options?.echoCancellation ?? true,
@@ -53,63 +106,105 @@ export class MicCapture {
     if (options?.deviceId) {
       audioConstraints.deviceId = { exact: options.deviceId };
     }
-    this.stream = await navigator.mediaDevices.getUserMedia({
+    const micStream = await navigator.mediaDevices.getUserMedia({
       audio: audioConstraints,
     });
+    this.isClonedTrack = false;
+    await this.initPipeline(micStream, targetSampleRate, onFrame);
+  }
+
+  /**
+   * Tap an existing audio track by cloning it so WebRTC / LiveKit call audio is untouched.
+   */
+  async startFromTrack(
+    track: MediaStreamTrack,
+    targetSampleRate: number,
+    onFrame: (pcm16: ArrayBuffer) => void
+  ): Promise<void> {
+    const cloned = track.clone();
+    this.isClonedTrack = true;
+    const stream = new MediaStream([cloned]);
+    await this.initPipeline(stream, targetSampleRate, onFrame);
+  }
+
+  private async initPipeline(
+    stream: MediaStream,
+    targetSampleRate: number,
+    onFrame: (pcm16: ArrayBuffer) => void
+  ): Promise<void> {
+    this.stream = stream;
+    this.ctx = new AudioContext();
+    if (this.ctx.state === "suspended") {
+      await this.ctx.resume().catch(() => {});
+    }
+
     const blobUrl = URL.createObjectURL(
       new Blob([WORKLET_CODE], { type: "application/javascript" }),
     );
-    await this.ctx.audioWorklet.addModule(blobUrl);
-    URL.revokeObjectURL(blobUrl);
-    const source = this.ctx.createMediaStreamSource(this.stream);
+    try {
+      await this.ctx.audioWorklet.addModule(blobUrl);
+    } finally {
+      URL.revokeObjectURL(blobUrl);
+    }
+
+    // AudioWorkletNode with numberOfOutputs: 0 ensures mic audio is NEVER routed to local speakers (no self-echo)
     this.node = new AudioWorkletNode(this.ctx, "pcm-capture", {
       numberOfOutputs: 0,
       channelCount: 1,
+      processorOptions: {
+        targetSampleRate,
+        frameSize: Math.floor(targetSampleRate * 0.05), // 50ms frames (800 samples at 16kHz)
+      },
     });
-    const inRate = this.ctx.sampleRate;
-    this.node.port.onmessage = (e: MessageEvent<Float32Array>) => {
-      const resampled = this.toRate(e.data, inRate, targetSampleRate);
-      const pcm16 = new Int16Array(resampled.length);
-      for (let i = 0; i < resampled.length; i++) {
-        const s = Math.max(-1, Math.min(1, resampled[i]));
-        pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-      }
-      onFrame(pcm16.buffer);
-    };
-    source.connect(this.node);
-  }
 
-  private toRate(input: Float32Array, from: number, to: number): Float32Array {
-    if (from === to) return input;
-    const ratio = from / to;
-    const outLen = Math.floor(input.length / ratio);
-    const out = new Float32Array(outLen);
-    for (let i = 0; i < outLen; i++) {
-      const pos = i * ratio;
-      const i0 = Math.floor(pos);
-      const i1 = Math.min(i0 + 1, input.length - 1);
-      const frac = pos - i0;
-      out[i] = input[i0] * (1 - frac) + input[i1] * frac;
-    }
-    return out;
+    this.node.port.onmessage = (e: MessageEvent<ArrayBuffer>) => {
+      onFrame(e.data);
+    };
+
+    const source = this.ctx.createMediaStreamSource(this.stream);
+    source.connect(this.node);
   }
 
   stop() {
     this.node?.disconnect();
-    this.stream?.getTracks().forEach((t) => t.stop());
+    if (this.stream) {
+      this.stream.getTracks().forEach((t) => {
+        // If this was a cloned track, stop it; if not cloned, stop it as well
+        t.stop();
+      });
+    }
     this.ctx?.close().catch(() => {});
     this.node = null;
     this.stream = null;
     this.ctx = null;
+    this.isClonedTrack = false;
   }
 }
 
-/** Sequential audio playback queue with utterance-scoped cancellation. */
+export interface PlayQueueOptions {
+  sequence?: number;
+  chunkIndex?: number;
+  utteranceId?: string;
+  speakerId?: string;
+}
+
+interface PlayQueueItem {
+  buffer: AudioBuffer;
+  tag: string;
+  sequence: number;
+  chunkIndex: number;
+  utteranceId?: string;
+  speakerId?: string;
+  enqueuedAt: number;
+}
+
+/** Sequential audio playback queue with utterance-scoped cancellation and sequence ordering. */
 export class AudioPlayer {
   private ctx: AudioContext;
   private current: AudioBufferSourceNode | null = null;
-  private queue: { buffer: AudioBuffer; tag: string }[] = [];
+  private queue: PlayQueueItem[] = [];
   private playingTag: string | null = null;
+  private lastPlayedSeqPerSpeaker: Map<string, number> = new Map();
 
   constructor() {
     this.ctx = new AudioContext();
@@ -132,11 +227,43 @@ export class AudioPlayer {
     return false;
   }
 
-  /** Enqueue decoded WAV bytes (TTS events). Replaces anything with the same tag. */
-  async enqueueWav(bytes: Uint8Array, tag: string, onDone?: () => void) {
+  /** Enqueue decoded WAV bytes (TTS events). Plays segments in strictly monotonic order. */
+  async enqueueWav(
+    bytes: Uint8Array,
+    tag: string,
+    opts?: PlayQueueOptions,
+    onDone?: () => void
+  ) {
+    const seq = opts?.sequence ?? 0;
+    const chunkIdx = opts?.chunkIndex ?? 0;
+    const speakerKey = opts?.speakerId ?? "";
+    if (speakerKey && seq > 0) {
+      const lastPlayed = this.lastPlayedSeqPerSpeaker.get(speakerKey) ?? 0;
+      if (seq < lastPlayed) {
+        // Discard stale audio segment that arrived out-of-order or after reconnection
+        return;
+      }
+    }
+
     const buffer = await this.ctx.decodeAudioData(bytes.slice().buffer as ArrayBuffer);
     this.queue = this.queue.filter((q) => q.tag !== tag);
-    this.queue.push({ buffer, tag });
+    this.queue.push({
+      buffer,
+      tag,
+      sequence: seq,
+      chunkIndex: chunkIdx,
+      utteranceId: opts?.utteranceId,
+      speakerId: opts?.speakerId,
+      enqueuedAt: Date.now(),
+    });
+
+    // Ensure queue is ordered strictly by sequence, chunkIndex, and arrival time
+    this.queue.sort((a, b) => {
+      if (a.sequence !== b.sequence) return a.sequence - b.sequence;
+      if (a.chunkIndex !== b.chunkIndex) return a.chunkIndex - b.chunkIndex;
+      return a.enqueuedAt - b.enqueuedAt;
+    });
+
     void this.playNext(onDone);
   }
 
@@ -150,7 +277,13 @@ export class AudioPlayer {
     const buffer = this.ctx.createBuffer(1, view.length, sampleRate);
     const data = buffer.getChannelData(0);
     for (let i = 0; i < view.length; i++) data[i] = view[i] / 0x8000;
-    this.queue.push({ buffer, tag });
+    this.queue.push({
+      buffer,
+      tag,
+      sequence: 0,
+      chunkIndex: 0,
+      enqueuedAt: Date.now(),
+    });
     void this.playNext();
   }
 
@@ -164,10 +297,23 @@ export class AudioPlayer {
     }
   }
 
+  /** Cancel all buffered audio for a specific speaker upon interruption */
+  cancelSpeaker(speakerId: string) {
+    this.queue = this.queue.filter((q) => q.speakerId !== speakerId);
+  }
+
   private async playNext(onDone?: () => void) {
     if (this.current) return;
     const item = this.queue.shift();
     if (!item) return;
+
+    if (item.speakerId && item.sequence > 0) {
+      this.lastPlayedSeqPerSpeaker.set(
+        item.speakerId,
+        Math.max(this.lastPlayedSeqPerSpeaker.get(item.speakerId) ?? 0, item.sequence)
+      );
+    }
+
     await this.resumeContext();
     const src = this.ctx.createBufferSource();
     src.buffer = item.buffer;
