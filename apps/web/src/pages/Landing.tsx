@@ -115,7 +115,7 @@ export default function Landing() {
                     Sign in
                   </Link>
                   <Link
-                    to="/signup"
+                    to="/translate"
                     className="btn-tactile rounded-xl bg-dl-blue px-4 py-2 font-semibold text-white shadow-sm hover:bg-dl-blue-hover"
                   >
                     Start Free
@@ -136,7 +136,7 @@ export default function Landing() {
               </Link>
             ) : (
               <Link
-                to="/signup"
+                to="/translate"
                 className="rounded-lg bg-dl-blue px-3 py-1.5 text-xs font-semibold text-white"
               >
                 Start Free
@@ -196,7 +196,7 @@ export default function Landing() {
                 </Link>
               )}
               <Link
-                to={user ? "/dashboard" : "/signup"}
+                to={user ? "/dashboard" : "/translate"}
                 onClick={() => setMobileMenuOpen(false)}
                 className="block rounded-lg bg-dl-blue px-3 py-2 text-center text-sm font-semibold text-white hover:bg-dl-blue-hover"
               >
@@ -231,7 +231,7 @@ export default function Landing() {
 
             <div className="mt-7 flex flex-wrap items-center gap-3.5">
               <Link
-                to="/signup"
+                to="/dashboard"
                 className="btn-tactile flex items-center gap-2 rounded-xl bg-dl-blue px-6 py-3.5 text-base font-semibold text-white shadow-sm hover:bg-dl-blue-hover"
               >
                 Launch Workspace <ArrowRight className="h-5 w-5" />

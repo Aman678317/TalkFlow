@@ -238,7 +238,9 @@ export async function api<T = any>(path: string, opts: RequestOptions = {}): Pro
     }
   }
   if (res.status === 401 && !isAuthRoute) {
-    onUnauthorized();
+    if (accessToken) {
+      onUnauthorized();
+    }
   }
   if (opts.raw) {
     if (!res.ok) throw new ApiError(res.status, await res.json().catch(() => null));

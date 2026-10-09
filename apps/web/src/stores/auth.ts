@@ -90,6 +90,7 @@ export const useAuth = create<AuthState>((set, get) => ({
     const org = r.membership?.org ?? null;
     if (user) localStorage.setItem("gt.local_user", JSON.stringify(user));
     if (org) localStorage.setItem("gt.local_org", JSON.stringify(org));
+    localStorage.removeItem("gt.logged_out");
     set({
       user,
       org,
@@ -113,6 +114,7 @@ export const useAuth = create<AuthState>((set, get) => ({
     const org = r.membership?.org ?? null;
     if (user) localStorage.setItem("gt.local_user", JSON.stringify(user));
     if (org) localStorage.setItem("gt.local_org", JSON.stringify(org));
+    localStorage.removeItem("gt.logged_out");
     set({
       user,
       org,
@@ -141,6 +143,7 @@ export const useAuth = create<AuthState>((set, get) => ({
     const org = r.organization ?? r.membership?.org ?? null;
     if (user) localStorage.setItem("gt.local_user", JSON.stringify(user));
     if (org) localStorage.setItem("gt.local_org", JSON.stringify(org));
+    localStorage.removeItem("gt.logged_out");
     set({
       user,
       org,
@@ -160,6 +163,7 @@ export const useAuth = create<AuthState>((set, get) => ({
     localStorage.removeItem("gt.refresh");
     localStorage.removeItem("gt.local_user");
     localStorage.removeItem("gt.local_org");
+    localStorage.setItem("gt.logged_out", "true");
     set({
       user: null,
       org: null,
@@ -174,21 +178,20 @@ export const useAuth = create<AuthState>((set, get) => ({
   async refreshMe() {
     loadPersistedTokens();
 
-    setUnauthorizedHandler(() => {
-      setTokens(null, null);
-      persistTokens();
-      localStorage.removeItem("gt.local_user");
-      localStorage.removeItem("gt.local_org");
-      set({
-        user: null,
-        org: null,
-        organizations: [],
-        role: null,
-        permissions: [],
+    const hasStoredTokens = Boolean(
+      typeof localStorage !== "undefined" &&
+      (localStorage.getItem("gt.access") || localStorage.getItem("gt.refresh"))
+    );
+    const hasCachedUser = Boolean(
+      typeof localStorage !== "undefined" && localStorage.getItem("gt.local_user")
+    );
+    if (!hasStoredTokens && !hasCachedUser) {
+      set((state) => ({
         initialized: true,
-        status: "unauthed",
-      });
-    });
+        status: state.user ? "authed" : "unauthed",
+      }));
+      return;
+    }
 
     try {
       const r = await api("/api/v1/auth/me", { timeoutMs: 10000 });
@@ -233,6 +236,24 @@ export const useAuth = create<AuthState>((set, get) => ({
     }
   },
 }));
+
+setUnauthorizedHandler(() => {
+  setTokens(null, null);
+  persistTokens();
+  if (typeof localStorage !== "undefined") {
+    localStorage.removeItem("gt.local_user");
+    localStorage.removeItem("gt.local_org");
+  }
+  useAuth.setState({
+    user: null,
+    org: null,
+    organizations: [],
+    role: null,
+    permissions: [],
+    initialized: true,
+    status: "unauthed",
+  });
+});
 
 if (typeof window !== "undefined" && typeof BroadcastChannel !== "undefined") {
   try {

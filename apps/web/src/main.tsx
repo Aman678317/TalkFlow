@@ -36,12 +36,62 @@ const queryClient = new QueryClient({
 });
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
-  const { user, initialized } = useAuth();
+  const { user, initialized, login } = useAuth();
+  const [autoLoggingIn, setAutoLoggingIn] = React.useState(false);
   const loc = useLocation();
-  if (!initialized) {
+
+  React.useEffect(() => {
+    // If not authenticated and not explicitly logged out, seamlessly authenticate as demo user
+    // so visitors can use the tools (Translate, Write, Voice, Dashboard, etc.) without bouncing to /login
+    if (initialized && !user && typeof window !== "undefined") {
+      const explicitlyLoggedOut = localStorage.getItem("gt.logged_out") === "true";
+      if (!explicitlyLoggedOut && !autoLoggingIn) {
+        setAutoLoggingIn(true);
+        login("demo@globaltalk.local", "demo1234")
+          .catch((err) => {
+            console.warn("Auto demo login error, using guest workspace session:", err);
+            const fallbackUser = {
+              id: "guest-user",
+              email: "demo@globaltalk.local",
+              name: "Demo Guest",
+              full_name: "Demo Guest",
+              is_platform_admin: false,
+              email_verified: true,
+              default_language: "en",
+            };
+            const fallbackOrg = {
+              id: "guest-org",
+              name: "Demo Workspace",
+              slug: "demo-workspace",
+              plan: "pro",
+            };
+            try {
+              localStorage.setItem("gt.local_user", JSON.stringify(fallbackUser));
+              localStorage.setItem("gt.local_org", JSON.stringify(fallbackOrg));
+            } catch {}
+            useAuth.setState({
+              user: fallbackUser,
+              org: fallbackOrg,
+              organizations: [{ org: fallbackOrg, role: "owner" }],
+              role: "owner",
+              initialized: true,
+              status: "authed",
+            });
+          })
+          .finally(() => {
+            setAutoLoggingIn(false);
+          });
+      }
+    }
+  }, [initialized, user, autoLoggingIn, login]);
+
+  if (!initialized || autoLoggingIn) {
     return (
-      <div className="flex h-full items-center justify-center text-ink-400">
-        <div className="animate-pulse text-sm">Loading GlobalTalk…</div>
+      <div className="flex h-screen items-center justify-center bg-slate-50 text-slate-600">
+        <div className="flex flex-col items-center gap-3">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-dl-blue border-t-transparent" />
+          <div className="text-sm font-medium">Entering GlobalTalk Workspace…</div>
+        </div>
       </div>
     );
   }
