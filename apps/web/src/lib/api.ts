@@ -88,6 +88,9 @@ export function getAccessToken() {
 }
 
 export const getApiBaseUrl = (): string => {
+  if (typeof window !== "undefined" && window.location.hostname.endsWith(".vercel.app")) {
+    return "";
+  }
   const envUrl = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim();
   if (envUrl) {
     return envUrl.replace(/\/+$/, "");

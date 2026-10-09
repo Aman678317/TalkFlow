@@ -1,5 +1,5 @@
 from pathlib import Path
-import yaml
+import yaml  # type: ignore
 from app.db.session import _normalize_db_url, _make_engine
 from app.realtime.protocol import ServerEventType
 

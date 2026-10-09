@@ -22,7 +22,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from app import metrics as met
 from app.ai import ai
@@ -355,10 +355,11 @@ class MeetingPipeline:
         session = self.session
         # --- persist canonical source (immutable) ---
         async with db_session() as db:
-            seq = int((await db.execute(
+            scalar_seq = (await db.execute(
                 select(func.coalesce(func.max(M.TranscriptSegment.seq), 0))
                 .where(M.TranscriptSegment.meeting_id == session.meeting_id)
-                )).scalar() or 0) + 1
+            )).scalar()
+            seq = (scalar_seq or 0) + 1
             segment = M.TranscriptSegment(
                 meeting_id=session.meeting_id, seq=seq,
                 speaker_id=p.participant_id, speaker_name=p.display_name,
@@ -381,7 +382,7 @@ class MeetingPipeline:
                 await storage().put(key, pcm16_to_wav(audio, 16000), "audio/wav")
                 async with db_session() as db:
                     await db.execute(
-                        M.TranscriptSegment.__table__.update()
+                        update(M.TranscriptSegment)
                         .where(M.TranscriptSegment.id == segment_id)
                         .values(audio_object_key=key))
                     await db.commit()
