@@ -207,11 +207,16 @@ export class MeetingSocket {
         this.opts.onEvent({
           version: 1,
           type: "quality.degraded",
+          session_id: "",
+          conversation_id: "",
+          sequence: null,
+          timestamp: new Date().toISOString(),
           data: {
             reason: "client_audio_backpressure",
             message: "Local network congestion: audio frames dropped to preserve real-time latency.",
             recoverable: true,
           },
+          user_message: "Local network congestion: audio frames dropped to preserve real-time latency.",
         });
       }
       return;

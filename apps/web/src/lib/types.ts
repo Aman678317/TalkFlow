@@ -106,11 +106,12 @@ export type RealtimeEventType =
   | "participant.joined" | "participant.left"
   | "audio.started" | "audio.stopped" | "speech.started" | "speech.ended"
   | "transcript.partial" | "transcript.final"
-  | "translation.started" | "translation.partial" | "translation.final"
-  | "tts.started" | "tts.chunk" | "tts.completed" | "audio.published"
+  | "translation.transcript.partial" | "translation.transcript.final"
+  | "translation.started" | "translation.partial" | "translation.final" | "translation.segment.final" | "translation.segment.translated"
+  | "tts.started" | "tts.chunk" | "tts.completed" | "translation.tts.ready" | "audio.published"
   | "caption.updated" | "language.changed"
   | "chat.message" | "chat.translation"
-  | "quality.degraded" | "quality.latency" | "translation.failed"
+  | "quality.degraded" | "quality.latency" | "translation.failed" | "translation.error"
   | "reconnect.required" | "error" | "pong" | "signal";
 
 export interface RealtimeEvent {

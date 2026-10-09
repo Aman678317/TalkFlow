@@ -88,6 +88,10 @@ export class MicCapture {
     return this.stream;
   }
 
+  get isCloned(): boolean {
+    return this.isClonedTrack;
+  }
+
   async start(
     targetSampleRate: number,
     onFrame: (pcm16: ArrayBuffer) => void,
@@ -177,12 +181,30 @@ export class MicCapture {
   }
 }
 
-/** Sequential audio playback queue with utterance-scoped cancellation. */
+export interface PlayQueueOptions {
+  sequence?: number;
+  chunkIndex?: number;
+  utteranceId?: string;
+  speakerId?: string;
+}
+
+interface PlayQueueItem {
+  buffer: AudioBuffer;
+  tag: string;
+  sequence: number;
+  chunkIndex: number;
+  utteranceId?: string;
+  speakerId?: string;
+  enqueuedAt: number;
+}
+
+/** Sequential audio playback queue with utterance-scoped cancellation and sequence ordering. */
 export class AudioPlayer {
   private ctx: AudioContext;
   private current: AudioBufferSourceNode | null = null;
-  private queue: { buffer: AudioBuffer; tag: string }[] = [];
+  private queue: PlayQueueItem[] = [];
   private playingTag: string | null = null;
+  private lastPlayedSeqPerSpeaker: Map<string, number> = new Map();
 
   constructor() {
     this.ctx = new AudioContext();
@@ -205,11 +227,43 @@ export class AudioPlayer {
     return false;
   }
 
-  /** Enqueue decoded WAV bytes (TTS events). Replaces anything with the same tag. */
-  async enqueueWav(bytes: Uint8Array, tag: string, onDone?: () => void) {
+  /** Enqueue decoded WAV bytes (TTS events). Plays segments in strictly monotonic order. */
+  async enqueueWav(
+    bytes: Uint8Array,
+    tag: string,
+    opts?: PlayQueueOptions,
+    onDone?: () => void
+  ) {
+    const seq = opts?.sequence ?? 0;
+    const chunkIdx = opts?.chunkIndex ?? 0;
+    const speakerKey = opts?.speakerId ?? "";
+    if (speakerKey && seq > 0) {
+      const lastPlayed = this.lastPlayedSeqPerSpeaker.get(speakerKey) ?? 0;
+      if (seq < lastPlayed) {
+        // Discard stale audio segment that arrived out-of-order or after reconnection
+        return;
+      }
+    }
+
     const buffer = await this.ctx.decodeAudioData(bytes.slice().buffer as ArrayBuffer);
     this.queue = this.queue.filter((q) => q.tag !== tag);
-    this.queue.push({ buffer, tag });
+    this.queue.push({
+      buffer,
+      tag,
+      sequence: seq,
+      chunkIndex: chunkIdx,
+      utteranceId: opts?.utteranceId,
+      speakerId: opts?.speakerId,
+      enqueuedAt: Date.now(),
+    });
+
+    // Ensure queue is ordered strictly by sequence, chunkIndex, and arrival time
+    this.queue.sort((a, b) => {
+      if (a.sequence !== b.sequence) return a.sequence - b.sequence;
+      if (a.chunkIndex !== b.chunkIndex) return a.chunkIndex - b.chunkIndex;
+      return a.enqueuedAt - b.enqueuedAt;
+    });
+
     void this.playNext(onDone);
   }
 
@@ -223,7 +277,13 @@ export class AudioPlayer {
     const buffer = this.ctx.createBuffer(1, view.length, sampleRate);
     const data = buffer.getChannelData(0);
     for (let i = 0; i < view.length; i++) data[i] = view[i] / 0x8000;
-    this.queue.push({ buffer, tag });
+    this.queue.push({
+      buffer,
+      tag,
+      sequence: 0,
+      chunkIndex: 0,
+      enqueuedAt: Date.now(),
+    });
     void this.playNext();
   }
 
@@ -237,10 +297,23 @@ export class AudioPlayer {
     }
   }
 
+  /** Cancel all buffered audio for a specific speaker upon interruption */
+  cancelSpeaker(speakerId: string) {
+    this.queue = this.queue.filter((q) => q.speakerId !== speakerId);
+  }
+
   private async playNext(onDone?: () => void) {
     if (this.current) return;
     const item = this.queue.shift();
     if (!item) return;
+
+    if (item.speakerId && item.sequence > 0) {
+      this.lastPlayedSeqPerSpeaker.set(
+        item.speakerId,
+        Math.max(this.lastPlayedSeqPerSpeaker.get(item.speakerId) ?? 0, item.sequence)
+      );
+    }
+
     await this.resumeContext();
     const src = this.ctx.createBufferSource();
     src.buffer = item.buffer;
