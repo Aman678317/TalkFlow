@@ -55,6 +55,7 @@ class UtteranceState:
     partial_text: str = ""
     seq: int = 0
     in_speech: bool = False
+    locked_language: str | None = None
 
 
 class MeetingPipeline:
@@ -201,10 +202,17 @@ class MeetingPipeline:
     # ------------------------------------------------------------------ #
     # STT: partial + final
     # ------------------------------------------------------------------ #
+    def _lang_hint(self, p: RtParticipant, u: UtteranceState | None = None) -> str | None:
+        if p.speak_lang not in ("auto", ""):
+            return p.speak_lang
+        if u and u.locked_language:
+            return u.locked_language
+        return None
+
     async def _emit_partial(self, p: RtParticipant, u: UtteranceState) -> None:
         try:
             chunk, _decision = await ai.transcribe(bytes(u.buffer), 16000,
-                                                   lang_hint=self._lang_hint(p))
+                                                   lang_hint=self._lang_hint(p, u))
         except AppError as e:
             log.debug("partial STT unavailable: %s", e.message)
             return
@@ -213,16 +221,16 @@ class MeetingPipeline:
             return
         if chunk.text and chunk.text != u.partial_text:
             u.partial_text = chunk.text
-            lang = chunk.language or self._lang_hint(p) or "auto"
+            # Phase 3 language locking: lock detected language once confidence threshold is reached
+            if not u.locked_language and chunk.language and (chunk.confidence or 0.0) >= 0.70:
+                u.locked_language = chunk.language
+            lang = u.locked_language or chunk.language or self._lang_hint(p, u) or "auto"
             await manager.broadcast(
                 self.session, ServerEventType.TRANSCRIPT_PARTIAL,
                 {"speaker_name": p.display_name, "language": lang,
                  "text": chunk.text, "is_final": False,
                  "utterance_started_ms": u.started_at_ms},
                 speaker_id=str(p.participant_id))
-
-    def _lang_hint(self, p: RtParticipant) -> str | None:
-        return None if p.speak_lang in ("auto", "") else p.speak_lang
 
     async def _finalize_utterance(self, p: RtParticipant, u: UtteranceState,
                                   forced: bool = False,
@@ -233,6 +241,7 @@ class MeetingPipeline:
         if audio_bytes is None:
             u.buffer = bytearray()
         if len(audio) < 1600:  # <50ms — noise blip
+            u.locked_language = None
             return
         cap_start = capture_started if capture_started is not None else u.capture_started
         capture_ms = (time.perf_counter() - cap_start) * 1000
@@ -240,7 +249,7 @@ class MeetingPipeline:
         t_stt = time.perf_counter()
         try:
             chunk, decision = await ai.transcribe(audio, 16000,
-                                                   lang_hint=self._lang_hint(p))
+                                                   lang_hint=self._lang_hint(p, u))
         except (AppError, Exception) as ex:
             log.warning("STT transcription unavailable/failed for %s: %s", p.participant_id, ex)
             await manager.broadcast(
@@ -249,6 +258,7 @@ class MeetingPipeline:
                     "Speech recognition is temporarily unavailable. Captions and "
                     "the original audio continue to work.",
                  "recoverable": True}, speaker_id=str(p.participant_id))
+            u.locked_language = None
             return
         stt_ms = (time.perf_counter() - t_stt) * 1000
         met.STT_LATENCY.labels(provider=decision.provider).observe(stt_ms)
@@ -257,11 +267,13 @@ class MeetingPipeline:
             await manager.broadcast(
                 self.session, ServerEventType.SPEECH_ENDED,
                 {"empty": True}, speaker_id=str(p.participant_id))
+            u.locked_language = None
             return
-        source_lang = chunk.language or self._lang_hint(p) or "auto"
+        source_lang = u.locked_language or chunk.language or self._lang_hint(p, u) or "auto"
         if source_lang == "auto":
             det = await ai.detect_language(text)
             source_lang = det.language
+        u.locked_language = None  # Reset locked language for the next speech segment
         await self._commit_segment(
             p, text=text, source_lang=source_lang, audio=audio,
             confidence=chunk.confidence, stt_model=chunk.model or decision.model,
