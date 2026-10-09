@@ -68,6 +68,7 @@ class MeetingPipeline:
         self.translation_tasks: dict[tuple[int, str], asyncio.Task] = {}
         self._closed = False
         self._latest_final_seq: dict[uuid.UUID, int] = {}
+        self._last_final_text: dict[uuid.UUID, str] = {}
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -89,6 +90,7 @@ class MeetingPipeline:
         self.audio_queues.pop(participant_id, None)
         self.vads.pop(participant_id, None)
         self.utterances.pop(participant_id, None)
+        self._last_final_text.pop(participant_id, None)
         if task:
             task.cancel()
 
@@ -366,6 +368,8 @@ class MeetingPipeline:
         # --- compute deduplicated target set & fan out ---
         targets = manager.required_target_languages(
             session, source_lang, exclude_speaker=str(p.participant_id))
+        prev_context = self._last_final_text.get(p.participant_id, "")
+        self._last_final_text[p.participant_id] = text
         if not targets:
             return
         for target_lang in sorted(targets):
@@ -374,7 +378,8 @@ class MeetingPipeline:
                 self._translate_and_synthesize(
                     segment_id=segment_id, seq=seq, speaker=p, text=text,
                     source_lang=source_lang, target_lang=target_lang,
-                    stt_ms=stt_ms, capture_ms=capture_ms),
+                    stt_ms=stt_ms, capture_ms=capture_ms,
+                    prev_context=prev_context),
                 name=f"fanout-{seq}-{target_lang}")
             self.translation_tasks[key] = task
             task.add_done_callback(lambda _t, k=key: self.translation_tasks.pop(k, None))
@@ -382,7 +387,8 @@ class MeetingPipeline:
     async def _translate_and_synthesize(self, *, segment_id: uuid.UUID, seq: int,
                                         speaker: RtParticipant, text: str,
                                         source_lang: str, target_lang: str,
-                                        stt_ms: float, capture_ms: float) -> None:
+                                        stt_ms: float, capture_ms: float,
+                                        prev_context: str = "") -> None:
         session = self.session
         trace = LatencyTrace(segment_id=str(segment_id), seq=seq,
                              source_lang=source_lang, target_lang=target_lang,
@@ -405,6 +411,7 @@ class MeetingPipeline:
                         org_id=session.org_id, user_id=speaker.user_id,
                         product="realtime", meeting_id=session.meeting_id,
                         segment_id=segment_id, intent="latency_optimized",
+                        context=prev_context,
                         persist=True, meter=True))
         except AppError as e:
             await self._translation_failed(segment_id, seq, target_lang, e)
