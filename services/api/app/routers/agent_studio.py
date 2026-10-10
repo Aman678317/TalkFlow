@@ -163,9 +163,9 @@ async def _run_bridge(action: str, input_text: str = "") -> Dict[str, Any]:
     # Serverless fallback handlers
     if action == "triage":
         return _fallback_triage(input_text or "General support ticket")
-    elif action == "research":
+    elif action in ("research", "research-crew"):
         return _fallback_research(input_text or "State of agentic AI, 2026")
-    elif action == "content":
+    elif action in ("content", "content-pipeline"):
         return _fallback_content(input_text or "Why agentic AI needs typed tool calls")
 
     raise HTTPException(status_code=400, detail=f"Unsupported action: {action}")
