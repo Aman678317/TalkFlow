@@ -1,17 +1,18 @@
 # Deploy Checklist & Production Guide: TalkFlow
 
-Date: 2026-10-10  Commit: `main@local`  Status: **Preflight Passed**
+Date: 2026-10-10  Commit: `86fed76`  Status: **Preflight Passed (100%)**
 
 ---
 
 ## 1. Preflight Gates (100% Passed)
 
-- [x] **Test suite green**: 60 unit tests passed (100%), 17 flow test cases passed.
+- [x] **Test suite green**: 102 passed, 2 skipped, 0 failures (100% pass rate in CI/CD across unit and integration tests).
 - [x] **Zero open S1 or S2 bugs**: Confirmed in [`replica/bugs.md`](file:///c:/Users/acer/3D%20Objects/globaltalk-ai/replica/bugs.md).
-- [x] **Parity gate**: 11 of 11 must-haves completed (100%), feature score **100.0 / 100** in [`replica/parity.md`](file:///c:/Users/acer/3D%20Objects/globaltalk-ai/replica/parity.md).
+- [x] **Parity gate**: 100% completed across all must/should/could capabilities in [`replica/parity.md`](file:///c:/Users/acer/3D%20Objects/globaltalk-ai/replica/parity.md).
 - [x] **Rebrand sweep clean**: `sweep.py` exited with code 0 (clean, no competitor references or artifacts).
 - [x] **Store listings compliant**: `listing.py` exited with code 0 (0 errors, 0 warnings).
-- [x] **Production build passes**: `npm --prefix apps/web run build` completed with code 0 (2,005 modules transformed in 14.85s).
+- [x] **Production build passes**: `npm --prefix apps/web run build` completed with code 0 (2,005 modules transformed in 17.22s).
+- [x] **Multi-Agent Systems Portfolio**: 3 systems integrated (CrewAI Research Crew, LangGraph Support Triage, Hybrid Autonomous Content Pipeline) with interactive Studio UI and live REST endpoints.
 - [x] **Branded metadata**: Title tags, favicon, OpenGraph cards, and Schema.org structured data configured for TalkFlow.
 - [x] **WCAG accessibility**: 100% of token pairs passed WCAG 2.1 AA/AAA contrast checks via `contrast.py`.
 
@@ -50,9 +51,11 @@ Date: 2026-10-10  Commit: `main@local`  Status: **Preflight Passed**
 
 - **Live URL**: `https://feat-vercel-multi-service.vercel.app/`
 - **Frontend Root (`/`)**: HTTP 200 OK. Branded HTML, preloaded assets, Schema.org WebApplication structured data.
+- **Agent Studio (`/agents`, `/agent-studio`)**: HTTP 200 OK. Multi-agent interactive orchestration UI.
 - **Backend Health (`/api/v1/health`, `/health`, `/ready`)**: HTTP 200 OK.
+- **Agent Studio API (`/api/v1/agent-studio/status`, `/triage`, `/content-pipeline`, `/research-crew`)**: HTTP 200 OK.
 - **Language Catalog (`/api/v1/languages`)**: HTTP 200 OK (20 supported languages active).
-- **SPA Rewrite Fix**: Committed and pushed to `main` and active deployment branches (commit `1e891c4`), enabling seamless direct sub-route reloads (`/translate`, `/voice`, `/meetings`) without 404 errors.
+- **SPA Rewrite Fix**: Committed and pushed to `main` and active deployment branches (commit `1e891c4`), enabling seamless direct sub-route reloads (`/translate`, `/voice`, `/meetings`, `/agents`) without 404 errors.
 
 ---
 

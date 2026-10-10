@@ -14,3 +14,7 @@ Glossary and translation-memory management,glossaries,should,yes,yes,Implemented
 API key management and usage dashboard,developer,should,yes,yes,Implemented in apps/web/src/pages/ApiKeys.tsx and Usage.tsx
 Team / RBAC / billing controls,admin,should,yes,yes,Implemented in apps/web/src/pages/Team.tsx and Billing.tsx
 Admin analytics and settings,admin,could,yes,yes,Implemented in apps/web/src/pages/Admin.tsx and Settings.tsx
+Multi-Agent Studio with LangGraph and CrewAI workflows,agents,must,yes,yes,Implemented in apps/web/src/pages/AgentStudio.tsx and services/api/app/routers/agent_studio.py
+Support triage state machine with human escalation,agents,must,yes,yes,Implemented in multi-agent-portfolio/system-02-support-triage
+Autonomous self-correcting content generation pipeline,agents,must,yes,yes,Implemented in multi-agent-portfolio/system-03-content-pipeline
+Research assistant crew with 4 specialized roles,agents,must,yes,yes,Implemented in multi-agent-portfolio/system-01-research-crew
