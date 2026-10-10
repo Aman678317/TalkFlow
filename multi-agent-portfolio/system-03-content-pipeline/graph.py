@@ -161,12 +161,9 @@ def publish_content(state: ContentState) -> Dict[str, Any]:
 
     print(f"\n[Publish Node] Formatting and publishing final post (Final Score: {score:.2f}, Loops: {loops})...")
 
-    # Save to output folder
-    output_dir = Path(__file__).resolve().parent / "output"
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # Save to output folder (safely handle read-only environments like AWS Lambda / Vercel Serverless)
+    import tempfile
     slug = "".join(c if c.isalnum() else "_" for c in topic.lower())[:30]
-    out_file = output_dir / f"{slug}.md"
-
     header_meta = (
         f"---\n"
         f"title: \"{topic}\"\n"
@@ -176,14 +173,26 @@ def publish_content(state: ContentState) -> Dict[str, Any]:
         f"pipeline: \"LangGraph + CrewAI Hybrid\"\n"
         f"---\n\n"
     )
-
     final_content = header_meta + draft
-    out_file.write_text(final_content, encoding="utf-8")
-    print(f"[Publish Node] Successfully wrote published post to: {out_file}")
+
+    out_file = None
+    for target_dir in [
+        Path(__file__).resolve().parent / "output",
+        Path(tempfile.gettempdir()) / "content_pipeline" / "output",
+    ]:
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+            cand_file = target_dir / f"{slug}.md"
+            cand_file.write_text(final_content, encoding="utf-8")
+            out_file = cand_file
+            print(f"[Publish Node] Successfully wrote published post to: {out_file}")
+            break
+        except OSError:
+            continue
 
     return {
         "final_content": final_content,
-        "published_path": str(out_file),
+        "published_path": str(out_file) if out_file else f"/tmp/{slug}.md",
         "status": "published",
     }
 
