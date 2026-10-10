@@ -1,6 +1,6 @@
 search_path = ["services/api", "apps/api", "ai", "."]
-project_excludes = ["gt_ai/**"]
+project_excludes = ["gt_ai/**", "multi-agent-portfolio/**"]
 
 [tool.pyrefly]
 search_path = ["services/api", "apps/api", "ai", "."]
-project_excludes = ["gt_ai/**"]
+project_excludes = ["gt_ai/**", "multi-agent-portfolio/**"]
