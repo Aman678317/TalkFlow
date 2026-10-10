@@ -2,15 +2,19 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import {
   ArrowRight,
+  Bot,
   CheckCircle2,
   ChevronDown,
   FileText,
+  GitBranch,
   Languages,
   Mic,
+  RefreshCw,
   Shield,
   Sparkles,
   Video,
   Volume2,
+  Workflow,
   Zap,
   Menu,
   X,
@@ -96,6 +100,13 @@ export default function Landing() {
               className="inline-flex items-center min-h-[40px] px-3.5 rounded-lg text-slate-700 hover:text-dl-navy hover:bg-dl-bg-alt transition-colors"
             >
               Meetings
+            </Link>
+            <Link
+              to="/agents"
+              className="inline-flex items-center min-h-[40px] px-3.5 rounded-lg text-indigo-700 hover:text-indigo-900 hover:bg-indigo-50/70 font-semibold transition-colors"
+            >
+              <Bot className="h-4 w-4 mr-1.5 text-indigo-600" />
+              Agent Studio
             </Link>
 
             <div className="ml-4 flex items-center gap-2 border-l border-dl-border pl-4">
@@ -185,6 +196,14 @@ export default function Landing() {
             >
               Meetings
             </Link>
+            <Link
+              to="/agents"
+              onClick={() => setMobileMenuOpen(false)}
+              className="flex items-center gap-2 rounded-lg px-3 py-2 text-base font-semibold text-indigo-700 hover:bg-indigo-50/70"
+            >
+              <Bot className="h-4 w-4 text-indigo-600" />
+              Agent Studio
+            </Link>
             <div className="border-t border-dl-border pt-3 flex flex-col gap-2">
               {!user && (
                 <Link
@@ -211,10 +230,20 @@ export default function Landing() {
       <main className="mx-auto max-w-7xl px-6">
         <section className="py-12 lg:py-16 grid gap-12 lg:grid-cols-2 lg:items-center">
           <div>
-            {/* Eyebrow Restraint: Only 1 eyebrow on the entire page */}
-            <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-dl-border bg-dl-bg-alt px-3.5 py-1 text-xs font-semibold text-slate-700">
-              <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-              Sub-second voice and text translation pipeline
+            {/* Hero Eyebrows */}
+            <div className="mb-4 flex flex-wrap items-center gap-2.5">
+              <div className="inline-flex items-center gap-2 rounded-full border border-dl-border bg-dl-bg-alt px-3.5 py-1 text-xs font-semibold text-slate-700">
+                <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+                Sub-second voice and text translation pipeline
+              </div>
+              <Link
+                to="/agents"
+                className="inline-flex items-center gap-1.5 rounded-full border border-indigo-200 bg-indigo-50/90 px-3 py-1 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 transition-colors shadow-xs"
+              >
+                <Bot className="h-3.5 w-3.5 text-indigo-600" />
+                <span>New: Multi-Agent Studio (LangGraph + CrewAI)</span>
+                <ArrowRight className="h-3 w-3 ml-0.5" />
+              </Link>
             </div>
 
             <h1 className="text-4xl font-extrabold tracking-tight sm:text-6xl text-dl-navy leading-[1.1]">
@@ -229,7 +258,7 @@ export default function Landing() {
               Translate speech, text, documents, and video meetings in real time with sub-second latency and zero data retention.
             </p>
 
-            <div className="mt-7 flex flex-wrap items-center gap-3.5">
+            <div className="mt-7 flex flex-wrap items-center gap-3">
               <Link
                 to="/dashboard"
                 className="btn-tactile flex items-center gap-2 rounded-xl bg-dl-blue px-6 py-3.5 text-base font-semibold text-white shadow-sm hover:bg-dl-blue-hover"
@@ -237,8 +266,15 @@ export default function Landing() {
                 Launch Workspace <ArrowRight className="h-5 w-5" />
               </Link>
               <Link
+                to="/agents"
+                className="btn-tactile flex items-center gap-2 rounded-xl border border-indigo-200 bg-indigo-50/70 px-5 py-3.5 text-base font-semibold text-indigo-700 hover:bg-indigo-100/90 shadow-xs"
+              >
+                <Bot className="h-5 w-5 text-indigo-600" />
+                Multi-Agent Studio
+              </Link>
+              <Link
                 to="/translate"
-                className="btn-tactile rounded-xl border border-dl-border bg-white px-6 py-3.5 text-base font-semibold text-dl-navy hover:bg-dl-bg-alt shadow-xs"
+                className="btn-tactile rounded-xl border border-dl-border bg-white px-5 py-3.5 text-base font-semibold text-dl-navy hover:bg-dl-bg-alt shadow-xs"
               >
                 Try Translator
               </Link>
@@ -579,6 +615,134 @@ export default function Landing() {
           </div>
         </section>
 
+        {/* MULTI-AGENT SYSTEMS STUDIO SHOWCASE */}
+        <section className="border-t border-dl-border/80 py-16 lg:py-20" aria-labelledby="multi-agent-heading">
+          <div className="text-center max-w-3xl mx-auto mb-12">
+            <div className="inline-flex items-center gap-2 rounded-full border border-indigo-200 bg-indigo-50 px-3.5 py-1 text-xs font-semibold text-indigo-800 mb-3">
+              <Bot className="h-3.5 w-3.5 text-indigo-600" />
+              Autonomous Agent Orchestration
+            </div>
+            <h2 id="multi-agent-heading" className="text-3xl font-extrabold sm:text-4xl text-dl-navy tracking-tight">
+              Production Multi-Agent Systems in Action
+            </h2>
+            <p className="mt-3 text-slate-600 text-sm max-w-2xl mx-auto">
+              Explore 3 production agent architectures powered by LangGraph state machines and CrewAI role-playing personas. Interactive, live, and inspectable in real time.
+            </p>
+          </div>
+
+          <div className="grid gap-6 md:grid-cols-3 mb-10">
+            {/* Card 1: Customer Support Triage Graph */}
+            <div className="group rounded-2xl border border-dl-border bg-white p-6 shadow-xs hover:border-indigo-300 hover:shadow-card transition-all flex flex-col justify-between">
+              <div>
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-indigo-50 text-indigo-600 group-hover:bg-indigo-600 group-hover:text-white transition-colors">
+                    <GitBranch className="h-5 w-5" />
+                  </div>
+                  <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-700">
+                    LangGraph State Machine
+                  </span>
+                </div>
+                <h3 className="text-lg font-bold text-dl-navy group-hover:text-indigo-600 transition-colors">
+                  Customer Support Triage Graph
+                </h3>
+                <p className="mt-2 text-xs leading-relaxed text-slate-600">
+                  Classifies customer tickets, extracts priority, routes to specialist subgraphs (Billing, Technical, General), and detects escalation triggers.
+                </p>
+                <div className="mt-4 flex flex-wrap gap-1.5 pt-3 border-t border-dl-border/60">
+                  <span className="rounded bg-dl-bg-alt px-2 py-0.5 text-[10px] font-medium text-slate-600">Conditional Edges</span>
+                  <span className="rounded bg-dl-bg-alt px-2 py-0.5 text-[10px] font-medium text-slate-600">Human Escalation</span>
+                  <span className="rounded bg-dl-bg-alt px-2 py-0.5 text-[10px] font-medium text-slate-600">Typed Dict State</span>
+                </div>
+              </div>
+              <Link
+                to="/agents"
+                className="mt-6 inline-flex items-center text-xs font-semibold text-indigo-600 hover:text-indigo-700"
+              >
+                Try Triage Graph <ArrowRight className="h-3.5 w-3.5 ml-1 transition-transform group-hover:translate-x-1" />
+              </Link>
+            </div>
+
+            {/* Card 2: Autonomous Content Pipeline */}
+            <div className="group rounded-2xl border border-dl-border bg-white p-6 shadow-xs hover:border-indigo-300 hover:shadow-card transition-all flex flex-col justify-between">
+              <div>
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-purple-50 text-purple-600 group-hover:bg-purple-600 group-hover:text-white transition-colors">
+                    <RefreshCw className="h-5 w-5" />
+                  </div>
+                  <span className="rounded-full border border-purple-200 bg-purple-50 px-2.5 py-0.5 text-[11px] font-semibold text-purple-700">
+                    Self-Correcting Loop
+                  </span>
+                </div>
+                <h3 className="text-lg font-bold text-dl-navy group-hover:text-indigo-600 transition-colors">
+                  Autonomous Content Pipeline
+                </h3>
+                <p className="mt-2 text-xs leading-relaxed text-slate-600">
+                  Researches, drafts, and audits content in an automated feedback loop. Iterates up to 3 cycles until quality score reaches 0.80+.
+                </p>
+                <div className="mt-4 flex flex-wrap gap-1.5 pt-3 border-t border-dl-border/60">
+                  <span className="rounded bg-dl-bg-alt px-2 py-0.5 text-[10px] font-medium text-slate-600">LangGraph + CrewAI</span>
+                  <span className="rounded bg-dl-bg-alt px-2 py-0.5 text-[10px] font-medium text-slate-600">Quality Rubric</span>
+                  <span className="rounded bg-dl-bg-alt px-2 py-0.5 text-[10px] font-medium text-slate-600">Infinite-Loop Guards</span>
+                </div>
+              </div>
+              <Link
+                to="/agents"
+                className="mt-6 inline-flex items-center text-xs font-semibold text-purple-600 hover:text-purple-700"
+              >
+                Launch Pipeline <ArrowRight className="h-3.5 w-3.5 ml-1 transition-transform group-hover:translate-x-1" />
+              </Link>
+            </div>
+
+            {/* Card 3: Research Assistant Crew */}
+            <div className="group rounded-2xl border border-dl-border bg-white p-6 shadow-xs hover:border-indigo-300 hover:shadow-card transition-all flex flex-col justify-between">
+              <div>
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-sky-50 text-sky-600 group-hover:bg-sky-600 group-hover:text-white transition-colors">
+                    <Workflow className="h-5 w-5" />
+                  </div>
+                  <span className="rounded-full border border-sky-200 bg-sky-50 px-2.5 py-0.5 text-[11px] font-semibold text-sky-700">
+                    CrewAI 4-Agent Crew
+                  </span>
+                </div>
+                <h3 className="text-lg font-bold text-dl-navy group-hover:text-indigo-600 transition-colors">
+                  Research Assistant Crew
+                </h3>
+                <p className="mt-2 text-xs leading-relaxed text-slate-600">
+                  Hub & Spoke architecture with 4 specialized roles: Information Gatherer, Synthesizer, Report Writer, and Fact-Checker.
+                </p>
+                <div className="mt-4 flex flex-wrap gap-1.5 pt-3 border-t border-dl-border/60">
+                  <span className="rounded bg-dl-bg-alt px-2 py-0.5 text-[10px] font-medium text-slate-600">Role & Goal Prompts</span>
+                  <span className="rounded bg-dl-bg-alt px-2 py-0.5 text-[10px] font-medium text-slate-600">Executive Briefings</span>
+                  <span className="rounded bg-dl-bg-alt px-2 py-0.5 text-[10px] font-medium text-slate-600">Fact Verification</span>
+                </div>
+              </div>
+              <Link
+                to="/agents"
+                className="mt-6 inline-flex items-center text-xs font-semibold text-sky-600 hover:text-sky-700"
+              >
+                Deploy Crew <ArrowRight className="h-3.5 w-3.5 ml-1 transition-transform group-hover:translate-x-1" />
+              </Link>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-indigo-200/80 bg-gradient-to-r from-indigo-50/60 via-white to-purple-50/60 p-6 flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div>
+              <h4 className="text-base font-bold text-dl-navy">
+                Interactive Multi-Agent Studio with Real-time Visualizer
+              </h4>
+              <p className="text-xs text-slate-600 mt-1">
+                Test prompts, trace state transitions, examine agent personas, and run live multi-agent pipelines with zero setup.
+              </p>
+            </div>
+            <Link
+              to="/agents"
+              className="btn-tactile shrink-0 flex items-center gap-2 rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-indigo-700"
+            >
+              Open Agent Studio <ArrowRight className="h-4 w-4" />
+            </Link>
+          </div>
+        </section>
+
         {/* FREQUENTLY ASKED QUESTIONS */}
         <section className="border-t border-dl-border/80 py-16 lg:py-20" aria-labelledby="faq-heading">
           <div className="text-center max-w-2xl mx-auto mb-12">
@@ -631,6 +795,7 @@ export default function Landing() {
                 <li><Link to="/voice" className="text-slate-600 hover:text-dl-navy">Live Voice Translation</Link></li>
                 <li><Link to="/meetings" className="text-slate-600 hover:text-dl-navy">Multilingual Meetings</Link></li>
                 <li><Link to="/documents" className="text-slate-600 hover:text-dl-navy">Document Translation</Link></li>
+                <li><Link to="/agents" className="text-indigo-600 font-semibold hover:text-indigo-800">Multi-Agent Studio</Link></li>
               </ul>
             </div>
 
@@ -641,7 +806,7 @@ export default function Landing() {
                 <li><Link to="/api/docs" className="text-slate-600 hover:text-dl-navy">REST & WebSocket API</Link></li>
                 <li>
                   <a
-                    href="https://github.com/Aman678317/Anv-AI"
+                    href="https://github.com/Aman678317/TalkFlow"
                     target="_blank"
                     rel="noopener noreferrer"
                     className="inline-flex items-center gap-1 text-slate-600 hover:text-dl-navy"
