@@ -13,7 +13,14 @@ CURRENT_DIR = Path(__file__).resolve().parent
 if str(CURRENT_DIR) not in sys.path:
     sys.path.insert(0, str(CURRENT_DIR))
 
-from langgraph.graph import StateGraph, END
+try:
+    from langgraph.graph import StateGraph, END
+    HAS_LANGGRAPH = True
+except ImportError:
+    HAS_LANGGRAPH = False
+    StateGraph = None  # type: ignore[assignment]
+    END = None  # type: ignore[assignment]
+
 from crew_node import run_research_crew
 
 
@@ -183,8 +190,32 @@ def publish_content(state: ContentState) -> Dict[str, Any]:
 
 # --- StateGraph Assembly ---
 
+class FallbackContentPipeline:
+    """Lightweight content pipeline fallback when langgraph is not installed (e.g. CI environments)."""
+
+    def invoke(self, state: dict) -> dict:
+        current_state = dict(state)
+        r_res = run_research_crew(current_state)
+        current_state.update(r_res)
+
+        while True:
+            d_res = draft_content(current_state)  # type: ignore[arg-type]
+            current_state.update(d_res)
+            c_res = critique_draft(current_state)  # type: ignore[arg-type]
+            current_state.update(c_res)
+            if should_revise(current_state) != "draft":  # type: ignore[arg-type]
+                break
+
+        p_res = publish_content(current_state)  # type: ignore[arg-type]
+        current_state.update(p_res)
+        return current_state
+
+
 def build_content_pipeline():
     """Build and compile the autonomous content generation and critique graph."""
+    if not HAS_LANGGRAPH:
+        return FallbackContentPipeline()
+
     workflow = StateGraph(ContentState)  # type: ignore[arg-type]
 
     # 1. Register nodes
