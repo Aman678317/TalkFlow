@@ -28,6 +28,7 @@ import Team from './pages/Team';
 import Admin from './pages/Admin';
 import JoinCall from './pages/JoinCall';
 import DocsPage from './pages/DocsPage';
+import AgentStudio from './pages/AgentStudio';
 
 function RequireAuth({ children }: { children: JSX.Element }) {
   const status = useAuth((s) => s.status);
@@ -64,6 +65,8 @@ export default function App() {
           <Route element={<AppShell />}>
             <Route path="/translate" element={<Translate />} />
             <Route path="/write" element={<WritePage />} />
+            <Route path="/agents" element={<AgentStudio />} />
+            <Route path="/agent-studio" element={<AgentStudio />} />
             <Route path="/docs" element={<DocsPage />} />
             <Route path="/api/docs" element={<DocsPage />} />
           </Route>

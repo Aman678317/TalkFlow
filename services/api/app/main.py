@@ -77,7 +77,7 @@ def create_app() -> FastAPI:
     from app.routers import (
         assistant as assistant_routers,
         auth, documents, health, meetings, orgs, platform, translate,
-        customization, write, v2_v3, telephony,
+        customization, write, v2_v3, telephony, agent_studio,
     )
     app.include_router(v2_v3.router)
     app.include_router(health.router)
@@ -92,6 +92,7 @@ def create_app() -> FastAPI:
     app.include_router(assistant_routers.chat_router)
     app.include_router(assistant_routers.assistant_router)
     app.include_router(assistant_routers.agent_router)
+    app.include_router(agent_studio.router)
     app.include_router(telephony.router)
     # Technical specification alias: /api/voice/* endpoints
     voice_alias_router = APIRouter(prefix="/api/voice", tags=["voice-aliases"])

@@ -1,6 +1,6 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import {
-  BookOpen, CreditCard, FileText, Files, Gauge, History, KeyRound, Languages,
+  BookOpen, Bot, CreditCard, FileText, Files, Gauge, History, KeyRound, Languages,
   LayoutDashboard, Mic, MessageSquare, Phone, Settings as SettingsIcon,
   ShieldCheck, Sparkles, Users, Video,
 } from 'lucide-react';
@@ -12,6 +12,7 @@ const NAV = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/translate', label: 'Translate', icon: Languages },
   { to: '/write', label: 'Write', icon: Sparkles },
+  { to: '/agents', label: 'Agent Studio', icon: Bot },
   { to: '/voice', label: 'Live Voice', icon: Mic },
   { to: '/voice?tab=phone', label: 'Global Call', icon: Phone },
   { to: '/meetings', label: 'Meetings', icon: Video },
