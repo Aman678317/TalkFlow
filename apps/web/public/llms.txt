@@ -21,4 +21,4 @@ It eliminates language barriers across speech, text, documents, and video meetin
 - Frontend: React 18, TypeScript (strict), Vite, Tailwind CSS, Zustand, TanStack Query.
 - Backend: Python 3.11, FastAPI, Pydantic v2, SQLAlchemy 2, Alembic.
 - License: MIT Open Source.
-- Repository: https://github.com/Aman678317/Anv-AI
+- Repository: https://github.com/Aman678317/TalkFlow
