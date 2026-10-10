@@ -101,14 +101,21 @@
       "source": "/:page(voice|meetings|documents|dashboard|translate|write|agents|agent-studio|chat|history|glossaries|translation-memory|style-profiles|usage|billing|settings|team|admin|login|signup|docs)",
       "destination": {
         "service": "web",
-        "path": "/index.html"
+        "path": "/"
+      }
+    },
+    {
+      "source": "/:page(voice|meetings|documents|dashboard|translate|write|agents|agent-studio|chat|history|glossaries|translation-memory|style-profiles|usage|billing|settings|team|admin|login|signup|docs)/:sub*",
+      "destination": {
+        "service": "web",
+        "path": "/"
       }
     },
     {
       "source": "/:page(meeting|join)/:id*",
       "destination": {
         "service": "web",
-        "path": "/index.html"
+        "path": "/"
       }
     },
     {
