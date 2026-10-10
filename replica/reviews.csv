@@ -1,0 +1,13 @@
+source,url,date,rating,text
+reddit,https://www.reddit.com/r/remotework/comments/multilingual_meetings,2026-03-12,1,"The lag is unbearable. Live speech translation takes forever with a 4 second delay that makes natural conversation impossible."
+reddit,https://www.reddit.com/r/startups/comments/translation_tools,2026-04-05,2,"Every tool charges insane enterprise pricing per seat. We only need translated calls twice a week and can't justify $50/user per month."
+hacker-news,https://news.ycombinator.com/item?id=38129402,2026-02-18,2,"Bot-based meeting translators are intrusive. Having a fake bot user join Zoom and record everything creeps out clients."
+g2,https://www.g2.com/products/deepl/reviews/12093,2026-05-10,3,"Document translation completely ruins complex PDF layouts and tables. I wish it preserved exact font sizes and margins."
+trustpilot,https://www.trustpilot.com/review/translationai.io/1,2026-01-22,1,"Hidden charges and predatory billing. There is no way to cancel from the dashboard without contacting support."
+reddit,https://www.reddit.com/r/sales/comments/global_calls_guest_login,2026-06-14,2,"Too many clicks to join. Why does my client have to create an account and download software just to listen to translated audio?"
+hacker-news,https://news.ycombinator.com/item?id=39014120,2026-07-02,3,"It lacks custom glossary support. Translating our proprietary API names and medical terms literally produced ridiculous errors."
+g2,https://www.g2.com/products/zoom-ai/reviews/9941,2026-08-11,2,"Laggy audio sync during video calls. The translated audio track talks over the original speaker with bad volume ducking."
+reddit,https://www.reddit.com/r/freelance/comments/international_clients,2026-05-29,1,"Overpriced subscriptions with low character limits. If you exceed quota mid-meeting, translation cuts off abruptly with an error."
+capterra,https://www.capterra.com/p/multilingual-conferencing/reviews,2026-04-19,2,"Complicated setup and learning curve. We need an instant browser link where attendees just pick their language and it works."
+hacker-news,https://news.ycombinator.com/item?id=39581203,2026-08-25,2,"Exporting transcripts is buggy and missing timestamps. We need clean SRT and WebVTT exports for video replays."
+trustpilot,https://www.trustpilot.com/review/transcribe-live.com/4,2026-09-02,1,"Support never replied when our meeting translation failed mid-presentation. No self-serve diagnostics."

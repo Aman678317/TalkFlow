@@ -1,0 +1,17 @@
+{
+  "name": "TalkFlow",
+  "avoid": [
+    "Interprefy",
+    "KudoWay",
+    "Wordly"
+  ],
+  "domains": [
+    "interprefy.com",
+    "kudoway.com",
+    "wordly.ai"
+  ],
+  "colors": [
+    "#ff4f00",
+    "#0052cc"
+  ]
+}

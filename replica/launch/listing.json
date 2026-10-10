@@ -1,0 +1,20 @@
+{
+  "avoid": [
+    "Interprefy",
+    "KudoWay",
+    "Wordly"
+  ],
+  "app_store": {
+    "name": "TalkFlow: Live Translator",
+    "subtitle": "Bilingual Calls & Meetings",
+    "promotional_text": "Break language barriers instantly. Speak in your language, be heard in theirs with sub-second real-time speech translation and video meetings.",
+    "description": "TalkFlow enables natural real-time speech translation and multilingual video meetings across 50+ languages.\n\nKey Capabilities:\n- Real-Time Voice: Speak naturally and hear instant translated speech with sub-second latency.\n- In-Browser Meetings: Create video conference links where guests pick their language and join without downloading extra apps.\n- Layout-Preserving Documents: Translate PDFs and office files while keeping tables and formatting intact.\n- Professional Writing: Polish grammar, adjust tone, and translate documents with custom brand glossaries.\n- Transcript Export: Download timestamped subtitles in SRT and WebVTT formats for call recordings.",
+    "keywords": "voice,speech,captions,languages,video,transcribe,interpreter,subtitles,audio,multilingual",
+    "whats_new": "Zero-login guest join links and enhanced audio streaming performance."
+  },
+  "google_play": {
+    "title": "TalkFlow: Live Translator",
+    "short_description": "Instant real-time speech translation and multilingual video meetings.",
+    "full_description": "TalkFlow enables natural real-time speech translation and multilingual video meetings across 50+ languages.\n\nKey Capabilities:\n- Real-Time Voice: Speak naturally and hear instant translated speech with sub-second latency.\n- In-Browser Meetings: Create video conference links where guests pick their language and join without downloading extra apps.\n- Layout-Preserving Documents: Translate PDFs and office files while keeping tables and formatting intact.\n- Professional Writing: Polish grammar, adjust tone, and translate documents with custom brand glossaries.\n- Transcript Export: Download timestamped subtitles in SRT and WebVTT formats for call recordings."
+  }
+}

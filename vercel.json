@@ -98,10 +98,17 @@
       }
     },
     {
-      "source": "/(voice|meetings|meeting/.*|documents|dashboard|translate|write|chat|history|glossaries|translation-memory|style-profiles|usage|billing|settings|team|admin|login|signup|join/.*|docs)",
+      "source": "/:page(voice|meetings|documents|dashboard|translate|write|chat|history|glossaries|translation-memory|style-profiles|usage|billing|settings|team|admin|login|signup|docs)",
       "destination": {
         "service": "web",
-        "path": "/"
+        "path": "/index.html"
+      }
+    },
+    {
+      "source": "/:page(meeting|join)/:id*",
+      "destination": {
+        "service": "web",
+        "path": "/index.html"
       }
     },
     {

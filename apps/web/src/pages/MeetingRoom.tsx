@@ -29,8 +29,7 @@ import { useLanguages, languageLabel } from "../hooks/useLanguages";
 import { useLiveKitRoom } from "../hooks/useLiveKitRoom";
 import { AudioPlayer, MicCapture, b64ToBytes } from "../lib/audio";
 import { MeetingSocket, type SocketState } from "../lib/ws";
-import { WebRTCManager } from "../lib/webrtc";
-import type { JoinMeetingResponse, Meeting, ParticipantInfo, Preferences, RealtimeEvent, TranscriptItem } from "../lib/types";
+import type { Meeting, ParticipantInfo, Preferences, RealtimeEvent, TranscriptItem } from "../lib/types";
 import { Button, ErrorState, SegmentedControl, Select, Spinner } from "../components/ui";
 import { VideoTile } from "../components/meeting/VideoTile";
 import { toast } from "../stores/toasts";
@@ -141,20 +140,10 @@ export default function MeetingRoom() {
   const [notice, setNotice] = React.useState<string | null>(null);
   const [summary, setSummary] = React.useState<any>(null);
   const [myParticipantId, setMyParticipantId] = React.useState<string | undefined>();
-  const myParticipantIdRef = React.useRef<string | undefined>(myParticipantId);
-  myParticipantIdRef.current = myParticipantId;
-  const [displayName, setDisplayName] = React.useState(user?.full_name || (user?.email ? user.email.split("@")[0] : "Guest"));
+  const [displayName, setDisplayName] = React.useState(user?.full_name || "Guest");
   const [inviteCopied, setInviteCopied] = React.useState(false);
   const [callTime, setCallTime] = React.useState("00:00");
   const [currentLatencyMs, setCurrentLatencyMs] = React.useState<number | null>(null);
-
-  // Pre-Join Lobby & WebRTC mesh state
-  const [hasJoined, setHasJoined] = React.useState<boolean>(false);
-  const [isJoining, setIsJoining] = React.useState<boolean>(false);
-  const [joinTicket, setJoinTicket] = React.useState<string | undefined>(undefined);
-  const [remoteStreams, setRemoteStreams] = React.useState<Map<string, MediaStream>>(new Map());
-  const [leftParticipantIds, setLeftParticipantIds] = React.useState<Set<string>>(new Set());
-  const webrtcRef = React.useRef<WebRTCManager | null>(null);
 
   const handleExportTranscript = React.useCallback(
     (format: "txt" | "srt" | "vtt" | "json") => {
@@ -193,86 +182,6 @@ export default function MeetingRoom() {
     },
     [captions, id, prefs.listening_language, callTime]
   );
-
-  const handleLeaveMeeting = React.useCallback(async () => {
-    if (localVideoStream) {
-      localVideoStream.getTracks().forEach((t) => t.stop());
-    }
-    micRef.current?.stop();
-    const pid = myParticipantIdRef.current || myParticipantId;
-    if (pid) {
-      try {
-        await api(`/api/v1/meetings/${id}/leave`, {
-          method: "POST",
-          body: JSON.stringify({ participant_id: pid }),
-        });
-      } catch { }
-    }
-    nav(`/meetings?end=${id}`);
-  }, [id, localVideoStream, myParticipantId, nav]);
-
-  React.useEffect(() => {
-    const onUnload = () => {
-      const pid = myParticipantIdRef.current || myParticipantId;
-      if (pid) {
-        const payload = JSON.stringify({ participant_id: pid });
-        const blob = new Blob([payload], { type: "application/json" });
-        navigator.sendBeacon(`/api/v1/meetings/${id}/leave`, blob);
-      }
-    };
-    window.addEventListener("pagehide", onUnload);
-    return () => window.removeEventListener("pagehide", onUnload);
-  }, [id, myParticipantId]);
-
-  const handleJoinMeeting = React.useCallback(async () => {
-    if (isJoining) return;
-    setIsJoining(true);
-    try {
-      const guestKeyStorageKey = `gt_guest_key_${id}`;
-      let guestKey = sessionStorage.getItem(guestKeyStorageKey);
-      if (!guestKey) {
-        guestKey = `guest_${Math.random().toString(36).slice(2, 10)}_${Date.now()}`;
-        sessionStorage.setItem(guestKeyStorageKey, guestKey);
-      }
-
-      const res = await api<JoinMeetingResponse>(`/api/v1/meetings/${id}/join`, {
-        method: "POST",
-        body: JSON.stringify({
-          display_name: displayName.trim() || user?.full_name || (user?.email ? user.email.split("@")[0] : "Guest"),
-          speak_lang: prefs.speaking_language === "AUTO" ? "en" : prefs.speaking_language,
-          hear_lang: prefs.listening_language,
-          audio_mode: prefs.audio_mode,
-          guest_key: guestKey,
-        }),
-      });
-
-      let ticket: string | undefined;
-      if (res.rt_url) {
-        try {
-          const u = new URL(res.rt_url, window.location.origin);
-          ticket = u.searchParams.get("ticket") || undefined;
-        } catch {
-          const match = res.rt_url.match(/ticket=([^&]+)/);
-          if (match) ticket = match[1];
-        }
-      }
-
-      setMyParticipantId(res.participant_id);
-      myParticipantIdRef.current = res.participant_id;
-      if (ticket) {
-        setJoinTicket(ticket);
-      }
-      setHasJoined(true);
-      void meetingQ.refetch();
-      void participantsQ.refetch();
-      toast.success("Joined meeting", `Connected as ${displayName}`);
-    } catch (err: any) {
-      const msg = err?.message || "Failed to join meeting. Please verify meeting ID or network.";
-      toast.error("Join Failed", msg);
-    } finally {
-      setIsJoining(false);
-    }
-  }, [id, isJoining, displayName, user, prefs, meetingQ, participantsQ]);
 
   // Call timer effect
   React.useEffect(() => {
@@ -353,8 +262,6 @@ export default function MeetingRoom() {
   /** utterance short-id → language (to decide original-relay playback) */
   const utterLangRef = React.useRef<Map<string, string>>(new Map());
   const namesRef = React.useRef<Map<string, string>>(new Map());
-  /** Phase 5: highest sequence number seen per speaker to prevent stale overwrites on reconnect */
-  const highestSeqPerSpeaker = React.useRef<Map<string, number>>(new Map());
 
   React.useEffect(() => {
     const self = mediaRoom.peers.find((peer) => peer.self);
@@ -370,58 +277,14 @@ export default function MeetingRoom() {
     refetchInterval: drawerOpen && drawerTab === "captions" ? 8000 : false,
   });
 
-  // ---------------- WebRTC & WebSocket lifecycle ----------------
+  // ---------------- websocket lifecycle ----------------
   React.useEffect(() => {
-    if (!hasJoined) return;
-
-    // 1. Initialize WebRTC mesh manager
-    const webrtc = new WebRTCManager({
-      localParticipantId: myParticipantId || "guest",
-      onRemoteStream: (peerId, stream) => {
-        const normId = peerId.toLowerCase().trim();
-        setRemoteStreams((prev) => {
-          const next = new Map(prev);
-          next.set(peerId, stream);
-          next.set(normId, stream);
-          return next;
-        });
-      },
-      onRemoteStreamRemoved: (peerId) => {
-        const normId = peerId.toLowerCase().trim();
-        setRemoteStreams((prev) => {
-          const next = new Map(prev);
-          next.delete(peerId);
-          next.delete(normId);
-          return next;
-        });
-      },
-      sendSignal: (targetId, signal) => {
-        socketRef.current?.sendJson({
-          type: "signal",
-          data: {
-            target_id: targetId,
-            signal,
-          },
-        });
-      },
-    });
-
-    if (localVideoStreamRef.current) {
-      const vTrack = localVideoStreamRef.current.getVideoTracks()[0];
-      if (vTrack) webrtc.setVideoTrack(vTrack);
-    }
-    if (micRef.current?.mediaStream) {
-      const aTrack = micRef.current.mediaStream.getAudioTracks()[0];
-      if (aTrack) webrtc.setAudioTrack(aTrack);
-    }
-    webrtcRef.current = webrtc;
-
-    // 2. Initialize Audio Player and Meeting Socket
+    if (!meetingQ.data) return;
+    const meeting = meetingQ.data;
     playerRef.current = new AudioPlayer();
     const socket = new MeetingSocket({
       meetingId: id,
-      joinToken: meetingQ.data?.join_token,
-      ticket: joinTicket,
+      joinToken: meeting.join_token,
       displayName,
       preferences: { ...prefsRef.current },
       participantId: myParticipantId,
@@ -456,9 +319,6 @@ export default function MeetingRoom() {
     socket.connect();
     return () => {
       socket.close();
-      socketRef.current = null;
-      webrtc.dispose();
-      webrtcRef.current = null;
       micRef.current?.stop();
       playerRef.current?.dispose();
       if (virtualCameraCleanupRef.current) {
@@ -470,94 +330,30 @@ export default function MeetingRoom() {
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasJoined, id, joinTicket]);
-
-  // Synchronize local video track with WebRTC mesh
-  React.useEffect(() => {
-    if (webrtcRef.current) {
-      const vTrack = localVideoStream?.getVideoTracks()[0] || null;
-      webrtcRef.current.setVideoTrack(vTrack);
-    }
-  }, [localVideoStream]);
-
-  // Synchronize participants with WebRTC mesh
-  React.useEffect(() => {
-    if (!hasJoined || !webrtcRef.current) return;
-    const parts = participantsQ.data ?? [];
-    for (const p of parts) {
-      if (p.id !== myParticipantIdRef.current && p.status === "joined") {
-        void webrtcRef.current.initiateCallTo(p.id);
-      }
-    }
-  }, [hasJoined, participantsQ.data]);
+  }, [meetingQ.data?.id]);
 
   function handleEvent(evt: RealtimeEvent) {
     const t = evt.type;
     switch (t) {
-      case "signal": {
-        const senderId = (evt.data as any)?.sender_id || (evt as any).sender_id;
-        const signal = (evt.data as any)?.signal || (evt as any).signal;
-        if (senderId && signal) {
-          void webrtcRef.current?.handleSignal(senderId, signal);
-        }
-        break;
-      }
       case "session.created":
       case "session.updated":
       case "session.resumed": {
-        const pid = (evt.participant_id as string | undefined) || (evt.data as any)?.participant_id;
-        if (pid && (!myParticipantIdRef.current || evt.type === "session.created")) {
-          setMyParticipantId(pid);
-          myParticipantIdRef.current = pid;
-        }
-        const parts = ((evt.participants || (evt.data as any)?.participants) as any[]) ?? [];
-        for (const p of parts) {
-          const peerId = p.participant_id || p.id;
-          const pName = p.display_name || p.name;
-          if (peerId && pName) namesRef.current.set(peerId, pName);
-          if (peerId && peerId !== myParticipantIdRef.current) {
-            void webrtcRef.current?.initiateCallTo(peerId);
-          }
-        }
+        const pid = evt.participant_id as string | undefined;
+        if (pid && (!myParticipantId || evt.type === "session.created")) setMyParticipantId(pid);
+        const parts = (evt.participants as any[]) ?? [];
+        for (const p of parts) namesRef.current.set(p.participant_id, p.display_name);
         if (evt.type === "session.resumed")
           toast.success("Reconnected", "Session resumed — missed events replayed.");
         break;
       }
       case "participant.joined": {
-        const pid = (evt.participant_id as string) || (evt.data as any)?.participant_id;
-        const pName = (evt.display_name as string) || (evt.data as any)?.display_name;
-        if (pid) {
-          const normPid = pid.toLowerCase().trim();
-          setLeftParticipantIds((prev) => {
-            if (!prev.has(normPid)) return prev;
-            const next = new Set(prev);
-            next.delete(normPid);
-            return next;
-          });
-          if (pName) namesRef.current.set(pid, pName);
-          if (pid !== myParticipantIdRef.current) {
-            void webrtcRef.current?.initiateCallTo(pid);
-          }
-        }
+        namesRef.current.set(evt.participant_id as string, evt.display_name as string);
         qc.invalidateQueries({ queryKey: ["meeting", id, "participants"] });
         break;
       }
-      case "participant.left": {
-        const pid = (evt.participant_id as string) || (evt.data as any)?.participant_id;
-        if (pid) {
-          const normPid = pid.toLowerCase().trim();
-          setLeftParticipantIds((prev) => new Set(prev).add(normPid));
-          webrtcRef.current?.removePeer(pid);
-          setRemoteStreams((prev) => {
-            const next = new Map(prev);
-            next.delete(pid);
-            next.delete(normPid);
-            return next;
-          });
-        }
+      case "participant.left":
         qc.invalidateQueries({ queryKey: ["meeting", id, "participants"] });
         break;
-      }
       case "speech.started":
         setSpeakingNow(evt.speaker_id as string);
         break;
@@ -567,100 +363,51 @@ export default function MeetingRoom() {
           playerRef.current?.cancelTag(`orig-${(evt.utterance_id as string).slice(0, 16)}`);
         break;
       case "transcript.partial":
-      case "transcript.final":
-      case "translation.transcript.partial":
-      case "translation.transcript.final": {
-        const uid =
-          (evt.utterance_id as string) || (evt.utteranceId as string) || (evt.segment_id as string);
+      case "transcript.final": {
+        const uid = evt.utterance_id as string;
         if (typeof uid === "string") utterLangRef.current.set(uid.slice(0, 16), evt.language as string);
-        const speakerKey = (evt.speaker_id as string) || (evt.speakerId as string) || "";
-        const seqNum = (evt.sequence as number) ?? (evt.seq as number) ?? 0;
-        const isFinal = t === "transcript.final" || t === "translation.transcript.final";
-
-        if (speakerKey && seqNum > 0) {
-          const currentHigh = highestSeqPerSpeaker.current.get(speakerKey) ?? 0;
-          if (isFinal) {
-            if (seqNum < currentHigh) {
-              // Stale final segment from prior reconnect or network lag: do not overwrite newer state
-              break;
-            }
-            highestSeqPerSpeaker.current.set(speakerKey, Math.max(currentHigh, seqNum));
-          } else {
-            // Discard flutter if speaker already has a newer finalized utterance
-            if (seqNum < currentHigh) {
-              break;
-            }
-          }
-        }
-
         const mine =
           prefsRef.current.caption_mode !== "translated" || evt.language === prefsRef.current.listening_language;
-        if (!mine && (t === "transcript.partial" || t === "translation.transcript.partial")) break;
+        if (!mine && t === "transcript.partial") break;
         setCaptions((prev) => {
           const line = prev.find((c) => c.id === uid);
           const data: CaptionLine = line ?? {
             id: uid,
-            speaker: (evt.display_name as string) || namesRef.current.get(speakerKey) || "Speaker",
+            speaker: (evt.display_name as string) || namesRef.current.get(evt.speaker_id as string) || "Speaker",
             language: evt.language as string,
             originalFinal: false,
             partial: true,
           };
           if (mine) {
-            data.original = (evt.source_text as string) || (evt.text as string);
-            data.originalFinal = isFinal;
+            data.original = evt.text as string;
+            data.originalFinal = t === "transcript.final";
           }
-          data.partial = !isFinal;
+          data.partial = t === "transcript.partial";
           return line ? prev.map((c) => (c.id === uid ? { ...data } : c)) : [...prev.slice(-80), data];
         });
         break;
       }
-      case "translation.final":
-      case "translation.segment.final":
-      case "translation.segment.translated": {
+      case "translation.final": {
         if (evt.latency_ms) setCurrentLatencyMs(Math.round(evt.latency_ms as number));
         if (translationStatus !== "normal") {
           setTranslationStatus("normal");
           setTranslationMessage(null);
         }
         if (isDegradedNetwork) setIsDegradedNetwork(false);
-        setNotice((prev) => (prev && (prev.includes("degraded") || prev.includes("latency") || prev.includes("falling behind")) ? null : prev));
-
-        const targetLang =
-          (evt.target_language as string) || (evt.targetLanguage as string) || (evt.target_lang as string);
-        if (targetLang !== prefsRef.current.listening_language) break;
+        if (evt.target_language !== prefsRef.current.listening_language) break;
         if (prefsRef.current.caption_mode === "original") break;
-
-        const speakerKey = (evt.speaker_id as string) || (evt.speakerId as string) || "";
-        const seqNum = (evt.sequence as number) ?? (evt.seq as number) ?? 0;
-        if (speakerKey && seqNum > 0) {
-          const currentHigh = highestSeqPerSpeaker.current.get(speakerKey) ?? 0;
-          if (seqNum < currentHigh) {
-            // Reconnection guard: older segment cannot overwrite newer translated caption
-            break;
-          }
-          highestSeqPerSpeaker.current.set(speakerKey, Math.max(currentHigh, seqNum));
-        }
-
-        const seg =
-          (evt.segment_id as string) || (evt.utterance_id as string) || (evt.utteranceId as string);
-        const dedupId =
-          (evt.dedup_key as string) || (evt.dedupKey as string) || `tr:${seg}:${targetLang}`;
-        const translatedText =
-          (evt.translated_text as string) || (evt.translatedText as string) || (evt.text as string);
-        const sourceLang =
-          (evt.source_language as string) || (evt.sourceLanguage as string) || (evt.source_lang as string);
-
+        const seg = evt.segment_id as string;
         setCaptions((prev) => {
           const existingIdx = prev.findIndex(
-            (c) => c.id === dedupId || c.id === `tr:${seg}:${targetLang}` || (c.id === seg && c.translated)
+            (c) => c.id === `tr:${seg}:${evt.target_language}` || (c.id === seg && c.translated)
           );
           if (existingIdx !== -1) {
             return prev.map((c, i) =>
               i === existingIdx
                 ? {
                   ...c,
-                  translated: translatedText,
-                  translatedLang: targetLang,
+                  translated: evt.text as string,
+                  translatedLang: evt.target_language as string,
                   latencyMs: (evt.latency_ms as number) || c.latencyMs,
                 }
                 : c
@@ -671,20 +418,20 @@ export default function MeetingRoom() {
             .findIndex(
               (c) =>
                 (c.id === seg ||
-                  c.speaker === ((evt.display_name as string) || namesRef.current.get(speakerKey))) &&
+                  c.speaker === ((evt.display_name as string) || namesRef.current.get(evt.speaker_id as string))) &&
                 !c.translated &&
                 !c.id.startsWith("tr:") &&
-                (!c.language || c.language === sourceLang)
+                (!c.language || c.language === evt.source_language)
             );
           if (idx === -1) {
             return [
               ...prev.slice(-80),
               {
-                id: dedupId,
-                speaker: (evt.display_name as string) || namesRef.current.get(speakerKey) || "Speaker",
-                language: sourceLang,
-                translated: translatedText,
-                translatedLang: targetLang,
+                id: `tr:${seg}:${evt.target_language}`,
+                speaker: (evt.display_name as string) || namesRef.current.get(evt.speaker_id as string) || "Speaker",
+                language: evt.source_language as string,
+                translated: evt.text as string,
+                translatedLang: evt.target_language as string,
                 originalFinal: true,
                 partial: false,
                 latencyMs: evt.latency_ms as number,
@@ -694,17 +441,16 @@ export default function MeetingRoom() {
           const target = prev[prev.length - 1 - idx];
           const updated = {
             ...target,
-            translated: translatedText,
-            translatedLang: targetLang,
+            translated: evt.text as string,
+            translatedLang: evt.target_language as string,
             latencyMs: evt.latency_ms as number,
           };
           return prev.map((c) => (c === target ? updated : c));
         });
         break;
       }
-      case "translation.failed":
-      case "translation.error": {
-        if (evt.target_language && evt.target_language !== prefsRef.current.listening_language) break;
+      case "translation.failed": {
+        if (evt.target_language !== prefsRef.current.listening_language) break;
         setTranslationStatus("unavailable");
         setTranslationMessage((evt.user_message as string) ?? "Translation unavailable. Original audio is active.");
         setNotice((evt.user_message as string) ?? "Translation delayed. The original audio is still active.");
@@ -726,57 +472,36 @@ export default function MeetingRoom() {
         );
         break;
       }
-      case "tts.chunk":
-      case "translation.tts.ready": {
-        const targetLang =
-          (evt.target_language as string) || (evt.targetLanguage as string) || (evt.target_lang as string);
-        if (targetLang !== prefsRef.current.listening_language) break;
+      case "tts.chunk": {
+        if (evt.target_language !== prefsRef.current.listening_language) break;
         const mode = prefsRef.current.audio_mode;
         if (mode !== "translated" && mode !== "mixed") break;
         const audio = (evt.audio_base64 as string) || (evt.audio as string);
         if (!audio) break;
         const uid =
           (evt.utterance_id as string | undefined)?.slice(0, 16) ?? (evt.segment_id as string)?.slice(0, 16);
-        const seq = (evt.sequence as number) ?? (evt.seq as number) ?? 0;
-        const chunkIdx = (evt.chunk_index as number) ?? (evt.chunkIndex as number) ?? 0;
-        const speakerId = (evt.speaker_id as string) || (evt.speakerId as string) || "";
         void playerRef.current?.resumeContext();
-        void playerRef.current?.enqueueWav(
-          b64ToBytes(audio),
-          `tts-${uid}-${chunkIdx}`,
-          { sequence: seq, chunkIndex: chunkIdx, utteranceId: uid, speakerId }
-        );
+        void playerRef.current?.enqueueWav(b64ToBytes(audio), `tts-${uid}`);
         break;
       }
       case "tts.completed": {
-        const targetLang =
-          (evt.target_language as string) || (evt.targetLanguage as string) || (evt.target_lang as string);
-        if (targetLang !== prefsRef.current.listening_language) break;
+        if (evt.target_language !== prefsRef.current.listening_language) break;
         const mode = prefsRef.current.audio_mode;
         if (mode !== "translated" && mode !== "mixed") break;
         const audio = evt.audio as string;
         if (audio) {
           const uid =
             (evt.utterance_id as string | undefined)?.slice(0, 16) ?? (evt.segment_id as string)?.slice(0, 16);
-          const seq = (evt.sequence as number) ?? (evt.seq as number) ?? 0;
-          const speakerId = (evt.speaker_id as string) || (evt.speakerId as string) || "";
           void playerRef.current?.resumeContext();
-          void playerRef.current?.enqueueWav(
-            b64ToBytes(audio),
-            `tts-${uid}-final`,
-            { sequence: seq, chunkIndex: 9999, utteranceId: uid, speakerId }
-          );
+          void playerRef.current?.enqueueWav(b64ToBytes(audio), `tts-${uid}`);
         }
         break;
       }
       case "quality.degraded":
         setIsDegradedNetwork(true);
         setTranslationStatus("delayed");
-        setTranslationMessage((evt.user_message as string) ?? "Live translation is catching up. Original audio remains active.");
-        window.setTimeout(() => {
-          setTranslationStatus((s) => (s === "delayed" ? "normal" : s));
-          setNotice((prev) => (prev && (prev.includes("degraded") || prev.includes("latency") || prev.includes("falling behind")) ? null : prev));
-        }, 5000);
+        setTranslationMessage((evt.user_message as string) ?? "Live translation is experiencing latency degradation.");
+        setNotice((evt.user_message as string) ?? "Live translation is temporarily degraded.");
         break;
       case "quality.latency": {
         const ms = (evt.total_e2e_latency_ms as number) || 0;
@@ -842,7 +567,6 @@ export default function MeetingRoom() {
       micRef.current?.stop();
       micRef.current = null;
       setMicOn(false);
-      webrtcRef.current?.setAudioTrack(null);
       socketRef.current?.sendJson({ type: "audio.stopped" });
       return;
     }
@@ -866,13 +590,10 @@ export default function MeetingRoom() {
       );
       micRef.current = mic;
       const track = mic.mediaStream?.getAudioTracks()[0];
-      if (track) {
-        webrtcRef.current?.setAudioTrack(track);
-        if (mediaRoom.state === "connected") {
-          try {
-            await mediaRoom.publishMicrophone(track);
-          } catch { }
-        }
+      if (track && mediaRoom.state === "connected") {
+        try {
+          await mediaRoom.publishMicrophone(track);
+        } catch { }
       }
       setMicOn(true);
       setMicPermissionBlocked(false);
@@ -887,7 +608,6 @@ export default function MeetingRoom() {
       micRef.current?.stop();
       micRef.current = null;
       setMicOn(false);
-      webrtcRef.current?.setAudioTrack(null);
       const isPermissionDenied =
         err?.name === "NotAllowedError" ||
         err?.name === "PermissionDeniedError" ||
@@ -962,13 +682,10 @@ export default function MeetingRoom() {
       );
       micRef.current = mic;
       const newTrack = mic.mediaStream?.getAudioTracks()[0];
-      if (newTrack) {
-        webrtcRef.current?.setAudioTrack(newTrack);
-        if (mediaRoom.state === "connected") {
-          try {
-            await mediaRoom.publishMicrophone(newTrack);
-          } catch { }
-        }
+      if (newTrack && mediaRoom.state === "connected") {
+        try {
+          await mediaRoom.publishMicrophone(newTrack);
+        } catch { }
       }
       toast.success("Audio settings updated", "Microphone DSP and input updated.");
     } catch (err: any) {
@@ -991,7 +708,6 @@ export default function MeetingRoom() {
           await mediaRoom.setCameraEnabled(false);
         } catch { }
       }
-      webrtcRef.current?.setVideoTrack(null);
       setCameraOn(false);
       setUsingVirtualCamera(false);
       return;
@@ -1018,8 +734,6 @@ export default function MeetingRoom() {
           audio: false,
         });
         setLocalVideoStream(stream);
-        const vTrack = stream.getVideoTracks()[0];
-        if (vTrack) webrtcRef.current?.setVideoTrack(vTrack);
         setCameraOn(true);
         setUsingVirtualCamera(false);
         setCameraPermissionBlocked(false);
@@ -1035,8 +749,6 @@ export default function MeetingRoom() {
       const virtualCam = createVirtualCameraStream(displayName);
       virtualCameraCleanupRef.current = virtualCam.stop;
       setLocalVideoStream(virtualCam.stream);
-      const vTrack = virtualCam.stream.getVideoTracks()[0];
-      if (vTrack) webrtcRef.current?.setVideoTrack(vTrack);
       setCameraOn(true);
       setUsingVirtualCamera(true);
       setCameraPermissionBlocked(true);
@@ -1081,8 +793,6 @@ export default function MeetingRoom() {
         virtualCameraCleanupRef.current = null;
       }
       setLocalVideoStream(stream);
-      const vTrack = stream.getVideoTracks()[0];
-      if (vTrack) webrtcRef.current?.setVideoTrack(vTrack);
       setCameraOn(true);
       setUsingVirtualCamera(false);
       setCameraPermissionBlocked(false);
@@ -1156,6 +866,85 @@ export default function MeetingRoom() {
   });
 
   // ---------------- render calculations ----------------
+  if (meetingQ.isError) {
+    const err = meetingQ.error as any;
+    return (
+      <div className="p-6 bg-slate-900 min-h-screen text-white flex flex-col items-center justify-center gap-4">
+        <ErrorState
+          title={err?.message || "Meeting Not Found or Inaccessible"}
+          detail={err?.code || "The meeting session could not be retrieved. Please verify your connection or join link."}
+        />
+        <div className="flex items-center gap-3 mt-2">
+          <Button variant="secondary" onClick={() => nav("/meetings")}>
+            ← Back to Meetings
+          </Button>
+          <Button variant="primary" onClick={() => meetingQ.refetch()}>
+            Retry Connection
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  const participants = (participantsQ.data ?? []).filter((participant) => participant.status === "joined");
+  const participantsById = new Map(participants.map((participant) => [participant.id, participant]));
+
+  const callTiles =
+    mediaRoom.state === "connected"
+      ? mediaRoom.peers.map((peer) => {
+        const participant = participantsById.get(peer.id);
+        const speakingLanguage = participant?.speaking_language ?? (peer.self ? prefs.speaking_language : "AUTO");
+        const listeningLanguage = participant?.listening_language ?? (peer.self ? prefs.listening_language : "en");
+        return {
+          id: peer.id,
+          name: peer.name,
+          stream: peer.self ? peer.stream || localVideoStream : peer.stream,
+          isScreenShare: peer.isScreenShare,
+          self: peer.self,
+          speakingLanguage,
+          listeningLanguage,
+          speaking: speakingNow === peer.id || (peer.self && micOn && !!speakingNow),
+          muted: peer.self ? !micOn : !peer.microphoneOn,
+          isVirtualCamera: peer.self ? usingVirtualCamera : false,
+        };
+      })
+      : participants.map((participant) => {
+        const isSelf = participant.id === myParticipantId;
+        return {
+          id: participant.id,
+          name: participant.display_name,
+          stream: isSelf ? localVideoStream : null,
+          isScreenShare: false,
+          self: isSelf,
+          speakingLanguage: participant.speaking_language,
+          listeningLanguage: participant.listening_language,
+          speaking: speakingNow === participant.id || (isSelf && micOn && !!speakingNow),
+          muted: isSelf ? !micOn : true,
+          isVirtualCamera: isSelf ? usingVirtualCamera : false,
+        };
+      });
+
+  const hasSelfTile = callTiles.some((t) => t.self);
+  const finalTiles = hasSelfTile
+    ? callTiles
+    : [
+      {
+        id: myParticipantId || "me",
+        name: displayName + " (You)",
+        stream: localVideoStream,
+        isScreenShare: screenOn,
+        self: true,
+        speakingLanguage: prefs.speaking_language,
+        listeningLanguage: prefs.listening_language,
+        speaking: micOn && !!speakingNow,
+        muted: !micOn,
+        isVirtualCamera: usingVirtualCamera,
+      },
+      ...callTiles,
+    ];
+
+  const latestCaption = captions.length > 0 ? captions[captions.length - 1] : null;
+
   const connectionInfo = React.useMemo(() => {
     if (!isOnline) {
       return {
@@ -1206,328 +995,6 @@ export default function MeetingRoom() {
     };
   }, [isOnline, socketState, mediaRoom.state, mediaRoom.error, isDegradedNetwork]);
 
-  const participants = (participantsQ.data ?? []).filter(
-    (participant) =>
-      participant.status === "joined" &&
-      !leftParticipantIds.has(participant.id.toLowerCase().trim())
-  );
-  const participantsById = new Map(participants.map((participant) => [participant.id, participant]));
-
-  // Include peers who connected via WebRTC stream even if participantsQ polling is delayed
-  const myNormId = (myParticipantId || "").toLowerCase().trim();
-  const knownPeerIds = new Set(participants.map((p) => p.id.toLowerCase().trim()));
-  const streamOnlyPeers = Array.from(remoteStreams.keys())
-    .map((k) => k.toLowerCase().trim())
-    .filter((pid, idx, arr) => arr.indexOf(pid) === idx)
-    .filter((pid) => pid !== myNormId && !knownPeerIds.has(pid) && !leftParticipantIds.has(pid))
-    .map((pid) => ({
-      id: pid,
-      display_name: namesRef.current.get(pid) || "Remote Participant",
-      status: "joined",
-      speaking_language: "AUTO",
-      listening_language: "en",
-      audio_mode: "translated" as const,
-      caption_mode: "both" as const,
-    }));
-  const combinedParticipants = [...participants, ...streamOnlyPeers];
-
-  const callTiles =
-    mediaRoom.state === "connected"
-      ? mediaRoom.peers.map((peer) => {
-        const participant = participantsById.get(peer.id);
-        const speakingLanguage = participant?.speaking_language ?? (peer.self ? prefs.speaking_language : "AUTO");
-        const listeningLanguage = participant?.listening_language ?? (peer.self ? prefs.listening_language : "en");
-        return {
-          id: peer.id,
-          name: peer.name,
-          stream: peer.self ? peer.stream || localVideoStream : peer.stream,
-          isScreenShare: peer.isScreenShare,
-          self: peer.self,
-          speakingLanguage,
-          listeningLanguage,
-          speaking: speakingNow === peer.id || (peer.self && micOn && !!speakingNow),
-          muted: peer.self ? !micOn : !peer.microphoneOn,
-          isVirtualCamera: peer.self ? usingVirtualCamera : false,
-        };
-      })
-      : combinedParticipants.map((participant) => {
-        const normId = participant.id.toLowerCase().trim();
-        const isSelf = participant.id === myParticipantId || (!!myNormId && normId === myNormId);
-        const remoteStream = !isSelf ? (remoteStreams.get(participant.id) || remoteStreams.get(normId) || null) : null;
-        return {
-          id: participant.id,
-          name: participant.display_name,
-          stream: isSelf ? localVideoStream : remoteStream,
-          isScreenShare: false,
-          self: isSelf,
-          speakingLanguage: participant.speaking_language,
-          listeningLanguage: participant.listening_language,
-          speaking: speakingNow === participant.id || (isSelf && micOn && !!speakingNow),
-          muted: isSelf ? !micOn : false,
-          isVirtualCamera: isSelf ? usingVirtualCamera : false,
-        };
-      });
-
-  const hasSelfTile = callTiles.some((t) => t.self);
-  const finalTiles = hasSelfTile
-    ? callTiles
-    : [
-      {
-        id: myParticipantId || "me",
-        name: displayName + " (You)",
-        stream: localVideoStream,
-        isScreenShare: screenOn,
-        self: true,
-        speakingLanguage: prefs.speaking_language,
-        listeningLanguage: prefs.listening_language,
-        speaking: micOn && !!speakingNow,
-        muted: !micOn,
-        isVirtualCamera: usingVirtualCamera,
-      },
-      ...callTiles,
-    ];
-
-  const latestCaption = captions.length > 0 ? captions[captions.length - 1] : null;
-
-  // ---------------- Pre-Join Lobby View (Google Meet Green Room) ----------------
-  if (!hasJoined) {
-    return (
-      <div className="flex min-h-screen w-full flex-col bg-[#131314] text-white">
-        {/* Lobby Top Header */}
-        <header className="flex h-14 items-center justify-between border-b border-white/10 bg-[#1E1F22] px-4 sm:px-6">
-          <div className="flex items-center gap-3">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => nav("/meetings")}
-              className="text-slate-300 hover:text-white hover:bg-white/10 text-xs gap-1.5 h-8 px-2.5 rounded-lg"
-            >
-              ← Meetings
-            </Button>
-            <div className="h-4 w-px bg-white/20" />
-            <div className="flex items-center gap-2">
-              <span className="font-semibold text-sm text-white truncate max-w-xs">
-                {meetingQ.data?.title || "GlobalTalk Meeting"}
-              </span>
-              <span className="text-[11px] px-2 py-0.5 rounded-full bg-white/10 text-slate-300 font-mono">
-                {id.slice(0, 8)}
-              </span>
-            </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => void copyInviteLink()}
-              className="text-slate-300 hover:text-white hover:bg-white/10 text-xs gap-1.5 h-8 px-2.5 rounded-lg"
-            >
-              {inviteCopied ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
-              <span>{inviteCopied ? "Link Copied!" : "Copy link"}</span>
-            </Button>
-          </div>
-        </header>
-
-        {/* Lobby Main Body */}
-        <main className="flex flex-1 items-center justify-center p-4 sm:p-8">
-          <div className="w-full max-w-5xl grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
-            
-            {/* Left: Camera Preview & Quick Toggles (7 cols) */}
-            <div className="lg:col-span-7 flex flex-col items-center">
-              <div className="relative aspect-video w-full max-w-xl rounded-3xl overflow-hidden border border-white/15 bg-[#202124] shadow-2xl flex items-center justify-center">
-                {cameraOn && localVideoStream ? (
-                  <video
-                    ref={(el) => {
-                      if (el && localVideoStream && el.srcObject !== localVideoStream) {
-                        el.srcObject = localVideoStream;
-                      }
-                    }}
-                    autoPlay
-                    playsInline
-                    muted
-                    className={`h-full w-full object-cover ${usingVirtualCamera ? "" : "-scale-x-100"}`}
-                  />
-                ) : (
-                  <div className="flex flex-col items-center gap-3 text-slate-400">
-                    <div className="h-20 w-20 rounded-full bg-white/10 flex items-center justify-center text-white text-2xl font-bold">
-                      {(displayName || "U").charAt(0).toUpperCase()}
-                    </div>
-                    <span className="text-sm font-medium">Camera is off</span>
-                  </div>
-                )}
-
-                {/* Floating Media Controls on Camera Preview */}
-                <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-3 bg-black/60 backdrop-blur-md px-4 py-2 rounded-full border border-white/10">
-                  <button
-                    type="button"
-                    onClick={() => void toggleMic()}
-                    className={`h-11 w-11 rounded-full flex items-center justify-center transition-all ${
-                      micOn ? "bg-white/15 hover:bg-white/25 text-white" : "bg-[#EA4335] text-white hover:bg-[#D93025]"
-                    }`}
-                    title={micOn ? "Mute microphone" : "Unmute microphone"}
-                  >
-                    {micOn ? <Mic className="h-5 w-5" /> : <MicOff className="h-5 w-5" />}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void toggleCamera()}
-                    className={`h-11 w-11 rounded-full flex items-center justify-center transition-all ${
-                      cameraOn ? "bg-white/15 hover:bg-white/25 text-white" : "bg-[#EA4335] text-white hover:bg-[#D93025]"
-                    }`}
-                    title={cameraOn ? "Turn off camera" : "Turn on camera"}
-                  >
-                    {cameraOn ? <Camera className="h-5 w-5" /> : <CameraOff className="h-5 w-5" />}
-                  </button>
-                </div>
-
-                {usingVirtualCamera && (
-                  <div className="absolute top-3 left-3 bg-sky-500/80 backdrop-blur-sm px-2.5 py-1 rounded-full text-[11px] font-semibold text-white">
-                    Virtual Studio Camera
-                  </div>
-                )}
-              </div>
-
-              {/* Device Quick Status under video */}
-              <div className="w-full max-w-xl mt-4 flex items-center justify-between text-xs text-slate-400 px-2">
-                <span>{availableCameras.length > 0 ? `${availableCameras.length} camera(s) detected` : "Default camera ready"}</span>
-                <span>{availableMics.length > 0 ? `${availableMics.length} mic(s) detected` : "Default mic ready"}</span>
-              </div>
-            </div>
-
-            {/* Right: Meeting Information, Name, Preferences & Join Button (5 cols) */}
-            <div className="lg:col-span-5 flex flex-col gap-5 bg-[#1E1F22] border border-white/10 rounded-3xl p-6 sm:p-7 shadow-xl">
-              <div>
-                <h2 className="text-2xl font-bold text-white tracking-tight">Ready to join?</h2>
-                <p className="text-xs text-slate-400 mt-1">
-                  {participants.length > 0
-                    ? `${participants.length} participant${participants.length > 1 ? "s" : ""} in call`
-                    : "No one else is here yet"}
-                </p>
-              </div>
-
-              {/* Display Name Input */}
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
-                  Your Name
-                </label>
-                <input
-                  type="text"
-                  value={displayName}
-                  onChange={(e) => setDisplayName(e.target.value)}
-                  placeholder="Enter your name"
-                  className="w-full rounded-xl bg-white/5 border border-white/15 px-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-dl-blue transition-all"
-                />
-              </div>
-
-              {/* Language Selection Grid */}
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5 flex items-center gap-1">
-                    <Globe className="h-3.5 w-3.5 text-dl-blue" />
-                    I speak
-                  </label>
-                  <Select
-                    value={prefs.speaking_language}
-                    onChange={(e) => updatePrefs({ speaking_language: e.target.value })}
-                    className="!bg-[#282A2D] !text-white !border-white/15 w-full rounded-xl text-xs py-2"
-                  >
-                    <option value="AUTO">Auto-detect</option>
-                    {caps.map((l) => (
-                      <option key={l.code} value={l.code}>
-                        {l.name} ({l.native_name})
-                      </option>
-                    ))}
-                  </Select>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5 flex items-center gap-1">
-                    <Volume2 className="h-3.5 w-3.5 text-emerald-400" />
-                    I want to hear
-                  </label>
-                  <Select
-                    value={prefs.listening_language}
-                    onChange={(e) => updatePrefs({ listening_language: e.target.value })}
-                    className="!bg-[#282A2D] !text-white !border-white/15 w-full rounded-xl text-xs py-2"
-                  >
-                    {caps.map((l) => (
-                      <option key={l.code} value={l.code}>
-                        {l.name} ({l.native_name})
-                      </option>
-                    ))}
-                  </Select>
-                </div>
-              </div>
-
-              {/* Audio Mode */}
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
-                  Audio Translation Mode
-                </label>
-                <SegmentedControl
-                  options={[
-                    { value: "translated", label: "Translated" },
-                    { value: "original", label: "Original" },
-                    { value: "mixed", label: "Mixed" },
-                  ]}
-                  value={prefs.audio_mode}
-                  onChange={(v) => updatePrefs({ audio_mode: v as any })}
-                  ariaLabel="Audio translation mode"
-                />
-                <p className="text-[11px] text-slate-400 mt-1">
-                  {prefs.audio_mode === "translated"
-                    ? "Hears translated AI voice in your language; original voice muted."
-                    : prefs.audio_mode === "original"
-                      ? "Hears speaker's original voice directly with live captions."
-                      : "Hears translated AI voice + ducked (20%) original voice."}
-                </p>
-              </div>
-
-              {/* Join Now Button */}
-              <div className="pt-2">
-                <Button
-                  onClick={() => void handleJoinMeeting()}
-                  disabled={isJoining}
-                  className="w-full py-3 h-12 bg-dl-blue hover:bg-dl-blue-hover text-white font-semibold rounded-2xl shadow-lg transition-all active:scale-[0.98] text-base flex items-center justify-center gap-2"
-                >
-                  {isJoining ? (
-                    <>
-                      <Spinner className="h-5 w-5 text-white" />
-                      <span>Joining session...</span>
-                    </>
-                  ) : (
-                    <span>Join now</span>
-                  )}
-                </Button>
-              </div>
-            </div>
-
-          </div>
-        </main>
-      </div>
-    );
-  }
-
-  // ---------------- Error State (Only after join attempt) ----------------
-  if (meetingQ.isError) {
-    const err = meetingQ.error as any;
-    return (
-      <div className="p-6 bg-slate-900 min-h-screen text-white flex flex-col items-center justify-center gap-4">
-        <ErrorState
-          title={err?.message || "Meeting Not Found or Inaccessible"}
-          detail={err?.code || "The meeting session could not be retrieved. Please verify your connection or join link."}
-        />
-        <div className="flex items-center gap-3 mt-2">
-          <Button variant="secondary" onClick={() => nav("/meetings")}>
-            ← Back to Meetings
-          </Button>
-          <Button variant="primary" onClick={() => meetingQ.refetch()}>
-            Retry Connection
-          </Button>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="flex h-screen w-full flex-col overflow-hidden bg-[#131314] text-white select-none">
       {/* =========================================================================
@@ -1539,7 +1006,7 @@ export default function MeetingRoom() {
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => void handleLeaveMeeting()}
+            onClick={() => nav("/meetings")}
             className="text-slate-300 hover:text-white hover:bg-white/10 text-xs gap-1.5 h-8 px-2.5 rounded-lg"
           >
             ← Meetings
@@ -1846,8 +1313,6 @@ export default function MeetingRoom() {
                 speaking={tile.speaking}
                 muted={tile.muted}
                 self={tile.self}
-                audioMuted={tile.self || prefs.audio_mode === "translated"}
-                audioVolume={prefs.audio_mode === "mixed" ? 0.2 : 1.0}
                 className="aspect-video w-full rounded-2xl border border-white/10 shadow-lg bg-[#202124]"
               />
             ))}
@@ -2122,11 +1587,10 @@ export default function MeetingRoom() {
                       <button
                         type="button"
                         onClick={() => setShowCaptionsOverlay((prev) => !prev)}
-                        className={`text-[10px] px-2 py-0.5 rounded border transition-colors ${
-                          showCaptionsOverlay
-                            ? "bg-dl-blue/20 border-dl-blue/40 text-dl-blue font-medium"
-                            : "bg-white/5 border-white/10 text-slate-400"
-                        }`}
+                        className={`text-[10px] px-2 py-0.5 rounded border transition-colors ${showCaptionsOverlay
+                          ? "bg-dl-blue/20 border-dl-blue/40 text-dl-blue font-medium"
+                          : "bg-white/5 border-white/10 text-slate-400"
+                          }`}
                       >
                         Overlay: {showCaptionsOverlay ? "ON" : "OFF"}
                       </button>
@@ -2140,11 +1604,10 @@ export default function MeetingRoom() {
                             key={m}
                             type="button"
                             onClick={() => updatePrefs({ caption_mode: m })}
-                            className={`px-2 py-0.5 text-[10px] rounded capitalize transition-all ${
-                              prefs.caption_mode === m
-                                ? "bg-dl-blue text-white font-medium"
-                                : "text-slate-400 hover:text-white"
-                            }`}
+                            className={`px-2 py-0.5 text-[10px] rounded capitalize transition-all ${prefs.caption_mode === m
+                              ? "bg-dl-blue text-white font-medium"
+                              : "text-slate-400 hover:text-white"
+                              }`}
                           >
                             {m === "translated" ? "My language" : m}
                           </button>
@@ -2374,7 +1837,13 @@ export default function MeetingRoom() {
           {/* End Call / Leave Meeting (Red Pill) */}
           <button
             type="button"
-            onClick={() => void handleLeaveMeeting()}
+            onClick={() => {
+              if (localVideoStream) {
+                localVideoStream.getTracks().forEach((t) => t.stop());
+              }
+              micRef.current?.stop();
+              nav(`/meetings?end=${id}`);
+            }}
             className="h-11 px-5 sm:h-12 sm:px-6 rounded-full flex items-center justify-center gap-2 bg-[#EA4335] hover:bg-[#D93025] text-white font-medium shadow-md transition-all active:scale-95"
             aria-label="Leave call"
             title="Leave this meeting"
@@ -2449,277 +1918,279 @@ export default function MeetingRoom() {
       {/* =========================================================================
           LANGUAGE & AUDIO SETTINGS DIALOG (Google Meet Settings Modal)
          ========================================================================= */}
-      {settingsOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
-          <div className="w-full max-w-lg rounded-2xl border border-white/15 bg-[#1E1F22] p-6 shadow-2xl space-y-5 animate-scale-in text-white">
-            <div className="flex items-center justify-between border-b border-white/10 pb-3">
-              <div className="flex items-center gap-2">
-                <Globe className="h-5 w-5 text-dl-blue" />
-                <h3 className="text-base font-bold text-white">Audio & Multilingual Translation Settings</h3>
+      {
+        settingsOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
+            <div className="w-full max-w-lg rounded-2xl border border-white/15 bg-[#1E1F22] p-6 shadow-2xl space-y-5 animate-scale-in text-white">
+              <div className="flex items-center justify-between border-b border-white/10 pb-3">
+                <div className="flex items-center gap-2">
+                  <Globe className="h-5 w-5 text-dl-blue" />
+                  <h3 className="text-base font-bold text-white">Audio & Multilingual Translation Settings</h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSettingsOpen(false)}
+                  className="h-8 w-8 rounded-full flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/10"
+                >
+                  <X className="h-4 w-4" />
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() => setSettingsOpen(false)}
-                className="h-8 w-8 rounded-full flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/10"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
 
-            {/* Settings Tab Selector */}
-            <div className="flex border-b border-white/10 text-xs font-medium bg-[#1A1B1D] rounded-lg p-0.5">
-              <button
-                type="button"
-                onClick={() => setSettingsTab("translation")}
-                className={`flex-1 py-1.5 text-center rounded-md transition ${settingsTab === "translation"
-                  ? "bg-dl-blue text-white font-semibold shadow-xs"
-                  : "text-slate-400 hover:text-slate-200"
-                  }`}
-              >
-                Translation & Languages
-              </button>
-              <button
-                type="button"
-                onClick={() => setSettingsTab("devices")}
-                className={`flex-1 py-1.5 text-center rounded-md transition ${settingsTab === "devices"
-                  ? "bg-dl-blue text-white font-semibold shadow-xs"
-                  : "text-slate-400 hover:text-slate-200"
-                  }`}
-              >
-                Audio, Video & Devices
-              </button>
-            </div>
+              {/* Settings Tab Selector */}
+              <div className="flex border-b border-white/10 text-xs font-medium bg-[#1A1B1D] rounded-lg p-0.5">
+                <button
+                  type="button"
+                  onClick={() => setSettingsTab("translation")}
+                  className={`flex-1 py-1.5 text-center rounded-md transition ${settingsTab === "translation"
+                    ? "bg-dl-blue text-white font-semibold shadow-xs"
+                    : "text-slate-400 hover:text-slate-200"
+                    }`}
+                >
+                  Translation & Languages
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSettingsTab("devices")}
+                  className={`flex-1 py-1.5 text-center rounded-md transition ${settingsTab === "devices"
+                    ? "bg-dl-blue text-white font-semibold shadow-xs"
+                    : "text-slate-400 hover:text-slate-200"
+                    }`}
+                >
+                  Audio, Video & Devices
+                </button>
+              </div>
 
-            {settingsTab === "translation" ? (
-              <div className="space-y-4 text-xs">
-                {/* I speak */}
-                <div>
-                  <label className="block mb-1.5 font-semibold uppercase tracking-wider text-slate-300 text-[11px]">
-                    I speak (My native language)
-                  </label>
-                  <Select
-                    aria-label="I speak"
-                    className="!bg-[#282A2D] !text-white !border-white/15 w-full rounded-xl"
-                    value={prefs.speaking_language}
-                    onChange={(e) => updatePrefs({ speaking_language: e.target.value })}
-                  >
-                    <option value="AUTO">Auto detect</option>
-                    {caps
-                      .filter((c) => c.speech_input_supported)
-                      .map((c) => (
-                        <option key={c.code} value={c.code}>
-                          {c.name} ({c.native_name})
+              {settingsTab === "translation" ? (
+                <div className="space-y-4 text-xs">
+                  {/* I speak */}
+                  <div>
+                    <label className="block mb-1.5 font-semibold uppercase tracking-wider text-slate-300 text-[11px]">
+                      I speak (My native language)
+                    </label>
+                    <Select
+                      aria-label="I speak"
+                      className="!bg-[#282A2D] !text-white !border-white/15 w-full rounded-xl"
+                      value={prefs.speaking_language}
+                      onChange={(e) => updatePrefs({ speaking_language: e.target.value })}
+                    >
+                      <option value="AUTO">Auto detect</option>
+                      {caps
+                        .filter((c) => c.speech_input_supported)
+                        .map((c) => (
+                          <option key={c.code} value={c.code}>
+                            {c.name} ({c.native_name})
+                          </option>
+                        ))}
+                    </Select>
+                  </div>
+
+                  {/* I want to hear */}
+                  <div>
+                    <label className="block mb-1.5 font-semibold uppercase tracking-wider text-slate-300 text-[11px]">
+                      I want to hear (Translate incoming audio into)
+                    </label>
+                    <Select
+                      aria-label="I want to hear"
+                      className="!bg-[#282A2D] !text-white !border-white/15 w-full rounded-xl"
+                      value={prefs.listening_language}
+                      onChange={(e) => updatePrefs({ listening_language: e.target.value })}
+                    >
+                      {caps
+                        .filter((c) => c.translation_supported || c.speech_input_supported)
+                        .map((c) => (
+                          <option key={c.code} value={c.code}>
+                            {c.name} ({c.native_name})
+                            {c.speech_output_supported ? "" : " — captions only"}
+                          </option>
+                        ))}
+                    </Select>
+                  </div>
+
+                  {/* Audio Routing Mode */}
+                  <div>
+                    <label className="block mb-1.5 font-semibold uppercase tracking-wider text-slate-300 text-[11px]">
+                      Audio Playback Mode
+                    </label>
+                    <SegmentedControl
+                      ariaLabel="Audio mode"
+                      value={prefs.audio_mode}
+                      onChange={(v) => updatePrefs({ audio_mode: v })}
+                      options={[
+                        { value: "original", label: "Original", title: "Only the speakers' original voices" },
+                        {
+                          value: "translated",
+                          label: "Translated",
+                          title: "Translated voice; original when you understand the source",
+                        },
+                        { value: "mixed", label: "Mixed", title: "Original and translated voices together" },
+                      ]}
+                    />
+                  </div>
+
+                  {/* Caption display */}
+                  <div>
+                    <label className="block mb-1.5 font-semibold uppercase tracking-wider text-slate-300 text-[11px]">
+                      Captions Mode
+                    </label>
+                    <SegmentedControl
+                      ariaLabel="Caption mode"
+                      value={prefs.caption_mode}
+                      onChange={(v) => updatePrefs({ caption_mode: v })}
+                      options={[
+                        { value: "original", label: "Original" },
+                        { value: "translated", label: "My language" },
+                        { value: "both", label: "Both" },
+                      ]}
+                    />
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-4 text-xs">
+                  {/* Microphone Selection */}
+                  <div>
+                    <label className="block mb-1.5 font-semibold uppercase tracking-wider text-slate-300 text-[11px] flex items-center gap-1.5">
+                      <Mic className="h-3.5 w-3.5 text-dl-blue" />
+                      Microphone Input
+                    </label>
+                    <Select
+                      aria-label="Microphone input"
+                      className="!bg-[#282A2D] !text-white !border-white/15 w-full rounded-xl"
+                      value={selectedMicId}
+                      onChange={(e) => {
+                        const newId = e.target.value;
+                        setSelectedMicId(newId);
+                        void restartMicWithSettings({ micId: newId });
+                      }}
+                    >
+                      <option value="">Default System Microphone</option>
+                      {availableMics.map((mic, idx) => (
+                        <option key={mic.deviceId || idx} value={mic.deviceId}>
+                          {mic.label || `Microphone ${idx + 1}`}
                         </option>
                       ))}
-                  </Select>
-                </div>
+                    </Select>
+                  </div>
 
-                {/* I want to hear */}
-                <div>
-                  <label className="block mb-1.5 font-semibold uppercase tracking-wider text-slate-300 text-[11px]">
-                    I want to hear (Translate incoming audio into)
-                  </label>
-                  <Select
-                    aria-label="I want to hear"
-                    className="!bg-[#282A2D] !text-white !border-white/15 w-full rounded-xl"
-                    value={prefs.listening_language}
-                    onChange={(e) => updatePrefs({ listening_language: e.target.value })}
-                  >
-                    {caps
-                      .filter((c) => c.translation_supported || c.speech_input_supported)
-                      .map((c) => (
-                        <option key={c.code} value={c.code}>
-                          {c.name} ({c.native_name})
-                          {c.speech_output_supported ? "" : " — captions only"}
+                  {/* Speaker Selection */}
+                  <div>
+                    <label className="block mb-1.5 font-semibold uppercase tracking-wider text-slate-300 text-[11px] flex items-center gap-1.5">
+                      <Volume2 className="h-3.5 w-3.5 text-dl-blue" />
+                      Speaker Output (Hardware Playback)
+                    </label>
+                    <Select
+                      aria-label="Speaker output"
+                      className="!bg-[#282A2D] !text-white !border-white/15 w-full rounded-xl"
+                      value={selectedSpeakerId}
+                      onChange={(e) => void handleSpeakerChange(e.target.value)}
+                    >
+                      <option value="">Default System Speaker</option>
+                      {availableSpeakers.map((spk, idx) => (
+                        <option key={spk.deviceId || idx} value={spk.deviceId}>
+                          {spk.label || `Speaker ${idx + 1}`}
                         </option>
                       ))}
-                  </Select>
-                </div>
+                    </Select>
+                  </div>
 
-                {/* Audio Routing Mode */}
-                <div>
-                  <label className="block mb-1.5 font-semibold uppercase tracking-wider text-slate-300 text-[11px]">
-                    Audio Playback Mode
-                  </label>
-                  <SegmentedControl
-                    ariaLabel="Audio mode"
-                    value={prefs.audio_mode}
-                    onChange={(v) => updatePrefs({ audio_mode: v })}
-                    options={[
-                      { value: "original", label: "Original", title: "Only the speakers' original voices" },
-                      {
-                        value: "translated",
-                        label: "Translated",
-                        title: "Translated voice; original when you understand the source",
-                      },
-                      { value: "mixed", label: "Mixed", title: "Original and translated voices together" },
-                    ]}
-                  />
-                </div>
+                  {/* Camera Selection */}
+                  <div>
+                    <label className="block mb-1.5 font-semibold uppercase tracking-wider text-slate-300 text-[11px] flex items-center gap-1.5">
+                      <Camera className="h-3.5 w-3.5 text-dl-blue" />
+                      Camera Video Input
+                    </label>
+                    <Select
+                      aria-label="Camera video input"
+                      className="!bg-[#282A2D] !text-white !border-white/15 w-full rounded-xl"
+                      value={selectedCameraId}
+                      onChange={(e) => {
+                        setSelectedCameraId(e.target.value);
+                        if (cameraOn && !usingVirtualCamera) {
+                          void retryPhysicalCamera();
+                        }
+                      }}
+                    >
+                      <option value="">Default System Camera</option>
+                      {availableCameras.map((cam, idx) => (
+                        <option key={cam.deviceId || idx} value={cam.deviceId}>
+                          {cam.label || `Camera ${idx + 1}`}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
 
-                {/* Caption display */}
-                <div>
-                  <label className="block mb-1.5 font-semibold uppercase tracking-wider text-slate-300 text-[11px]">
-                    Captions Mode
-                  </label>
-                  <SegmentedControl
-                    ariaLabel="Caption mode"
-                    value={prefs.caption_mode}
-                    onChange={(v) => updatePrefs({ caption_mode: v })}
-                    options={[
-                      { value: "original", label: "Original" },
-                      { value: "translated", label: "My language" },
-                      { value: "both", label: "Both" },
-                    ]}
-                  />
+                  {/* Audio Signal Processing (DSP) Toggles */}
+                  <div className="pt-2 border-t border-white/10 space-y-2">
+                    <span className="block font-semibold uppercase tracking-wider text-slate-300 text-[11px]">
+                      Audio Signal Processing (DSP)
+                    </span>
+
+                    <label className="flex items-center justify-between p-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 cursor-pointer">
+                      <div>
+                        <span className="font-medium text-white block text-xs">Acoustic Echo Cancellation</span>
+                        <span className="text-[11px] text-slate-400">Prevents speaker audio echoing into microphone</span>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={dspSettings.echoCancellation}
+                        onChange={(e) => {
+                          const updated = { ...dspSettings, echoCancellation: e.target.checked };
+                          setDspSettings(updated);
+                          void restartMicWithSettings({ dsp: updated });
+                        }}
+                        className="h-4 w-4 rounded accent-dl-blue"
+                      />
+                    </label>
+
+                    <label className="flex items-center justify-between p-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 cursor-pointer">
+                      <div>
+                        <span className="font-medium text-white block text-xs">Background Noise Suppression</span>
+                        <span className="text-[11px] text-slate-400">Reduces background fans, typing, and room hum</span>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={dspSettings.noiseSuppression}
+                        onChange={(e) => {
+                          const updated = { ...dspSettings, noiseSuppression: e.target.checked };
+                          setDspSettings(updated);
+                          void restartMicWithSettings({ dsp: updated });
+                        }}
+                        className="h-4 w-4 rounded accent-dl-blue"
+                      />
+                    </label>
+
+                    <label className="flex items-center justify-between p-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 cursor-pointer">
+                      <div>
+                        <span className="font-medium text-white block text-xs">Automatic Gain Control (AGC)</span>
+                        <span className="text-[11px] text-slate-400">Stabilizes microphone volume levels</span>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={dspSettings.autoGainControl}
+                        onChange={(e) => {
+                          const updated = { ...dspSettings, autoGainControl: e.target.checked };
+                          setDspSettings(updated);
+                          void restartMicWithSettings({ dsp: updated });
+                        }}
+                        className="h-4 w-4 rounded accent-dl-blue"
+                      />
+                    </label>
+                  </div>
                 </div>
+              )}
+
+              <div className="flex justify-end pt-3 border-t border-white/10">
+                <Button
+                  type="button"
+                  onClick={() => setSettingsOpen(false)}
+                  className="bg-dl-blue hover:bg-dl-blue-hover text-white rounded-xl px-5"
+                >
+                  Done
+                </Button>
               </div>
-            ) : (
-              <div className="space-y-4 text-xs">
-                {/* Microphone Selection */}
-                <div>
-                  <label className="block mb-1.5 font-semibold uppercase tracking-wider text-slate-300 text-[11px] flex items-center gap-1.5">
-                    <Mic className="h-3.5 w-3.5 text-dl-blue" />
-                    Microphone Input
-                  </label>
-                  <Select
-                    aria-label="Microphone input"
-                    className="!bg-[#282A2D] !text-white !border-white/15 w-full rounded-xl"
-                    value={selectedMicId}
-                    onChange={(e) => {
-                      const newId = e.target.value;
-                      setSelectedMicId(newId);
-                      void restartMicWithSettings({ micId: newId });
-                    }}
-                  >
-                    <option value="">Default System Microphone</option>
-                    {availableMics.map((mic, idx) => (
-                      <option key={mic.deviceId || idx} value={mic.deviceId}>
-                        {mic.label || `Microphone ${idx + 1}`}
-                      </option>
-                    ))}
-                  </Select>
-                </div>
-
-                {/* Speaker Selection */}
-                <div>
-                  <label className="block mb-1.5 font-semibold uppercase tracking-wider text-slate-300 text-[11px] flex items-center gap-1.5">
-                    <Volume2 className="h-3.5 w-3.5 text-dl-blue" />
-                    Speaker Output (Hardware Playback)
-                  </label>
-                  <Select
-                    aria-label="Speaker output"
-                    className="!bg-[#282A2D] !text-white !border-white/15 w-full rounded-xl"
-                    value={selectedSpeakerId}
-                    onChange={(e) => void handleSpeakerChange(e.target.value)}
-                  >
-                    <option value="">Default System Speaker</option>
-                    {availableSpeakers.map((spk, idx) => (
-                      <option key={spk.deviceId || idx} value={spk.deviceId}>
-                        {spk.label || `Speaker ${idx + 1}`}
-                      </option>
-                    ))}
-                  </Select>
-                </div>
-
-                {/* Camera Selection */}
-                <div>
-                  <label className="block mb-1.5 font-semibold uppercase tracking-wider text-slate-300 text-[11px] flex items-center gap-1.5">
-                    <Camera className="h-3.5 w-3.5 text-dl-blue" />
-                    Camera Video Input
-                  </label>
-                  <Select
-                    aria-label="Camera video input"
-                    className="!bg-[#282A2D] !text-white !border-white/15 w-full rounded-xl"
-                    value={selectedCameraId}
-                    onChange={(e) => {
-                      setSelectedCameraId(e.target.value);
-                      if (cameraOn && !usingVirtualCamera) {
-                        void retryPhysicalCamera();
-                      }
-                    }}
-                  >
-                    <option value="">Default System Camera</option>
-                    {availableCameras.map((cam, idx) => (
-                      <option key={cam.deviceId || idx} value={cam.deviceId}>
-                        {cam.label || `Camera ${idx + 1}`}
-                      </option>
-                    ))}
-                  </Select>
-                </div>
-
-                {/* Audio Signal Processing (DSP) Toggles */}
-                <div className="pt-2 border-t border-white/10 space-y-2">
-                  <span className="block font-semibold uppercase tracking-wider text-slate-300 text-[11px]">
-                    Audio Signal Processing (DSP)
-                  </span>
-
-                  <label className="flex items-center justify-between p-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 cursor-pointer">
-                    <div>
-                      <span className="font-medium text-white block text-xs">Acoustic Echo Cancellation</span>
-                      <span className="text-[11px] text-slate-400">Prevents speaker audio echoing into microphone</span>
-                    </div>
-                    <input
-                      type="checkbox"
-                      checked={dspSettings.echoCancellation}
-                      onChange={(e) => {
-                        const updated = { ...dspSettings, echoCancellation: e.target.checked };
-                        setDspSettings(updated);
-                        void restartMicWithSettings({ dsp: updated });
-                      }}
-                      className="h-4 w-4 rounded accent-dl-blue"
-                    />
-                  </label>
-
-                  <label className="flex items-center justify-between p-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 cursor-pointer">
-                    <div>
-                      <span className="font-medium text-white block text-xs">Background Noise Suppression</span>
-                      <span className="text-[11px] text-slate-400">Reduces background fans, typing, and room hum</span>
-                    </div>
-                    <input
-                      type="checkbox"
-                      checked={dspSettings.noiseSuppression}
-                      onChange={(e) => {
-                        const updated = { ...dspSettings, noiseSuppression: e.target.checked };
-                        setDspSettings(updated);
-                        void restartMicWithSettings({ dsp: updated });
-                      }}
-                      className="h-4 w-4 rounded accent-dl-blue"
-                    />
-                  </label>
-
-                  <label className="flex items-center justify-between p-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 cursor-pointer">
-                    <div>
-                      <span className="font-medium text-white block text-xs">Automatic Gain Control (AGC)</span>
-                      <span className="text-[11px] text-slate-400">Stabilizes microphone volume levels</span>
-                    </div>
-                    <input
-                      type="checkbox"
-                      checked={dspSettings.autoGainControl}
-                      onChange={(e) => {
-                        const updated = { ...dspSettings, autoGainControl: e.target.checked };
-                        setDspSettings(updated);
-                        void restartMicWithSettings({ dsp: updated });
-                      }}
-                      className="h-4 w-4 rounded accent-dl-blue"
-                    />
-                  </label>
-                </div>
-              </div>
-            )}
-
-            <div className="flex justify-end pt-3 border-t border-white/10">
-              <Button
-                type="button"
-                onClick={() => setSettingsOpen(false)}
-                className="bg-dl-blue hover:bg-dl-blue-hover text-white rounded-xl px-5"
-              >
-                Done
-              </Button>
             </div>
           </div>
-        </div>
-      )}
-    </div>
+        )
+      }
+    </div >
   );
 }

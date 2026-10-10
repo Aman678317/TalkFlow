@@ -1,4 +1,6 @@
 """Automated cross-tenant isolation and BOLA / IDOR security tests:
+
+
 - Tenant A creates meetings, documents, glossaries, style profiles, translation memories, API keys, webhooks, prompts
 - Tenant B attempts to access, modify, export, or delete Tenant A's resources
 - Verifies that cross-tenant access returns 404 Not Found (never leaks resource existence via 403 or custom metadata)

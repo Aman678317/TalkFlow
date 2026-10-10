@@ -39,8 +39,18 @@ class SentenceTransformerEmbeddingProvider(BaseProvider):
                     except ImportError as e:
                         raise ProviderUnavailable(
                             "sentence_transformers requires `pip install gt-ai[embeddings]`") from e
-                    return SentenceTransformer(self.model_id, cache_folder=self.cache_dir)
-                self._model = await asyncio.to_thread(_load)
+                    try:
+                        return SentenceTransformer(self.model_id, cache_folder=self.cache_dir, local_files_only=True)
+                    except Exception:
+                        try:
+                            return SentenceTransformer(self.model_id, cache_folder=self.cache_dir)
+                        except Exception as e:
+                            raise ProviderUnavailable(f"sentence_transformers model {self.model_id} failed to load: {e}") from e
+                try:
+                    self._model = await asyncio.wait_for(asyncio.to_thread(_load), timeout=5.0)
+                except Exception as e:
+                    raise ProviderUnavailable(f"sentence_transformers model {self.model_id} unavailable: {e}") from e
+
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         await self._ensure()

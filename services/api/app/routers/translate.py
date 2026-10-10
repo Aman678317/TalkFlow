@@ -164,6 +164,8 @@ async def history(principal: Principal = Depends(rl_translate),
                   offset: int = Query(default=0, ge=0),
                   product: str = Query(default=""),
                   target_lang: str = Query(default="")):
+    if principal is None or not principal.org_id:
+        return {"items": [], "limit": limit, "offset": offset}
     q = select(M.TranslationSegment).where(
         M.TranslationSegment.org_id == principal.org_id,
         M.TranslationSegment.product.in_(["text", "chat"] if not product else [product]))
@@ -192,6 +194,8 @@ async def history(principal: Principal = Depends(rl_translate),
 @router.delete("/history", status_code=204)
 async def clear_history(principal: Principal = Depends(rl_translate),
                         db: AsyncSession = Depends(get_db)):
+    if principal is None or not principal.org_id:
+        raise AuthenticationError("Authentication required.")
     from sqlalchemy import delete as sa_delete
     q = sa_delete(M.TranslationSegment).where(
         M.TranslationSegment.org_id == principal.org_id,

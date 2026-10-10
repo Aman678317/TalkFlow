@@ -1,0 +1,16 @@
+feature,area,priority,original,clone,notes
+Landing page with CTA and product positioning,marketing,must,yes,yes,Implemented in apps/web/src/pages/Landing.tsx
+Sign up / log in to workspace,onboarding,must,yes,yes,Implemented in apps/web/src/pages/Login.tsx and Signup.tsx
+Dashboard overview and workspace navigation,workspace,must,yes,yes,Implemented in apps/web/src/pages/Dashboard.tsx
+Translate text with source/target language selection,translation,must,yes,yes,Implemented in apps/web/src/pages/Translate.tsx
+Auto-detect language and rewrite formality,translation,must,yes,yes,Implemented in apps/web/src/pages/Translate.tsx and Write.tsx
+AI writing assistant with tone/style controls,writing,must,yes,yes,Implemented in apps/web/src/pages/Write.tsx
+Real-time voice translation studio,voice,must,yes,yes,Implemented in apps/web/src/pages/Voice.tsx
+Create or join a multilingual meeting room,meetings,must,yes,yes,Implemented in apps/web/src/pages/Meetings.tsx and MeetingRoom.tsx
+Multilingual chat room experience,chat,must,yes,yes,Implemented in apps/web/src/pages/ChatRooms.tsx and ChatPage.tsx
+Upload DOCX/PPTX/XLSX/PDF/TXT files for translation,documents,must,yes,yes,Implemented in apps/web/src/pages/Documents.tsx
+Track translation history and transcript archive,history,must,yes,yes,Implemented in apps/web/src/pages/History.tsx
+Glossary and translation-memory management,glossaries,should,yes,yes,Implemented in apps/web/src/pages/Glossaries.tsx and TranslationMemory.tsx
+API key management and usage dashboard,developer,should,yes,yes,Implemented in apps/web/src/pages/ApiKeys.tsx and Usage.tsx
+Team / RBAC / billing controls,admin,should,yes,yes,Implemented in apps/web/src/pages/Team.tsx and Billing.tsx
+Admin analytics and settings,admin,could,yes,yes,Implemented in apps/web/src/pages/Admin.tsx and Settings.tsx
