@@ -9,7 +9,7 @@
       "root": "services/api",
       "framework": "fastapi",
       "entrypoint": "app.main:app",
-      "installCommand": "pip install -r requirements.txt && pip install ../../ai && python -c \"import shutil; shutil.copytree('../../ai/gt_ai', './gt_ai', dirs_exist_ok=True)\""
+      "installCommand": "pip install -r requirements.txt && pip install ../../ai && python -c \"import shutil; shutil.copytree('../../ai/gt_ai', './gt_ai', dirs_exist_ok=True); shutil.copytree('../../multi-agent-portfolio', './multi_agent_portfolio', dirs_exist_ok=True)\""
     },
     "connect": {
       "root": "apps/amazon-connect-v2v/webapp",
@@ -95,27 +95,6 @@
       "destination": {
         "service": "connect",
         "path": "/:path*"
-      }
-    },
-    {
-      "source": "/:page(voice|meetings|documents|dashboard|translate|write|agents|agent-studio|chat|history|glossaries|translation-memory|style-profiles|usage|billing|settings|team|admin|login|signup|docs)",
-      "destination": {
-        "service": "web",
-        "path": "/"
-      }
-    },
-    {
-      "source": "/:page(voice|meetings|documents|dashboard|translate|write|agents|agent-studio|chat|history|glossaries|translation-memory|style-profiles|usage|billing|settings|team|admin|login|signup|docs)/:sub*",
-      "destination": {
-        "service": "web",
-        "path": "/"
-      }
-    },
-    {
-      "source": "/:page(meeting|join)/:id*",
-      "destination": {
-        "service": "web",
-        "path": "/"
       }
     },
     {
