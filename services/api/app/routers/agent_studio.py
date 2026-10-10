@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -45,22 +46,28 @@ else:
     _PYTHON_BIN = str(_VENV_PYTHON)
 
 
+def _exec_bridge_sync(cmd: List[str], cwd: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        cmd,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=180,
+    )
+
+
 async def _run_bridge(action: str, input_text: str = "") -> Dict[str, Any]:
-    """Execute bridge.py asynchronously and parse delimited JSON output."""
+    """Execute bridge.py asynchronously via thread worker and parse delimited JSON output."""
     cmd = [_PYTHON_BIN, str(_BRIDGE_SCRIPT), "--action", action]
     if input_text:
         cmd.extend(["--input", input_text])
 
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            cwd=str(_PORTFOLIO_ROOT),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await proc.communicate()
-        raw_output = stdout.decode("utf-8", errors="replace")
-        err_output = stderr.decode("utf-8", errors="replace")
+        proc = await asyncio.to_thread(_exec_bridge_sync, cmd, str(_PORTFOLIO_ROOT))
+        raw_output = proc.stdout
+        err_output = proc.stderr
 
         if "__JSON_START__" in raw_output and "__JSON_END__" in raw_output:
             json_part = raw_output.split("__JSON_START__")[1].split("__JSON_END__")[0].strip()
