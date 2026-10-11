@@ -5,8 +5,61 @@
 - Tenant B attempts to access, modify, export, or delete Tenant A's resources
 - Verifies that cross-tenant access returns 404 Not Found (never leaks resource existence via 403 or custom metadata)
 """
+import os
 import uuid
 import pytest
+
+
+def _insert_global_style_profile(name: str) -> str:
+    """Insert a style profile with org_id NULL (= system default, see db/models.py)."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+    from app.db import models as M
+
+    url = os.environ["DATABASE_URL"].replace("+aiosqlite", "")
+    engine = create_engine(url)
+    try:
+        with Session(engine) as s:
+            sp = M.StyleProfile(org_id=None, name=name, kind="custom",
+                                config_json={"tone": "formal"}, status="active")
+            s.add(sp)
+            s.commit()
+            return str(sp.id)
+    finally:
+        engine.dispose()
+
+
+def test_global_style_profiles_usable_by_every_org(services_app_client, user, second_user):
+    # org_id NULL profiles are system defaults: listed and translatable by ANY org.
+    # Regression: the cross-tenant guard used to reject them, 404-ing every seeded style.
+    sp_id = _insert_global_style_profile(f"Global System {uuid.uuid4().hex[:6]}")
+
+    listed = services_app_client.get("/api/v1/style-profiles", headers=second_user["headers"])
+    assert listed.status_code == 200
+    assert sp_id in [s["id"] for s in listed.json()]
+
+    tr = services_app_client.post(
+        "/api/v1/translate",
+        headers=second_user["headers"],
+        json={"text": "Good morning team", "source_language": "en",
+              "target_language": "de", "style_profile_id": sp_id},
+    )
+    assert tr.status_code == 200, tr.text
+
+    # Org-owned profiles of ANOTHER tenant must still 404 (isolation preserved).
+    own = services_app_client.post(
+        "/api/v1/style-profiles",
+        headers=user["headers"],
+        json={"name": "Private Tone", "kind": "tone", "config": {"tone": "formal"}},
+    )
+    assert own.status_code == 201
+    other = services_app_client.post(
+        "/api/v1/translate",
+        headers=second_user["headers"],
+        json={"text": "Hello partner", "source_language": "en",
+              "target_language": "de", "style_profile_id": own.json()["id"]},
+    )
+    assert other.status_code == 404
 
 
 def test_cross_tenant_meeting_isolation(services_app_client, user, second_user):
