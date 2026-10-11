@@ -87,6 +87,7 @@ class Settings(BaseSettings):
     # --- livekit ---
     livekit_enabled: bool = False
     livekit_url: str = ""
+    livekit_public_url: str = ""  # browser-reachable wss:// URL
     livekit_api_key: str = ""
     livekit_api_secret: str = ""
 

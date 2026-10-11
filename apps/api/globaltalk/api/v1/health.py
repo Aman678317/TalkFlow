@@ -131,17 +131,13 @@ def components():
                     "last_check": datetime.now(timezone.utc).isoformat()})
 
     # Docling (optional parser upgrade)
-    docling = False
-    try:
-        import docling  # noqa: F401
-        docling = True
-    except ImportError:
-        pass
+    import importlib.util
+    docling_ok = importlib.util.find_spec("docling") is not None
     out.append({"component": "docling", "task": "document-parser", "provider": "docling",
-                "version": "", "status": "READY" if docling else "OPTIONAL",
-                "health": "installed" if docling else "built-in parsers active (pypdf/docx/pptx/openpyxl)",
+                "version": "", "status": "READY" if docling_ok else "OPTIONAL",
+                "health": "installed" if docling_ok else "built-in parsers active (pypdf/docx/pptx/openpyxl)",
                 "license_review_status": "MIT — REVIEWED", "gpu_required": False,
-                "loaded_model": docling, "latency": None,
+                "loaded_model": docling_ok, "latency": None,
                 "last_check": datetime.now(timezone.utc).isoformat()})
 
     return {"components": out,
