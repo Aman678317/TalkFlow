@@ -111,7 +111,8 @@ export type RealtimeEventType =
   | "tts.started" | "tts.chunk" | "tts.completed" | "translation.tts.ready" | "audio.published"
   | "caption.updated" | "language.changed"
   | "chat.message" | "chat.translation"
-  | "quality.degraded" | "quality.latency" | "translation.failed" | "translation.error"
+  | "media.state"
+  | "quality.degraded" | "quality.latency" | "latency.report" | "translation.failed" | "translation.error"
   | "reconnect.required" | "error" | "pong" | "signal";
 
 export interface RealtimeEvent {

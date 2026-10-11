@@ -212,6 +212,9 @@ export class WebRTCManager {
     };
 
     pc.ontrack = (e) => {
+      // P2P carries video only; live audio runs through the realtime
+      // translation pipeline (original relay + TTS) over the meeting socket.
+      if (e.track.kind === "audio") return;
       let stream = this.remoteStreams.get(remoteId);
       if (!stream) {
         stream = (e.streams && e.streams[0]) ? e.streams[0] : new MediaStream();
@@ -246,6 +249,10 @@ export class WebRTCManager {
     };
 
     return pc;
+  }
+
+  hasPeer(remoteId: string) {
+    return this.peers.has(remoteId);
   }
 
   removePeer(remoteId: string) {
