@@ -28,6 +28,9 @@ import Team from "./pages/Team";
 import SettingsPage from "./pages/Settings";
 import Admin from "./pages/Admin";
 import JoinCall from "./pages/JoinCall";
+import AgentStudio from "./pages/AgentStudio";
+import DocsPage from "./pages/DocsPage";
+import AppShell from "./components/layout/AppShell";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -116,6 +119,13 @@ export default function App() {
           <Route path="/join/:roomId" element={<JoinCall />} />
           {/* Full-screen Google Meet style meeting room (accessible to all participants via link, no auth wall) */}
           <Route path="/meeting/:id" element={<MeetingRoom />} />
+          {/* Public tool pages — linked from Landing & header; without these they bounced to / */}
+          <Route element={<AppShell />}>
+            <Route path="/agents" element={<AgentStudio />} />
+            <Route path="/agent-studio" element={<AgentStudio />} />
+            <Route path="/docs" element={<DocsPage />} />
+            <Route path="/api/docs" element={<DocsPage />} />
+          </Route>
           <Route element={<RequireAuth><Layout /></RequireAuth>}>
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/translate" element={<TranslatePage />} />

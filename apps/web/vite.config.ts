@@ -23,7 +23,17 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      "/api": { target: "http://127.0.0.1:8088", changeOrigin: true, ws: true, timeout: 60000, proxyTimeout: 60000 },
+      "/api": {
+        target: "http://127.0.0.1:8088",
+        changeOrigin: true,
+        ws: true,
+        timeout: 60000,
+        proxyTimeout: 60000,
+        // "/api" (no sub-path) is the SPA's API-keys page, not a backend call.
+        bypass(req) {
+          if (req.url === "/api" || req.url.startsWith("/api?")) return "/index.html";
+        },
+      },
       "/api-docs": { target: "http://127.0.0.1:8088", changeOrigin: true, timeout: 60000, proxyTimeout: 60000 },
       "/v2": { target: "http://127.0.0.1:8088", changeOrigin: true, timeout: 60000, proxyTimeout: 60000 },
       "/v3": { target: "http://127.0.0.1:8088", changeOrigin: true, timeout: 60000, proxyTimeout: 60000 },
