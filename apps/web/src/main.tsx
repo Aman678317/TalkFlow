@@ -128,7 +128,7 @@ export default function App() {
       <QueryClientProvider client={queryClient}>
         <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
           <Routes>
-            <Route path="/" element={<Landing />} />
+            <Route path="/" element={<RootGate />} />
             <Route path="/login" element={<Login />} />
             <Route path="/signup" element={<Signup />} />
             {/* Public Call Join Route: Recipient joins directly from their mobile or browser without authentication */}
