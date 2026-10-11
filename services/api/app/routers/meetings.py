@@ -77,13 +77,25 @@ async def list_meetings(principal: Principal = Depends(require_org_user),
     if status:
         q = q.where(M.Meeting.status == status)
     res = await db.execute(q.order_by(M.Meeting.created_at.desc()).limit(limit))
-    return [MeetingOut.model_validate(m) for m in res.scalars().all()]
+    return [_meeting_out(m) for m in res.scalars().all()]
+
+
+def _meeting_out(meeting: M.Meeting) -> MeetingOut:
+    """Serialize a meeting with the derived fields the web client expects."""
+    out = MeetingOut.model_validate(meeting)
+    out.transport = meeting.mode
+    out.has_summary = bool(meeting.summary_json)
+    return out
 
 
 async def _detail(db: AsyncSession, meeting: M.Meeting,
                   principal: Principal | None = None) -> MeetingDetailOut:
     participants = await meeting_service.list_participants(db, meeting.id)
     base = MeetingDetailOut.model_validate(meeting)
+    base.transport = meeting.mode
+    base.has_summary = bool(meeting.summary_json)
+    if meeting.mode == "livekit" and livekit_bridge.enabled():
+        base.livekit_url = livekit_bridge.public_url()
     base.participants = [
         ParticipantFullOut(
             participant=ParticipantOut.model_validate(p),
@@ -274,6 +286,45 @@ async def meeting_token(meeting_id: uuid.UUID,
             meeting.room_name, mine.livekit_identity or str(mine.id),
             mine.display_name, {"participant_id": str(mine.id)})
     return out
+
+
+@router.post("/meetings/{meeting_id}/media-token", response_model=dict)
+async def meeting_media_token(meeting_id: uuid.UUID,
+                              participant_id: uuid.UUID = Query(...),
+                              principal: Principal = Depends(require_org_user),
+                              db: AsyncSession = Depends(get_db)):
+    """LiveKit SFU credentials for an already-joined participant.
+
+    `/tokens` hands out a websocket ticket; the browser media layer instead
+    needs the {url, token} pair that livekit-client connects with.
+    """
+    if not livekit_bridge.enabled():
+        raise ValidationError(
+            "Video calling is not configured for this server.",
+            details={"code": "media_transport_unavailable"})
+    meeting = await _meeting_or_404(db, meeting_id, principal)
+    if meeting.mode != "livekit":
+        raise ValidationError(
+            "This meeting runs on the websocket transport.",
+            details={"code": "media_transport_unavailable", "mode": meeting.mode})
+    participants = await meeting_service.list_participants(db, meeting.id)
+    mine = next((p for p, _ in participants if p.id == participant_id), None)
+    if mine is None:
+        raise NotFoundError("Join the meeting first.")
+    # Mint only for the caller's own identity unless they manage members;
+    # otherwise any org user could join the room as someone else.
+    if not (principal.user_id and mine.user_id == principal.user_id):
+        principal.require("manage_members")
+    credentials = livekit_bridge.join_token(
+        meeting.room_name, mine.livekit_identity or str(mine.id),
+        mine.display_name,
+        {"meeting_id": str(meeting.id), "participant_id": str(mine.id)})
+    if credentials is None:
+        raise ValidationError("Video calling is not configured for this server.",
+                              details={"code": "media_transport_unavailable"})
+    return {"url": credentials["url"], "room": meeting.room_name,
+            "identity": mine.livekit_identity or str(mine.id),
+            "token": credentials["token"]}
 
 
 @router.put("/meetings/{meeting_id}/participants/{participant_id}/preferences",
