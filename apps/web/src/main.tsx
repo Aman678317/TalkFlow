@@ -102,6 +102,20 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+function RootGate() {
+  // Visitors flow straight into the workspace (RequireAuth demo auto-login →
+  // /dashboard). The landing page is only shown after an explicit sign-out,
+  // so "stay logged in" never bounces a returning user to a marketing page.
+  let loggedOut = false;
+  try {
+    loggedOut = localStorage.getItem("gt.logged_out") === "true";
+  } catch {
+    /* storage unavailable */
+  }
+  if (loggedOut) return <Landing />;
+  return <Navigate to="/dashboard" replace />;
+}
+
 export default function App() {
   const refreshMe = useAuth((s) => s.refreshMe);
   React.useEffect(() => {
@@ -112,7 +126,7 @@ export default function App() {
     <QueryClientProvider client={queryClient}>
       <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <Routes>
-          <Route path="/" element={<Landing />} />
+          <Route path="/" element={<RootGate />} />
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
           {/* Public Call Join Route: Recipient joins directly from their mobile or browser without authentication */}
