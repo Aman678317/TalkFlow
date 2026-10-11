@@ -1,4 +1,5 @@
-import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { AnimatePresence } from 'motion/react';
 import {
   BookOpen, Bot, CreditCard, FileText, Files, Gauge, History, KeyRound, Languages,
   LayoutDashboard, Mic, MessageSquare, Phone, Settings as SettingsIcon,
@@ -7,6 +8,7 @@ import {
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/stores/auth';
 import ErrorBoundary from '@/components/common/ErrorBoundary';
+import { PageTransition } from '@/components/Motion';
 
 const NAV = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -38,6 +40,7 @@ const PLATFORM = [
 
 export default function AppShell() {
   const navigate = useNavigate();
+  const location = useLocation();
   const user = useAuth((s) => s.user);
   const org = useAuth((s) => s.organizations[0]?.org);
   const isAdmin = useAuth((s) => s.user?.is_platform_admin);
@@ -112,7 +115,11 @@ export default function AppShell() {
         </header>
         <main className="min-w-0 flex-1 overflow-y-auto" id="main-content">
           <ErrorBoundary sectionName="PageOutlet">
-            <Outlet />
+            <AnimatePresence mode="wait" initial={false}>
+              <PageTransition key={location.pathname} className="h-full">
+                <Outlet />
+              </PageTransition>
+            </AnimatePresence>
           </ErrorBoundary>
         </main>
       </div>

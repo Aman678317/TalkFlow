@@ -2161,7 +2161,7 @@ export default function MeetingRoom() {
           <button
             type="button"
             onClick={toggleMic}
-            className={`h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center transition-all ${micOn
+            className={`h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center transition-all duration-150 active:scale-95 ${micOn
               ? "bg-[#3C4043] hover:bg-[#434649] text-white"
               : "bg-red-600 hover:bg-red-700 text-white ring-2 ring-red-500/30"
               }`}
@@ -2175,7 +2175,7 @@ export default function MeetingRoom() {
           <button
             type="button"
             onClick={toggleCamera}
-            className={`h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center transition-all relative ${cameraOn
+            className={`h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center transition-all duration-150 active:scale-95 relative ${cameraOn
               ? usingVirtualCamera
                 ? "bg-sky-600 hover:bg-sky-500 text-white ring-2 ring-sky-400/50 shadow-md shadow-sky-600/30"
                 : "bg-[#3C4043] hover:bg-[#434649] text-white"
@@ -2205,7 +2205,7 @@ export default function MeetingRoom() {
           <button
             type="button"
             onClick={() => setShowCaptionsOverlay((prev) => !prev)}
-            className={`h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center transition-all ${showCaptionsOverlay
+            className={`h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center transition-all duration-150 active:scale-95 ${showCaptionsOverlay
               ? "bg-dl-blue text-white shadow-md shadow-dl-blue/30"
               : "bg-[#3C4043] hover:bg-[#434649] text-white"
               }`}
@@ -2219,7 +2219,7 @@ export default function MeetingRoom() {
           <button
             type="button"
             onClick={toggleScreen}
-            className={`h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center transition-all ${screenOn
+            className={`h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center transition-all duration-150 active:scale-95 ${screenOn
               ? "bg-dl-blue text-white shadow-md shadow-dl-blue/30"
               : "bg-[#3C4043] hover:bg-[#434649] text-white"
               }`}
@@ -2233,7 +2233,7 @@ export default function MeetingRoom() {
           <button
             type="button"
             onClick={() => setSettingsOpen(true)}
-            className="h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center bg-[#3C4043] hover:bg-[#434649] text-white transition-all"
+            className="h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center bg-[#3C4043] hover:bg-[#434649] text-white transition-all duration-150 active:scale-95"
             aria-label="Language & Audio settings"
             title="Language & Audio Translation preferences"
           >

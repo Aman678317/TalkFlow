@@ -1,6 +1,9 @@
 import React from "react";
-import { NavLink, Outlet, useNavigate } from "react-router-dom";
+import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
+import { AnimatePresence, motion } from "motion/react";
 import { useAuth } from "../stores/auth";
+import { PageTransition } from "./Motion";
+import { springSoft } from "../lib/motion";
 
 import {
   LayoutDashboard, ArrowLeftRight, PenLine, Mic2, FileText,
@@ -98,6 +101,7 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
 export default function Layout() {
   const { user, org, role, logout } = useAuth();
   const nav = useNavigate();
+  const location = useLocation();
   const [open, setOpen] = React.useState(false);
   const [collapsedGroups, setCollapsedGroups] = React.useState<Record<string, boolean>>({
     Tools: false,
@@ -166,26 +170,39 @@ export default function Layout() {
                     </button>
                   )}
                 </div>
-                {!isCollapsed && items.map(({ to, label, Icon }) => (
-                  <NavLink
-                    key={to}
-                    to={to}
-                    onClick={() => setOpen(false)}
-                    className={({ isActive }) =>
-                      `group flex items-center gap-3 rounded-xl px-3 py-2 text-[13px] font-medium transition-all duration-150 mb-0.5 active:scale-[0.98]
-                       ${isActive
-                         ? "bg-dl-blue text-white shadow-xs"
-                         : "text-white/60 hover:bg-white/[.07] hover:text-white"}`
-                    }
-                  >
-                    {({ isActive }) => (
-                      <>
-                        <Icon className={`h-4 w-4 shrink-0 transition-colors ${isActive ? "text-white" : "text-white/40 group-hover:text-white/80"}`} />
-                        <span className="truncate">{label}</span>
-                      </>
-                    )}
-                  </NavLink>
-                ))}
+                <AnimatePresence initial={false}>
+                  {!isCollapsed && (
+                    <motion.div
+                      key="group-items"
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: "auto", opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={springSoft}
+                      className="overflow-hidden"
+                    >
+                      {items.map(({ to, label, Icon }) => (
+                        <NavLink
+                          key={to}
+                          to={to}
+                          onClick={() => setOpen(false)}
+                          className={({ isActive }) =>
+                            `group flex items-center gap-3 rounded-xl px-3 py-2 text-[13px] font-medium transition-all duration-200 mb-0.5 active:scale-[0.98]
+                             ${isActive
+                               ? "bg-dl-blue text-white shadow-xs"
+                               : "text-white/60 hover:bg-white/[.07] hover:text-white"}`
+                          }
+                        >
+                          {({ isActive }) => (
+                            <>
+                              <Icon className={`h-4 w-4 shrink-0 transition-colors ${isActive ? "text-white" : "text-white/40 group-hover:text-white/80"}`} />
+                              <span className="truncate">{label}</span>
+                            </>
+                          )}
+                        </NavLink>
+                      ))}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </div>
             );
           })}
@@ -223,17 +240,23 @@ export default function Layout() {
       </aside>
 
       {/* Overlay (mobile) */}
-      {open && (
-        <div
-          className="fixed inset-0 z-30 bg-black/40 backdrop-blur-sm lg:hidden transition-opacity"
-          onClick={() => setOpen(false)}
-        />
-      )}
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="fixed inset-0 z-30 bg-black/40 backdrop-blur-sm lg:hidden"
+            onClick={() => setOpen(false)}
+          />
+        )}
+      </AnimatePresence>
 
       {/* ── Main content ────────────────────────────────────────── */}
       <div className="flex min-w-0 flex-1 flex-col">
-        {/* Top bar */}
-        <header className="border-b border-slate-200/80 bg-white/95 backdrop-blur-sm sticky top-0 z-20">
+        {/* Top bar — frosted material, content scrolls under */}
+        <header className="material-bar sticky top-0 z-20">
           <div className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-4 py-2.5 lg:px-6">
             <button
               className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 lg:hidden transition-colors"
@@ -264,10 +287,14 @@ export default function Layout() {
           </div>
         </header>
 
-        {/* Page content */}
+        {/* Page content — keyed route transitions (skipped for reduced motion via MotionConfig) */}
         <main className="min-h-0 flex-1 overflow-y-auto">
           <ErrorBoundary>
-            <Outlet />
+            <AnimatePresence mode="wait" initial={false}>
+              <PageTransition key={location.pathname} className="h-full">
+                <Outlet />
+              </PageTransition>
+            </AnimatePresence>
           </ErrorBoundary>
         </main>
       </div>

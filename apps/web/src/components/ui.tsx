@@ -2,10 +2,12 @@
  * GlobalTalk AI design system (PDD §36).
  * Accessible primitives: focus rings, aria attributes, keyboard support.
  */
-import { forwardRef, useEffect, useRef, type ButtonHTMLAttributes,
+import { forwardRef, useEffect, useId, useRef, type ButtonHTMLAttributes,
          type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes,
          type TextareaHTMLAttributes } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
 import { cn } from '@/lib/utils';
+import { springSheet, springSnappy, TAP_TRANSITION, PRESS_SCALE, EASE_STANDARD } from '@/lib/motion';
 export { Field, SegmentedControl } from './ui/index';
 
 // ---------------------------------------------------------------------------
@@ -37,20 +39,29 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ variant = 'primary', size = 'md', loading, className, children, disabled, ...props }, ref) => (
-    <button
-      ref={ref}
-      className={cn(
-        'inline-flex items-center font-medium transition-colors select-none',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris-500 focus-visible:ring-offset-2',
-        'disabled:cursor-not-allowed',
-        VARIANTS[variant], SIZES[size], className)}
-      disabled={disabled || loading}
-      {...props}>
-      {loading && <Spinner className="h-4 w-4" />}
-      {children}
-    </button>
-  ));
+  ({ variant = 'primary', size = 'md', loading, className, children, disabled, ...props }, ref) => {
+    // motion.button redefines drag/animation handlers; buttons don't use them
+    const { onDrag, onDragStart, onDragEnd, onAnimationStart, onAnimationEnd,
+            onAnimationIteration, onTransitionEnd, ...rest } = props as ButtonHTMLAttributes<HTMLButtonElement> &
+      Record<'onDrag' | 'onDragStart' | 'onDragEnd' | 'onAnimationStart' | 'onAnimationEnd' |
+        'onAnimationIteration' | 'onTransitionEnd', unknown>;
+    return (
+      <motion.button
+        ref={ref}
+        whileTap={disabled || loading ? undefined : { scale: PRESS_SCALE }}
+        transition={TAP_TRANSITION}
+        className={cn(
+          'inline-flex items-center font-medium transition-colors select-none',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris-500 focus-visible:ring-offset-2',
+          'disabled:cursor-not-allowed',
+          VARIANTS[variant], SIZES[size], className)}
+        disabled={disabled || loading}
+        {...rest}>
+        {loading && <Spinner className="h-4 w-4" />}
+        {children}
+      </motion.button>
+    );
+  });
 Button.displayName = 'Button';
 
 // ---------------------------------------------------------------------------
@@ -151,8 +162,11 @@ export function Toggle({ checked, onChange, label, id }:
       className={cn('relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris-500 focus-visible:ring-offset-2',
         checked ? 'bg-iris-600' : 'bg-slate-300')}>
-      <span className={cn('inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform',
-        checked ? 'translate-x-6' : 'translate-x-1')} />
+      <motion.span
+        layout
+        transition={springSnappy}
+        className={cn('inline-block h-4 w-4 rounded-full bg-white shadow-sm',
+          checked ? 'ml-6' : 'ml-1')} />
     </button>
   );
 }
@@ -233,21 +247,30 @@ export function Modal({ open, onClose, title, children, wide }:
     focusables?.[0]?.focus();
     return () => document.removeEventListener('keydown', onKey);
   }, [open, onClose]);
-  if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog"
-         aria-modal="true" aria-label={typeof title === 'string' ? title : 'Dialog'}>
-      <div className="absolute inset-0 bg-slate-950/50 animate-fade-in" onClick={onClose} />
-      <div ref={ref}
-           className={cn('relative w-full rounded-2xl bg-white shadow-lift animate-slide-up',
-             wide ? 'max-w-3xl' : 'max-w-lg')}>
-        <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
-          <h2 className="text-base font-semibold text-slate-900">{title}</h2>
-          <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close dialog">✕</Button>
+    <AnimatePresence>
+      {open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog"
+             aria-modal="true" aria-label={typeof title === 'string' ? title : 'Dialog'}>
+          <motion.div className="absolute inset-0 bg-slate-950/50" onClick={onClose}
+               initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+               exit={{ opacity: 0 }} transition={{ duration: 0.2, ease: EASE_STANDARD }} />
+          <motion.div ref={ref}
+               initial={{ opacity: 0, scale: 0.96, y: 14 }}
+               animate={{ opacity: 1, scale: 1, y: 0 }}
+               exit={{ opacity: 0, scale: 0.97, y: 8, transition: { duration: 0.16, ease: 'easeIn' } }}
+               transition={springSheet}
+               className={cn('relative w-full rounded-2xl bg-white shadow-lift',
+                 wide ? 'max-w-3xl' : 'max-w-lg')}>
+            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+              <h2 className="text-base font-semibold tracking-title text-slate-900">{title}</h2>
+              <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close dialog">✕</Button>
+            </div>
+            <div className="px-5 py-4">{children}</div>
+          </motion.div>
         </div>
-        <div className="px-5 py-4">{children}</div>
-      </div>
-    </div>
+      )}
+    </AnimatePresence>
   );
 }
 
@@ -290,6 +313,7 @@ export function ErrorState({ title, detail, message, code, retry, onRetry }:
 export function Tabs({ tabs, active, onChange }:
   { tabs: Array<{ id: string; label: ReactNode }>; active: string;
     onChange: (id: string) => void }) {
+  const groupId = useId();
   return (
     <div role="tablist" aria-label="Tabs" className="flex gap-1 rounded-xl2 bg-slate-100 p-1">
       {tabs.map((t) => (
@@ -301,10 +325,15 @@ export function Tabs({ tabs, active, onChange }:
             if (e.key === 'ArrowRight') onChange(tabs[(i + 1) % tabs.length].id);
             if (e.key === 'ArrowLeft') onChange(tabs[(i - 1 + tabs.length) % tabs.length].id);
           }}
-          className={cn('rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
+          className={cn('relative rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris-500',
-            active === t.id ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800')}>
-          {t.label}
+            active === t.id ? 'text-slate-900' : 'text-slate-500 hover:text-slate-800')}>
+          {active === t.id && (
+            <motion.span layoutId={`tab-pill-${groupId}`}
+              transition={springSnappy}
+              className="absolute inset-0 rounded-lg bg-white shadow-sm" />
+          )}
+          <span className="relative z-10">{t.label}</span>
         </button>
       ))}
     </div>

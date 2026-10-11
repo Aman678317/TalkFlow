@@ -54,10 +54,17 @@ export default {
         mono: ['"JetBrains Mono"', "ui-monospace", "SFMono-Regular", "monospace"],
       },
       boxShadow: {
-        card: "0 1px 3px rgba(15,43,70,.06), 0 4px 12px rgba(15,43,70,.06)",
-        pop:  "0 8px 32px rgba(15,43,70,.14)",
+        card: "0 1px 2px rgba(15,43,70,.04), 0 4px 16px rgba(15,43,70,.06)",
+        pop:  "0 12px 40px rgba(15,43,70,.16)",
         "panel": "0 0 0 1px #E4E7EB",
         "xs": "0 1px 2px rgba(15,43,70,.05)",
+        // Apple-style layered elevation: tight contact shadow + soft ambient
+        lift: "0 1px 2px rgba(15,43,70,.06), 0 8px 24px rgba(15,43,70,.12)",
+        "lift-sm": "0 1px 2px rgba(15,43,70,.05), 0 4px 12px rgba(15,43,70,.08)",
+      },
+      letterSpacing: {
+        display: "-0.022em",
+        title: "-0.015em",
       },
       borderRadius: {
         xl2: "14px",
@@ -76,11 +83,21 @@ export default {
           from: { opacity: "0", transform: "translateY(-6px)" },
           to:   { opacity: "1", transform: "translateY(0)" },
         },
+        "slide-up": {
+          from: { opacity: "0", transform: "translateY(10px) scale(0.98)" },
+          to:   { opacity: "1", transform: "translateY(0) scale(1)" },
+        },
+        "pulse-soft": {
+          "0%, 100%": { opacity: "1" },
+          "50%": { opacity: "0.55" },
+        },
       },
       animation: {
         "pulse-ring": "pulse-ring 1.4s ease-out infinite",
         "fade-in": "fade-in 0.18s ease-out both",
         "slide-down": "slide-down 0.18s ease-out both",
+        "slide-up": "slide-up 0.28s cubic-bezier(0.16, 1, 0.3, 1) both",
+        "pulse-soft": "pulse-soft 1.8s ease-in-out infinite",
       },
     },
   },

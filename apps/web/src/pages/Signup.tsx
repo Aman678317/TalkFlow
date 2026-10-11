@@ -1,10 +1,12 @@
 import React from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { motion } from "motion/react";
 import { Logo } from "../components/Layout";
 import { Button, Field, Input } from "../components/ui";
 import { SocialAuthButtons } from "../components/auth/SocialAuthButtons";
 import { useAuth } from "../stores/auth";
 import { ApiError } from "../lib/api";
+import { springSoft } from "../lib/motion";
 
 export default function Signup() {
   const { signup, user, status } = useAuth();
@@ -43,10 +45,15 @@ export default function Signup() {
 
   return (
     <div className="flex min-h-full items-center justify-center bg-ink-50 p-6">
-      <div className="w-full max-w-sm">
+      <motion.div
+        className="w-full max-w-sm"
+        initial={{ opacity: 0, y: 16 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={springSoft}
+      >
         <div className="mb-8 flex flex-col items-center gap-2">
           <Logo className="h-10 w-10" />
-          <h1 className="text-xl font-bold text-ink-900">Create your workspace</h1>
+          <h1 className="text-xl font-bold tracking-title text-ink-900">Create your workspace</h1>
           <p className="text-sm text-ink-400">Free plan · no credit card</p>
         </div>
         <div className="gt-card space-y-4 p-6">
@@ -81,7 +88,7 @@ export default function Signup() {
           </p>
         </form>
       </div>
-    </div>
+    </motion.div>
   </div>
 );
 }
