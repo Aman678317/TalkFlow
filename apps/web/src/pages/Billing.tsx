@@ -2,9 +2,16 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { Badge, Button, Card } from "../components/ui";
 
-interface Invoice {
-  id: string; amount_cents: number; currency: string; status: string;
-  period_start?: string; period_end?: string; breakdown: Record<string, any>; created_at: string;
+interface BillingEvent {
+  id: string; kind: string; amount_cents: number; currency: string;
+  period: string; lines_json: { description?: string; amount_cents?: number }[];
+  created_at: string;
+}
+
+interface InvoicePreview {
+  period: string; plan: string; currency: string; total_cents: number;
+  lines: { description: string; amount_cents: number }[];
+  usage: Record<string, number>;
 }
 
 const PLANS = [
@@ -15,8 +22,9 @@ const PLANS = [
 ];
 
 export default function Billing() {
-  const invoicesQ = useQuery({ queryKey: ["invoices"], queryFn: () => api<Invoice[]>("/api/v1/billing/invoices") });
-  const previewQ = useQuery({ queryKey: ["billing-preview"], queryFn: () => api<any>("/api/v1/billing/checkout-preview", { method: "POST" }) });
+  const eventsQ = useQuery({ queryKey: ["billing-events"], queryFn: () => api<BillingEvent[]>("/api/v1/billing/events") });
+  const invoices = (eventsQ.data ?? []).filter((e) => e.kind === "invoice_created");
+  const previewQ = useQuery({ queryKey: ["billing-preview"], queryFn: () => api<InvoicePreview>("/api/v1/billing/preview-invoice") });
   const usageQ = useQuery({ queryKey: ["usage", 30], queryFn: () => api<any>("/api/v1/usage?days=30") });
   const currentPlan = usageQ.data?.plan ?? "free";
 
@@ -45,33 +53,28 @@ export default function Billing() {
       </div>
 
       {previewQ.data && (
-        <Card title="Current period estimate (from real metering)">
-          <div className="grid gap-4 sm:grid-cols-3">
+        <Card title={`Current period estimate — ${previewQ.data.period} (from real metering)`}>
+          <div className="grid gap-4 sm:grid-cols-2">
             <div>
-              <p className="text-[11px] uppercase tracking-wider text-ink-400">Base</p>
-              <p className="text-xl font-bold">${(previewQ.data.base_cents / 100).toFixed(2)}</p>
-            </div>
-            <div>
-              <p className="text-[11px] uppercase tracking-wider text-ink-400">Overage</p>
-              <p className="text-xl font-bold">${(previewQ.data.overage_cents / 100).toFixed(2)}</p>
+              <p className="text-[11px] uppercase tracking-wider text-ink-400">Plan</p>
+              <p className="text-xl font-bold capitalize text-ink-900">{previewQ.data.plan}</p>
             </div>
             <div>
               <p className="text-[11px] uppercase tracking-wider text-ink-400">Estimated total</p>
-              <p className="text-xl font-extrabold text-signal-700">${(previewQ.data.total_cents / 100).toFixed(2)}</p>
+              <p className="text-xl font-extrabold text-signal-700">
+                ${(previewQ.data.total_cents / 100).toFixed(2)} {previewQ.data.currency}
+              </p>
             </div>
           </div>
-          {Object.keys(previewQ.data.breakdown ?? {}).length > 0 && (
+          {previewQ.data.lines.length > 0 && (
             <table className="mt-4 w-full text-left text-xs">
               <thead><tr className="border-b border-ink-100 text-ink-400">
-                <th className="py-1.5">Dimension</th><th>Used</th><th>Included</th><th>Overage</th><th>Cost</th></tr></thead>
+                <th className="py-1.5">Line item</th><th className="text-right">Amount</th></tr></thead>
               <tbody>
-                {Object.entries<any>(previewQ.data.breakdown).map(([dim, b]) => (
-                  <tr key={dim} className="border-b border-ink-50">
-                    <td className="py-1.5 font-medium text-ink-700">{dim}</td>
-                    <td>{Math.round(b.used).toLocaleString()}</td>
-                    <td>{isFinite(b.included) ? Math.round(b.included).toLocaleString() : "∞"}</td>
-                    <td>{Math.round(b.overage).toLocaleString()}</td>
-                    <td>${(b.overage_cents / 100).toFixed(2)}</td>
+                {previewQ.data.lines.map((l, i) => (
+                  <tr key={i} className="border-b border-ink-50">
+                    <td className="py-1.5 font-medium text-ink-700">{l.description}</td>
+                    <td className="text-right">${(l.amount_cents / 100).toFixed(2)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -81,19 +84,18 @@ export default function Billing() {
       )}
 
       <Card title="Invoices">
-        {(invoicesQ.data ?? []).length === 0 ? (
+        {invoices.length === 0 ? (
           <p className="py-4 text-center text-xs text-ink-400">No invoices yet — invoices are generated at period close from metered usage.</p>
         ) : (
           <table className="w-full text-left text-sm">
             <thead><tr className="border-b border-ink-100 text-[11px] uppercase tracking-wider text-ink-400">
-              <th className="py-2">Date</th><th>Period</th><th>Amount</th><th>Status</th></tr></thead>
+              <th className="py-2">Date</th><th>Period</th><th>Amount</th></tr></thead>
             <tbody>
-              {(invoicesQ.data ?? []).map((inv) => (
+              {invoices.map((inv) => (
                 <tr key={inv.id} className="border-b border-ink-50">
                   <td className="py-2">{new Date(inv.created_at).toLocaleDateString()}</td>
-                  <td className="text-xs text-ink-400">{inv.period_start ? new Date(inv.period_start).toLocaleDateString() : "—"} → {inv.period_end ? new Date(inv.period_end).toLocaleDateString() : "—"}</td>
+                  <td className="text-xs text-ink-400">{inv.period}</td>
                   <td className="font-medium">${(inv.amount_cents / 100).toFixed(2)} {inv.currency}</td>
-                  <td><Badge tone={inv.status === "paid" ? "good" : "warn"}>{inv.status}</Badge></td>
                 </tr>
               ))}
             </tbody>

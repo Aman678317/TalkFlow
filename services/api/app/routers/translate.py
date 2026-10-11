@@ -55,7 +55,8 @@ async def translate(body: TranslateRequest,
     if principal and principal.org_id:
         if body.style_profile_id:
             sp = await db.get(M.StyleProfile, body.style_profile_id)
-            if not sp or sp.org_id != principal.org_id:
+            # Global profiles (org_id NULL) are intentionally listable and usable by every org.
+            if not sp or (sp.org_id is not None and sp.org_id != principal.org_id):
                 raise NotFoundError("Style profile not found.")
         if body.glossary_id:
             gl = await db.get(M.Glossary, body.glossary_id)

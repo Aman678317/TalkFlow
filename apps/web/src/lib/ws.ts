@@ -6,7 +6,7 @@
  * - heartbeat ping/pong with connection-quality estimate
  */
 import type { Preferences, RealtimeEvent } from "./types";
-import { getAccessToken } from "./api";
+import { getAccessToken, getApiBaseUrl } from "./api";
 
 export type BinaryFrameKind = "original" | "tts";
 export interface BinaryFrame {
@@ -53,6 +53,8 @@ export class MeetingSocket {
   private lastSequence = 0;
   private everJoined = false;
   private attempt = 0;
+  private quickFailures = 0;
+  private connectStartedAt = 0;
   private closedByUser = false;
   private pingTimer: number | undefined;
   /** utterance short-id → speaker participant id (from speech.started events) */
@@ -72,28 +74,33 @@ export class MeetingSocket {
     const params = new URLSearchParams();
     if (this.opts.ticket) {
       params.set("ticket", this.opts.ticket);
+    } else if (this.opts.joinToken) {
+      // An explicit guest key always wins over the tab's JWT so a signed-in
+      // user can open a separate guest seat (second person, same browser).
+      params.set("join_token", this.opts.joinToken);
     } else {
       const jwt = getAccessToken();
       if (jwt) {
         params.set("token", jwt);
       } else {
-        let jt = this.opts.joinToken;
-        if (!jt) {
-          try {
-            jt = sessionStorage.getItem(`gt_guest_${this.opts.meetingId}`) || undefined;
-            if (!jt) {
-              jt = `guest-${Math.random().toString(36).substring(2, 10)}${Date.now().toString(36)}`;
-              sessionStorage.setItem(`gt_guest_${this.opts.meetingId}`, jt);
-            }
-          } catch {
-            // ignore storage errors
+        let jt: string | undefined;
+        try {
+          jt = sessionStorage.getItem(`gt_guest_${this.opts.meetingId}`) || undefined;
+          if (!jt) {
+            jt = `guest-${Math.random().toString(36).substring(2, 10)}${Date.now().toString(36)}`;
+            sessionStorage.setItem(`gt_guest_${this.opts.meetingId}`, jt);
           }
+        } catch {
+          // ignore storage errors
         }
         if (jt) params.set("join_token", jt);
       }
     }
     const q = params.toString();
-    const rawBase = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() || (import.meta.env.PROD ? "https://talkflow-csbw.onrender.com" : "");
+    // Resolve the API host exactly like REST traffic does (api.ts). A Vercel
+    // preview build has no baked VITE_API_BASE_URL, so without this the REST
+    // calls would hit same-origin while the WS fell back to Render and failed.
+    const rawBase = getApiBaseUrl();
     let host = location.host;
     let customProto = proto;
     if (rawBase) {
@@ -117,6 +124,7 @@ export class MeetingSocket {
     const ws = new WebSocket(this.wsUrl());
     ws.binaryType = "arraybuffer";
     this.ws = ws;
+    this.connectStartedAt = Date.now();
 
     ws.onopen = () => {
       const p = this.opts.preferences;
@@ -154,6 +162,7 @@ export class MeetingSocket {
         evt.type === "session.resumed") {
         this.everJoined = true;
         this.attempt = 0;
+        this.quickFailures = 0;
         this.setState("joined");
         this.startHeartbeat();
       }
@@ -170,6 +179,16 @@ export class MeetingSocket {
       if (ev.code === 4401 || ev.code === 4404) {
         this.setState("error");
         return;
+      }
+      // A server that rejects the handshake pre-accept surfaces as 1006 with
+      // the close code lost. Never-joined quick failures mean the credential
+      // or room state is bad — stop after 5 instead of retrying forever.
+      if (!this.everJoined && Date.now() - this.connectStartedAt < 3_000) {
+        this.quickFailures += 1;
+        if (this.quickFailures >= 5) {
+          this.setState("error");
+          return;
+        }
       }
       this.scheduleReconnect();
     };

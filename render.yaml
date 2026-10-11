@@ -18,6 +18,10 @@ services:
         value: production
       - key: PORT
         value: 10000
+      # app.config rejects production startup without a strong SECRET_KEY
+      # (>=32 chars, non-default) — generate it in the Blueprint itself.
+      - key: SECRET_KEY
+        generateValue: true
       - key: DATABASE_URL
         sync: false
       - key: SUPABASE_URL
@@ -30,6 +34,10 @@ services:
         sync: false
       - key: JWT_SECRET
         generateValue: true
+      # Production validator requires REDIS_URL (distributed cache + queue);
+      # satisfied by the Redis instance declared below (same region).
+      - key: REDIS_URL
+        value: redis://default:${Redis.globaltalk-cache.password}@${Redis.globaltalk-cache.host}:${Redis.globaltalk-cache.port}
       - key: CORS_ORIGINS
         value: https://globaltalk-ai.vercel.app,https://feat-vercel-multi-service.vercel.app,http://localhost:5173
       - key: TRANSLATION_PROVIDER
@@ -41,4 +49,11 @@ services:
       - key: LANG_DETECT_PROVIDER
         value: auto
       - key: CACHE_BACKEND
-        value: memory
+        value: auto
+
+databases:
+  - type: redis
+    name: globaltalk-cache
+    region: oregon
+    plan: free
+    maxmemoryPolicy: allkeys-lru

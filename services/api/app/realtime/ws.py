@@ -119,7 +119,6 @@ async def realtime_ws(
                     await ws.close(code=4403, reason="Forbidden: not a member of the meeting organization")
                     return
                 dname = (user.name if user and user.name else (user.email.split("@")[0] if user else "Participant"))
-                from app.services import meeting_service
                 participant, _, _ = await meeting_service.join_meeting(
                     db, meeting, user_id=user_id, display_name=dname,
                     speak_lang="auto", hear_lang="en", audio_mode="translated"
@@ -323,9 +322,11 @@ async def realtime_ws(
                     {"participant_id": str(rp.participant_id)},
                     to=[v for v in session.participants.values() if v.connected])
             # Mark participant status as left in database so GET /participants stays clean
-            with contextlib.suppress(Exception):
+            try:
                 async with db_session() as db:
                     await meeting_service.leave_participant(db, rp.participant_id)
+            except Exception:
+                log.exception("failed to mark participant %s as left", rp.participant_id)
         log.info("ws closed for participant %s (session %s)", rp.participant_id,
                  session.session_id)
 
@@ -458,7 +459,6 @@ async def _handle_event(ws: WebSocket, session, rp: RtParticipant, event) -> Non
         audio_mode = data.get("audio_mode")
         captions = data.get("captions_enabled")
         async with db_session() as db:
-            from app.services import meeting_service
             pref = await meeting_service.update_preference(
                 db, rp.participant_id, speak_lang=speak, hear_lang=hear,
                 audio_mode=audio_mode, captions_enabled=captions)

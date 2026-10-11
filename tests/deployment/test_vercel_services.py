@@ -44,7 +44,10 @@ def test_vercel_rewrites_route_api_and_connect_before_the_web_catchall():
         "service": "connect",
         "path": "/:path*",
     }
-    assert rewrite_map["/(.*)"] == {"service": "web"}
+    # The web catch-all must fall back to /index.html so client-side routes with
+    # dynamic segments (/meeting/:id, /join/:roomId) resolve on a hard refresh
+    # instead of returning a 404 from the edge.
+    assert rewrite_map["/(.*)"] == {"service": "web", "path": "/index.html"}
     assert rewrites[-1]["source"] == "/(.*)"
 
 

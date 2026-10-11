@@ -5,12 +5,14 @@ import {
   ArrowLeftRight,
   BookOpen,
   Check,
+  Clock,
   Copy,
   Download,
   FileText,
   Mic,
   MicOff,
   Sparkles,
+  Trash2,
   Volume2,
   X,
   Upload,
@@ -21,6 +23,14 @@ import type { TranslateResponse } from "../lib/types";
 import { useLanguages } from "../hooks/useLanguages";
 import { Badge, ErrorState } from "../components/ui";
 import { toast } from "../stores/toasts";
+import {
+  RECENTS_LIMIT,
+  loadRecents,
+  relativeTime,
+  saveRecents,
+  withRecent,
+  type RecentTranslation,
+} from "../lib/recentTranslations";
 
 interface Glossary {
   id: string;
@@ -475,6 +485,9 @@ export default function TranslatePage() {
   const [isListening, setIsListening] = React.useState(false);
   const [recognitionObj, setRecognitionObj] = React.useState<any>(null);
 
+  // Recent translations (persisted client-side)
+  const [recents, setRecents] = React.useState<RecentTranslation[]>(() => loadRecents());
+
   // Dictionary
   const [dictData, setDictData] = React.useState<DictionaryEntry | null>(null);
   const [dictLoading, setDictLoading] = React.useState(false);
@@ -681,6 +694,82 @@ export default function TranslatePage() {
     setTimeout(() => URL.revokeObjectURL(url), 200);
   }
 
+  function commitRecent(res: TranslateResponse) {
+    const srcText = (res.source_text || "").trim();
+    const outText = (res.translated_text || "").trim();
+    if (!srcText || !outText) return;
+    if (res.quality_flags?.includes("untranslated_fallback")) return;
+    setRecents((prev) =>
+      withRecent(
+        prev,
+        {
+          sourceText: srcText,
+          translatedText: outText,
+          srcLang: res.source_language,
+          tgtLang: res.target_language,
+          ts: Date.now(),
+        },
+        RECENTS_LIMIT,
+      ),
+    );
+  }
+
+  function restoreRecent(r: RecentTranslation) {
+    setSrcLang(r.srcLang);
+    setTgtLang(r.tgtLang);
+    setSource(r.sourceText);
+  }
+
+  function removeRecent(r: RecentTranslation) {
+    setRecents((prev) => prev.filter((x) => !(x.ts === r.ts && x.sourceText === r.sourceText)));
+  }
+
+  function clearRecents() {
+    setRecents([]);
+  }
+
+  function clearAll() {
+    setSource("");
+    setResult(null);
+  }
+
+  // Persist recents whenever they change (keeps state updaters pure).
+  React.useEffect(() => {
+    saveRecents(recents);
+  }, [recents]);
+
+  // Commit a translation to recents once the text has settled (avoids per-keystroke spam).
+  React.useEffect(() => {
+    if (!result) return;
+    const snapshot = result;
+    const t = window.setTimeout(() => commitRecent(snapshot), 2000);
+    return () => window.clearTimeout(t);
+  }, [result]);
+
+  // DeepL-style keyboard shortcuts: swap languages, copy translation, clear.
+  React.useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && e.shiftKey && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        swap();
+      } else if (mod && e.shiftKey && e.key.toLowerCase() === "c") {
+        e.preventDefault();
+        copyOut();
+      } else if (e.key === "Escape") {
+        const el = document.activeElement as HTMLElement | null;
+        if (el && el.getAttribute("aria-label") === "Source text" && source) {
+          e.preventDefault();
+          clearAll();
+          el.blur();
+        }
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source, result, srcLang, tgtLang]);
+
   const activeGlossaries = (glossaries ?? []).filter((g) => g.status === "active");
   const caps = langs ?? [];
 
@@ -842,7 +931,8 @@ export default function TranslatePage() {
               </button>
             </div>
 
-            <span className="text-xs text-dl-faint select-none">
+            <span className="text-xs text-dl-faint select-none tabular-nums">
+              {source.trim() ? `${source.trim().split(/\s+/).length.toLocaleString()} words · ` : ""}
               {source.length.toLocaleString()} chars
             </span>
           </div>
@@ -1012,6 +1102,68 @@ export default function TranslatePage() {
           </div>
         </div>
       </div>
+
+      {/* ── Recent translations strip ───────────────────────────── */}
+      {recents.length > 0 && (
+        <div className="border-t border-dl-border bg-white px-6 py-3">
+          <div className="mb-2 flex items-center justify-between">
+            <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-dl-muted">
+              <Clock className="h-3.5 w-3.5" />
+              Recent translations
+              <span className="ml-1 hidden text-[11px] font-normal normal-case tracking-normal text-dl-faint sm:inline">
+                · click to restore · ⌘/Ctrl+Shift+K swap · ⌘/Ctrl+Shift+C copy · Esc clear
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={clearRecents}
+              className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-dl-faint hover:bg-dl-bg-alt hover:text-dl-navy transition-colors"
+              title="Clear all recent translations"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              Clear
+            </button>
+          </div>
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {recents.map((r) => (
+              <div
+                key={`${r.ts}-${r.sourceText}`}
+                className="group relative flex min-w-[220px] max-w-[280px] shrink-0 cursor-pointer flex-col rounded-xl border border-dl-border bg-[#FAFBFC] p-3 text-left transition-all hover:border-dl-blue/50 hover:bg-dl-blue-light/20 hover:shadow-xs"
+                onClick={() => restoreRecent(r)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    restoreRecent(r);
+                  }
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    removeRecent(r);
+                  }}
+                  className="absolute right-1.5 top-1.5 hidden h-5 w-5 items-center justify-center rounded-full text-dl-faint hover:bg-dl-border hover:text-dl-navy group-hover:flex"
+                  title="Remove"
+                  aria-label="Remove from recent translations"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+                <p className="truncate pr-5 text-[13px] font-medium text-dl-navy">{r.sourceText}</p>
+                <p className="truncate text-[13px] text-dl-muted">{r.translatedText}</p>
+                <div className="mt-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase text-dl-faint">
+                  <span className="rounded bg-white px-1.5 py-0.5 ring-1 ring-dl-border">{r.srcLang}</span>
+                  <ArrowLeftRight className="h-2.5 w-2.5" />
+                  <span className="rounded bg-white px-1.5 py-0.5 ring-1 ring-dl-border">{r.tgtLang}</span>
+                  <span className="ml-auto font-normal normal-case text-dl-faint">{relativeTime(r.ts)}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* ── Dictionary drawer ────────────────────────────────────── */}
       {showDict && (

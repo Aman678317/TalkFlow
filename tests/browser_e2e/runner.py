@@ -23,14 +23,21 @@ REPO = Path(__file__).resolve().parents[2]
 SCREENSHOTS_DIR = REPO / "tests" / "browser_e2e" / "screenshots"
 SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
 
-def resolve_browser_executable(candidates: tuple[Path, ...] | None = None) -> str:
-    """Find a Chromium-compatible Edge install on this Windows host.
+import shutil
 
-    Developer machines may have regular Edge, EdgeCore, or both.  Keep the
-    browser checklist runnable across those layouts instead of hard-coding one
-    version-specific install location.
+def resolve_browser_executable(candidates: tuple[Path, ...] | None = None) -> str:
+    """Find a Chromium-compatible browser (Edge / Chrome / Chromium) install.
+
+    Developer machines or CI environments may have regular Edge, Chrome, or
+    Chromium on Windows or Linux. Keep the browser checklist runnable across
+    those layouts.
     """
     if candidates is None:
+        for cmd in ("msedge", "google-chrome", "chromium", "chromium-browser"):
+            found = shutil.which(cmd)
+            if found:
+                return found
+
         edgecore_root = Path(r"C:\Program Files (x86)\Microsoft\EdgeCore")
         candidates = (
             Path(r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"),
@@ -38,13 +45,17 @@ def resolve_browser_executable(candidates: tuple[Path, ...] | None = None) -> st
             *sorted(edgecore_root.glob("*/msedge.exe"), reverse=True),
         )
     for candidate in candidates:
-        if candidate.is_file():
-            return str(candidate)
+        candidate_path = Path(candidate)
+        if candidate_path.is_file():
+            return str(candidate_path)
     searched = ", ".join(str(candidate) for candidate in candidates)
-    raise FileNotFoundError(f"Microsoft Edge was not found. Searched: {searched}")
+    raise FileNotFoundError(f"Microsoft Edge or Chromium browser was not found. Searched: {searched}")
 
 
-EDGE_PATH = resolve_browser_executable()
+try:
+    EDGE_PATH = resolve_browser_executable()
+except FileNotFoundError:
+    EDGE_PATH = None
 BASE_URL = "http://localhost:5173"
 API_URL = "http://127.0.0.1:8088"
 
