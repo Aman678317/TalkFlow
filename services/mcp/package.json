@@ -1,0 +1,19 @@
+{
+  "name": "@globaltalk/mcp-server",
+  "version": "0.1.0",
+  "description": "Stdio MCP server exposing GlobalTalk AI (TalkFlow) translation, document translation, rephrasing, language discovery, glossary and style-profile lookup as MCP tools.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "talkflow-mcp-server": "src/index.mjs"
+  },
+  "main": "src/index.mjs",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node src/index.mjs",
+    "smoke": "node test/smoke.mjs"
+  },
+  "dependencies": {}
+}
