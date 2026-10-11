@@ -6,7 +6,7 @@
  * - heartbeat ping/pong with connection-quality estimate
  */
 import type { Preferences, RealtimeEvent } from "./types";
-import { getAccessToken } from "./api";
+import { getAccessToken, getApiBaseUrl } from "./api";
 
 export type BinaryFrameKind = "original" | "tts";
 export interface BinaryFrame {
@@ -97,7 +97,10 @@ export class MeetingSocket {
       }
     }
     const q = params.toString();
-    const rawBase = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() || (import.meta.env.PROD ? "https://talkflow-csbw.onrender.com" : "");
+    // Resolve the API host exactly like REST traffic does (api.ts). A Vercel
+    // preview build has no baked VITE_API_BASE_URL, so without this the REST
+    // calls would hit same-origin while the WS fell back to Render and failed.
+    const rawBase = getApiBaseUrl();
     let host = location.host;
     let customProto = proto;
     if (rawBase) {
