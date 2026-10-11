@@ -106,7 +106,7 @@ export default function Meetings() {
   }
 
   async function copyInvite(m: Meeting) {
-    const url = `${location.origin}/meeting/${m.id}?join=${m.join_token}`;
+    const url = `${location.origin}/meeting/${m.id}`;
     await navigator.clipboard.writeText(url);
     setJoinUrl(url);
     setCopiedId(m.id);
