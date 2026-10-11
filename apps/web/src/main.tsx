@@ -2,6 +2,7 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { MotionConfig } from "motion/react";
 import "./index.css";
 import Layout from "./components/Layout";
 import { ToastHost } from "./stores/toast";
