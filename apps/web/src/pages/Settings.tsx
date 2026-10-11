@@ -6,7 +6,7 @@ import { useAuth } from "../stores/auth";
 import { useToasts } from "../stores/toast";
 import { useLanguages } from "../hooks/useLanguages";
 
-interface SessionRow { id: string; user_agent: string; ip_address: string; created_at: string; last_seen_at: string; revoked: boolean; }
+interface SessionRow { id: string; device_info: string; created_at: string; last_seen_at: string | null; revoked_at: string | null; }
 
 export default function SettingsPage() {
   const { user, org } = useAuth();
@@ -14,25 +14,32 @@ export default function SettingsPage() {
   const { data: langs } = useLanguages();
   const [lang, setLang] = React.useState(user?.default_language ?? "en");
   const [pw, setPw] = React.useState({ token: "", password: "" });
+  const [resetStarted, setResetStarted] = React.useState(false);
 
-  const sessionsQ = useQuery({ queryKey: ["sessions"], queryFn: () => api<SessionRow[]>("/api/v1/auth/sessions") });
-  const orgQ = useQuery({ queryKey: ["org"], queryFn: () => api<any>("/api/v1/org") });
+  const sessionsQ = useQuery({ queryKey: ["sessions"], queryFn: () => api<SessionRow[]>("/api/v1/auth/me/sessions") });
+  const orgQ = useQuery({ queryKey: ["org"], queryFn: () => api<any>("/api/v1/organizations/current") });
 
   async function requestReset() {
     if (!user) return;
-    const r = await api<any>("/api/v1/auth/password-reset", { method: "POST", body: { email: user.email } });
-    if (r.dev_token) {
-      setPw({ token: r.dev_token, password: "" });
-      push({ kind: "info", title: "Reset token generated (dev mode)", body: "In production this is emailed, never shown." });
-    } else {
-      push({ kind: "success", title: "If the account exists, a reset link has been sent" });
+    try {
+      // Backend takes the email as a query param and never reveals whether the account exists.
+      await api("/api/v1/auth/password-reset/request?email=" + encodeURIComponent(user.email), { method: "POST" });
+      setResetStarted(true);
+      push({ kind: "info", title: "Reset link issued", body: "In local dev the token is printed in the backend log — paste it below to finish." });
+    } catch (e: any) {
+      push({ kind: "error", title: "Could not start reset", body: e.message });
     }
   }
   async function confirmReset(e: React.FormEvent) {
     e.preventDefault();
-    await api("/api/v1/auth/password-reset/confirm", { method: "POST", body: { token: pw.token, new_password: pw.password } });
-    push({ kind: "success", title: "Password updated", body: "All sessions were revoked — sign in again." });
-    setPw({ token: "", password: "" });
+    try {
+      await api("/api/v1/auth/password-reset/confirm", { method: "POST", body: { token: pw.token, new_password: pw.password } });
+      push({ kind: "success", title: "Password updated", body: "All sessions were revoked — sign in again." });
+      setPw({ token: "", password: "" });
+      setResetStarted(false);
+    } catch (e: any) {
+      push({ kind: "error", title: "Reset failed", body: e.message });
+    }
   }
 
   return (
@@ -72,8 +79,12 @@ export default function SettingsPage() {
           <Button variant="secondary" size="sm" onClick={requestReset}>Start password reset</Button>
           <span className="text-xs text-ink-400">Resets revoke every active session.</span>
         </div>
-        {pw.token && (
+        {resetStarted && (
           <form className="mt-3 flex flex-wrap items-end gap-2" onSubmit={confirmReset}>
+            <Field label="Reset token">
+              <Input required placeholder="paste token from backend log" value={pw.token}
+                     onChange={(e) => setPw({ ...pw, token: e.target.value })} />
+            </Field>
             <Field label="New password">
               <Input type="password" required minLength={8} value={pw.password}
                      onChange={(e) => setPw({ ...pw, password: e.target.value })} />
@@ -86,14 +97,14 @@ export default function SettingsPage() {
       <Card title="Active sessions (device tracking)">
         {(sessionsQ.data ?? []).length === 0 ? <p className="text-xs text-ink-400">No sessions recorded.</p> : (
           <table className="w-full text-left text-xs">
-            <thead><tr className="border-b border-ink-100 text-ink-400"><th className="py-1.5">Device</th><th>IP</th><th>Last seen</th><th>State</th></tr></thead>
+            <thead><tr className="border-b border-ink-100 text-ink-400"><th className="py-1.5">Device</th><th>Started</th><th>Last seen</th><th>State</th></tr></thead>
             <tbody>
               {(sessionsQ.data ?? []).map((s) => (
                 <tr key={s.id} className="border-b border-ink-50">
-                  <td className="max-w-[240px] truncate py-1.5">{s.user_agent || "unknown"}</td>
-                  <td className="font-mono">{s.ip_address || "—"}</td>
-                  <td>{new Date(s.last_seen_at).toLocaleString()}</td>
-                  <td>{s.revoked ? <Badge tone="bad">revoked</Badge> : <Badge tone="good">active</Badge>}</td>
+                  <td className="max-w-[240px] truncate py-1.5">{s.device_info || "unknown"}</td>
+                  <td>{new Date(s.created_at).toLocaleDateString()}</td>
+                  <td>{s.last_seen_at ? new Date(s.last_seen_at).toLocaleString() : "—"}</td>
+                  <td>{s.revoked_at ? <Badge tone="bad">revoked</Badge> : <Badge tone="good">active</Badge>}</td>
                 </tr>
               ))}
             </tbody>
