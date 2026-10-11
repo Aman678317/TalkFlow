@@ -33,8 +33,13 @@ jobs:
           pip install -r services/api/requirements.txt
           pip install greenlet prometheus-client
           pip install ruff
-      - name: Lint (ruff)
-        run: ruff check apps/api ai services scripts --select E,F,W --ignore E501,E402,W505 || true
+      - name: Lint (ruff, blocking)
+        run: ruff check apps/api ai services scripts --select E9,F --ignore F401,F841,F541
+      - name: Lint backlog (unused imports, ambiguous names, formatting)
+        # Reported on every run but non-blocking; fold into the step above as the
+        # repo clears them. Some F401 hits are deliberate re-exports (ai.bootstrap).
+        continue-on-error: true
+        run: ruff check apps/api ai services scripts --select E,F,W --ignore E501,E402,W505
       - name: Unit + integration tests (SQLite fast lane)
         env:
           APP_ENV: test
@@ -84,7 +89,7 @@ jobs:
         run: python -m pytest tests/realtime -q
       - name: Verify AI stack report
         env: { MODEL_CACHE_PATH: "${{ runner.temp }}/models" }
-        run: python scripts/verify_ai_stack.py || true
+        run: python scripts/verify_ai_stack.py
 
   frontend:
     runs-on: ubuntu-latest
