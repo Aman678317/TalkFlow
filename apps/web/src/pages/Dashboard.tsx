@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowRight, Languages, Mic, Video, FileText, Activity, Clock, Globe } from "lucide-react";
 import { api } from "../lib/api";
 import { Button, Skeleton } from "../components/ui";
+import { Stagger, StaggerItem } from "../components/Motion";
 import { useAuth } from "../stores/auth";
 import { useLanguages } from "../hooks/useLanguages";
 
@@ -89,11 +90,11 @@ export default function Dashboard() {
       </div>
 
       {/* KPI Stats Grid */}
-      <div className="grid grid-cols-2 gap-3.5 lg:grid-cols-4">
+      <Stagger className="grid grid-cols-2 gap-3.5 lg:grid-cols-4">
         {stats.map((s) => {
           const Icon = s.icon;
           return (
-            <div key={s.label} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xs">
+            <StaggerItem key={s.label} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xs transition-shadow duration-200 hover:shadow-lift-sm">
               <div className="flex items-center justify-between mb-2">
                 <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">{s.label}</p>
                 <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-slate-50 text-slate-500">
@@ -105,15 +106,15 @@ export default function Dashboard() {
               ) : (
                 <p className="text-2xl font-bold text-slate-900 font-mono tracking-tight">{s.value}</p>
               )}
-            </div>
+            </StaggerItem>
           );
         })}
-      </div>
+      </Stagger>
 
       {/* Workspace Activity Cards */}
-      <div className="grid gap-5 lg:grid-cols-2">
+      <Stagger className="grid gap-5 lg:grid-cols-2">
         {/* Recent Translations Card */}
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
+        <StaggerItem className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
           <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-3">
             <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
               <Languages className="h-4 w-4 text-dl-blue" /> Recent translations
@@ -147,10 +148,10 @@ export default function Dashboard() {
               ))}
             </ul>
           )}
-        </div>
+        </StaggerItem>
 
         {/* Recent Meetings Card */}
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
+        <StaggerItem className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
           <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-3">
             <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
               <Video className="h-4 w-4 text-dl-blue" /> Recent meetings
@@ -191,10 +192,10 @@ export default function Dashboard() {
               ))}
             </ul>
           )}
-        </div>
+        </StaggerItem>
 
         {/* Documents Summary Card */}
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
+        <StaggerItem className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
           <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-3">
             <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
               <FileText className="h-4 w-4 text-dl-blue" /> Documents
@@ -232,10 +233,10 @@ export default function Dashboard() {
               ))}
             </ul>
           )}
-        </div>
+        </StaggerItem>
 
         {/* Supported Languages Card */}
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
+        <StaggerItem className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
           <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-3">
             <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
               <Globe className="h-4 w-4 text-dl-blue" /> Language capabilities
@@ -260,8 +261,8 @@ export default function Dashboard() {
           <p className="mt-3 text-[11px] leading-relaxed text-slate-400">
             Capabilities are validated per deployment. A language is only shown as supported when models are installed and healthy. 🔊 = translated voice available.
           </p>
-        </div>
-      </div>
+        </StaggerItem>
+      </Stagger>
     </div>
   );
 }

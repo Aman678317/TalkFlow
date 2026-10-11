@@ -1,6 +1,7 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { motion } from "motion/react";
 import {
   ArrowLeftRight,
   BookOpen,
@@ -81,6 +82,7 @@ function TabSwitcher({ active, onChange, tabs }: {
   onChange: (v: string) => void;
   tabs: { value: string; label: string; icon?: React.ReactNode; badge?: React.ReactNode }[];
 }) {
+  const groupId = React.useId();
   return (
     <div className="flex items-center gap-0.5" role="tablist">
       {tabs.map((t) => (
@@ -90,16 +92,25 @@ function TabSwitcher({ active, onChange, tabs }: {
           aria-selected={active === t.value}
           onClick={() => onChange(t.value)}
           className={`
-            inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-[13px] font-medium
-            transition-all duration-150
+            relative inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-[13px] font-medium
+            transition-colors duration-150 active:scale-[0.98]
             ${active === t.value
-              ? "bg-white text-dl-navy shadow-xs border border-dl-border"
+              ? "text-dl-navy"
               : "text-dl-muted hover:bg-white/60 hover:text-dl-navy"}
           `}
         >
-          {t.icon}
-          {t.label}
-          {t.badge}
+          {active === t.value && (
+            <motion.span
+              layoutId={`tabswitcher-${groupId}`}
+              transition={{ type: "spring", bounce: 0, duration: 0.3 }}
+              className="absolute inset-0 rounded-lg border border-dl-border bg-white shadow-xs"
+            />
+          )}
+          <span className="relative z-10 inline-flex items-center gap-1.5">
+            {t.icon}
+            {t.label}
+            {t.badge}
+          </span>
         </button>
       ))}
     </div>
@@ -122,7 +133,7 @@ function LangBar({
   right?: React.ReactNode;
 }) {
   return (
-    <div className="flex items-center justify-between gap-2 border-b border-dl-border bg-[#FAFBFC] px-4 py-2.5">
+    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-dl-border bg-[#FAFBFC] px-4 py-2.5">
       <div className="flex flex-wrap items-center gap-0.5">
         {showAuto && (
           <button
@@ -774,7 +785,7 @@ export default function TranslatePage() {
   const caps = langs ?? [];
 
   return (
-    <div className="flex flex-col h-full bg-[#F8F9FA]">
+    <div className="flex flex-col min-h-full lg:h-full bg-[#F8F9FA]">
 
       {/* ── Top mode switcher bar (Desi style) ─────────────────── */}
       <div className="bg-white border-b border-dl-border px-6 py-2.5 flex flex-wrap items-center justify-between gap-3">
@@ -963,7 +974,7 @@ export default function TranslatePage() {
             onSelect={setTgtLang}
             langs={caps.filter((c: any) => c.translation_supported)}
             right={
-              <div className="flex items-center gap-0.5 rounded-lg bg-dl-border/60 p-0.5">
+              <div className="ml-auto flex items-center gap-0.5 rounded-lg bg-dl-border/60 p-0.5">
                 {(["default", "formal", "informal"] as const).map((mode) => (
                   <button
                     key={mode}
