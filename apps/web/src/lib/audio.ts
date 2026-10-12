@@ -186,6 +186,8 @@ export interface PlayQueueOptions {
   chunkIndex?: number;
   utteranceId?: string;
   speakerId?: string;
+  /** Which transport delivered this chunk. Binary is primary, JSON is the fallback. */
+  source?: "binary" | "json";
 }
 
 interface PlayQueueItem {
@@ -200,14 +202,33 @@ interface PlayQueueItem {
 
 /** Sequential audio playback queue with utterance-scoped cancellation and sequence ordering. */
 export class AudioPlayer {
+  /** Grace period for the binary chunk to arrive before the JSON fallback plays it. */
+  static readonly JSON_FALLBACK_GRACE_MS = 350;
+  /** Bound on the cross-transport dedup registry (FIFO eviction). */
+  static readonly MAX_DELIVERIES = 512;
+
   private ctx: AudioContext;
   private current: AudioBufferSourceNode | null = null;
   private queue: PlayQueueItem[] = [];
   private playingTag: string | null = null;
   private lastPlayedSeqPerSpeaker: Map<string, number> = new Map();
+  /** (tag, chunkIndex) -> transport that actually enqueued it. Bounded by MAX_DELIVERIES. */
+  private deliveredChunks: Map<string, "binary" | "json"> = new Map();
+  private pendingDeliveries: Map<string, ReturnType<typeof setTimeout>> = new Map();
+  private playedCount = 0;
 
-  constructor() {
+  constructor(private onPlaybackError?: (message: string) => void) {
     this.ctx = new AudioContext();
+  }
+
+  /** Decode/resume failures must reach the UI — a silent player is the bug we are fixing. */
+  private reportPlaybackError(err: unknown, stage: string) {
+    const name = err instanceof Error ? err.name : "PlaybackError";
+    const message =
+      name === "NotAllowedError"
+        ? "Browser blocked audio playback — tap anywhere once to allow translated speech."
+        : `Translated audio could not be ${stage}.`;
+    this.onPlaybackError?.(message);
   }
 
   async resumeContext() {
@@ -245,8 +266,15 @@ export class AudioPlayer {
       }
     }
 
-    const buffer = await this.ctx.decodeAudioData(bytes.slice().buffer as ArrayBuffer);
-    this.queue = this.queue.filter((q) => q.tag !== tag);
+    let buffer: AudioBuffer;
+    try {
+      buffer = await this.ctx.decodeAudioData(bytes.slice().buffer as ArrayBuffer);
+    } catch (err) {
+      this.reportPlaybackError(err, "decoded");
+      throw err;
+    }
+    // NOTE: no same-tag eviction here. Earlier chunks of the same utterance are valid
+    // audio that has not played yet; bulk removal is `cancelTag`'s job only.
     this.queue.push({
       buffer,
       tag,
@@ -289,6 +317,13 @@ export class AudioPlayer {
 
   /** Cancel everything belonging to an utterance (stale output detection). */
   cancelTag(tag: string) {
+    const prefix = `${tag}:`;
+    for (const key of [...this.pendingDeliveries.keys()]) {
+      if (key.startsWith(prefix)) this.cancelDelivery(key);
+    }
+    for (const key of [...this.deliveredChunks.keys()]) {
+      if (key.startsWith(prefix)) this.deliveredChunks.delete(key);
+    }
     this.queue = this.queue.filter((q) => q.tag !== tag);
     if (this.playingTag === tag && this.current) {
       this.current.stop();
@@ -302,10 +337,98 @@ export class AudioPlayer {
     this.queue = this.queue.filter((q) => q.speakerId !== speakerId);
   }
 
+  /**
+   * Deliver one translated TTS chunk, exactly once.
+   *
+   * The server sends every chunk on two transports (binary frame + JSON
+   * `tts.chunk`). Binary is primary; a JSON chunk is held briefly and only
+   * enqueued if the binary half never shows up. Whichever transport wins, the
+   * `(tag, chunkIndex)` key is recorded so the loser is dropped.
+   */
+  async deliver(
+    bytes: Uint8Array,
+    tag: string,
+    opts: PlayQueueOptions,
+    onDone?: () => void
+  ): Promise<void> {
+    const key = `${tag}:${opts.chunkIndex ?? 0}`;
+    const source = opts.source ?? "binary";
+    const winner = this.deliveredChunks.get(key);
+    if (winner) {
+      this.cancelDelivery(key);
+      return;
+    }
+    if (source === "json") {
+      // Await the binary half for one grace period before falling back.
+      const timer = setTimeout(() => {
+        this.pendingDeliveries.delete(key);
+        void this.enqueueDelivered(key, source, bytes, tag, opts, onDone);
+      }, AudioPlayer.JSON_FALLBACK_GRACE_MS);
+      this.pendingDeliveries.set(key, timer);
+      return;
+    }
+    await this.enqueueDelivered(key, source, bytes, tag, opts, onDone);
+  }
+
+  private async enqueueDelivered(
+    key: string,
+    source: "binary" | "json",
+    bytes: Uint8Array,
+    tag: string,
+    opts: PlayQueueOptions,
+    onDone?: () => void
+  ) {
+    if (this.deliveredChunks.has(key)) return;
+    this.rememberDelivery(key, source);
+    await this.enqueueWav(bytes, tag, opts, onDone);
+  }
+
+  private cancelDelivery(key: string) {
+    const timer = this.pendingDeliveries.get(key);
+    if (timer) {
+      clearTimeout(timer);
+      this.pendingDeliveries.delete(key);
+    }
+  }
+
+  private rememberDelivery(key: string, source: "binary" | "json") {
+    if (this.deliveredChunks.size >= AudioPlayer.MAX_DELIVERIES) {
+      const oldest = this.deliveredChunks.keys().next().value;
+      if (oldest !== undefined) this.deliveredChunks.delete(oldest);
+    }
+    this.deliveredChunks.set(key, source);
+  }
+
+  /** Test/inspection hook: how many decoded chunks are waiting to play. */
+  debugQueueLength(): number {
+    return this.queue.length;
+  }
+
+  /** Test/inspection hook: how many chunks actually reached an AudioBufferSourceNode. */
+  debugPlayedCount(): number {
+    return this.playedCount;
+  }
+
+  /** Stop the current source and drop everything queued (barge-in, language change). */
+  async stopAll(): Promise<void> {
+    for (const timer of this.pendingDeliveries.values()) clearTimeout(timer);
+    this.pendingDeliveries.clear();
+    this.queue = [];
+    if (this.current) {
+      this.current.onended = null;
+      this.current.stop();
+      this.current = null;
+      this.playingTag = null;
+    }
+  }
+
   private async playNext(onDone?: () => void) {
     if (this.current) return;
     const item = this.queue.shift();
-    if (!item) return;
+    if (!item) {
+      onDone?.();
+      return;
+    }
 
     if (item.speakerId && item.sequence > 0) {
       this.lastPlayedSeqPerSpeaker.set(
@@ -314,23 +437,34 @@ export class AudioPlayer {
       );
     }
 
-    await this.resumeContext();
-    const src = this.ctx.createBufferSource();
-    src.buffer = item.buffer;
-    src.connect(this.ctx.destination);
-    this.current = src;
-    this.playingTag = item.tag;
-    src.onended = () => {
+    // A rejected resume() (autoplay block) or a failed start() must not kill the
+    // player: report it, release the slot, and let the next enqueue retry.
+    try {
+      await this.resumeContext();
+      const src = this.ctx.createBufferSource();
+      src.buffer = item.buffer;
+      src.connect(this.ctx.destination);
+      this.current = src;
+      this.playingTag = item.tag;
+      this.playedCount++;
+      src.onended = () => {
+        this.current = null;
+        this.playingTag = null;
+        onDone?.();
+        void this.playNext();
+      };
+      src.start();
+    } catch (err) {
+      this.reportPlaybackError(err, "started");
       this.current = null;
       this.playingTag = null;
-      onDone?.();
-      void this.playNext();
-    };
-    src.start();
+      this.queue.unshift(item);
+    }
   }
 
   dispose() {
-    this.queue = [];
+    void this.stopAll();
+    this.deliveredChunks.clear();
     this.current?.stop();
     this.ctx.close().catch(() => {});
   }
