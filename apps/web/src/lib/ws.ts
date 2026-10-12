@@ -274,6 +274,14 @@ export class MeetingSocket {
     this.sendJson({ type: "chat.send", text });
   }
 
+  /** Inject a canned transcript (dev/test only — server guards with
+   *  is_dev_mode + 403 when STT is real and configured). Used to verify the
+   *  translation + TTS fan-out end-to-end on Render where no STT model is
+   *  installed. */
+  injectTranscript(text: string, language: string) {
+    this.sendJson({ type: "transcript.inject", text, language });
+  }
+
   close() {
     this.closedByUser = true;
     this.stopHeartbeat();

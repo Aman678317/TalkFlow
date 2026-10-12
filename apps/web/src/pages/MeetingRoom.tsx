@@ -328,6 +328,7 @@ export default function MeetingRoom() {
         const player = playerRef.current!;
         const mode = prefsRef.current.audio_mode;
         if (frame.kind === "original") {
+          // Original-audio relay: backend sends raw PCM16 mono @ 16 kHz.
           const lang = utterLangRef.current.get(frame.shortId);
           const understoodNatively = lang && lang === prefsRef.current.listening_language;
           const liveKitConnected = mediaRoomStateRef.current === "connected";
@@ -339,8 +340,13 @@ export default function MeetingRoom() {
             player.enqueuePcm16(frame.pcm, SAMPLE_RATE, `orig-${frame.shortId}`);
           }
         } else {
+          // TTS audio: backend serializes the provider's WAV bytes (with the
+          // standard 44-byte RIFF/fmt/data header) inside the binary payload,
+          // so decode it through the WAV path — NOT enqueuePcm16, which treats
+          // its input as raw PCM and would play the header as 22ms of garbage.
           if (mode === "translated" || mode === "mixed") {
-            player.enqueuePcm16(frame.pcm, SAMPLE_RATE, `tts-${frame.shortId}`);
+            const wavBytes = new Uint8Array(frame.pcm);
+            void player.enqueueWav(wavBytes, `tts-${frame.shortId}`);
           }
         }
       },
@@ -385,6 +391,17 @@ export default function MeetingRoom() {
         socketRef.current?.sendJson({ type: "signal", target_id: targetId, signal }),
     });
     rtcRef.current = rtc;
+    // Seed the manager with whatever local tracks are already available so
+    // the very first createPeerConnection (driven by the roster effect below)
+    // attaches the camera + mic BEFORE the initial offer SDP is generated.
+    // Without this, the existing camera/mic effect had already run while
+    // rtcRef.current was null (during the lobby phase) and never re-runs
+    // for the in-room phase — leaving every first offer without a track,
+    // and the remote tile stuck black.
+    const videoTrack = localVideoStream?.getVideoTracks()[0] ?? null;
+    if (videoTrack) rtc.setVideoTrack(videoTrack);
+    const audioTrack = micRef.current?.mediaStream?.getAudioTracks()[0] ?? null;
+    if (audioTrack) rtc.setAudioTrack(audioTrack);
     return () => {
       rtc.dispose();
       if (rtcRef.current === rtc) rtcRef.current = null;
@@ -674,6 +691,40 @@ export default function MeetingRoom() {
       case "language.changed":
         qc.invalidateQueries({ queryKey: ["meeting", id, "participants"] });
         break;
+      case "diagnostic": {
+        // Surface pipeline-stage signals so translation "silence" stops
+        // looking like a transport bug. STT_enter/exit, MT_enter/exit,
+        // TTS_enter/exit each carry provider/model so we can tell at a
+        // glance whether production is actually running real models or
+        // silently falling back to dev_*.
+        const stage = String(evt.stage || "");
+        const provider = evt.provider ? String(evt.provider) : null;
+        if (import.meta.env.DEV) {
+          // eslint-disable-next-line no-console
+          console.debug(`[pipeline:${stage}]`, evt);
+        }
+        // Update the translation status banner with a concise one-liner so
+        // the user sees *something* (e.g. "STT ready" or "TTS → dev_tone").
+        if (stage === "stt_exit" && provider) {
+          setTranslationStatus("normal");
+          setTranslationMessage(`Listening · STT: ${provider}`);
+        } else if (stage === "tts_provider" && provider) {
+          setTranslationMessage(
+            `Voice: ${provider}${provider.startsWith("dev_") ? " (placeholder audio)" : ""}`,
+          );
+        } else if (stage === "stt_failed" || stage === "mt_failed" || stage === "tts_failed") {
+          setTranslationStatus("unavailable");
+          setTranslationMessage(
+            `${stage.toUpperCase()} failed${evt.error_type ? ` (${evt.error_type})` : ""}`,
+          );
+        } else if (stage === "fanout_skipped" || stage === "tts_skipped") {
+          setTranslationStatus("unavailable");
+          setTranslationMessage(
+            String(evt.reason || stage),
+          );
+        }
+        break;
+      }
       default:
         break;
     }
@@ -1503,6 +1554,43 @@ export default function MeetingRoom() {
           </div>
         </div>
       </div>
+
+      {/* Dev-only: inject a test transcript so the translation + TTS fan-out
+          can be verified end-to-end on environments without a real STT model
+          (e.g. Render where faster-whisper isn't installed). Stripped from
+          production builds via import.meta.env.DEV. */}
+      {import.meta.env.DEV && phase === "in" && (
+        <div className="flex items-center gap-2 border-b border-violet-500/30 bg-violet-950/40 px-4 py-1.5 text-[11px] text-violet-100 shrink-0">
+          <span className="font-semibold uppercase tracking-wider text-violet-300">
+            Dev
+          </span>
+          <span className="text-violet-200/80">
+            Inject canned transcript → drive STT→MT→TTS pipeline:
+          </span>
+          {[
+            { text: "Hello, world.", lang: "en", label: "EN→Hindi" },
+            { text: "The meeting starts at 3pm.", lang: "en", label: "EN→Hindi (sentence)" },
+            { text: "你好世界。", lang: "zh", label: "ZH→Hindi" },
+            { text: "नमस्ते दुनिया।", lang: "hi", label: "HI→English" },
+          ].map((opt) => (
+            <button
+              key={`${opt.lang}:${opt.text}`}
+              type="button"
+              onClick={() => {
+                socketRef.current?.injectTranscript(opt.text, opt.lang);
+                toast.info(
+                  "Injected transcript",
+                  `${opt.label}: "${opt.text}"`,
+                );
+              }}
+              className="rounded-md border border-violet-400/40 bg-violet-500/15 px-2 py-0.5 text-violet-100 hover:bg-violet-500/30"
+              title={`Server treats this as a final STT segment; MT fans out to hear_lang listeners; TTS delivers en→hi audio to you.`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      )}
 
       {notice && (
         <div className="flex items-center gap-2 border-b border-amber-500/20 bg-amber-950/60 px-4 py-2 text-xs text-amber-200 shrink-0" role="status">
