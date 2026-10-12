@@ -656,6 +656,9 @@ class MeetingPipeline:
                 target_lang=target_lang,
                 provider=decision.provider, model=decision.model))
             chunk_idx = 0
+            # Short id MUST be derived from the same id the JSON `tts.chunk` event
+            # carries (`segment_id`), otherwise the two transports produce different
+            # queue tags for one chunk and the client cannot dedup the duplicate.
             short_id_bytes = str(segment_id).replace("-", "")[:16].ljust(16, "\x00").encode("utf-8")
             lang_bytes = target_lang.encode("utf-8")
             bin_header = b"\x54" + short_id_bytes + bytes([len(lang_bytes)]) + lang_bytes
