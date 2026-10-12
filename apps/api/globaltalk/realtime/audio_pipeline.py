@@ -107,6 +107,64 @@ class AudioPipeline:
             del self._pending[:CHUNK_SAMPLES * 2]
             await self._process_chunk(chunk)
 
+    async def inject_transcript(self, *, text: str, language: str = "") -> None:
+        """Dev affordance: synthesize a canonical transcript segment without
+        STT/audio, then run the normal translation + TTS fan-out.
+
+        Mirrors Tree A's `pipe.inject_transcript` in semantics. Gated at the
+        WS layer by `is_dev_mode("stt")` so production cannot reach this
+        unless STT has actually failovered to a dev_* provider.
+        """
+        text = (text or "").strip()
+        if not text:
+            return
+        session, conn = self.session, self.conn
+        now = time.perf_counter()
+        uid = uuid.uuid4().hex
+        utt = Utterance(uid=uid, short_id=uid[:16], started_mono_ms=int(self._mono_ms),
+                        t_first_chunk=now, t_stt_final=now)
+        if language:
+            source_lang = language
+        elif conn.speaking_language and conn.speaking_language != "auto":
+            source_lang = conn.speaking_language
+        else:
+            try:
+                source_lang = await self.loop.run_in_executor(
+                    _executor, self._detect_text_lang, text)
+            except Exception:
+                source_lang = "en"
+
+        self._diag("stt_enter", utt=utt.short_id, speaker=conn.participant_id,
+                   provider="inject")
+        self._diag("stt_exit", utt=utt.short_id, speaker=conn.participant_id,
+                   provider="inject", text_len=len(text), lang=source_lang,
+                   confidence=1.0)
+
+        latency = {"stt_final_ms": 0.0, "audio_capture_ms": 0.0,
+                   "stt_compute_ms": 0.0, "capture_ms": 0.0}
+        segment_id, seq = await self.loop.run_in_executor(
+            _executor, self._persist_injected_segment, utt, text, source_lang, latency)
+
+        final_evt = session.record(
+            EventType.TRANSCRIPT_FINAL, speaker_id=conn.participant_id,
+            utterance_id=utt.uid, segment_id=segment_id, sequence_hint=seq,
+            language=source_lang, text=text, is_final=True,
+            confidence=1.0, stt_provider="inject", stt_model="injected",
+            latency=latency, display_name=conn.display_name)
+        await self._deliver_captions(final_evt, source_lang, text, final=True)
+
+        try:
+            self._diag("fanout_start", utt=utt.short_id,
+                       speaker=conn.participant_id, source=source_lang)
+            async with self._fanout_sem:
+                await self._fanout(segment_id, source_lang, text, utt, now)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("inject_fanout_failed", extra={"segment_id": segment_id})
+            await self._emit_degraded("translation_pipeline_error",
+                                      "injected transcript fan-out failed")
+
     async def _process_chunk(self, chunk: bytes) -> None:
         self._mono_ms += 100
         try:
@@ -239,21 +297,35 @@ class AudioPipeline:
         session = self.session
 
         async def finalize():
+            self._diag("stt_enter", utt=utt.short_id, speaker=conn.participant_id,
+                       pcm_bytes=len(pcm), speaking_language=speaking_language)
             try:
                 result = await self.loop.run_in_executor(
                     _executor, self._stt, pcm, speaking_language,
                     LATENCY_MODE_PARAMS.get(conn.latency_mode, {}).get("beam", 1))
             except ProviderUnavailable as exc:
+                self._diag("stt_failed", utt=utt.short_id,
+                           speaker=conn.participant_id, error=str(exc)[:200])
                 await self._emit_degraded("stt_unavailable", str(exc))
                 return
             except Exception:
                 log.exception("final_stt_failed")
+                self._diag("stt_failed", utt=utt.short_id,
+                           speaker=conn.participant_id, error="final_stt_exception")
                 await self._emit_degraded("stt_error", "final transcription failed")
                 return
             if not result.text:
+                self._diag("stt_skipped", utt=utt.short_id,
+                           speaker=conn.participant_id, provider=result.provider,
+                           reason="empty_transcript")
                 return  # silence/noise burst; no canonical segment created
             utt.t_stt_final = time.perf_counter()
             stt_ms = (utt.t_stt_final - t_end) * 1000
+            self._diag("stt_exit", utt=utt.short_id, speaker=conn.participant_id,
+                       provider=result.provider, model=result.model,
+                       lang=result.language, text_len=len(result.text),
+                       confidence=round(result.confidence, 3),
+                       stt_ms=round(stt_ms, 1))
 
             # ---- persist CANONICAL SOURCE (immutable human source of truth)
             latency = {
@@ -332,6 +404,59 @@ class AudioPipeline:
         except Exception:
             log.exception("audio_archive_failed", extra={"utterance": utt.uid})
 
+    # ------------------------------------------------------------------ diagnostics + inject helpers
+
+    def _diag(self, stage: str, *, utt: str | None = None,
+              speaker: str | None = None, seq: int | None = None,
+              **fields) -> dict:
+        """Emit a structured diagnostic record to logs AND broadcast it to the
+        meeting as a `diagnostic` event so the frontend can surface which STT /
+        MT / TTS provider actually ran. Without this, a silent empty transcript
+        on a prod deploy (faster-whisper missing, dev_text returns empty) looks
+        like "translation active" with zero output on the listener side."""
+        rec: dict = {"stage": stage, "meeting_id": self.session.meeting_id}
+        if speaker is not None:
+            rec["speaker_id"] = speaker
+        if utt is not None:
+            rec["utterance_short_id"] = utt
+        if seq is not None:
+            rec["seq"] = seq
+        rec.update(fields)
+        evt = self.session.record(EventType.DIAGNOSTIC, persist=False, **rec)
+        spawn(self.session.broadcast(evt), name=f"diag-{stage}")
+        log.info(f"diag_{stage}", extra=rec)
+        return rec
+
+    def _detect_text_lang(self, text: str) -> str:
+        """Sync langid call used by the inject path via _executor."""
+        router = get_router()
+        try:
+            result, _route = router.execute(RouteRequest(task="langid"),
+                                             lambda p: p.detect(text))
+            if result and result.language:
+                return result.language
+        except ProviderUnavailable:
+            pass
+        return "en"
+
+    def _persist_injected_segment(self, utt: Utterance, text: str, source_lang: str,
+                                  latency: dict) -> tuple[str, int]:
+        with session_scope() as db:
+            from globaltalk.services.meetings import next_segment_sequence
+            seq = next_segment_sequence(db, self.session.meeting_id)
+            row = TranscriptSegment(
+                org_id=self.session.org_id, meeting_id=self.session.meeting_id,
+                participant_id=self.conn.participant_id, sequence=seq,
+                language=source_lang, text=text, is_final=True, confidence=1.0,
+                stt_provider="inject", stt_model="injected",
+                started_at_ms=utt.started_mono_ms, ended_at_ms=utt.started_mono_ms,
+                latency=latency)
+            db.add(row)
+            db.flush()
+            sid = row.id
+            db.commit()
+            return sid, seq
+
     # ------------------------------------------------------------------ fan-out
 
     async def _fanout(self, segment_id: str, source_language: str, source_text: str,
@@ -339,7 +464,13 @@ class AudioPipeline:
         session, conn = self.session, self.conn
         targets = session.required_target_languages(source_language, exclude=conn.participant_id)
         if not targets:
+            self._diag("fanout_skipped", utt=utt.short_id,
+                       speaker=conn.participant_id, segment_id=segment_id,
+                       source=source_language, reason="no_listeners_needing_translation")
             return
+        self._diag("fanout_start", utt=utt.short_id, speaker=conn.participant_id,
+                   segment_id=segment_id, source=source_language,
+                   targets=sorted(targets))
         started_evt = session.record(EventType.TRANSLATION_STARTED,
                                      speaker_id=conn.participant_id,
                                      segment_id=segment_id,
@@ -370,6 +501,9 @@ class AudioPipeline:
             # DEDUP: generate each (segment, target language) exactly once (section 88)
             log.info("fanout_target_start", extra={"target": target_language,
                                                    "segment_id": segment_id})
+            self._diag("mt_enter", utt=utt.short_id, speaker=conn.participant_id,
+                       segment_id=segment_id, source=source_language,
+                       target=target_language)
             try:
                 result = await self.loop.run_in_executor(
                     _executor, self._translate_sync, source_text, source_language,
@@ -377,6 +511,9 @@ class AudioPipeline:
             except ProviderUnavailable as exc:
                 log.warning("fanout_target_unavailable",
                             extra={"target": target_language, "reason": str(exc)[:200]})
+                self._diag("mt_failed", utt=utt.short_id,
+                           speaker=conn.participant_id, segment_id=segment_id,
+                           target=target_language, error=str(exc)[:200])
                 await self._emit_translation_failed(segment_id, target_language, str(exc))
                 return
             log.info("fanout_target_translated",
@@ -390,6 +527,12 @@ class AudioPipeline:
                 "untranslated": "untranslated_fallback" in result.quality_flags,
                 "translation_segment_id": None, "audio": None,
             }
+            self._diag("mt_exit", utt=utt.short_id, speaker=conn.participant_id,
+                       segment_id=segment_id, provider=result.provider,
+                       model=result.model, source=source_language,
+                       target=target_language, text_len=len(result.text),
+                       flags=list(result.quality_flags),
+                       ms=round(entry["latency_ms"], 1))
             if not entry["untranslated"]:
                 entry["translation_segment_id"] = await self.loop.run_in_executor(
                     _executor, self._persist_translation, segment_id, source_language,
@@ -400,6 +543,9 @@ class AudioPipeline:
             cached = entry
         else:
             t_translate = time.perf_counter()
+            self._diag("mt_cached", utt=utt.short_id, speaker=conn.participant_id,
+                       segment_id=segment_id, source=source_language,
+                       target=target_language)
 
         # ---- deliver translated captions to listeners of this language
         listeners = session.listeners_for_language(target_language, exclude=conn.participant_id)
@@ -431,11 +577,17 @@ class AudioPipeline:
         if not audio_listeners or cached["untranslated"]:
             return
         if cached["audio"] is None:
+            self._diag("tts_enter", utt=utt.short_id, speaker=conn.participant_id,
+                       segment_id=segment_id, target=target_language,
+                       listener_count=len(audio_listeners))
             try:
                 wav = await self.loop.run_in_executor(
                     _executor, self._tts_sync, cached["text"], target_language)
             except ProviderUnavailable as exc:
                 # captions-only fallback (section 89): explicit, never silent
+                self._diag("tts_failed", utt=utt.short_id,
+                           speaker=conn.participant_id, segment_id=segment_id,
+                           target=target_language, error=str(exc)[:200])
                 evt = session.record(
                     EventType.QUALITY_DEGRADED, speaker_id=conn.participant_id,
                     segment_id=segment_id, target_language=target_language,
@@ -449,6 +601,10 @@ class AudioPipeline:
             t_tts = time.perf_counter()
             cached["audio"] = wav
             cached["tts_ms"] = (t_tts - t_translate) * 1000
+            self._diag("tts_first_audio", utt=utt.short_id,
+                       speaker=conn.participant_id, segment_id=segment_id,
+                       target=target_language, ms=round(cached["tts_ms"], 1),
+                       bytes=len(wav) if wav else 0)
             if cached.get("translation_segment_id"):
                 spawn(self._store_tts_audio(cached["translation_segment_id"],
                                             segment_id, target_language, wav),
