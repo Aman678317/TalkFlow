@@ -372,8 +372,22 @@ class AIFacade:
         return out
 
     def is_dev_mode(self, task: Task) -> bool:
-        name = self._configured_name(task)
-        return name.startswith("dev_")
+        # `transcript.inject` etc. are dev affordances. The configured name is
+        # the operator's preference (often `auto` -> "kokoro"), but at runtime
+        # we may have failed over to `dev_*` providers (kokoro model files
+        # missing on Render -> dev_tone). Trust the health map, not the
+        # configured name — otherwise injection is wrongly disabled in
+        # production where STT/TTS silently falls back to dev_*.
+        if self.router is not None:
+            for (t_key, name), h in self.router.health.items():
+                if t_key == task.value and name.startswith("dev_"):
+                    if h is None or h.available:
+                        return True
+        # Non-production environments always count as dev mode so the
+        # frontend "Inject test transcript" affordance works in local QA.
+        if not settings.is_production:
+            return True
+        return self._configured_name(task).startswith("dev_")
 
 
 ai = AIFacade()

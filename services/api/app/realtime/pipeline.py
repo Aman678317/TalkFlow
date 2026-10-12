@@ -127,6 +127,44 @@ class MeetingPipeline:
                                "dropped. The original call is unaffected.",
                     "recoverable": True})
 
+    def _diag(self, stage: str, *, utt: str | None = None, seq: int | None = None,
+              speaker: uuid.UUID | None = None, **fields: object) -> dict:
+        """Build a structured diagnostic record. Emitted to logs AND broadcast
+        to the meeting so frontend can surface "STT: dev_text" / "TTS: dev_tone"
+        in the realtime translation status banner — without this, a silent
+        empty transcript on the prod Render deploy (faster-whisper not
+        installed, dev_text returns empty text) looked like "translation
+        active" with zero output to the listener."""
+        rec: dict[str, object] = {
+            "stage": stage,
+            "meeting_id": str(self.session.meeting_id),
+        }
+        if speaker is not None:
+            rec["speaker_id"] = str(speaker)
+        if utt is not None:
+            rec["utterance_id"] = utt
+        if seq is not None:
+            rec["seq"] = seq
+        rec.update(fields)
+        return rec
+
+    def _broadcast_diag(self, record: dict) -> None:
+        """Fire-and-forget: push a diagnostic record to every connected
+        participant. Never blocks the audio path on a slow socket."""
+        try:
+            asyncio.create_task(
+                manager.broadcast(
+                    self.session,
+                    "diagnostic",
+                    record,
+                    sequenced=False,
+                ),
+                name=f"diag-{record.get('stage')}",
+            )
+        except RuntimeError:
+            # no running loop during shutdown
+            pass
+
     async def _speaker_loop(self, p: RtParticipant) -> None:
         q = self.audio_queues[p.participant_id]
         vad = self.vads[p.participant_id]
@@ -280,16 +318,29 @@ class MeetingPipeline:
             u.buffer = bytearray()
         if len(audio) < 1600:  # <50ms — noise blip
             u.locked_language = None
+            self._broadcast_diag(self._diag(
+                "stt_skipped", utt=str(utterance_id or u.utterance_id),
+                seq=seq or u.seq, speaker=p.participant_id,
+                reason="below_min_audio", audio_bytes=len(audio),
+                min_bytes=1600))
             return
         cap_start = capture_started if capture_started is not None else u.capture_started
         capture_ms = (time.perf_counter() - cap_start) * 1000
         started_at_ms = start_ms if start_ms is not None else u.started_at_ms
         t_stt = time.perf_counter()
+        self._broadcast_diag(self._diag(
+            "stt_enter", utt=str(utterance_id or u.utterance_id),
+            seq=seq or u.seq, speaker=p.participant_id,
+            audio_bytes=len(audio), lang_hint=self._lang_hint(p, u) or "auto"))
         try:
             chunk, decision = await ai.transcribe(audio, 16000,
                                                    lang_hint=self._lang_hint(p, u))
         except (AppError, Exception) as ex:
             log.warning("STT transcription unavailable/failed for %s: %s", p.participant_id, ex)
+            self._broadcast_diag(self._diag(
+                "stt_failed", utt=str(utterance_id or u.utterance_id),
+                seq=seq or u.seq, speaker=p.participant_id,
+                error_type=type(ex).__name__, error=str(ex)[:160]))
             await manager.broadcast(
                 self.session, ServerEventType.ERROR,
                 {"code": "stt_unavailable", "message":
@@ -301,6 +352,13 @@ class MeetingPipeline:
         stt_ms = (time.perf_counter() - t_stt) * 1000
         met.STT_LATENCY.labels(provider=decision.provider).observe(stt_ms)
         text = (chunk.text or "").strip()
+        self._broadcast_diag(self._diag(
+            "stt_exit", utt=str(utterance_id or u.utterance_id),
+            seq=seq or u.seq, speaker=p.participant_id,
+            provider=decision.provider, model=chunk.model or decision.model,
+            stt_ms=round(stt_ms, 1),
+            text_len=len(text), text_preview=text[:80],
+            language=chunk.language, confidence=chunk.confidence))
         if not text:
             await manager.broadcast(
                 self.session, ServerEventType.SPEECH_ENDED,
@@ -311,6 +369,11 @@ class MeetingPipeline:
         if source_lang == "auto":
             det = await ai.detect_language(text)
             source_lang = det.language
+            self._broadcast_diag(self._diag(
+                "lang_detect", utt=str(utterance_id or u.utterance_id),
+                seq=seq or u.seq, speaker=p.participant_id,
+                provider=det.provider, language=source_lang,
+                confidence=det.confidence))
         u.locked_language = None  # Reset locked language for the next speech segment
         await self._commit_segment(
             p, text=text, source_lang=source_lang, audio=audio,
@@ -424,7 +487,19 @@ class MeetingPipeline:
         prev_context = self._last_final_text.get(p.participant_id, "")
         self._last_final_text[p.participant_id] = text
         if not targets:
+            self._broadcast_diag(self._diag(
+                "fanout_skipped", utt=str(u_id), seq=seq, speaker=p.participant_id,
+                reason="no_targets", source_lang=source_lang,
+                connected_participants=sum(
+                    1 for x in session.participants.values() if x.connected),
+                participant_hear_langs=[
+                    x.hear_lang for x in session.participants.values() if x.connected
+                ]))
             return
+        self._broadcast_diag(self._diag(
+            "fanout_start", utt=str(u_id), seq=seq, speaker=p.participant_id,
+            source_lang=source_lang, targets=sorted(targets),
+            text_preview=text[:80]))
         for target_lang in sorted(targets):
             key = (seq, target_lang)
             task = asyncio.create_task(
@@ -461,6 +536,10 @@ class MeetingPipeline:
              "seq": seq, "sequence": seq, "target_lang": target_lang, "target_language": target_lang,
              "created_at": now_ms, "createdAt": now_ms},
             speaker_id=str(speaker.participant_id))
+        self._broadcast_diag(self._diag(
+            "mt_enter", utt=str(u_id), seq=seq, speaker=speaker.participant_id,
+            source_lang=source_lang, target_lang=target_lang,
+            text_len=len(text), text_preview=text[:80]))
         try:
             async with db_session() as db:
                 out = await translate_text(
@@ -472,6 +551,10 @@ class MeetingPipeline:
                         context=prev_context,
                         persist=True, meter=True))
         except AppError as e:
+            self._broadcast_diag(self._diag(
+                "mt_failed", utt=str(u_id), seq=seq, speaker=speaker.participant_id,
+                source_lang=source_lang, target_lang=target_lang,
+                error_type=type(e).__name__, error=str(e)[:160]))
             await self._translation_failed(segment_id, seq, target_lang, e)
             return
         except Exception as e:
@@ -481,6 +564,12 @@ class MeetingPipeline:
         trace.translation_ms = (time.perf_counter() - t0) * 1000
         translated = out.result.text
         now_ms = int(time.time() * 1000)
+        self._broadcast_diag(self._diag(
+            "mt_exit", utt=str(u_id), seq=seq, speaker=speaker.participant_id,
+            source_lang=source_lang, target_lang=target_lang,
+            provider=out.result.provider, model=out.result.model,
+            translation_ms=round(trace.translation_ms, 1),
+            translated_text_preview=translated[:80]))
 
         # --- Phase 5 translation.segment.final + translation.final contract ---
         final_translation_event = {
@@ -534,8 +623,24 @@ class MeetingPipeline:
         audio_listeners = manager.listeners_for_language(
             session, target_lang, want_audio=True)
         if not audio_listeners:
+            self._broadcast_diag(self._diag(
+                "tts_skipped", utt=str(u_id), seq=seq, speaker=speaker.participant_id,
+                target_lang=target_lang,
+                reason="no_audio_listeners",
+                participants=[
+                    {"id": str(p.participant_id), "hear_lang": p.hear_lang,
+                     "audio_mode": p.audio_mode, "connected": p.connected,
+                     "is_self": p.participant_id == speaker.participant_id}
+                    for p in session.participants.values()
+                ]))
             await self._report_latency(trace)
             return
+        self._broadcast_diag(self._diag(
+            "tts_enter", utt=str(u_id), seq=seq, speaker=speaker.participant_id,
+            target_lang=target_lang,
+            listener_count=len(audio_listeners),
+            listeners=[{"id": str(p.participant_id), "hear_lang": p.hear_lang,
+                        "audio_mode": p.audio_mode} for p in audio_listeners]))
         await manager.broadcast(
             session, ServerEventType.TTS_STARTED,
             {"segment_id": str(segment_id), "utterance_id": u_id, "utteranceId": u_id,
@@ -546,6 +651,10 @@ class MeetingPipeline:
         first = True
         try:
             stream, decision = await ai.synthesize_stream(translated, target_lang)
+            self._broadcast_diag(self._diag(
+                "tts_provider", utt=str(u_id), seq=seq, speaker=speaker.participant_id,
+                target_lang=target_lang,
+                provider=decision.provider, model=decision.model))
             chunk_idx = 0
             short_id_bytes = str(segment_id).replace("-", "")[:16].ljust(16, "\x00").encode("utf-8")
             lang_bytes = target_lang.encode("utf-8")
@@ -560,6 +669,13 @@ class MeetingPipeline:
                     trace.tts_first_audio_ms = (time.perf_counter() - t_tts) * 1000
                     met.TTS_LATENCY.labels(provider=decision.provider).observe(
                         trace.tts_first_audio_ms)
+                    self._broadcast_diag(self._diag(
+                        "tts_first_audio", utt=str(u_id), seq=seq,
+                        speaker=speaker.participant_id, target_lang=target_lang,
+                        provider=decision.provider,
+                        tts_first_audio_ms=round(trace.tts_first_audio_ms, 1),
+                        bytes=len(audio.data), sample_rate=audio.sample_rate,
+                        format=audio.format, is_dev=audio.is_dev))
                     first = False
                 b64 = base64.b64encode(audio.data).decode()
                 await manager.broadcast(
@@ -573,7 +689,11 @@ class MeetingPipeline:
                      "created_at": now_ms, "createdAt": now_ms},
                     to=audio_listeners, speaker_id=str(speaker.participant_id))
 
-                # Binary frame delivery for lowest-latency audio playback
+                # Binary frame delivery for lowest-latency audio playback.
+                # NOTE: payload = [tag][shortId][langLen][lang][WAV bytes].
+                # Frontend decodes via decodeBinaryFrame and routes TTS frames
+                # through AudioPlayer.enqueueWav (not enqueuePcm16) — see
+                # apps/web/src/lib/audio.ts and MeetingRoom.tsx onBinary.
                 bin_frame = bin_header + audio.data
                 for p in audio_listeners:
                     if p.connected and p.ws is not None:
@@ -587,14 +707,23 @@ class MeetingPipeline:
                 session, ServerEventType.TTS_COMPLETED,
                 {"segment_id": str(segment_id), "utterance_id": str(segment_id),
                  "seq": seq, "target_lang": target_lang, "target_language": target_lang,
-                 "chunks": chunk_idx, "stale_dropped": trace.stale_dropped},
+                 "chunks": chunk_idx, "stale_dropped": trace.stale_dropped,
+                 "provider": decision.provider},
                 to=audio_listeners, speaker_id=str(speaker.participant_id))
+            self._broadcast_diag(self._diag(
+                "tts_exit", utt=str(u_id), seq=seq, speaker=speaker.participant_id,
+                target_lang=target_lang, provider=decision.provider,
+                chunks=chunk_idx, stale_dropped=trace.stale_dropped))
             # LiveKit mode: publish synthetic track (bridge no-ops in ws mode)
             from app.realtime import livekit_bridge
             await livekit_bridge.publish_translated_audio(
                 session, target_lang, translated, str(segment_id), seq)
         except (AppError, Exception) as ex:
             log.warning("TTS fan-out failed for target %s: %s", target_lang, ex)
+            self._broadcast_diag(self._diag(
+                "tts_failed", utt=str(u_id), seq=seq, speaker=speaker.participant_id,
+                target_lang=target_lang,
+                error_type=type(ex).__name__, error=str(ex)[:160]))
             await manager.broadcast(
                 session, ServerEventType.ERROR,
                 {"code": "tts_unavailable",
