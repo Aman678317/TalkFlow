@@ -1191,6 +1191,13 @@ export default function MeetingRoom() {
                 {cameraOn ? <Camera className="h-5 w-5" /> : <CameraOff className="h-5 w-5" />}
               </button>
             </div>
+            <p className="text-center text-[11px] text-slate-500">
+              {(!micOn || !cameraOn) ? (
+                <>Tip: turn on your {(!micOn && !cameraOn) ? "mic and camera" : (!micOn ? "mic" : "camera")} so the other party joining from a shared link can see and hear you. They auto-enable when you tap <span className="text-slate-300 font-medium">Add to call</span>.</>
+              ) : (
+                <>Mic and camera are on — both will appear in the room.</>
+              )}
+            </p>
             <p className="text-center text-xs text-slate-400">
               {meetingQ.data.title} · room {meetingQ.data.room_name || id.slice(0, 8)}
             </p>
@@ -1304,7 +1311,24 @@ export default function MeetingRoom() {
               variant="primary"
               className="w-full"
               disabled={phase === "joining"}
-              onClick={() => void joinNow()}
+              onClick={async () => {
+                // "Add to call" is the user-gesture we need to request camera
+                // and mic. Auto-enable them so the other party joining from a
+                // shared link actually sees and hears you, instead of landing
+                // in the room with a black tile + red mic and a one-way
+                // silence. toggleCamera() falls back to the virtual camera
+                // when permission is denied; toggleMic() surfaces a
+                // permission guide on denial. Either way the toggles must
+                // never block the join — a stuck permission dialog shouldn't
+                // strand the user in the lobby.
+                const safeToggle = (fn: () => Promise<void>) =>
+                  fn().catch(() => {/* toggleX already toasts / sets blocked state */});
+                await Promise.all([
+                  cameraOn ? Promise.resolve() : safeToggle(toggleCamera),
+                  micOn ? Promise.resolve() : safeToggle(toggleMic),
+                ]);
+                await joinNow();
+              }}
             >
               {phase === "joining" ? "Joining…" : "Add to call"}
             </Button>

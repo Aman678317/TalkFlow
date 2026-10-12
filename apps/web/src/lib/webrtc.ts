@@ -40,16 +40,22 @@ export class WebRTCManager {
   }
 
   setVideoTrack(track: MediaStreamTrack | null) {
+    const wasNull = this.localVideoTrack === null;
     this.localVideoTrack = track;
-    this.updateSendersForKind('video', track);
+    this.updateSendersForKind('video', track, wasNull);
   }
 
   setAudioTrack(track: MediaStreamTrack | null) {
+    const wasNull = this.localAudioTrack === null;
     this.localAudioTrack = track;
-    this.updateSendersForKind('audio', track);
+    this.updateSendersForKind('audio', track, wasNull);
   }
 
-  private updateSendersForKind(kind: 'audio' | 'video', track: MediaStreamTrack | null) {
+  private updateSendersForKind(
+    kind: 'audio' | 'video',
+    track: MediaStreamTrack | null,
+    wasNull: boolean,
+  ) {
     for (const [peerId, pc] of this.peers.entries()) {
       let senderFound = false;
       const senders = pc.getSenders();
@@ -70,6 +76,12 @@ export class WebRTCManager {
         } catch (e) {
           console.warn(`[WebRTC] Failed to add ${kind} track to ${peerId}:`, e);
         }
+      } else if (senderFound && track && wasNull) {
+        // The transceiver was created with no track (camera/mic was off at
+        // offer time). replaceTrack alone updates the sender's track but the
+        // remote receiver has no codec info to decode with — we must push a
+        // fresh offer so the SDP advertises the actual codec and direction.
+        void this.renegotiate(peerId, pc);
       }
     }
   }
@@ -208,6 +220,30 @@ export class WebRTCManager {
           type: 'ice-candidate',
           candidate: e.candidate.toJSON(),
         });
+      }
+    };
+
+    // When the local sender stack changes (initial track attach, replaceTrack
+    // when toggling camera, mic-permission changes) the browser fires
+    // `negotiationneeded`. If we ignore it, the remote side never learns about
+    // the new m-line and the corresponding `RTCRtpReceiver` never gets a track
+    // — which is exactly why the guest's tile stays black after the host
+    // toggles their camera on mid-call. Always renegotiate and use the
+    // polite/impolite glare rule from `handleSignal` so concurrent offers
+    // from both peers don't deadlock.
+    pc.onnegotiationneeded = async () => {
+      try {
+        if (pc.signalingState !== 'stable') return;
+        const offer = await pc.createOffer({
+          offerToReceiveAudio: true,
+          offerToReceiveVideo: true,
+        });
+        await pc.setLocalDescription(offer);
+        this.options.sendSignal(remoteId, { type: 'offer', sdp: offer });
+        // If the peer races us with their own offer, the polite/impolite
+        // glare rule in handleSignal will roll back and accept theirs.
+      } catch (err) {
+        console.warn(`[WebRTC] negotiationneeded failed for ${remoteId}:`, err);
       }
     };
 
