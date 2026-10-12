@@ -385,6 +385,17 @@ export default function MeetingRoom() {
         socketRef.current?.sendJson({ type: "signal", target_id: targetId, signal }),
     });
     rtcRef.current = rtc;
+    // Seed the manager with whatever local tracks are already available so
+    // the very first createPeerConnection (driven by the roster effect below)
+    // attaches the camera + mic BEFORE the initial offer SDP is generated.
+    // Without this, the existing camera/mic effect had already run while
+    // rtcRef.current was null (during the lobby phase) and never re-runs
+    // for the in-room phase — leaving every first offer without a track,
+    // and the remote tile stuck black.
+    const videoTrack = localVideoStream?.getVideoTracks()[0] ?? null;
+    if (videoTrack) rtc.setVideoTrack(videoTrack);
+    const audioTrack = micRef.current?.mediaStream?.getAudioTracks()[0] ?? null;
+    if (audioTrack) rtc.setAudioTrack(audioTrack);
     return () => {
       rtc.dispose();
       if (rtcRef.current === rtc) rtcRef.current = null;
