@@ -46,6 +46,15 @@ class RtParticipant:
     last_seq_seen: int = 0
     joined_at: float = field(default_factory=time.time)
     is_bot: bool = False             # agent bridge participants
+    # ---- bounded outbound queue ------------------------------------------- #
+    # Every frame this connection is owed goes through `outbox` and one writer
+    # task, never through the caller's `await`. See SessionManager._offer.
+    outbox: asyncio.Queue | None = field(default=None, repr=False)
+    sender: asyncio.Task | None = field(default=None, repr=False)
+    sent: int = 0
+    dropped_events: int = 0
+    dropped_audio: int = 0
+    send_slow: bool = False
 
 
 @dataclass
@@ -107,6 +116,8 @@ class SessionManager:
                 session.closed = True
                 self._by_meeting.pop(session.meeting_id, None)
                 met.ACTIVE_MEETINGS.dec()
+                for p in session.participants.values():
+                    self._stop_sender(p)
                 if session.pipeline:
                     await session.pipeline.shutdown()
                 log.info("rt session %s closed", session_id)
@@ -115,13 +126,21 @@ class SessionManager:
     # Participants & routing
     # ------------------------------------------------------------------ #
     def add_participant(self, session: RtSession, p: RtParticipant) -> None:
+        previous = session.participants.get(str(p.participant_id))
+        if previous is not None and previous is not p:
+            # A reconnect builds a fresh participant for the same id. The object
+            # being replaced still owns a writer task pointed at a socket nobody
+            # will read from again.
+            self._stop_sender(previous)
+        else:
+            met.ACTIVE_PARTICIPANTS.inc()
         session.participants[str(p.participant_id)] = p
-        met.ACTIVE_PARTICIPANTS.inc()
 
     def remove_participant(self, session: RtSession, participant_id: uuid.UUID) -> None:
         key = str(participant_id)
-        if key in session.participants:
-            session.participants.pop(key)
+        p = session.participants.pop(key, None)
+        if p is not None:
+            self._stop_sender(p)
             met.ACTIVE_PARTICIPANTS.dec()
 
     def attach_ws(self, session: RtSession, participant_id: uuid.UUID,
@@ -131,6 +150,11 @@ class SessionManager:
         if p:
             if p.connected and p.ws is not None and p.ws != ws:
                 old_ws = p.ws
+            if p.ws is not None and p.ws != ws:
+                # A new socket is a new connection, not a continuation of the old
+                # one: its writer and whatever that writer had not managed to push
+                # out belong to a turn nobody will play.
+                self._stop_sender(p)
             p.ws = ws
             p.connected = True
         return p, old_ws
@@ -144,6 +168,137 @@ class SessionManager:
             p.connected = False
             p.ws = None
             p.ws_task = None
+            self._stop_sender(p)
+
+    @staticmethod
+    def _stop_sender(p: RtParticipant) -> None:
+        """Drop the writer with the socket it was writing to.
+
+        The backlog goes with it: frames for a dead connection are not
+        replayable through a queue, and the resume buffer is what a reconnecting
+        client reads.
+        """
+        if p.sender is not None and not p.sender.done():
+            p.sender.cancel()
+        p.sender = None
+        p.outbox = None
+
+    # ------------------------------------------------------------------ #
+    # Outbound queue: one writer per connection, bounded backlog
+    # ------------------------------------------------------------------ #
+    def _outbox_for(self, session: RtSession, p: RtParticipant) -> asyncio.Queue:
+        if p.outbox is None or p.sender is None or p.sender.done():
+            p.outbox = asyncio.Queue(maxsize=max(1, settings.rt_send_queue_size))
+            p.sender = asyncio.create_task(self._drain(session, p),
+                                           name=f"rt-send-{p.participant_id}")
+        return p.outbox
+
+    def _offer(self, session: RtSession, p: RtParticipant, kind: str,
+               payload) -> None:
+        """Hand one frame to the connection's writer, without waiting for it.
+
+        This is the whole of the backpressure decision, so it is worth stating
+        plainly. `broadcast` used to `await ws.send_text(...)` for every
+        listener in turn, which means the meeting's fan-out task — the one that
+        produces captions and audio for *everyone* — was only as fast as the
+        slowest browser in the room. A backgrounded tab stops reading its socket,
+        the TCP window closes, and that one listener holds the pipeline.
+
+        So the write is handed to a per-connection writer instead, and the
+        backlog is bounded. When it is full the *oldest* queued frame is dropped,
+        because a live meeting only has one useful direction: the frame a
+        listener would receive 4 seconds late describes a turn they have already
+        moved past, and the newest one describes the turn they are on. Nothing
+        here pretends the drop is free — it is counted, and it is reported.
+        """
+        q = self._outbox_for(session, p)
+        dropped: tuple[str, object] | None = None
+        try:
+            q.put_nowait((kind, payload))
+        except asyncio.QueueFull:
+            try:
+                dropped = q.get_nowait()
+            except asyncio.QueueEmpty:
+                return  # the writer took it between the two calls
+            try:
+                q.put_nowait((kind, payload))
+            except asyncio.QueueFull:
+                return
+        if dropped is not None:
+            lost = dropped[0]
+            if lost == "audio":
+                p.dropped_audio += 1
+            else:
+                p.dropped_events += 1
+            p.send_slow = True
+            session.quality_degraded = True
+            met.SEND_DROPPED.labels(kind=lost, reason="queue_full").inc()
+
+    async def _drain(self, session: RtSession, p: RtParticipant) -> None:
+        """The only task that writes to this participant's socket."""
+        q = p.outbox
+        assert q is not None
+        while True:
+            kind, payload = await q.get()
+            ws = p.ws
+            if ws is None:
+                continue
+            send = ws.send_bytes if kind == "audio" else ws.send_text
+            try:
+                # `asyncio.timeout` rather than `wait_for`: it bounds the write
+                # without wrapping it in another task, so the frame is still
+                # written by *this* task and a caller that yields once after
+                # offering it can rely on it having been handed to the socket.
+                async with asyncio.timeout(settings.rt_send_timeout_s):
+                    await send(payload)
+                p.sent += 1
+            except asyncio.CancelledError:
+                raise
+            except TimeoutError:
+                met.SEND_DROPPED.labels(kind=kind, reason="send_timeout").inc()
+                log.warning("closing %s: socket did not accept a frame in %.1fs "
+                            "(queue was %d deep)", p.participant_id,
+                            settings.rt_send_timeout_s, q.qsize())
+                self._drop_connection(session, p, ws)
+                return
+            except Exception as e:
+                log.debug("ws send failed to %s: %s", p.participant_id, e)
+                self._drop_connection(session, p, ws)
+                return
+
+    def _drop_connection(self, session: RtSession, p: RtParticipant,
+                         ws: WebSocket) -> None:
+        """A socket that will not take a frame is not a slow listener, it is a
+        dead one. Mark it as the receive loop would and let that loop run its
+        own teardown — including the resume buffer this client will read when it
+        reconnects.
+
+        Deliberately not `detach_ws`: that cancels this task, and a task cannot
+        cancel itself on its way out.
+        """
+        if p.ws is not ws:
+            return
+        p.connected = False
+        p.ws = None
+        p.send_slow = True
+
+    def send_stats(self, session: RtSession) -> dict[str, Any]:
+        """What the room's connections could not take.
+
+        Health that cannot say "a listener lost frames" is how a meeting where
+        half the room heard nothing gets reported as healthy.
+        """
+        return {
+            "sent": sum(p.sent for p in session.participants.values()),
+            "dropped_events": sum(p.dropped_events for p in session.participants.values()),
+            "dropped_audio": sum(p.dropped_audio for p in session.participants.values()),
+            "queued": sum(p.outbox.qsize() for p in session.participants.values()
+                          if p.outbox is not None),
+            "slow": [str(pid) for pid, p in session.participants.items()
+                     if p.send_slow],
+            "queue_size": max(1, settings.rt_send_queue_size),
+        }
+
 
     def audio_listener(self, p: RtParticipant) -> bool:
         """Whether this participant is owed translated speech at all.
@@ -212,18 +367,16 @@ class SessionManager:
         if sequenced:
             session.replay_buffer.append(payload)
         targets = to if to is not None else list(session.participants.values())
-        disconnected = []
         for p in targets:
             if p.ws is None or not p.connected:
                 continue
-            try:
-                await p.ws.send_text(payload)
-            except Exception as e:
-                log.debug("ws send failed to %s: %s", p.participant_id, e)
-                p.connected = False
-                disconnected.append(p)
-        for p in disconnected:
-            self.detach_ws(session, p.participant_id)
+            self._offer(session, p, "event", payload)
+        # One scheduling turn, so that a caller which awaits this — the fan-out
+        # task, a test that asserts on what a listener received — sees the frames
+        # it just handed off. It is a yield, not a wait: a writer that is blocked
+        # on a stalled socket is not runnable, so this returns immediately and the
+        # slow listener holds nobody up.
+        await asyncio.sleep(0)
         return event
 
     async def send_to(self, p: RtParticipant, session: RtSession,
@@ -256,10 +409,32 @@ class SessionManager:
         for p in session.participants.values():
             if (p.connected and p.ws is not None and p.participant_id != from_pid
                     and p.audio_mode in ("original", "mixed")):
-                try:
-                    await p.ws.send_bytes(payload)
-                except Exception:
-                    p.connected = False
+                self.send_audio(session, p, payload)
+        await asyncio.sleep(0)
+
+    def send_audio(self, session: RtSession, p: RtParticipant,
+                   payload: bytes) -> None:
+        """Queue one media frame for one listener.
+
+        Both kinds of audio the room sends (relay of the speaker's own voice, and
+        a synthesized chunk) go through the same writer as the JSON events, in the
+        same queue, so the order the pipeline produced them in is the order the
+        browser reads them — which is what its dedup registry keys on.
+        """
+        if p.ws is None or not p.connected:
+            return
+        self._offer(session, p, "audio", payload)
+
+    def send_event(self, session: RtSession, p: RtParticipant, payload: str) -> None:
+        """Queue one raw JSON frame for one listener.
+
+        Direct socket writes from a *third* task — a signalling relay, say — race
+        the connection's own writer, so anything addressed to a participant goes
+        through their queue even when it is not a session broadcast.
+        """
+        if p.ws is None or not p.connected:
+            return
+        self._offer(session, p, "event", payload)
 
 
 manager = SessionManager()

@@ -190,6 +190,37 @@ the room keeps the speaker's original text as the caption and the event names
 which layer gave up. When every voice fails, synthesis raises a stated
 `ProviderError` rather than handing out a stream that dies on the first frame.
 
+### Delivery backpressure
+
+Every frame the room sends to a participant — JSON event, base64 chunk, binary
+audio — goes into that connection's bounded queue (`rt_send_queue_size`, default
+128) and is written by one writer task per socket. It is not awaited by the
+caller any more.
+
+This matters because the caller used to be the meeting's fan-out task, and
+`broadcast` wrote to each listener in turn from it: one backgrounded browser tab
+stops reading its socket, the TCP window closes, and that single listener holds
+up every other listener behind it and the pipeline behind them. A room of eight
+was as fast as its worst connection.
+
+The policy when a queue is full is to drop the **oldest** queued frame, because a
+live meeting has only one useful direction: the frame a listener would receive
+four seconds late describes a turn they have already moved past. Media outruns
+captions, so what actually gets dropped is stale audio; the caption that just
+arrived is queued behind nothing. Drops are counted per connection
+(`gt_ws_send_dropped_total{kind,reason}`), reported in
+`GET /meetings/{id}/realtime/health` under `send` (`dropped_audio`, `dropped_events`,
+`queued`, `slow`), and set the meeting's `quality_degraded`. A socket that has
+not accepted a single frame in `rt_send_timeout_s` (10 s) is treated as dead
+rather than slow: the writer stops, and the listener's own reconnect resumes from
+the replay buffer.
+
+`tests/unit/test_realtime_send_backpressure.py` pins all of it — that a listener
+which never reads cannot delay one that does, that the backlog stays at the
+configured bound and keeps the newest frames, that a caption is not dropped to
+save a stale audio frame, that events and their binary frames still arrive as an
+ordered pair, and that a reconnect does not inherit the dead socket's backlog.
+
 ## Pipeline stages (server)
 
 1. **Ingest** 50 ms PCM chunks (16 kHz mono) → EnergyVAD (or Silero) on 30 ms frames.

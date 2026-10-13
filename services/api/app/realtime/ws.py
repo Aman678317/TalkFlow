@@ -404,25 +404,30 @@ async def _handle_event(ws: WebSocket, session, rp: RtParticipant, event) -> Non
         last_seq = int(data.get("last_sequence", 0))
         if last_seq > 0:
             missed = manager.replay_since(session, last_seq)
-            await ws.send_text(json.dumps({
+            # The ack and the replayed frames go through the connection's queue,
+            # in this order: a live caption produced meanwhile would otherwise
+            # overtake the backlog it is supposed to follow.
+            manager.send_event(session, rp, json.dumps({
                 "version": 1, "type": ServerEventType.SESSION_RESUMED,
                 "session_id": session.session_id,
                 "data": {"resumed_from": last_seq, "replayed": len(missed),
                          "server_sequence": session.sequence}}))
             for raw in missed:
-                await ws.send_text(raw)
+                manager.send_event(session, rp, raw)
+            await asyncio.sleep(0)
             met.RECONNECTS.inc()
 
     elif event.type == ClientEventType.SESSION_RESUME:
         last_seq = int(data.get("last_sequence", 0))
         missed = manager.replay_since(session, last_seq)
-        await ws.send_text(json.dumps({
+        manager.send_event(session, rp, json.dumps({
             "version": 1, "type": ServerEventType.SESSION_RESUMED,
             "session_id": session.session_id,
             "data": {"resumed_from": last_seq, "replayed": len(missed),
                      "server_sequence": session.sequence}}))
         for raw in missed:
-            await ws.send_text(raw)
+            manager.send_event(session, rp, raw)
+        await asyncio.sleep(0)
         met.RECONNECTS.inc()
 
     elif event.type == ClientEventType.AUDIO_START:
@@ -540,17 +545,17 @@ async def _handle_event(ws: WebSocket, session, rp: RtParticipant, event) -> Non
                     target_p = p
                     break
         if target_p and target_p.ws:
-            with contextlib.suppress(Exception):
-                await target_p.ws.send_text(json.dumps({
-                    "version": 1,
-                    "type": ServerEventType.SIGNAL,
-                    "session_id": session.session_id,
-                    "data": {
-                        "sender_id": str(rp.participant_id),
-                        "signal": signal_data,
-                    },
-                    "timestamp": time.time(),
-                }))
+            manager.send_event(session, target_p, json.dumps({
+                "version": 1,
+                "type": ServerEventType.SIGNAL,
+                "session_id": session.session_id,
+                "data": {
+                    "sender_id": str(rp.participant_id),
+                    "signal": signal_data,
+                },
+                "timestamp": time.time(),
+            }))
+            await asyncio.sleep(0)
         elif not target_id:
             await manager.broadcast(session, ServerEventType.SIGNAL, {
                 "sender_id": str(rp.participant_id),
