@@ -215,10 +215,9 @@ is the part a listener can act on. Two things deliberately do not go on *this*
 event:
 
 - the provider's own sentence. An unset `MT_HTTP_URL` is an operator's finding,
-  not something to show a browser, so it goes to the log; the `diagnostic` event
-  still carries a truncated copy, which is a leak with its own name. The removed
-  `detail` field was the old copy of it on `translation.failed` — clients that
-  read it must read `code` and `message` instead.
+  not something to show a browser, so it goes to the log and nowhere on the wire.
+  The removed `detail` field was the old copy of it on `translation.failed` —
+  clients that read it must read `code` and `message` instead.
 - a traceback, unless nothing in the failure named itself. `log.exception` is
   reserved for `provider_unavailable`, because a stack trace for a known refusal
   every few seconds is how a real crash gets lost in the noise.
@@ -229,6 +228,41 @@ failure — including that an unsupported pair still leaves the speaker's origin
 caption on screen and never claims the pair is merely slow.
 Reconnection, participant identity and resume replay are covered by
 `tests/integration/test_realtime_reconnect.py`.
+
+### What the diagnostic stream may say
+
+`_broadcast_diag` sends a `diagnostic` event to **every connected participant**,
+gated by nothing — no flag, no role, no operator setting. That made it the second
+copy of every caption: `text_preview`, `translated_text_preview` and `error` were
+filled from the words themselves, so a listener who was not entitled to a caption
+still received the first eighty characters of it, and an engine that quotes the
+sentence it refused handed the same words to the whole room.
+
+One rule now governs the stream: **a record may describe the pipeline, never the
+content that went through it.** Lengths, providers, models, stage names, timings,
+language codes and error class names are all kept; `text_preview`,
+`translated_text_preview` and `error` are gone from every stage. The provider's
+sentence for a refusal is logged (`stt failed (reason): …`) rather than broadcast,
+and the stage record keeps `error_type` so the banner in the browser can still
+tell a user whether a real model answered or a dev stand-in did.
+
+`tests/unit/test_realtime_diagnostic_privacy.py` drives a real turn and checks
+both halves: nothing forbidden arrives, and the stream still says the things it
+was built to say.
+
+### What the room says about storage
+
+Audio is stored per turn only if the *room's* window allows it: the websocket
+resolves `retention_service.policy_for(org, meeting)["audio_days"]` at connect and
+the pipeline consults that, so a room that set `audio_days: 0` never writes a WAV
+instead of writing one for the deployment default. The same resolved numbers come
+back on `GET /api/v1/meetings/{id}` under `retention` and are shown in the lobby
+before anyone speaks — guests joining by link included, since they are the people
+whose voice is being kept, and they have no account to inspect afterwards.
+Deletion itself is `docs/DATABASE.md` §Retention; the tests are
+`tests/unit/test_realtime_audio_retention.py`,
+`tests/integration/test_meeting_retention_disclosure.py` and
+`tests/integration/test_retention_sweep.py`.
 
 ### Delivery backpressure
 
