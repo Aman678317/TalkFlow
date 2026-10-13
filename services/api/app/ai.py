@@ -162,8 +162,15 @@ class AIFacade:
                     if s.name == cfg:
                         s.priority += 2000
         self._specs = specs
+        # A registry reload must not erase what the last hour of calls proved:
+        # the health records and the open circuits are the process's memory of
+        # which providers answer on this host.
         health = self.router.health if self.router else {}
-        self.router = ModelRouter(specs, gpu_available=settings.gpu_available, health=health)
+        breakers = self.router.breakers if self.router else {}
+        self.router = ModelRouter(specs, gpu_available=settings.gpu_available,
+                                  health=health, breakers=breakers,
+                                  breaker_cooldown_s=settings.provider_cooldown_s,
+                                  breaker_max_cooldown_s=settings.provider_max_cooldown_s)
         log.info("model registry loaded: %s",
                  {t.value: [s.name for s in specs[t]] for t in TASKS})
 
@@ -171,64 +178,51 @@ class AIFacade:
     # Routed execution with failover
     # ------------------------------------------------------------------ #
     def _ordered_candidates(self, task: Task, route_kw: dict) -> list[RouteDecision]:
-        """Ask the router for a decision, then re-rank excluding providers we
-        already tried. Health is restored after routing so long-term state is
-        not corrupted by a single request's failover."""
+        """Ask the router for its best route, then for the next best, and so on.
+
+        Walking is done by excluding tried providers from the routing call, not
+        by marking them unhealthy. The version this replaces flipped
+        `available` to make the router move on and restored it afterwards —
+        which zeroed every candidate's health counters on every failover, so the
+        error rate the circuit breaker reads described how many candidates this
+        request happened to have rather than how often the provider failed.
+        """
         assert self.router is not None
         order: list[RouteDecision] = []
         tried: set[str] = set()
-        touched: list[tuple[Task, str, bool]] = []
         candidates = list(self.router.providers.get(task, []))
-        max_attempts = max(10, len(candidates) + 2)
-        try:
-            for _ in range(max_attempts):
-                try:
-                    decision = self.router.route(task, **route_kw)
-                except Exception:
-                    break
-                if decision.provider in tried:
-                    break
-                tried.add(decision.provider)
-                order.append(decision)
-                t_key = task.value if isinstance(task, Task) else task
-                prev_h = self.router.health.get((t_key, decision.provider))
-                touched.append((task, decision.provider, prev_h.available if prev_h is not None else True))
-                self.router.mark_available(task, decision.provider, False)
+        for _ in range(max(10, len(candidates) + 2)):
+            try:
+                decision = self.router.route(task, exclude=frozenset(tried),
+                                             **route_kw)
+            except Exception:
+                break
+            tried.add(decision.provider)
+            order.append(decision)
 
-            # Ensure neural_online and dev fallback are always in candidates list if not tried yet
-            if task == Task.MT:
-                for cand, rsn in [("neural_online", "neural translation provider"), ("dev_echo", "fallback to dev provider")]:
-                    if cand not in tried:
-                        order.append(RouteDecision(
-                            provider=cand,
-                            model=cand,
-                            task=task,
-                            reason=rsn,
-                        ))
-            else:
-                dev_fallback = {
-                    Task.STT: "dev_text",
-                    Task.TTS: "dev_tone",
-                    Task.LANG_DETECT: "langdetect",
-                    Task.SUMMARIZE: "extractive",
-                    Task.EMBED: "hash_tfidf",
-                }.get(task)
-                if dev_fallback and dev_fallback not in tried:
-                    order.append(RouteDecision(
-                        provider=dev_fallback,
-                        model=dev_fallback,
-                        task=task,
-                        reason="fallback provider",
-                    ))
-        finally:
-            for t, name, prev in touched:
-                t_key = t.value if isinstance(t, Task) else t
-                self.router.mark_available(t, name, prev)
-                # mark_available reset counters only when flipping to unavailable;
-                # ensure original state restored
-                h = self.router.health.get((t_key, name))
-                if h is not None:
-                    h.available = prev
+        # The last resort is named here because it is not in the registry: an
+        # online translator with no key configured, and the local dev stand-in.
+        # The network one obeys the circuit breaker — a public endpoint that is
+        # down should cost the room one timeout, not one per turn forever. The
+        # local one does not: it is what answers when everything else has
+        # tripped, and refusing it fast is cheaper than reasoning about it.
+        if task == Task.MT:
+            last = [("neural_online", "neural translation provider", True),
+                    ("dev_echo", "fallback to dev provider", False)]
+        else:
+            dev_fallback = {
+                Task.STT: "dev_text",
+                Task.TTS: "dev_tone",
+                Task.LANG_DETECT: "langdetect",
+                Task.SUMMARIZE: "extractive",
+                Task.EMBED: "hash_tfidf",
+            }.get(task)
+            last = [(dev_fallback, "fallback provider", False)] if dev_fallback else []
+        for cand, rsn, obey_breaker in last:
+            if cand and cand not in tried and (
+                    not obey_breaker or not self.router.circuit_open(task, cand)):
+                order.append(RouteDecision(provider=cand, model=cand,
+                                           task=task, reason=rsn))
         return order
 
     async def _execute(self, task: Task, route_kw: dict, call):
@@ -347,16 +341,24 @@ class AIFacade:
             raise ProviderError("AI router not initialized")
         for decision in self._ordered_candidates(Task.TTS, {}):
             name = decision.provider
+            if self.router.circuit_open(Task.TTS, name):
+                continue
             try:
                 provider = self.provider(Task.TTS, name)
                 if not hasattr(provider, "synthesize_stream"):
+                    self.router.trip(Task.TTS, name, "cannot stream audio")
                     continue
                 if hasattr(provider, "healthcheck") and not await provider.healthcheck():
-                    log.info("TTS stream candidate %s is not answering; trying the "
-                             "next one", name)
+                    # A voice that will not answer a healthcheck is not going to
+                    # answer the room either, and it is asked again on the next
+                    # turn unless something remembers. This host was paying two
+                    # refused probes per turn for a Piper and a Kokoro that are
+                    # not installed.
+                    self.router.trip(Task.TTS, name, "healthcheck refused")
                     continue
                 return provider.synthesize_stream(text, lang, voice), decision
             except Exception as exc:
+                self.router.trip(Task.TTS, name, f"unusable: {type(exc).__name__}")
                 log.warning("TTS stream candidate %s unusable: %s", name, exc)
         # Saying so is the useful failure. Returning a stream that dies on the
         # first frame turns "no voice on this host" into a per-turn mystery.

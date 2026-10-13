@@ -169,6 +169,12 @@ class Settings(BaseSettings):
     # meeting's own budget: past this the turn is late enough that a caption
     # with the speaker's original words is worth more than a pending one.
     rt_translate_timeout_s: float = 5.0
+    #: How long a tripped provider is left alone before it is probed again, and
+    #: the ceiling that probe backs off to. Without a cooldown a provider that
+    #: is simply absent from this host is asked again on every turn: a measured
+    #: run here paid two refused voice probes per utterance.
+    provider_cooldown_s: float = 30.0
+    provider_max_cooldown_s: float = 600.0
 
     # realtime tuning (PDD §11.4)
     rt_target_latency_ms: float = 2500.0
