@@ -47,6 +47,19 @@ cd apps/web && npx vitest run && npx tsc -b
   `services/api` tree has no real-provider latency harness yet, so production latency
   for this path is still unmeasured. A green tick here is not a listening check either —
   only two browsers with two microphones can prove a conversation feels natural.
+- **Voice benchmark** (`python scripts/bench_tts_voices.py --lang en,hi,ur`): the Phase 3
+  requirement to *benchmark target-language TTS voices*. Measures, per
+  (language, provider, voice), time-to-first-audio, real-time factor, produced audio
+  length and peak amplitude, against sentences taken from the golden translation dataset.
+  Needs model weights; without them it is still the right tool, because it reports every
+  voice it could not measure and *why* — three different answers that must never be
+  confused: the file is absent, the provider is installed but cannot start (on Windows
+  this is `onnxruntime` failing to find the Visual C++ runtime), and the language has no
+  voice to offer at all. Tamil, Gujarati and Kannada are in that last category for both
+  shipped providers, so speech output for them is not a tuning problem. `passed_gates`
+  is false for all three; none of them is a skip and none is a score.
+  Covered in CI by `tests/unit/test_tts_voice_bench.py`, which runs the harness against a
+  fake provider so the arithmetic and the honesty rules hold on a machine with no weights.
 - **Frontend** (apps/web): vitest on the binary protocol decoder, API error contract
   normalization, base64 audio round-trip; `tsc -b` strict gate in CI.
 - **Failure tests** (section 56): provider-down paths are covered by the passthrough/
