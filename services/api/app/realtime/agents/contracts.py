@@ -10,6 +10,12 @@ Two rules are structural here, not advisory:
 * Audio bytes never appear in an event. Chunk events carry `payload_bytes` and
   delivery metadata only; the bytes travel through the transport callback. That
   keeps 50 ms audio frames off the event bus, as the design guide requires.
+* **Words never appear in an event either.** A stage event says how much was
+  said, in which language, by which engine, and how long it took — never what
+  was said. `observation()` is the only thing a stage may publish, precisely
+  because a 4 096-event trace of a meeting is a second, unretained transcript
+  the moment it stores sentences. Text travels on the client wire protocol and
+  into the durable transcript row, which are governed elsewhere.
 * Every event carries a correlation id that survives the whole path, so
   capture -> transcript -> translation -> TTS -> delivery is one queryable
   chain rather than five unrelated logs.
@@ -59,7 +65,15 @@ class RealtimeEvent(BaseModel):
     speaker_id: str | None = None
     recipient_id: str | None = None
     segment_id: str | None = None
+    #: The speaker's turn number, carried so a stage event can be placed on the
+    #: same timeline the captions use. Not the bus's own order — see `bus_sequence`.
     sequence: int = 0
+    #: This event's position in the single stream of events this meeting's bus
+    #: published, stamped by the bus and never by the producer. `sequence` restarts
+    #: per speaker and `event_id` is random, so neither can answer "what happened
+    #: between the translation event and this chunk, and in what order?" — an
+    #: event log you cannot sort is not evidence.
+    bus_sequence: int = 0
     timestamp_ms: int = 0
     payload: dict[str, Any] = Field(default_factory=dict)
 
@@ -99,11 +113,32 @@ class TranscriptSegment(BaseModel):
     provider: str | None = None
     model: str | None = None
 
+    def observation(self) -> dict[str, Any]:
+        """Everything about this transcript that is not the words.
+
+        `word_timestamps` is left out on purpose: they are the recognised words
+        again, in a finer form than the sentence itself.
+        """
+        return {
+            "version": self.version,
+            "sequence_number": self.sequence_number,
+            "transcript_revision": self.transcript_revision,
+            "source_language": self.source_language,
+            "is_final": self.is_final,
+            "start_time_ms": self.start_time_ms,
+            "end_time_ms": self.end_time_ms,
+            "confidence": self.confidence,
+            "provider": self.provider,
+            "model": self.model,
+            "text_chars": len(self.recognized_text or ""),
+            "word_count": len((self.recognized_text or "").split()),
+        }
+
     def to_event(self, stage: Stage) -> RealtimeEvent:
         return RealtimeEvent(
             type=stage, correlation_id=self.correlation_id, meeting_id=self.meeting_id,
             speaker_id=self.speaker_id, segment_id=self.segment_id,
-            sequence=self.sequence_number, payload=self.model_dump(exclude_defaults=False),
+            sequence=self.sequence_number, payload=self.observation(),
         )
 
 
@@ -122,6 +157,10 @@ class TranslationSegment(BaseModel):
     translated_text: str
     translation_revision: int = 1
     is_final: bool = True
+    #: The speaker's turn number this translation came from. Without it every
+    #: stage after Agent 1 published `sequence=0`, so the two stages a listener
+    #: actually waits on — translation and speech — had no place in the turn.
+    source_sequence_number: int = 0
     source_start_time_ms: int = 0
     source_end_time_ms: int = 0
     # The canonical source travels with its translation so a listener can always
@@ -133,12 +172,36 @@ class TranslationSegment(BaseModel):
     latency_ms: float = 0.0
     quality_flags: list[str] = Field(default_factory=list)
 
+    def observation(self) -> dict[str, Any]:
+        """Sizes and provenance for both sides of the transfer, never the text.
+
+        `source_text` stays on the model — a later stage must be able to
+        re-translate from the original words — it simply does not travel into
+        the event spine.
+        """
+        return {
+            "version": self.version,
+            "sequence_number": self.source_sequence_number,
+            "translation_revision": self.translation_revision,
+            "source_language": self.source_language,
+            "target_language": self.target_language,
+            "is_final": self.is_final,
+            "source_start_time_ms": self.source_start_time_ms,
+            "source_end_time_ms": self.source_end_time_ms,
+            "provider": self.provider,
+            "model": self.model,
+            "latency_ms": round(self.latency_ms, 1),
+            "quality_flags": list(self.quality_flags),
+            "source_chars": len(self.source_text or ""),
+            "translated_chars": len(self.translated_text or ""),
+        }
+
     def to_event(self) -> RealtimeEvent:
         return RealtimeEvent(
             type=Stage.TRANSLATION_READY, correlation_id=self.correlation_id,
             meeting_id=self.meeting_id, speaker_id=self.speaker_id,
             recipient_id=self.recipient_id, segment_id=self.source_segment_id,
-            payload=self.model_dump(exclude_defaults=False),
+            sequence=self.source_sequence_number, payload=self.observation(),
         )
 
 
@@ -154,6 +217,9 @@ class TtsChunkReady(BaseModel):
     segment_id: str
     target_language: str
     chunk_index: int
+    #: The speaker's turn number, so a chunk can be placed in the turn it belongs
+    #: to rather than only in the segment it came from.
+    sequence_number: int = 0
     codec: str = "wav"
     sample_rate: int = 24000
     channels: int = 1
@@ -168,11 +234,15 @@ class TtsChunkReady(BaseModel):
     is_dev: bool = False
 
     def to_event(self, *, duplicate: bool = False) -> RealtimeEvent:
+        # No `observation()` here: every field of a chunk declaration is already
+        # transport metadata — codec, rate, index, byte count — there is no
+        # content on this model to leave out.
         payload = self.model_dump(exclude_defaults=False)
         if duplicate:
             payload["duplicate"] = True
         return RealtimeEvent(
             type=Stage.TTS_CHUNK_READY, correlation_id=self.correlation_id,
             meeting_id=self.meeting_id, speaker_id=self.speaker_id,
-            segment_id=self.segment_id, payload=payload,
+            segment_id=self.segment_id, sequence=self.sequence_number,
+            payload=payload,
         )
