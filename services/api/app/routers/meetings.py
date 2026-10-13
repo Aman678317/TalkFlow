@@ -463,6 +463,23 @@ async def _all_segments(db: AsyncSession, meeting_id: uuid.UUID):
     return res.scalars().all()
 
 
+@router.get("/meetings/{meeting_id}/realtime/health")
+async def realtime_health(meeting_id: uuid.UUID,
+                          principal: Principal = Depends(require_org_user),
+                          db: AsyncSession = Depends(get_db)):
+    """What this meeting's speech path has actually proved it did.
+
+    `/api/v1/health` answers "is the process up". This answers the question an
+    operator in a degraded meeting is asking: which stage stopped producing, and
+    is it running on a real provider. Read-only, content-free — counters and
+    timings, never audio or transcript text.
+    """
+    meeting = await _meeting_or_404(db, meeting_id, principal)
+    principal.require("view_usage")
+    from app.realtime import pipeline as rt_pipeline
+    return rt_pipeline.meeting_health(meeting.id)
+
+
 @router.post("/meetings/{meeting_id}/end", response_model=MeetingOut)
 async def end_meeting(meeting_id: uuid.UUID,
                       principal: Principal = Depends(require_org_user),

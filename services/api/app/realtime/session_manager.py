@@ -145,6 +145,16 @@ class SessionManager:
             p.ws = None
             p.ws_task = None
 
+    def audio_listener(self, p: RtParticipant) -> bool:
+        """Whether this participant is owed translated speech at all.
+
+        One definition of "wants audio", shared by the fan-out below and by the
+        stage health report: a captions-only room legitimately delivers no
+        synthesized speech, and calling that broken is how a warning stops being
+        read.
+        """
+        return p.connected and p.audio_mode in ("translated", "mixed")
+
     def listeners_for_language(self, session: RtSession, target_lang: str,
                                *, want_audio: bool) -> list[RtParticipant]:
         """Fan-out: participants whose hear_lang == target_lang.
@@ -157,7 +167,7 @@ class SessionManager:
             if not p.connected or p.hear_lang != target_lang:
                 continue
             if want_audio:
-                if p.audio_mode in ("translated", "mixed"):
+                if self.audio_listener(p):
                     out.append(p)
             else:
                 if p.captions_enabled or p.audio_mode != "original":

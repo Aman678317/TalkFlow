@@ -236,7 +236,7 @@ async def realtime_ws(
         "audio_mode": rp.audio_mode,
         "protocol_version": 1,
         "server_sequence": session.sequence,
-        "ai": {"translation": "active", "dev_mode": _dev_flags()},
+        "ai": pl.get_pipeline(session).stage_health(),
         "participants": [_participant_snapshot(k, v)
                          for k, v in session.participants.items()],
     }, sequenced=False)
@@ -316,19 +316,35 @@ async def realtime_ws(
             if rp_in_session is not None and rp_in_session.ws == ws:
                 rp_in_session.connected = False
                 rp_in_session.ws = None
+            # The socket is gone, so nothing will ever feed this participant's
+            # audio queue again. The queue, its VAD and its in-progress utterance
+            # stay allocated until the session itself closes — minutes later, and
+            # only if the session is ever closed.
+            pl.get_pipeline(session).stop_speaker(rp.participant_id)
             with contextlib.suppress(Exception):
                 await manager.broadcast(
                     session, ServerEventType.PARTICIPANT_LEFT,
                     {"participant_id": str(rp.participant_id)},
                     to=[v for v in session.participants.values() if v.connected])
-            # Mark participant status as left in database so GET /participants stays clean
+            # Mark participant status as left in database so GET /participants stays clean.
+            # Deliberately detached: this finally runs *while* the task is being
+            # cancelled, and an await cancelled halfway through a write leaves that
+            # transaction open on a connection nobody will ever hand back.
             try:
-                async with db_session() as db:
-                    await meeting_service.leave_participant(db, rp.participant_id)
+                cleanup = asyncio.create_task(_mark_participant_left(rp.participant_id))
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                # `cleanup` keeps running on its own and commits; that is the point.
+                pass
             except Exception:
                 log.exception("failed to mark participant %s as left", rp.participant_id)
         log.info("ws closed for participant %s (session %s)", rp.participant_id,
                  session.session_id)
+
+
+async def _mark_participant_left(participant_id: uuid.UUID) -> None:
+    async with db_session() as db:
+        await meeting_service.leave_participant(db, participant_id)
 
 
 def _auth(ticket: str, meeting_id: str) -> tuple[str, uuid.UUID]:
@@ -341,16 +357,6 @@ def _auth(ticket: str, meeting_id: str) -> tuple[str, uuid.UUID]:
         raise
     except Exception as e:
         raise AuthenticationError(f"Invalid ticket: {e}")
-
-
-def _dev_flags() -> dict:
-    from gt_ai.types import Task
-    from app.ai import ai
-    return {
-        "stt_dev_mode": ai.is_dev_mode(Task.STT),
-        "mt_dev_mode": ai.is_dev_mode(Task.MT),
-        "tts_dev_mode": ai.is_dev_mode(Task.TTS),
-    }
 
 
 def _participant_snapshot(key: str, p: RtParticipant) -> dict:
