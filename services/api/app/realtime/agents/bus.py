@@ -43,6 +43,8 @@ class AgentBus:
         self.published = 0
         self.dispatched = 0
         self.closed = False
+        #: Position in this bus's own event stream, stamped on publish.
+        self._sequence = 0
 
     # ------------------------------------------------------------------ #
     @property
@@ -63,8 +65,14 @@ class AgentBus:
         if self.closed:
             self.dropped += 1
             return False
-        stamped = event if event.timestamp_ms else event.model_copy(
-            update={"timestamp_ms": self._clock()})
+        # Both stamps are unconditional. The clock may already have been supplied
+        # by a test or a replay, but the position in this stream belongs to the
+        # bus, and an event that skipped numbering left a hole no reader could
+        # tell apart from a drop.
+        self._sequence += 1
+        stamped = event.model_copy(update={
+            "bus_sequence": self._sequence,
+            "timestamp_ms": event.timestamp_ms or self._clock()})
         self._trace.append(stamped)
         self.published += 1
         try:
@@ -97,6 +105,8 @@ class AgentBus:
             "dropped_events": self.dropped,
             "published": self.published,
             "dispatched": self.dispatched,
+            "last_event_sequence": self._sequence,
+            "trace_events": len(self._trace),
             "closed": self.closed,
         }
 

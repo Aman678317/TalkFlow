@@ -130,6 +130,7 @@ class TranslationAgent:
             source_segment_id=segment.segment_id,
             source_language=segment.source_language, target_language=target_lang,
             translated_text=out.text, translation_revision=segment.transcript_revision,
+            source_sequence_number=segment.sequence_number,
             source_start_time_ms=segment.start_time_ms,
             source_end_time_ms=segment.end_time_ms,
             source_text=segment.recognized_text,
@@ -190,6 +191,11 @@ class TranslationAgent:
 
     async def _fail(self, segment: TranscriptSegment, target_lang: str,
                     exc: Exception, *, reason: str = "provider_unavailable") -> None:
+        # The provider's own message goes to the log, not to the event: an engine
+        # that rejects a sentence usually quotes it back, and the exception text
+        # would then sit in the meeting's trace as a second copy of the words.
+        log.warning("translation failed %s->%s (%s): %s",
+                    segment.source_language, target_lang, type(exc).__name__, exc)
         await self.bus.publish(RealtimeEvent(
             type=Stage.STAGE_FAILED, correlation_id=segment.correlation_id,
             meeting_id=self.meeting_id, speaker_id=segment.speaker_id,
@@ -197,7 +203,7 @@ class TranslationAgent:
             payload={"stage": "translation", "target_language": target_lang,
                      "source_language": segment.source_language,
                      "reason": reason, "recoverable": True,
-                     "error_code": type(exc).__name__, "error": str(exc)[:160]}))
+                     "error_code": type(exc).__name__}))
 
     # ------------------------------------------------------------------ #
     def note_language_change(self, speaker_id: str) -> None:

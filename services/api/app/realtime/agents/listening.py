@@ -114,12 +114,15 @@ class ListeningAgent:
         payload.update(extra)
         # Kept for the session owner so it can map a stage failure to the exact
         # wire event the client expects ("speech.ended empty" vs "stt
-        # unavailable") without re-deriving it from a None return.
+        # unavailable") without re-deriving it from a None return. The raw cause
+        # stays in this record — a provider's message quotes the audio it failed
+        # on often enough that it has no business in the meeting's trace.
         self._failures[correlation_id] = payload
         await self.bus.publish(RealtimeEvent(
             type=Stage.STAGE_FAILED, correlation_id=correlation_id,
             meeting_id=self.meeting_id, speaker_id=speaker_id, segment_id=segment_id,
-            sequence=sequence_number, payload=payload))
+            sequence=sequence_number,
+            payload={k: v for k, v in payload.items() if k != "error"}))
 
     # ------------------------------------------------------------------ #
     async def on_audio_captured(self, *, correlation_id: str, speaker_id: str,
