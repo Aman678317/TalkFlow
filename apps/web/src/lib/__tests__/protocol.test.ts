@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decodeBinaryFrame } from "../ws";
+import { decodeBinaryFrame, normId } from "../ws";
 import { ApiError } from "../api";
 import { b64ToBytes } from "../audio";
 
@@ -40,6 +40,46 @@ describe("realtime binary protocol", () => {
     expect(frame.shortId).toBe("seg42");
     expect(frame.language).toBe("hi");
     expect(new Uint8Array(frame.pcm)).toEqual(pcm);
+  });
+  // The deployed backend pads the binary short-id with NUL bytes
+  // (services/api/app/realtime/pipeline.py: `…[:16].ljust(16, "\x00")`), not with the
+  // ASCII character "0". Padding must be stripped for BOTH, otherwise the binary tag
+  // and the JSON tag for the same audio never match and cross-transport dedup is
+  // impossible. encodeTts above keeps "0" padding (Tree B's layout) to cover both.
+  function encodeTtsNulPadded(shortId: string, lang: string, payload: Uint8Array): ArrayBuffer {
+    const head = new Uint8Array(18 + lang.length);
+    head[0] = 0x54;
+    head.set(new TextEncoder().encode(shortId), 1);
+    head.set(new Uint8Array(16 - shortId.length), 1 + shortId.length); // NUL padding
+    head[17] = lang.length;
+    head.set(new TextEncoder().encode(lang), 18);
+    const out = new Uint8Array(head.length + payload.length);
+    out.set(head, 0);
+    out.set(payload, head.length);
+    return out.buffer;
+  }
+
+  it("strips NUL padding from server-produced TTS short ids", () => {
+    const frame = decodeBinaryFrame(encodeTtsNulPadded("a1b2c3d4", "hi", new Uint8Array([1])));
+    expect(frame.kind).toBe("tts");
+    expect(frame.shortId).toBe("a1b2c3d4");
+  });
+
+  it("strips ASCII-zero padding too (Tree B layout)", () => {
+    const frame = decodeBinaryFrame(encodeTts("a1b2c3d4", "hi", new Uint8Array([1])));
+    expect(frame.shortId).toBe("a1b2c3d4");
+  });
+
+  // The dedup contract: the binary short id and the JSON `segment_id` must key to the
+  // same value, or the same TTS chunk is played twice (tests/unit/test_tts_transport_identity.py).
+  it("keys binary and JSON transports to the same chunk identity", () => {
+    const segmentId = "6f1c2d3e-4b5a-4c6d-8e9f-0a1b2c3d4e5f";
+    const hex = segmentId.replace(/-/g, "");
+    const frame = decodeBinaryFrame(
+      encodeTtsNulPadded(hex.slice(0, 16), "hi", new Uint8Array([1]))
+    );
+    expect(frame.shortId).toBe(normId(segmentId));
+    expect(frame.shortId).toBe(normId(hex));
   });
 });
 

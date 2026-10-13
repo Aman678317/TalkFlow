@@ -35,10 +35,24 @@ export type SocketState = "connecting" | "joined" | "reconnecting" | "closed" | 
 
 const TEXT_DECODER = new TextDecoder();
 
+/**
+ * Canonical 16-char id used as the audio queue tag.
+ *
+ * The server writes it three ways: inside binary frames as UUID-hex with dashes
+ * stripped and NUL padding, inside JSON events as a raw UUID, and (Tree B) padded
+ * with the ASCII character "0". Every one of those collapses to this value, which
+ * is what makes cross-transport dedup of the same TTS chunk possible at all.
+ */
+export function normId(id: string): string {
+  return id.replace(/-/g, "").replace(/[\s0\u0000]+$/, "").slice(0, 16);
+}
+
 export function decodeBinaryFrame(buf: ArrayBuffer): BinaryFrame {
   const view = new Uint8Array(buf);
   const kind: BinaryFrameKind = view[0] === 0x4f ? "original" : "tts";
-  const shortId = TEXT_DECODER.decode(view.slice(1, 17)).replace(/0+$/, "");
+  // Tree A pads with NUL, Tree B with the ASCII character "0" — strip both so the
+  // binary tag matches the JSON tag for the same audio and dedup can work.
+  const shortId = normId(TEXT_DECODER.decode(view.slice(1, 17)));
   if (kind === "tts") {
     const n = view[17];
     const language = TEXT_DECODER.decode(view.slice(18, 18 + n));

@@ -28,7 +28,7 @@ import { api } from "../lib/api";
 import { useLanguages, languageLabel } from "../hooks/useLanguages";
 import { useLiveKitRoom } from "../hooks/useLiveKitRoom";
 import { AudioPlayer, MicCapture, b64ToBytes } from "../lib/audio";
-import { MeetingSocket, type SocketState } from "../lib/ws";
+import { MeetingSocket, normId, type SocketState } from "../lib/ws";
 import { WebRTCManager, type SignalMessage } from "../lib/webrtc";
 import type { JoinMeetingResponse, Meeting, ParticipantInfo, Preferences, RealtimeEvent, TranscriptItem } from "../lib/types";
 import { Button, ErrorState, SegmentedControl, Select, Spinner } from "../components/ui";
@@ -293,6 +293,8 @@ export default function MeetingRoom() {
   prefsRef.current = prefs;
   /** utterance short-id → language (to decide original-relay playback) */
   const utterLangRef = React.useRef<Map<string, string>>(new Map());
+  /** binary TTS frames carry no chunk index — count arrivals per segment id */
+  const ttsChunkSeqRef = React.useRef<Map<string, number>>(new Map());
   const namesRef = React.useRef<Map<string, string>>(new Map());
 
   React.useEffect(() => {
@@ -312,7 +314,11 @@ export default function MeetingRoom() {
   // ---------------- websocket lifecycle ----------------
   React.useEffect(() => {
     if (!meetingQ.data || phase !== "in") return;
-    playerRef.current = new AudioPlayer();
+    playerRef.current = new AudioPlayer((message) => {
+      setTranslationStatus("delayed");
+      setTranslationMessage(message);
+      setNotice(message);
+    });
     const socket = new MeetingSocket({
       meetingId: id,
       joinToken: seatGuestKeyRef.current ?? undefined,
@@ -346,7 +352,18 @@ export default function MeetingRoom() {
           // its input as raw PCM and would play the header as 22ms of garbage.
           if (mode === "translated" || mode === "mixed") {
             const wavBytes = new Uint8Array(frame.pcm);
-            void player.enqueueWav(wavBytes, `tts-${frame.shortId}`);
+            const tag = normId(frame.shortId);
+            // The binary frame carries no chunk index; the WebSocket delivers an
+            // utterance's chunks in order, so count them here. The JSON event for
+            // the same chunk carries the server's `chunk_index`, and both must
+            // agree or dedup silently fails and the chunk plays twice.
+            const next = ttsChunkSeqRef.current.get(tag) ?? 0;
+            ttsChunkSeqRef.current.set(tag, next + 1);
+            void player.deliver(wavBytes, tag, {
+              source: "binary",
+              sequence: 0,
+              chunkIndex: next,
+            });
           }
         }
       },
@@ -618,10 +635,18 @@ export default function MeetingRoom() {
         if (mode !== "translated" && mode !== "mixed") break;
         const audio = (evt.audio_base64 as string) || (evt.audio as string);
         if (!audio) break;
-        const uid =
-          (evt.utterance_id as string | undefined)?.slice(0, 16) ?? (evt.segment_id as string)?.slice(0, 16);
+        // Identity MUST match the binary frame's short id (UUID-hex, dashes
+        // stripped, first 16) or the same chunk arrives twice.
+        const tag = normId((evt.segment_id as string) ?? String(evt.utterance_id ?? ""));
+        const chunkIndex = Number(evt.chunk_index ?? 0);
+        const sequence = Number(evt.sequence ?? 0);
         void playerRef.current?.resumeContext();
-        void playerRef.current?.enqueueWav(b64ToBytes(audio), `tts-${uid}`);
+        void Promise.resolve(playerRef.current?.deliver(b64ToBytes(audio), tag, {
+          source: "json",
+          sequence,
+          chunkIndex,
+          speakerId: (evt.speaker_id as string) ?? undefined,
+        })).catch(() => { /* already surfaced through the player's error callback */ });
         break;
       }
       case "tts.completed": {
@@ -630,10 +655,16 @@ export default function MeetingRoom() {
         if (mode !== "translated" && mode !== "mixed") break;
         const audio = evt.audio as string;
         if (audio) {
-          const uid =
-            (evt.utterance_id as string | undefined)?.slice(0, 16) ?? (evt.segment_id as string)?.slice(0, 16);
+          // Whole-utterance payload: it is one chunk, and it must dedup against
+          // the streamed halves the same segment already delivered over binary.
+          const tag = normId((evt.segment_id as string) ?? String(evt.utterance_id ?? ""));
           void playerRef.current?.resumeContext();
-          void playerRef.current?.enqueueWav(b64ToBytes(audio), `tts-${uid}`);
+          void Promise.resolve(playerRef.current?.deliver(b64ToBytes(audio), tag, {
+            source: "json",
+            sequence: Number(evt.sequence ?? 0),
+            chunkIndex: 0,
+            speakerId: (evt.speaker_id as string) ?? undefined,
+          })).catch(() => { /* already surfaced through the player's error callback */ });
         }
         break;
       }

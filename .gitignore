@@ -19,6 +19,7 @@ dist/
 coverage/
 .mimosa/
 services/api/storage/
+model_cache/
 build/
 *.egg-info/
 .copilotkit/
@@ -29,3 +30,4 @@ my-project/
 apps/web/.agents/
 .vercel
 .vercel/
+model_cache/
