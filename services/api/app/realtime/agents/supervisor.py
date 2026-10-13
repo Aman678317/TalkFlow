@@ -204,6 +204,17 @@ class Supervisor:
     def is_cancelled(self, correlation_id: str) -> bool:
         return correlation_id in self._cancelled
 
+    def active_languages(self, speaker_id: str) -> list[str]:
+        """Target languages still in flight for one speaker.
+
+        Asked *before* an interruption, because the answer is what the browser
+        has to drop — after ``interrupt`` the bookkeeping is gone.
+        """
+        return sorted({lang
+                       for cid, meta in self._active.items()
+                       if meta["speaker_id"] == speaker_id
+                       for lang in meta.get("target_languages", [])})
+
     def is_stale_for(self, recipient_id: str, target_language: str) -> bool:
         """A listener who switched language must not receive the old language."""
         return (recipient_id, target_language) in self._stale_recipients
@@ -230,6 +241,10 @@ class Supervisor:
     async def recipient_changed(self, recipient_id: str, *, previous_language: str,
                                 new_language: str) -> None:
         """One listener changed target language — stale output is stale for them only."""
+        # Un-stale the language they just switched *to*. Without this, en→hi→en
+        # leaves (recipient, "en") stale forever and they never hear English
+        # again, because the first switch marked it and nothing ever cleared it.
+        self._stale_recipients.discard((recipient_id, new_language))
         self._stale_recipients.add((recipient_id, previous_language))
         if self._bus is not None:
             await self._bus.publish(RealtimeEvent(

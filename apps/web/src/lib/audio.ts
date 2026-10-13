@@ -2,11 +2,12 @@
  * Audio engine:
  * - capture: mic → AudioWorklet → 16 kHz mono PCM16 frames → WebSocket
  * - playback: queue for translated TTS WAVs + original-audio PCM relay streams,
- *   with per-utterance cancellation (stale output detection, section 10).
+ *   with per-utterance and per-speaker cancellation (stale output detection, §10).
  *
  * The browser never does translation: all synthesis happens server-side and arrives
  * as real audio (base64 WAV or binary PCM frames). speechSynthesis is NOT used.
  */
+import { normId } from "./ws";
 
 const WORKLET_CODE = `
 class PCMCaptureProcessor extends AudioWorkletProcessor {
@@ -215,13 +216,43 @@ export class AudioPlayer {
   /** (tag, chunkIndex) -> transport that actually enqueued it. Bounded by MAX_DELIVERIES. */
   private deliveredChunks: Map<string, "binary" | "json"> = new Map();
   private pendingDeliveries: Map<string, ReturnType<typeof setTimeout>> = new Map();
+  /**
+   * Queue tag -> speaker, learned from the JSON `tts.chunk` events. The binary
+   * frame carries only the segment's short id, so without this the player could
+   * not tell whose audio a queued chunk is — which is exactly what a barge-in
+   * flush has to know to drop one speaker without silencing another.
+   */
+  private speakerByTag: Map<string, string> = new Map();
+  /**
+   * Queue tag -> turn (utterance id), learned the same way: the JSON event names
+   * both, the binary frame names neither. Playback state is reported per turn
+   * because that is what a caption is keyed by.
+   */
+  private turnByTag: Map<string, string> = new Map();
   private playedCount = 0;
+  private playingTurn: string | null = null;
 
-  constructor(private onPlaybackError?: (message: string) => void) {
+  constructor(
+    /** Decode/resume failures must reach the UI — a silent player is the bug we are fixing. */
+    private onPlaybackError?: (message: string) => void,
+    /** Turn-level transitions, so a caption can say what the listener has heard. */
+    private onPlaybackState?: (
+      turn: string,
+      state: "playing" | "played" | "dropped",
+    ) => void,
+  ) {
     this.ctx = new AudioContext();
   }
 
-  /** Decode/resume failures must reach the UI — a silent player is the bug we are fixing. */
+  /** One transition per turn: chunks of a turn are silent, and a cut turn is dropped. */
+  private noteTurn(turn: string | null) {
+    if (turn === this.playingTurn) return;
+    const previous = this.playingTurn;
+    this.playingTurn = turn;
+    if (previous) this.onPlaybackState?.(previous, "played");
+    if (turn) this.onPlaybackState?.(turn, "playing");
+  }
+
   private reportPlaybackError(err: unknown, stage: string) {
     const name = err instanceof Error ? err.name : "PlaybackError";
     const message =
@@ -257,7 +288,7 @@ export class AudioPlayer {
   ) {
     const seq = opts?.sequence ?? 0;
     const chunkIdx = opts?.chunkIndex ?? 0;
-    const speakerKey = opts?.speakerId ?? "";
+    const speakerKey = this.speakerOf(tag, opts);
     if (speakerKey && seq > 0) {
       const lastPlayed = this.lastPlayedSeqPerSpeaker.get(speakerKey) ?? 0;
       if (seq < lastPlayed) {
@@ -280,8 +311,8 @@ export class AudioPlayer {
       tag,
       sequence: seq,
       chunkIndex: chunkIdx,
-      utteranceId: opts?.utteranceId,
-      speakerId: opts?.speakerId,
+      utteranceId: opts?.utteranceId ?? this.turnByTag.get(tag),
+      speakerId: this.speakerOf(tag, opts),
       enqueuedAt: Date.now(),
     });
 
@@ -325,16 +356,104 @@ export class AudioPlayer {
       if (key.startsWith(prefix)) this.deliveredChunks.delete(key);
     }
     this.queue = this.queue.filter((q) => q.tag !== tag);
-    if (this.playingTag === tag && this.current) {
-      this.current.stop();
-      this.current = null;
-      this.playingTag = null;
+    this.stopIfPlaying(tag);
+  }
+
+  /**
+   * Barge-in: drop one speaker's stale audio and nothing else's.
+   *
+   * A translated turn is streamed under the segment's short id, which the binary
+   * frame carries alone, so ownership comes from the JSON events that name both
+   * the segment and the speaker. Original relay frames are tagged with the
+   * speaker's own short id, so they resolve directly.
+   *
+   * Returns how many chunks were dropped, which is what the caller reports.
+   * Each interrupted turn is additionally reported once as "dropped" — never as
+   * "played" — so its caption can say the listener did not hear it.
+   */
+  cancelSpeaker(speakerId: string): number {
+    const tags = this.tagsOfSpeaker(speakerId);
+    for (const tag of tags) {
+      const prefix = `${tag}:`;
+      for (const key of [...this.pendingDeliveries.keys()]) {
+        if (key.startsWith(prefix)) this.cancelDelivery(key);
+      }
+      for (const key of [...this.deliveredChunks.keys()]) {
+        if (key.startsWith(prefix)) this.deliveredChunks.delete(key);
+      }
+    }
+    const wanted = new Set(tags);
+    const droppedTurns = new Set<string>();
+    let dropped = 0;
+    const kept: PlayQueueItem[] = [];
+    for (const item of this.queue) {
+      if (wanted.has(item.tag)) {
+        dropped += 1;
+        if (item.utteranceId) droppedTurns.add(item.utteranceId);
+      } else {
+        kept.push(item);
+      }
+    }
+    this.queue = kept;
+    for (const tag of tags) {
+      if (this.playingTag === tag && this.current) {
+        // Cleared before stopping: the chained playNext must not announce the
+        // audio it is about to cut off as having finished.
+        const liveTurn = this.playingTurn;
+        this.playingTurn = null;
+        if (this.stopIfPlaying(tag)) {
+          dropped += 1;
+          if (liveTurn) droppedTurns.add(liveTurn);
+        }
+      }
+    }
+    for (const turn of droppedTurns) this.onPlaybackState?.(turn, "dropped");
+    return dropped;
+  }
+
+  /** Tags that currently belong to one speaker, translated and original alike. */
+  private tagsOfSpeaker(speakerId: string): string[] {
+    const owners = new Set([speakerId, normId(speakerId)]);
+    const tags = new Set<string>([`orig-${normId(speakerId)}`]);
+    for (const [tag, owner] of this.speakerByTag) if (owners.has(owner)) tags.add(tag);
+    for (const item of this.queue) if (item.speakerId && owners.has(item.speakerId)) tags.add(item.tag);
+    return [...tags];
+  }
+
+  private stopIfPlaying(tag: string): boolean {
+    if (this.playingTag !== tag || !this.current) return false;
+    // onended must not fire: it would run the chunk's own completion callback and
+    // chain playback on from audio the caller just declared stale.
+    this.current.onended = null;
+    this.current.stop();
+    this.current = null;
+    this.playingTag = null;
+    void this.playNext();
+    return true;
+  }
+
+  /**
+   * Remember whose audio and which turn a queue tag belongs to. The binary TTS
+   * frame carries only the segment's short id, so both cross-transport
+   * cancellation and per-turn playback state depend on what the JSON events name.
+   */
+  noteOwnership(tag: string, owner: { speakerId?: string; utteranceId?: string }) {
+    if (owner.speakerId) this.remember(this.speakerByTag, tag, owner.speakerId);
+    if (owner.utteranceId) this.remember(this.turnByTag, tag, owner.utteranceId);
+  }
+
+  /** FIFO-evicting registry, so a long meeting cannot grow these without bound. */
+  private remember<T>(map: Map<string, T>, key: string, value: T) {
+    map.set(key, value);
+    while (map.size > AudioPlayer.MAX_DELIVERIES) {
+      const oldest = map.keys().next().value;
+      if (oldest === undefined) break;
+      map.delete(oldest);
     }
   }
 
-  /** Cancel all buffered audio for a specific speaker upon interruption */
-  cancelSpeaker(speakerId: string) {
-    this.queue = this.queue.filter((q) => q.speakerId !== speakerId);
+  private speakerOf(tag: string, opts?: PlayQueueOptions): string | undefined {
+    return opts?.speakerId ?? this.speakerByTag.get(tag);
   }
 
   /**
@@ -353,6 +472,7 @@ export class AudioPlayer {
   ): Promise<void> {
     const key = `${tag}:${opts.chunkIndex ?? 0}`;
     const source = opts.source ?? "binary";
+    this.noteOwnership(tag, opts);
     const winner = this.deliveredChunks.get(key);
     if (winner) {
       this.cancelDelivery(key);
@@ -413,19 +533,30 @@ export class AudioPlayer {
   async stopAll(): Promise<void> {
     for (const timer of this.pendingDeliveries.values()) clearTimeout(timer);
     this.pendingDeliveries.clear();
+    const droppedTurns = new Set<string>();
+    for (const item of this.queue) {
+      if (item.utteranceId) droppedTurns.add(item.utteranceId);
+    }
+    const liveTurn = this.playingTurn;
+    // Cleared before stopping: the caption must read "not heard", not "played".
+    this.playingTurn = null;
     this.queue = [];
     if (this.current) {
       this.current.onended = null;
       this.current.stop();
       this.current = null;
       this.playingTag = null;
+      if (liveTurn) droppedTurns.add(liveTurn);
     }
+    for (const turn of droppedTurns) this.onPlaybackState?.(turn, "dropped");
   }
 
   private async playNext(onDone?: () => void) {
     if (this.current) return;
     const item = this.queue.shift();
     if (!item) {
+      // Nothing left to hear: whatever turn was playing has now finished.
+      this.noteTurn(null);
       onDone?.();
       return;
     }
@@ -454,6 +585,9 @@ export class AudioPlayer {
         void this.playNext();
       };
       src.start();
+      // Only after start(): a failed start re-queues the item and must not have
+      // claimed to the UI that the listener is hearing it.
+      this.noteTurn(item.utteranceId ?? null);
     } catch (err) {
       this.reportPlaybackError(err, "started");
       this.current = null;

@@ -113,6 +113,7 @@ export type RealtimeEventType =
   | "chat.message" | "chat.translation"
   | "media.state"
   | "quality.degraded" | "quality.latency" | "latency.report" | "translation.failed" | "translation.error"
+  | "playback.flush"
   | "reconnect.required" | "error" | "pong" | "signal" | "diagnostic";
 
 export interface RealtimeEvent {

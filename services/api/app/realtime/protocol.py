@@ -39,6 +39,7 @@ class ServerEventType(StrEnum):
     CAPTION_UPDATED = "caption.updated"
     LANGUAGE_CHANGED = "language.changed"
     QUALITY_DEGRADED = "quality.degraded"
+    PLAYBACK_FLUSH = "playback.flush"
     TRANSLATION_FAILED = "translation.failed"
     RECONNECT_REQUIRED = "reconnect.required"
     CHAT_MESSAGE = "chat.message"
@@ -153,7 +154,12 @@ def transcript_partial(session_id: str, conversation_id: str, speaker_id: str,
 class LatencyTrace(BaseModel):
     """PDD §10 — every stage measured, reported via latency.report."""
     segment_id: str = ""
+    utterance_id: str = ""
     seq: int = 0
+    # Wall-clock start of the turn this report describes, and how long it ran.
+    # Without them a latency report cannot be tied back to the caption it delayed.
+    start_wall_ms: int = 0
+    duration_ms: int = 0
     source_lang: str = ""
     target_lang: str = ""
     audio_capture_ms: float = 0

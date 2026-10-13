@@ -458,6 +458,7 @@ async def _handle_event(ws: WebSocket, session, rp: RtParticipant, event) -> Non
         hear = data.get("hear_lang") or data.get("listening_language")
         audio_mode = data.get("audio_mode")
         captions = data.get("captions_enabled")
+        previous_hear_lang = rp.hear_lang
         async with db_session() as db:
             pref = await meeting_service.update_preference(
                 db, rp.participant_id, speak_lang=speak, hear_lang=hear,
@@ -470,6 +471,13 @@ async def _handle_event(ws: WebSocket, session, rp: RtParticipant, event) -> Non
             rp.audio_mode = audio_mode
         if captions is not None:
             rp.captions_enabled = bool(captions)
+        # Translated audio already in flight was made for the language this
+        # listener just left. Scope matters: it stops their playback and marks
+        # their (recipient, language) pair stale, and nobody else's delivery.
+        if rp.hear_lang != previous_hear_lang and previous_hear_lang:
+            await pipe.recipient_changed(
+                rp.participant_id, previous_language=previous_hear_lang,
+                new_language=rp.hear_lang)
         await manager.broadcast(session, ServerEventType.LANGUAGE_CHANGED, {
             "participant_id": str(rp.participant_id),
             "display_name": rp.display_name,

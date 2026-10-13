@@ -81,6 +81,21 @@ describe("realtime binary protocol", () => {
     expect(frame.shortId).toBe(normId(segmentId));
     expect(frame.shortId).toBe(normId(hex));
   });
+
+  // A literal "0" as the 16th hex digit is part of the id, not padding. Stripping
+  // padding before the 16-char cut truncated the binary key only, so that one chunk
+  // arrived under two tags and the listener heard it twice (~6% of segments).
+  it("keys a segment whose prefix ends in zero once, not twice", () => {
+    const segmentId = "cd58e898-050d-4280-9c3e-1a2b3c4d5e6f";
+    const hex = segmentId.replace(/-/g, "");
+    expect(hex[15]).toBe("0");
+    const frame = decodeBinaryFrame(
+      encodeTtsNulPadded(hex.slice(0, 16), "hi", new Uint8Array([1]))
+    );
+    expect(frame.shortId).toBe(normId(segmentId));
+    expect(frame.shortId).toBe(normId(hex));
+    expect(frame.shortId).toBe("cd58e898050d428");
+  });
 });
 
 describe("api error contract", () => {

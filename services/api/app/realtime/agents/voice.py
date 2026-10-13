@@ -66,12 +66,17 @@ class _SegmentDelivery:
 
 class VoiceAgent:
     def __init__(self, bus: AgentBus, tts: TtsStreamProvider, *, meeting_id: str,
-                 channels: int = 1, seen_limit: int = DEFAULT_SEEN_LIMIT) -> None:
+                 channels: int = 1, seen_limit: int = DEFAULT_SEEN_LIMIT,
+                 voice_for: Callable[[str], str | None] | None = None) -> None:
         self.bus = bus
         self.tts = tts
         self.meeting_id = meeting_id
         self.channels = channels
         self.seen_limit = seen_limit
+        #: target language -> voice name. None means "ask the provider for its
+        #: default", which is what the pipeline did until a voice per language
+        #: could be chosen at all.
+        self.voice_for = voice_for
         # Insertion-ordered set: one long meeting must not accumulate a chunk key
         # per 40 ms frame forever, and the recent window is what a replay needs.
         self._seen: dict[tuple[str, str, str, int], None] = {}
@@ -95,9 +100,10 @@ class VoiceAgent:
         """
         if translation.target_language == translation.source_language:
             return 0
+        voice = self.voice_for(translation.target_language) if self.voice_for else None
         try:
             stream, decision = await self.tts.synthesize_stream(
-                translation.translated_text, translation.target_language)
+                translation.translated_text, translation.target_language, voice)
         except Exception as exc:
             await self._fail(translation, exc)
             return 0
@@ -239,4 +245,19 @@ class VoiceAgent:
         for table in (self._deliveries, self._failures):
             for key in [k for k in table
                         if k[0] == correlation_id and k[1] == segment_id]:
+                table.pop(key, None)
+
+    def forget_correlation(self, correlation_id: str) -> None:
+        """Barge-in: drop every language run of one utterance.
+
+        ``forget_segment`` needs the durable segment id, but an interruption can
+        land before the transcript row exists, and a cancelled task never runs
+        ``finish_delivery``, so that run's totals would otherwise be kept for
+        the life of the meeting — and a retried chunk 0 would be judged a
+        duplicate of audio that never finished playing.
+        """
+        for key in [k for k in self._seen if k[0] == correlation_id]:
+            self._seen.pop(key, None)
+        for table in (self._deliveries, self._failures):
+            for key in [k for k in table if k[0] == correlation_id]:
                 table.pop(key, None)

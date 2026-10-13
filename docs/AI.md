@@ -31,6 +31,17 @@ passthrough). Request-level failures never blacklist a provider globally.
 - **MT:** quality model → Argos (offline NMT) → Marian/opus-mt (pair filler, e.g. mr) →
   **passthrough** (returns source flagged `untranslated_fallback` — never invents text).
 - **TTS:** Kokoro/Piper → Indic-Parler (Phase 5) → captions-only fallback.
+
+### Which voice speaks which language
+
+`TTS_VOICE_MAP=hi=hf_alpha,en=af_heart` (`services/api/app/realtime/voices.py`) decides
+what each listener hears, and the realtime path passes it all the way down to the
+provider. Empty map is not "no voice": Kokoro then picks from its own manifest by the
+language letter in the voice name (`hf_*` for Hindi, `zf_*` for Chinese) instead of
+serving every language with its English default, and Piper uses its per-language default
+file. Values are expected to come from `python scripts/bench_tts_voices.py`, not from a
+model card — voices that exist are a property of the deployment, and Tamil, Gujarati and
+Kannada have no voice in either shipped provider's upstream set.
 - **LLM:** vLLM (local server) → extractive assistant (deterministic, labeled).
 
 ## Capability registry (section 8)
