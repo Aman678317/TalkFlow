@@ -109,6 +109,26 @@ ready│review│failed. See DOCUMENTS.md.
 `GET /internal/components` (open-source component health + license review status) ·
 `GET /internal/audio-health` (VAD/STT/TTS/queues/GPU).
 
+`/version` answers for every AI task with the provider the configuration prefers
+and what this image can actually run it on:
+
+```json
+"ai": {"stt": {"provider": "faster_whisper", "runtime": "missing"},
+       "mt":   {"provider": "neural_online",  "runtime": "remote"},
+       "tts":  {"provider": "dev_tone",       "runtime": "dev_stand_in"}}
+```
+
+`runtime` is one of `importable` (the model package is installed), `missing` (it
+is not, so this provider will fail over), `remote` (the work happens over the
+network), `remote_unconfigured` (it needs a URL or key that is empty),
+`dev_stand_in` (a fake: it never recognises speech or produces speech), or
+`builtin` (pure-Python, nothing to install). `importable` means the package is
+present — weights, voice files and a loadable runtime are only proven once a
+stage actually runs. For that, `GET /api/v1/meetings/{id}/realtime/health` gives
+per-stage health for a live room, and `/metrics` carries
+`gt_stt_latency_ms`, `gt_tts_first_audio_ms`, `gt_e2e_latency_ms` and
+`gt_translation_failures_total`.
+
 ## Rate limits
 
 `RATE_LIMIT_TRANSLATE` (default 60/min per key/user), `RATE_LIMIT_AUTH` (10/min per

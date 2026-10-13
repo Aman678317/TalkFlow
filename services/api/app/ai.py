@@ -11,6 +11,7 @@ Responsibilities:
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import logging
 import time
 from typing import Any
@@ -33,6 +34,45 @@ from gt_ai.types import (
 log = logging.getLogger("app.ai")
 
 TASKS = (Task.STT, Task.MT, Task.TTS, Task.LANG_DETECT, Task.SUMMARIZE, Task.EMBED)
+
+# Each local-model adapter defers its heavy `import` until first use, so a build
+# whose requirements omit the package still registers the provider and still
+# answers with its name. This table is the only place that records which module
+# each provider is waiting for, which is what lets a deployment report the runtimes
+# it actually has instead of the ones it was configured to prefer. Providers not
+# listed here need no local model package.
+_RUNTIME_MODULE = {
+    "faster_whisper": "faster_whisper",
+    "piper": "piper",
+    "kokoro": "kokoro_onnx",
+    "argos": "argostranslate",
+    "nllb_ct2": "ctranslate2",
+    "madlad400": "transformers",
+    "sentence_transformers": "sentence_transformers",
+    "fasttext": "fasttext",
+    "langdetect": "langdetect",
+}
+
+# Providers whose work happens outside this process, with the setting that has to
+# be non-empty before they can do anything. `neural_online` is absent because it
+# needs neither a key nor a URL — it cascades over public web endpoints.
+_REMOTE_REQUIREMENT = {
+    "stt_http": "stt_http_url",
+    "mt_http": "mt_http_url",
+    "tts_http": "tts_http_url",
+    "llm_http": "llm_http_url",
+    "deepl": "deepl_api_key",
+}
+
+#: Network providers that need no configuration of their own to be reachable.
+_NETWORK_ONLY = frozenset({"neural_online"})
+
+
+def _module_present(module: str) -> bool:
+    try:
+        return importlib.util.find_spec(module) is not None
+    except (ImportError, ValueError):
+        return False
 
 
 class AIFacade:
@@ -405,6 +445,35 @@ class AIFacade:
             except Exception:
                 ok = False
             out[task.value] = {"provider": name, "healthy": ok}
+        return out
+
+    def runtime_report(self) -> dict[str, dict[str, str]]:
+        """Per task: the configured provider and whether this process can run it.
+
+        Answers the question `_configured_name()` alone cannot: an operator
+        setting of `auto` resolves to the head of a preference list, so a build
+        that installs no speech runtime still reported `faster_whisper` while
+        every call fell through to the dev stand-in.
+
+        `importable` means the package is in the image and nothing more —
+        weights, voice files, API keys and a loadable onnxruntime are proven only
+        when a stage actually runs, which is what `health()` and the stage
+        counters report.
+        """
+        out: dict[str, dict[str, str]] = {}
+        for task in TASKS:
+            name = self._configured_name(task)
+            if name.startswith("dev_"):
+                runtime = "dev_stand_in"
+            elif name in _REMOTE_REQUIREMENT:
+                runtime = ("remote" if getattr(settings, _REMOTE_REQUIREMENT[name], "")
+                           else "remote_unconfigured")
+            elif name in _RUNTIME_MODULE:
+                runtime = ("importable" if _module_present(_RUNTIME_MODULE[name])
+                           else "missing")
+            else:
+                runtime = "remote" if name in _NETWORK_ONLY else "builtin"
+            out[task.value] = {"provider": name, "runtime": runtime}
         return out
 
     def is_dev_mode(self, task: Task) -> bool:
