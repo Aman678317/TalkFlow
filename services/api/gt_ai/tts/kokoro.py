@@ -36,6 +36,21 @@ class KokoroProvider(BaseProvider):
     LANG_CODES = {"en": "en-us", "es": "es", "fr": "fr-fr", "hi": "hi",
                   "it": "it", "ja": "jp", "pt": "pt-br", "zh": "zh"}
 
+    #: Kokoro voice names begin with a language letter — `af_`/`am_` are American
+    #: English, `bf_`/`bm_` British, `hf_`/`hm_` Hindi, `zf_` Chinese. Used only
+    #: to pick a *default* when the caller named no voice: a Hindi listener must
+    #: not be served an English voice because the pipeline forgot to ask. The
+    #: manifest decides which names actually exist, so a miss falls back to the
+    #: configured default rather than inventing a voice.
+    LANG_PREFIXES = {"en": ("af_", "am_", "bf_", "bm_"),
+                     "es": ("ef_", "em_"),
+                     "fr": ("ff_",),
+                     "hi": ("hf_", "hm_"),
+                     "it": ("if_",),
+                     "ja": ("jf_", "jm_"),
+                     "pt": ("pf_",),
+                     "zh": ("zf_", "zm_")}
+
     def __init__(self, model_path: str = "model_cache/kokoro-v1.0.onnx",
                  voices_path: str = "model_cache/kokoro-voices.json",
                  default_voice: str = "af_heart") -> None:
@@ -68,6 +83,38 @@ class KokoroProvider(BaseProvider):
     async def warmup(self) -> None:
         await self._ensure_loaded()
 
+    def _voice_names(self) -> list[str]:
+        """Every voice name the loaded manifest offers.
+
+        `list_voices` is absent on older kokoro-onnx builds, and a voice picker
+        must not be the reason translated speech stops, so an unavailable
+        listing reads as "no candidates" instead of raising.
+        """
+        listing = getattr(self._tts, "list_voices", None)
+        if listing is None:
+            return []
+        return [v["name"] if isinstance(v, dict) else str(v) for v in listing()]
+
+    def voices_for(self, lang: str) -> list[str]:
+        """Manifest voices that speak `lang`. Empty before the weights load,
+        because until then the provider genuinely does not know what it has."""
+        prefixes = self.LANG_PREFIXES.get(lang)
+        if not prefixes or self._tts is None:
+            return []
+        return [n for n in self._voice_names() if n.startswith(prefixes)]
+
+    def _default_voice_for(self, lang: str) -> str:
+        """A voice that speaks `lang`, chosen from what is actually installed."""
+        prefixes = self.LANG_PREFIXES.get(lang)
+        if not prefixes:
+            return self.default_voice
+        for name in self._voice_names():
+            if name.startswith(prefixes):
+                return name
+        log.warning("kokoro manifest has no %s voice; falling back to %s",
+                    lang, self.default_voice)
+        return self.default_voice
+
     async def healthcheck(self) -> bool:
         try:
             await self._ensure_loaded()
@@ -93,7 +140,7 @@ class KokoroProvider(BaseProvider):
 
     async def synthesize(self, text: str, lang: str, voice: str | None = None) -> AudioChunk:
         await self._ensure_loaded()
-        voice = voice or self.default_voice
+        voice = voice or self._default_voice_for(lang)
         t0 = time.perf_counter()
         samples, rate = await asyncio.to_thread(self._synth_sync, text, voice, lang)
         wav = await asyncio.to_thread(self._to_wav, samples, rate)

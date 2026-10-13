@@ -41,6 +41,7 @@ from app.realtime.agents.translation import RealtimeTranslatorProvider, Translat
 from app.realtime.agents.voice import RealtimeTtsProvider, VoiceAgent
 from app.realtime.protocol import LatencyTrace, ServerEventType
 from app.realtime.session_manager import RtParticipant, RtSession, manager
+from app.realtime.voices import voice_for
 from app.services.translation_service import (
     TranslateContext, translate_text, validate_pair,
 )
@@ -132,7 +133,7 @@ class MeetingPipeline:
                                        translate_fn=lambda *a: translate_text(*a)),
             meeting_id=self._meeting_id)
         self.voice = VoiceAgent(self.bus, RealtimeTtsProvider(ai),
-                                meeting_id=self._meeting_id)
+                                meeting_id=self._meeting_id, voice_for=voice_for)
 
     # ------------------------------------------------------------------ #
     # Agent adapters: room scoping the agents cannot know on their own

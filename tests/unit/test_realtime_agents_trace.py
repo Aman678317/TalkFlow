@@ -115,7 +115,7 @@ class FakeTts:
         self.fail = fail
         self.calls: list[tuple[str, str]] = []
 
-    async def synthesize_stream(self, text: str, lang: str):
+    async def synthesize_stream(self, text: str, lang: str, voice: str | None = None):
         self.calls.append((lang, text))
         if self.fail:
             raise RuntimeError("tts provider down")

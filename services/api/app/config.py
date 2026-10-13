@@ -121,6 +121,11 @@ class Settings(BaseSettings):
     tts_provider: str = "auto"
     tts_model: str = "kokoro-v1.0"
     tts_http_url: str = ""
+    # Which voice speaks which target language: "hi=hf_alpha,en=af_heart".
+    # Empty means the provider's own default, which for Kokoro is a single
+    # English voice — correct for en, wrong for every other language the room
+    # translates into. Populated from the voice benchmark, not from a guess.
+    tts_voice_map: str = ""
     lang_detect_provider: str = "auto"
     fasttext_lid_model: str = ""
     summarization_provider: str = "extractive"
