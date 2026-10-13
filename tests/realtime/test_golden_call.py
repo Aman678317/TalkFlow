@@ -12,6 +12,9 @@ A speaks Hindi (real Piper-synthesized Hindi speech fed as PCM16):
   → C receives transcript.final(hi) (original caption) + translation.failed(mr, recoverable)
 B replies in English:
   → A receives translation.final(hi) + tts.completed
+F speaks Mandarin:
+  → E receives transcript.final(zh) + translation.final(hi) flagged pivoted_via_intermediate
+    (Argos has no zh/hi model, so this is the two-hop zh->en->hi route) + tts.completed
   → C receives translation.failed(mr)
 Chat: B sends English chat → all receive chat.message (original), A receives chat.translation(hi).
 Reconnect: B rejoins with last_sequence=0 → session.resumed + full replay, monotonic sequences.
@@ -66,7 +69,10 @@ def _models_available() -> bool:
         return False
     if not (MODEL_CACHE / "piper" / "en_US-lessac-medium.onnx").exists():
         return False
-    return (_argos_pair_installed("hi", "en") and _argos_pair_installed("en", "hi"))
+    if not (MODEL_CACHE / "piper" / "zh_CN-huayan-medium.onnx").exists():
+        return False
+    return all(_argos_pair_installed(*pair) for pair in (("hi", "en"), ("en", "hi"),
+                                                         ("zh", "en")))
 
 
 def _port_free() -> bool:
@@ -279,25 +285,31 @@ async def _golden(server_proc):
     en_speech = await loop.run_in_executor(
         None, _synth, "Hello everyone, let us start the meeting about the new plan.",
         "en_US-lessac-medium")
-    assert len(hi_speech) > 32000 and len(en_speech) > 32000
+    zh_speech = await loop.run_in_executor(
+        None, _synth, "大家好，我们今天讨论新的计划。", "zh_CN-huayan-medium")
+    assert len(hi_speech) > 32000 and len(en_speech) > 32000 and len(zh_speech) > 32000
 
     # ---------------------------------------------------------- participants join
     # A speaks Hindi (hears English) — B speaks English (hears Hindi)
     # C speaks Japanese (wants Marathi — MT unconfigured in sandbox → honest degradation)
     # D hears English (receives REAL English TTS when A speaks Hindi)
     # E hears Hindi  (receives REAL Hindi TTS when B speaks English)
+    # F speaks Mandarin (hears Hindi) — the Chinese -> Hindi leg, which Argos can only
+    #   reach by chaining zh->en->hi, so the pivot must be visible on the wire
     a = WSClient("Aarav")
     b = WSClient("Beth")
     c = WSClient("Chen")
     d = WSClient("Divya")
     e = WSClient("Esha")
+    f = WSClient("Fang")
     await a.connect(mid, speaking="hi", listening="en", jwt=jwt)
     await b.connect(mid, speaking="en", listening="hi", join_token=join_token)
     await c.connect(mid, speaking="ja", listening="mr", join_token=join_token,
                     audio_mode="mixed")
     await d.connect(mid, speaking="mr", listening="en", join_token=join_token)
     await e.connect(mid, speaking="en", listening="hi", join_token=join_token)
-    for client in (a, b, c, d, e):
+    await f.connect(mid, speaking="zh", listening="hi", join_token=join_token)
+    for client in (a, b, c, d, e, f):
         await client.expect(_by_type("participant.joined"), timeout=20)
 
     # ---------------------------------------------------------- A speaks Hindi
@@ -359,6 +371,25 @@ async def _golden(server_proc):
                                 and e_.get("segment_id") == seg2, timeout=30)
     assert final_en_d["language"] == "en"
 
+    # -------------------------- F speaks Mandarin -> Hindi (the Chinese->Hindi gate leg)
+    for cl in (a, b, c, d, e, f):
+        cl.events.clear(); cl._queue = asyncio.Queue()
+    await f.send_audio(zh_speech)
+    final_zh = await e.expect(lambda e_: e_["type"] == "transcript.final"
+                              and e_.get("language") == "zh", timeout=180)
+    seg3 = final_zh["segment_id"]
+    tr_hi_from_zh = await e.expect(_by_type("translation.final", target_language="hi",
+                                             segment_id=seg3), timeout=300)
+    assert any("\u0900" <= ch <= "\u097F" for ch in tr_hi_from_zh["text"]), \
+        f"expected Devanagari from the zh->hi route, got {tr_hi_from_zh['text']!r}"
+    assert "pivoted_via_intermediate" in (tr_hi_from_zh.get("quality_flags") or []), \
+        "Argos ships no zh/hi model, so a zh->hi result must declare its two-hop route"
+    tts_hi_from_zh = await e.expect(_by_type("tts.completed", target_language="hi",
+                                             segment_id=seg3), timeout=180)
+    with wave.open(io.BytesIO(base64.b64decode(tts_hi_from_zh["audio"]))) as w:
+        assert w.getnframes() > 8000  # >= 0.35 s of real Hindi audio, not a tone
+        assert w.getsampwidth() == 2
+
     # ---------------------------------------------------------- dedup check
     status, transcript = _api("GET", f"/api/v1/meetings/{mid}/transcript", jwt)
     assert status == 200
@@ -415,6 +446,6 @@ async def _golden(server_proc):
 
     # ---------------------------------------------------------- sequence integrity
     assert seen_seq > 0
-    for client in (a, b, c, e):
+    for client in (a, b, c, e, f):
         await client.close()
     await b2.close()
