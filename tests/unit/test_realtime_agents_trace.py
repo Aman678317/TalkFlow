@@ -520,6 +520,30 @@ async def test_agent4_target_language_change_cancels_stale_output():
 
 
 @pytest.mark.asyncio
+async def test_agent4_switching_back_to_a_language_un_stales_it():
+    """Staleness is a fact about the *past* turn, not a permanent subscription.
+
+    Marking (listener, "en") stale on en→ur is right; leaving it stale when the
+    same listener picks English again means they never hear English for the rest
+    of the meeting, because nothing else ever clears the set.
+    """
+    bus = AgentBus()
+    supervisor = Supervisor()
+    supervisor.attach(bus)
+    await supervisor.recipient_changed(LISTENER_EN_1, previous_language="en",
+                                       new_language="ur")
+    assert supervisor.is_stale_for(LISTENER_EN_1, "en") is True
+
+    await supervisor.recipient_changed(LISTENER_EN_1, previous_language="ur",
+                                       new_language="en")
+
+    assert supervisor.is_stale_for(LISTENER_EN_1, "en") is False
+    assert supervisor.is_stale_for(LISTENER_EN_1, "ur") is True
+    # and somebody else's choice is still not this listener's business
+    assert supervisor.is_stale_for(LISTENER_EN_2, "en") is False
+
+
+@pytest.mark.asyncio
 async def test_agent4_bounds_the_queue_and_counts_drops_instead_of_stalling_audio():
     bus = AgentBus(maxsize=2)
     for i in range(10):

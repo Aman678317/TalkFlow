@@ -533,13 +533,22 @@ export class AudioPlayer {
   async stopAll(): Promise<void> {
     for (const timer of this.pendingDeliveries.values()) clearTimeout(timer);
     this.pendingDeliveries.clear();
+    const droppedTurns = new Set<string>();
+    for (const item of this.queue) {
+      if (item.utteranceId) droppedTurns.add(item.utteranceId);
+    }
+    const liveTurn = this.playingTurn;
+    // Cleared before stopping: the caption must read "not heard", not "played".
+    this.playingTurn = null;
     this.queue = [];
     if (this.current) {
       this.current.onended = null;
       this.current.stop();
       this.current = null;
       this.playingTag = null;
+      if (liveTurn) droppedTurns.add(liveTurn);
     }
+    for (const turn of droppedTurns) this.onPlaybackState?.(turn, "dropped");
   }
 
   private async playNext(onDone?: () => void) {

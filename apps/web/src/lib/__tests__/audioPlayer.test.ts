@@ -372,4 +372,25 @@ describe("AudioPlayer playback state per turn", () => {
     expect(states).toEqual([]);
     expect(player.debugPlayedCount()).toBe(1);
   });
+
+  it("drops every queued and playing turn when the listener changes language", async () => {
+    const { AudioPlayer } = await import("../audio");
+    const states: Array<[string, string]> = [];
+    const player = new AudioPlayer(undefined, (turn, state) => states.push([turn, state]));
+
+    await player.deliver(wav(10), "tts-ana", { ...anaOpts(0), utteranceId: "turn-ana" });
+    await player.deliver(wav(11), "tts-ana", { ...anaOpts(1), utteranceId: "turn-ana" });
+    await player.deliver(wav(30), "tts-ben", { ...benOpts(0), utteranceId: "turn-ben" });
+    await settle();
+    states.length = 0;
+
+    await player.stopAll();
+    await settle();
+
+    expect(player.debugQueueLength()).toBe(0);
+    // Everything that was queued belonged to the language they left. A plain
+    // queue clear would leave the caption claiming "played" for audio nobody
+    // heard, which is the stale-output half of the Phase 3 gate.
+    expect(states).toEqual([["turn-ana", "dropped"], ["turn-ben", "dropped"]]);
+  });
 });

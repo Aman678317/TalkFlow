@@ -407,6 +407,53 @@ class MeetingPipeline:
             speaker_id=pid)
         return cancelled
 
+    # ------------------------------------------------------------------ #
+    # Listener routing (Phase 3): whose audio, in which language, right now
+    # ------------------------------------------------------------------ #
+    def _audio_recipients(self, target_lang: str,
+                          speaker_id: uuid.UUID) -> list[RtParticipant]:
+        """Who should get translated audio in this language *at this instant*.
+
+        Recomputed per chunk instead of once per stream: a listener who switches
+        language mid-utterance must not keep receiving the old language, while
+        everyone else listening in that language is still entitled to every
+        chunk of it.
+
+        The speaker is always excluded. Target selection already skips
+        self-translation (``required_target_languages``), but a language group
+        made for somebody else would otherwise deliver the speaker's own voice
+        back to them — duplicated audio, and the one output guaranteed to be
+        what their microphone just captured, i.e. the feedback loop.
+        """
+        listeners = manager.listeners_for_language(self.session, target_lang,
+                                                   want_audio=True)
+        listeners = [p for p in listeners if p.participant_id != speaker_id]
+        live = set(self.supervisor.live_recipients(
+            [str(p.participant_id) for p in listeners], target_lang))
+        return [p for p in listeners if str(p.participant_id) in live]
+
+    async def recipient_changed(self, participant_id: uuid.UUID, *,
+                                previous_language: str,
+                                new_language: str) -> None:
+        """A listener changed target language — drop only their stale audio.
+
+        ``sequenced=False`` on purpose: this instruction is addressed to one
+        socket about audio that only exists in that socket's queue. Put it in
+        the replay buffer and a *different* participant resuming the session
+        would be told to stop their live playback.
+        """
+        pid = str(participant_id)
+        await self.supervisor.recipient_changed(
+            pid, previous_language=previous_language, new_language=new_language)
+        target = [p for p in (self.session.participants.get(pid),) if p is not None]
+        await manager.broadcast(
+            self.session, ServerEventType.PLAYBACK_FLUSH,
+            {"participant_id": pid, "reason": "language_changed", "scope": "recipient",
+             "recoverable": True, "previous_language": previous_language,
+             "new_language": new_language,
+             "message": "Audio in your previous language was dropped."},
+            to=target, sequenced=False)
+
     async def _emit_partial(self, p: RtParticipant, u: UtteranceState) -> None:
         corr = str(u.utterance_id)
         segment = await self.listening.transcribe_partial(
@@ -823,8 +870,7 @@ class MeetingPipeline:
             return
 
         # --- TTS: once per (segment, target_lang) group ---
-        audio_listeners = manager.listeners_for_language(
-            session, target_lang, want_audio=True)
+        audio_listeners = self._audio_recipients(target_lang, speaker.participant_id)
         if not audio_listeners:
             self._broadcast_diag(self._diag(
                 "tts_skipped", utt=str(u_id), seq=seq, speaker=speaker.participant_id,
@@ -862,6 +908,11 @@ class MeetingPipeline:
         async def deliver(ready: TtsChunkReady, audio: bytes,
                           _recipients: list[str]) -> None:
             """One declared chunk, on both transports, with the same ids."""
+            # Both transports get the same recipient list, recomputed here: a
+            # listener that only the JSON path skipped would still be played the
+            # binary frame, and one that only the binary path skipped would hear
+            # the base64 fallback — either way the dedup registry cannot save it.
+            recipients = self._audio_recipients(target_lang, speaker.participant_id)
             await manager.broadcast(
                 session, ServerEventType.TTS_CHUNK,
                 {"segment_id": str(segment_id), "utterance_id": u_id, "utteranceId": u_id,
@@ -871,7 +922,7 @@ class MeetingPipeline:
                  "sample_rate": ready.sample_rate,
                  "is_dev": ready.is_dev, "model": ready.model,
                  "created_at": now_ms, "createdAt": now_ms},
-                to=audio_listeners, speaker_id=str(speaker.participant_id))
+                to=recipients, speaker_id=str(speaker.participant_id))
 
             # Binary frame delivery for lowest-latency audio playback.
             # NOTE: payload = [tag][shortId][langLen][lang][WAV bytes].
@@ -879,7 +930,7 @@ class MeetingPipeline:
             # through AudioPlayer.enqueueWav (not enqueuePcm16) — see
             # apps/web/src/lib/audio.ts and MeetingRoom.tsx onBinary.
             bin_frame = bin_header + audio
-            for listener in audio_listeners:
+            for listener in recipients:
                 if listener.connected and listener.ws is not None:
                     try:
                         await listener.ws.send_bytes(bin_frame)
@@ -932,7 +983,8 @@ class MeetingPipeline:
                  "seq": seq, "target_lang": target_lang, "target_language": target_lang,
                  "chunks": chunk_idx, "stale_dropped": trace.stale_dropped,
                  "provider": provider_name},
-                to=audio_listeners, speaker_id=str(speaker.participant_id))
+                to=self._audio_recipients(target_lang, speaker.participant_id),
+                speaker_id=str(speaker.participant_id))
             self._broadcast_diag(self._diag(
                 "tts_exit", utt=str(u_id), seq=seq, speaker=speaker.participant_id,
                 target_lang=target_lang, provider=provider_name,
@@ -955,7 +1007,8 @@ class MeetingPipeline:
                  "message": "Translated speech is temporarily unavailable. "
                             "Translated captions remain active.",
                  "recoverable": True, "target_lang": target_lang},
-                to=audio_listeners, speaker_id=str(speaker.participant_id))
+                to=self._audio_recipients(target_lang, speaker.participant_id),
+                speaker_id=str(speaker.participant_id))
         trace.delivery_ms = (time.perf_counter() - t0) * 1000
         trace.total_e2e_latency_ms = capture_ms + stt_ms + trace.delivery_ms
         met.E2E_LATENCY.labels(src=source_lang, tgt=target_lang).observe(

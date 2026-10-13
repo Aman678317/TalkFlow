@@ -124,6 +124,40 @@ never faked.
 8. **Backpressure** bounded concurrent fan-out per speaker (semaphore), overflow →
    `quality.degraded` (captions-only), never queue explosion.
 
+## Listener modes (tested matrix)
+
+`tests/unit/test_realtime_listener_modes.py` locks the routing table. A translated
+language group is delivered per chunk, to `hear_lang == target` participants in
+`translated` or `mixed` mode — never to the speaker of that turn, and never to a
+participant the supervisor has marked stale for that language.
+
+| Listener | translated audio | original relay | source caption | translated caption |
+| --- | --- | --- | --- | --- |
+| speaker | no | no (never echoed to sender) | yes | yes |
+| `original` | no | yes | yes | only if `caption_mode` allows it |
+| `mixed` | yes | yes | yes | as above |
+| `translated` | yes | no | yes | as above |
+
+Two people wanting English get one translation job and one chunk each — the group
+is per `(segment, language)`, not per listener, so there is no duplicate voice.
+
+### Changing your mind mid-utterance
+
+Two scopes, deliberately different:
+
+- `playback.flush` with `scope:"speaker"` — a barge-in. Broadcast to the session
+  and sequenced (a resume must not lose it); the browser cancels that speaker's
+  queue tags and everybody else keeps playing.
+- `playback.flush` with `scope:"recipient"` — one listener changed `hear_lang`.
+  Sent to that socket only and **not** sequenced, because a replayed recipient
+  flush would tell a *different* reconnecting participant to stop live audio.
+  The supervisor marks `(recipient, previous_language)` stale, and clears the
+  mark for `(recipient, new_language)` so en→ur→en does not leave English dead
+  for the rest of the meeting.
+
+Both scopes report the cut turn as `dropped` to the caption layer, so the line
+says "not heard" instead of implying the listener heard a sentence they did not.
+
 ## Reconnect & resume
 
 - Client reconnects with `resume:true, last_sequence:N` → `session.resumed` marker then

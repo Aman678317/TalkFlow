@@ -21,7 +21,7 @@ import {
   type CaptionLine,
   type CaptionView,
 } from "../captions";
-import type { RealtimeEvent, RealtimeEventType } from "../types";
+import type { CaptionMode, RealtimeEvent, RealtimeEventType } from "../types";
 
 const AMAN = "6f1c2d3e-4b5a-4c6d-8e9f-0a1b2c3d4e5f";
 const BETH = "b1bb1e50-1111-4c6d-8e9f-0a1b2c3d4e5f";
@@ -143,6 +143,24 @@ describe("caption reducer", () => {
     expect(reduceCaptions([], translated({ target_language: "ur" }), VIEW)).toHaveLength(0);
     expect(reduceCaptions([], translated(), { ...VIEW, caption_mode: "original" }))
       .toHaveLength(0);
+  });
+
+  it("shows exactly what each caption mode says it shows", () => {
+    // The acceptance matrix's Modes row, text half: no unintended mixing. Each
+    // mode gets one line for one turn — not two lines, and not the source text
+    // in a mode that asked not to see it.
+    const matrix: Array<[CaptionMode, { original?: string; translated?: string }]> = [
+      ["both", { original: "नमस्ते", translated: "Hello" }],
+      ["original", { original: "नमस्ते" }],
+      ["translated", { translated: "Hello" }],
+    ];
+    for (const [caption_mode, expected] of matrix) {
+      const view: CaptionView = { ...VIEW, caption_mode };
+      const lines = reduceCaptions(reduceCaptions([], final(), view), translated(), view);
+      expect({ mode: caption_mode, count: lines.length,
+        original: lines[0]?.original, translated: lines[0]?.translated })
+        .toEqual({ mode: caption_mode, count: 1, ...expected });
+    }
   });
 
   it("reports the latency of the turn that was measured", () => {

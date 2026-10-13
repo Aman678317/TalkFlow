@@ -565,6 +565,14 @@ export default function MeetingRoom() {
         break;
       }
       case "playback.flush": {
+        const scope = evt.scope as string | undefined;
+        if (scope === "recipient") {
+          // This listener changed what they want to hear, so every chunk still
+          // queued for them is in a language they no longer want. The server
+          // only ever sends this event to their own socket.
+          void playerRef.current?.stopAll();
+          break;
+        }
         // Barge-in: the named speaker started a new turn, so translated audio
         // still queued for their PREVIOUS turn would talk over their own voice.
         // Scope is one speaker — anybody else's in-flight audio keeps playing.

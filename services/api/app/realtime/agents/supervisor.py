@@ -241,6 +241,10 @@ class Supervisor:
     async def recipient_changed(self, recipient_id: str, *, previous_language: str,
                                 new_language: str) -> None:
         """One listener changed target language — stale output is stale for them only."""
+        # Un-stale the language they just switched *to*. Without this, en→hi→en
+        # leaves (recipient, "en") stale forever and they never hear English
+        # again, because the first switch marked it and nothing ever cleared it.
+        self._stale_recipients.discard((recipient_id, new_language))
         self._stale_recipients.add((recipient_id, previous_language))
         if self._bus is not None:
             await self._bus.publish(RealtimeEvent(
