@@ -31,6 +31,22 @@ cd apps/web && npx vitest run && npx tsc -b
   binary relay, multilingual chat + per-listener chat translation, reconnect with
   `session.resumed` + monotonic replay, live preference updates, AI summary from the
   stable transcript.
+- **Realtime conversation gate** (tests/integration/test_realtime_phase3_gate.py): the
+  composed Tree A path — real `MeetingPipeline`, real `SessionManager` routing, real wire
+  protocol, four real agents — with only the providers faked. Four tests, one per exit
+  clause: back-and-forth speech (two speakers, two listeners, each direction delivered in
+  full), interruption (barge-in flushes exactly the interrupted correlation, the cancelled
+  run stops where it stopped and leaves no gap/duplicate/queue behind, the next turn plays
+  complete), caption alignment (source and translated captions of one turn carry the same
+  segment/seq/`start_wall_ms`/`duration_ms`, and the timeline comes from the measured turn,
+  not arrival order), and per-stage latency, printed with `-s`:
+  `APP_ENV=test python -m pytest tests/integration/test_realtime_phase3_gate.py -q -s`.
+  Those millisecond figures are pipeline overhead plus fake providers. Provider-side
+  numbers with real weights exist only for the second backend tree (`apps/api`, run by
+  `tests/realtime/test_golden_call.py` and `bench_latency.py`); the deployed
+  `services/api` tree has no real-provider latency harness yet, so production latency
+  for this path is still unmeasured. A green tick here is not a listening check either —
+  only two browsers with two microphones can prove a conversation feels natural.
 - **Frontend** (apps/web): vitest on the binary protocol decoder, API error contract
   normalization, base64 audio round-trip; `tsc -b` strict gate in CI.
 - **Failure tests** (section 56): provider-down paths are covered by the passthrough/
