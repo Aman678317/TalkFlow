@@ -276,6 +276,10 @@ class MeetingPipeline:
                                    if manager.audio_listener(p)),
             "bus": self.bus.health(),
             "supervisor": self.supervisor.health(),
+            # What the room has actually waited, not what the stages claim to
+            # take: p50/p95 from the end of the speaker's turn to the first
+            # translated audio byte the listener was handed.
+            "latency": self.supervisor.latency_summary(),
             "closed": self._closed,
         }
 
@@ -397,11 +401,19 @@ class MeetingPipeline:
                             cap_start = u.capture_started
                             curr_uid = u.utterance_id
                             curr_seq = u.seq
+                            # The VAD only declares an end after
+                            # `vad_min_silence_ms` of real quiet, so the speaker
+                            # stopped talking that much ago. Anchoring on the
+                            # decision would credit the pipeline with the
+                            # speaker's own pause.
+                            end_wall = (int(time.time() * 1000)
+                                        - settings.vad_min_silence_ms)
                             asyncio.create_task(
                                 self._finalize_utterance(
                                     p, u, forced=False, audio_bytes=audio_payload,
                                     start_ms=start_ms, capture_started=cap_start,
-                                    utterance_id=curr_uid, seq=curr_seq
+                                    utterance_id=curr_uid, seq=curr_seq,
+                                    end_wall_ms=end_wall
                                 ),
                                 name=f"finalize-{p.participant_id}-{start_ms}"
                             )
@@ -436,9 +448,11 @@ class MeetingPipeline:
             # flush any in-flight speech on disconnect if session not closed
             if not self._closed and u.in_speech and len(u.buffer) > 3200:
                 try:
-                    await asyncio.shield(self._finalize_utterance(p, u, forced=True,
-                                                                 utterance_id=u.utterance_id,
-                                                                 seq=u.seq))
+                    await asyncio.shield(self._finalize_utterance(
+                        p, u, forced=True,
+                        utterance_id=u.utterance_id,
+                        seq=u.seq,
+                        end_wall_ms=int(time.time() * 1000)))
                 except Exception:
                     log.exception("flush on disconnect failed")
 
@@ -477,7 +491,10 @@ class MeetingPipeline:
             self._finalize_utterance(
                 p, u, forced=False, audio_bytes=audio_payload,
                 start_ms=start_ms, capture_started=cap_start,
-                utterance_id=curr_uid, seq=curr_seq
+                utterance_id=curr_uid, seq=curr_seq,
+                # A mid-speech commit has no trailing silence to subtract: this
+                # turn's audio simply stops being included at this instant.
+                end_wall_ms=int(time.time() * 1000)
             ),
             name=f"split-finalize-{p.participant_id}-{start_ms}"
         )
@@ -617,7 +634,8 @@ class MeetingPipeline:
                                   start_ms: int | None = None,
                                   capture_started: float | None = None,
                                   utterance_id: uuid.UUID | None = None,
-                                  seq: int | None = None) -> None:
+                                  seq: int | None = None,
+                                  end_wall_ms: int = 0) -> None:
         audio = audio_bytes if audio_bytes is not None else bytes(u.buffer)
         if audio_bytes is None:
             u.buffer = bytearray()
@@ -693,6 +711,7 @@ class MeetingPipeline:
             stt_model=segment.model or "", stt_provider=segment.provider or "",
             stt_ms=stt_ms, capture_ms=capture_ms, start_ms=started_at_ms,
             start_wall_ms=start_wall_ms, duration_ms=duration_ms,
+            speech_end_wall_ms=end_wall_ms,
             utterance_id=utterance_id or u.utterance_id,
             seq_num=seq_num)
 
@@ -717,7 +736,10 @@ class MeetingPipeline:
                                    audio=b"", confidence=1.0,
                                    stt_model="injected", stt_provider="inject",
                                    stt_ms=0.0, capture_ms=0.0, start_ms=0,
-                                   start_wall_ms=int(time.time() * 1000))
+                                   start_wall_ms=int(time.time() * 1000),
+                                   # An injected turn is complete the instant it
+                                   # arrives, so its speech-end is its receipt.
+                                   speech_end_wall_ms=int(time.time() * 1000))
 
     # ------------------------------------------------------------------ #
     # Canonical segment + fan-out
@@ -728,6 +750,7 @@ class MeetingPipeline:
                               stt_provider: str, stt_ms: float,
                               capture_ms: float, start_ms: int,
                               start_wall_ms: int = 0, duration_ms: int = 0,
+                              speech_end_wall_ms: int = 0,
                               utterance_id: uuid.UUID | None = None,
                               seq_num: int | None = None) -> None:
         session = self.session
@@ -792,6 +815,7 @@ class MeetingPipeline:
              # these, not from arrival order, which translation latency reorders.
              "start_wall_ms": start_wall_ms, "startWallMs": start_wall_ms,
              "duration_ms": duration_ms, "durationMs": duration_ms,
+             "speech_end_wall_ms": speech_end_wall_ms,
              "latency": {"audio_capture_ms": capture_ms, "stt_final_ms": stt_ms},
              "created_at": now_ms, "createdAt": now_ms,
              "dedup_key": f"{session.meeting_id}:{p.participant_id}:{seq}",
@@ -825,12 +849,14 @@ class MeetingPipeline:
                            utterance_id=str(u_id), text=text, source_lang=source_lang,
                            targets=targets, stt_ms=stt_ms, capture_ms=capture_ms,
                            start_wall_ms=start_wall_ms, duration_ms=duration_ms,
+                           speech_end_wall_ms=speech_end_wall_ms,
                            prev_context=prev_context)
 
     def _start_fanout(self, *, speaker: RtParticipant, segment_id: uuid.UUID,
                       seq: int, utterance_id: str, text: str, source_lang: str,
                       targets: set[str], stt_ms: float, capture_ms: float,
                       start_wall_ms: int = 0, duration_ms: int = 0,
+                      speech_end_wall_ms: int = 0,
                       prev_context: tuple[str, ...]) -> None:
         """Launch one language run per distinct target, and declare the turn
         active so a barge-in has something to cancel.
@@ -842,7 +868,8 @@ class MeetingPipeline:
         self.supervisor.note_active_segment(str(speaker.participant_id),
                                             correlation_id=utterance_id,
                                             sequence_number=seq,
-                                            target_languages=sorted(targets))
+                                            target_languages=sorted(targets),
+                                            speech_end_wall_ms=speech_end_wall_ms)
         self._fanout_pending[utterance_id] = len(targets)
         for target_lang in sorted(targets):
             key = (str(speaker.participant_id), seq, target_lang)
@@ -852,6 +879,7 @@ class MeetingPipeline:
                     source_lang=source_lang, target_lang=target_lang,
                     stt_ms=stt_ms, capture_ms=capture_ms,
                     start_wall_ms=start_wall_ms, duration_ms=duration_ms,
+                    speech_end_wall_ms=speech_end_wall_ms,
                     prev_context=prev_context, utterance_id=utterance_id),
                 name=f"fanout-{seq}-{target_lang}")
             self.translation_tasks[key] = task
@@ -878,12 +906,14 @@ class MeetingPipeline:
                                         source_lang: str, target_lang: str,
                                         stt_ms: float, capture_ms: float,
                                         start_wall_ms: int = 0, duration_ms: int = 0,
+                                        speech_end_wall_ms: int = 0,
                                         prev_context: tuple[str, ...] = (),
                                         utterance_id: str | None = None) -> None:
         session = self.session
         trace = LatencyTrace(segment_id=str(segment_id), seq=seq,
                              utterance_id=utterance_id or str(segment_id),
                              start_wall_ms=start_wall_ms, duration_ms=duration_ms,
+                             speech_end_wall_ms=speech_end_wall_ms,
                              source_lang=source_lang, target_lang=target_lang,
                              audio_capture_ms=capture_ms, stt_final_ms=stt_ms)
         t0 = time.perf_counter()
@@ -1082,6 +1112,9 @@ class MeetingPipeline:
             # Measured from before the provider call, as this metric always was;
             # Agent 3's own elapsed starts after the stream opens.
             trace.tts_first_audio_ms = (time.perf_counter() - t_tts) * 1000
+            if speech_end_wall_ms:
+                trace.speech_end_to_first_audio_ms = max(
+                    0, int(time.time() * 1000) - speech_end_wall_ms)
             met.TTS_LATENCY.labels(provider=ready.provider).observe(
                 trace.tts_first_audio_ms)
             self._broadcast_diag(self._diag(
@@ -1133,9 +1166,24 @@ class MeetingPipeline:
                 to=self._audio_recipients(target_lang, speaker.participant_id),
                 speaker_id=str(speaker.participant_id))
         trace.delivery_ms = (time.perf_counter() - t0) * 1000
-        trace.total_e2e_latency_ms = capture_ms + stt_ms + trace.delivery_ms
-        met.E2E_LATENCY.labels(src=source_lang, tgt=target_lang).observe(
-            trace.total_e2e_latency_ms)
+        if failure is None:
+            # With a failure there is no delivered audio, so no total: a number
+            # would measure a wait that never ended. The stage timings stand.
+            if speech_end_wall_ms:
+                trace.speech_end_to_delivery_ms = max(
+                    0, int(time.time() * 1000) - speech_end_wall_ms)
+                trace.total_e2e_latency_ms = trace.speech_end_to_delivery_ms
+                # `gt_e2e_latency_ms` is labelled "speech end -> translated audio
+                # delivered", so it gets that interval. The stage sum it used to
+                # observe adds a wall-clock turn length to per-stage durations and
+                # counts the speaker's own speech twice.
+                met.E2E_LATENCY.labels(src=source_lang, tgt=target_lang).observe(
+                    trace.speech_end_to_delivery_ms)
+            else:
+                # No speech-end anchor: the best available number is the sum of
+                # the stages that were actually timed, and it stays out of the
+                # histogram, which only holds the measured interval.
+                trace.total_e2e_latency_ms = capture_ms + stt_ms + trace.delivery_ms
         await self._report_latency(trace)
 
     async def _translation_failed(self, segment_id: uuid.UUID, seq: int,

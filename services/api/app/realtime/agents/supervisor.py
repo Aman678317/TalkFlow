@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -73,6 +74,19 @@ _FAILURE_LANG: dict[str, str | None] = {
     "voice": "target_language", "delivery": "target_language",
 }
 
+#: How many speech-end -> first-audio measurements one meeting keeps per language
+#: pair for the percentile report. A rolling window, not the whole meeting: a
+#: p95 computed over eight hours of audio describes a deployment that no longer
+#: exists, and an unbounded list is a memory leak with a report attached.
+LATENCY_WINDOW = 200
+
+
+def _percentile(sorted_vals: list[int], q: float) -> int:
+    """Nearest-rank percentile. `sorted_vals` must be non-empty and sorted."""
+    rank = max(0, min(len(sorted_vals) - 1,
+                      int(-(-q * len(sorted_vals) // 1)) - 1))
+    return sorted_vals[rank]
+
 
 @dataclass
 class _ChunkState:
@@ -97,6 +111,12 @@ class _SegmentRecord:
     chunks: dict[str, _ChunkState] = field(default_factory=dict)
     chunks_delivered: int = 0
     failures: list[str] = field(default_factory=list)
+    #: Wall ms at which the speaker stopped producing audio for this turn, when
+    #: the pipeline could say so. Every "how long did the listener wait" number
+    #: hangs off this instant; the stage durations below hang off event arrivals,
+    #: which start the clock at the first audio frame and so flatter the pause a
+    #: listener actually experiences.
+    speech_end_wall_ms: int = 0
 
 
 class Supervisor:
@@ -106,10 +126,12 @@ class Supervisor:
     STATUSES = frozenset({"not_yet_ran", "waiting", "ok", "degraded", "failing"})
 
     def __init__(self, clock: Callable[[], int] | None = None, *,
-                 meeting_id: str = "", record_limit: int = DEFAULT_RECORD_LIMIT) -> None:
+                 meeting_id: str = "", record_limit: int = DEFAULT_RECORD_LIMIT,
+                 latency_window: int = LATENCY_WINDOW) -> None:
         self._clock = clock
         self._meeting_id = meeting_id
         self.record_limit = record_limit
+        self.latency_window = latency_window
         self._bus: AgentBus | None = None
         self._records: dict[str, _SegmentRecord] = {}
         self._active: dict[str, dict[str, Any]] = {}
@@ -129,6 +151,8 @@ class Supervisor:
         self._stage_failures: dict[str, int] = dict.fromkeys(STAGE_CHAIN, 0)
         self._stage_event_ms: dict[str, int] = dict.fromkeys(STAGE_CHAIN, 0)
         self._stage_failure_ms: dict[str, int] = dict.fromkeys(STAGE_CHAIN, 0)
+        #: speech-end -> first translated audio, ms, per "src->tgt" pair.
+        self._latency: dict[str, deque[int]] = {}
 
     # ------------------------------------------------------------------ #
     def attach(self, bus: AgentBus) -> None:
@@ -211,6 +235,55 @@ class Supervisor:
         state.max_index = max(state.max_index, index)
         state.last_index = index
         rec.chunks_delivered = len(state.indexes)
+        if len(state.indexes) == 1:
+            self._note_first_audio(rec, event)
+
+    def _note_first_audio(self, rec: _SegmentRecord, event: RealtimeEvent) -> None:
+        """Record one sample of the wait a listener actually experienced.
+
+        Measured from the pipeline's speech-end anchor rather than from the
+        first audio frame of the turn, because the two differ by how long the
+        speaker talked: the frame clock answers "how fast is our pipeline", the
+        anchor answers "how long after I stopped talking did they hear me".
+        """
+        if not rec.speech_end_wall_ms:
+            return
+        sample = event.timestamp_ms - rec.speech_end_wall_ms
+        if sample < 0:
+            # The chunk is older than the moment the speaker stopped. A clock jump
+            # or a turn the pipeline never declared ended — either way it is not a
+            # wait anybody experienced, and averaging it would pull the p50 down.
+            return
+        pair = f"{rec.source_language or 'unknown'}->{rec.target_language or 'unknown'}"
+        window = self._latency.get(pair)
+        if window is None:
+            window = self._latency[pair] = deque(maxlen=self.latency_window)
+        window.append(sample)
+
+    def latency_summary(self) -> dict[str, Any]:
+        """p50/p95 of speech-end -> first translated audio, per language pair.
+
+        A pair with no samples is absent rather than zero: "0 ms" would read as a
+        meeting that was fast, when the truth is that nothing was measured.
+        """
+        out: dict[str, Any] = {"window": self.latency_window, "pairs": {}}
+        everything: list[int] = []
+        for pair, window in self._latency.items():
+            values = sorted(window)
+            if not values:
+                continue
+            everything += values
+            out["pairs"][pair] = {"n": len(values),
+                                  "p50_ms": _percentile(values, 0.50),
+                                  "p95_ms": _percentile(values, 0.95),
+                                  "max_ms": values[-1]}
+        if everything:
+            everything.sort()
+            out["overall"] = {"n": len(everything),
+                              "p50_ms": _percentile(everything, 0.50),
+                              "p95_ms": _percentile(everything, 0.95),
+                              "max_ms": everything[-1]}
+        return out
 
     def _observe_stage(self, event: RealtimeEvent) -> None:
         """Per-stage ledger: what was handed over, and what came back."""
@@ -311,6 +384,7 @@ class Supervisor:
         translated = rec.first_of.get(Stage.TRANSLATION_READY, 0)
         first_audio = rec.first_of.get(Stage.TTS_CHUNK_READY, 0)
         delivered = rec.first_of.get(Stage.AUDIO_DELIVERED, 0)
+        speech_end = rec.speech_end_wall_ms
 
         indexes: set[int] = set()
         max_index = -1
@@ -326,6 +400,7 @@ class Supervisor:
             "correlation_id": correlation_id,
             "source_language": rec.source_language,
             "target_language": rec.target_language,
+            "speech_end_wall_ms": rec.speech_end_wall_ms,
             "stages": list(rec.stage_order),
             "stt_ms": delta(captured, transcript),
             "translation_ms": delta(transcript, translated),
@@ -333,6 +408,10 @@ class Supervisor:
             "delivery_ms": delta(translated, delivered),
             "speech_to_first_translated_audio_ms": delta(captured, first_audio),
             "speech_to_delivery_ms": delta(captured, delivered),
+            # What the listener waited after they stopped hearing the speaker.
+            # 0 when the pipeline had no anchor for this turn.
+            "speech_end_to_first_audio_ms": delta(speech_end, first_audio),
+            "speech_end_to_delivery_ms": delta(speech_end, delivered),
             "chunks_expected": expected,
             "chunks_delivered": len(indexes),
             "missing_chunks": max(0, expected - len(indexes)),
@@ -345,10 +424,13 @@ class Supervisor:
     # ------------------------------------------------------------------ #
     def note_active_segment(self, speaker_id: str, *, correlation_id: str,
                             sequence_number: int,
-                            target_languages: list[str]) -> None:
+                            target_languages: list[str],
+                            speech_end_wall_ms: int = 0) -> None:
         self._active[correlation_id] = {
             "speaker_id": speaker_id, "sequence_number": sequence_number,
             "target_languages": list(target_languages)}
+        if speech_end_wall_ms:
+            self._record(correlation_id).speech_end_wall_ms = speech_end_wall_ms
         # Recorded here rather than derived from `_active`, which a barge-in
         # releases: the pipeline has now promised one provider call per language,
         # and translation is the only stage that can be owed work without an
