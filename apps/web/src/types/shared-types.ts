@@ -41,6 +41,46 @@ export interface ServerEvent<T = Record<string, unknown>> {
   data: T;
 }
 
+/** The four stages a listener depends on, in pipeline order. */
+export type RealtimeStage = 'listening' | 'translation' | 'voice' | 'delivery';
+
+/**
+ * What a stage has proved it did, derived from events that already happened.
+ * `dev_stand_in` means the stage ran on a stand-in engine rather than a real
+ * provider; `not_expected` means nobody in the room asked for that output.
+ */
+export type RealtimeStageStatus =
+  | 'not_yet_ran' | 'waiting' | 'ok' | 'degraded' | 'failing'
+  | 'dev_stand_in' | 'not_expected';
+
+export interface StageEvidence {
+  status: RealtimeStageStatus;
+  events: number;
+  expected: number;
+  pending: number;
+  failures: number;
+  last_event_ms: number;
+  last_failure_ms: number;
+  pending_ms: number;
+}
+
+export interface RealtimeStageHealth {
+  stages: Partial<Record<RealtimeStage, StageEvidence>>;
+  healthy: boolean;
+  dev_mode: Record<string, boolean>;
+  audio_listeners: number;
+  closed: boolean;
+  bus?: Record<string, number | boolean>;
+  supervisor?: Record<string, number>;
+  live?: boolean;
+  meeting_id?: string;
+  session_id?: string;
+  mode?: string;
+  connected?: number;
+  quality_degraded?: boolean;
+  reason?: string;
+}
+
 export interface SessionCreatedData {
   meeting_id: string;
   room_name: string;
@@ -52,7 +92,7 @@ export interface SessionCreatedData {
   audio_mode: AudioMode;
   protocol_version: number;
   server_sequence: number;
-  ai: { translation: string; dev_mode: Record<string, boolean> };
+  ai: RealtimeStageHealth;
   participants: ParticipantSnapshot[];
 }
 

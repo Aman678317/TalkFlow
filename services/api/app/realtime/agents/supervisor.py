@@ -3,7 +3,9 @@
 This agent calls no providers and no LLM. It is deterministic bookkeeping over
 the event bus: one record per in-flight utterance, so "did that chunk arrive, in
 what order, how late, and should it still be played?" has an answer that does
-not require reading five logs.
+not require reading five logs. The same observation answers a second question —
+"has each stage actually produced anything yet?" — which is what a health
+indicator has to be built from, since anything else is a claim.
 
 Cancellation is deliberately scoped. A barge-in from speaker A must not silence
 speaker B, and one listener switching target language must not cancel a segment
@@ -14,6 +16,7 @@ correlation, while a listener's language change marks only that
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -23,11 +26,52 @@ from app.realtime.agents.contracts import RealtimeEvent, Stage
 
 log = logging.getLogger("app.realtime.agents.supervisor")
 
+
+def _wall_ms() -> int:
+    return int(time.time() * 1000)
+
 _REPORT_ORDER = [Stage.AUDIO_CAPTURED, Stage.TRANSCRIPT_PARTIAL, Stage.TRANSCRIPT_FINAL,
                  Stage.TRANSLATION_READY, Stage.TTS_CHUNK_READY, Stage.AUDIO_DELIVERED]
 
 #: How many utterance chains one meeting keeps ordering state for.
 DEFAULT_RECORD_LIMIT = 512
+
+#: The four stages a listener depends on, in pipeline order. Health is reported
+#: per stage because "the pipeline is up" is not a claim anybody can act on.
+STAGE_CHAIN: tuple[str, ...] = ("listening", "translation", "voice", "delivery")
+
+#: Which lifecycle event hands work to which stage, and which stage's promise it
+#: settles. A stage's producer cannot report that it has stalled — a stalled
+#: producer reports nothing — so outstanding work is tracked here, from the
+#: upstream event, and released only by the stage's own output.
+#: `None` as the language field means "the turn itself, before a target exists".
+_REQUEST: dict[Stage, tuple[str, str | None]] = {
+    Stage.AUDIO_CAPTURED: ("listening", None),
+    Stage.TRANSLATION_READY: ("voice", "target_language"),
+    Stage.TTS_CHUNK_READY: ("delivery", "target_language"),
+}
+
+_ARRIVAL: dict[Stage, tuple[str, str | None]] = {
+    Stage.TRANSCRIPT_FINAL: ("listening", None),
+    Stage.TRANSLATION_READY: ("translation", "target_language"),
+    Stage.TTS_CHUNK_READY: ("voice", "target_language"),
+    Stage.AUDIO_DELIVERED: ("delivery", "target_language"),
+}
+
+#: A stage names itself the way its provider does, not the way the chain does.
+#: Without this, Agent 1's "stt" failure would land in a bucket nobody reads.
+_FAILURE_STAGE: dict[str, str] = {
+    "stt": "listening", "listening": "listening",
+    "translation": "translation",
+    "tts": "voice", "voice": "voice",
+    "delivery": "delivery",
+}
+
+#: Which payload field names the language a failure settles a promise for.
+_FAILURE_LANG: dict[str, str | None] = {
+    "listening": None, "translation": "target_language",
+    "voice": "target_language", "delivery": "target_language",
+}
 
 
 @dataclass
@@ -56,6 +100,11 @@ class _SegmentRecord:
 
 
 class Supervisor:
+    #: The only statuses this class emits. Kept as a named set because a health
+    #: reader has to be able to tell "broken" from "nothing to do", and an
+    #: open-ended vocabulary turns that into guesswork.
+    STATUSES = frozenset({"not_yet_ran", "waiting", "ok", "degraded", "failing"})
+
     def __init__(self, clock: Callable[[], int] | None = None, *,
                  meeting_id: str = "", record_limit: int = DEFAULT_RECORD_LIMIT) -> None:
         self._clock = clock
@@ -72,6 +121,14 @@ class Supervisor:
             "missing_chunks": 0, "cancelled_drops": 0, "stage_failures": 0,
             "interrupts": 0, "segments_completed": 0,
         }
+        self._stage_counts = {key: {"events": 0, "expected": 0}
+                              for key in STAGE_CHAIN}
+        #: Outstanding work per stage: {(correlation, language): first_seen_ms}.
+        self._pending: dict[str, dict[tuple[str, str], int]] = {
+            key: {} for key in STAGE_CHAIN}
+        self._stage_failures: dict[str, int] = dict.fromkeys(STAGE_CHAIN, 0)
+        self._stage_event_ms: dict[str, int] = dict.fromkeys(STAGE_CHAIN, 0)
+        self._stage_failure_ms: dict[str, int] = dict.fromkeys(STAGE_CHAIN, 0)
 
     # ------------------------------------------------------------------ #
     def attach(self, bus: AgentBus) -> None:
@@ -104,6 +161,7 @@ class Supervisor:
         stage_name = event.type.name.lower()
         if stage_name not in rec.stage_order:
             rec.stage_order.append(stage_name)
+        self._observe_stage(event)
 
         payload = event.payload
         if event.type in (Stage.TRANSCRIPT_PARTIAL, Stage.TRANSCRIPT_FINAL):
@@ -154,6 +212,97 @@ class Supervisor:
         state.last_index = index
         rec.chunks_delivered = len(state.indexes)
 
+    def _observe_stage(self, event: RealtimeEvent) -> None:
+        """Per-stage ledger: what was handed over, and what came back."""
+        if event.type is Stage.STAGE_FAILED:
+            key = _FAILURE_STAGE.get(str(event.payload.get("stage") or ""))
+            if key is not None:
+                self._stage_failures[key] += 1
+                self._stage_failure_ms[key] = event.timestamp_ms
+                # The stage answered, even if the answer was no. Leaving it in the
+                # ledger would report an error as a stall.
+                self._pending[key].pop(self._pending_key(event, _FAILURE_LANG.get(key,
+                                                                                   None)), None)
+            return
+        if event.payload.get("duplicate"):
+            return
+        request = _REQUEST.get(event.type)
+        if request is not None:
+            self._note_expected(*request, event=event)
+        arrival = _ARRIVAL.get(event.type)
+        if arrival is not None:
+            self._note_arrived(*arrival, event=event)
+
+    @staticmethod
+    def _pending_key(event: RealtimeEvent, lang_field: str | None) -> tuple[str, str]:
+        """One unit of outstanding work: a turn in a target language.
+
+        Language-parted because a turn translated into Hindi and into Tamil is
+        two promises, and keeping the third one silent while the first two are
+        delivered is exactly the failure a health report has to show.
+        """
+        lang = "" if lang_field is None else str(event.payload.get(lang_field) or "")
+        return (event.correlation_id, lang)
+
+    def _note_expected(self, key: str, lang_field: str | None, *,
+                       event: RealtimeEvent, when_ms: int | None = None) -> None:
+        """Work entered a stage; remember it until the stage answers."""
+        self._stage_counts[key]["expected"] += 1
+        self._pending[key].setdefault(
+            self._pending_key(event, lang_field),
+            event.timestamp_ms if when_ms is None else when_ms)
+
+    def _note_arrived(self, key: str, lang_field: str | None, *,
+                      event: RealtimeEvent) -> None:
+        self._stage_counts[key]["events"] += 1
+        self._stage_event_ms[key] = event.timestamp_ms
+        self._pending[key].pop(self._pending_key(event, lang_field), None)
+
+    def _drop_pending(self, correlation_id: str) -> None:
+        """Stop owing a turn: cancellation releases every stage's claim on it."""
+        for ledger in self._pending.values():
+            for unit in [k for k in ledger if k[0] == correlation_id]:
+                del ledger[unit]
+
+    def stage_status(self) -> dict[str, dict[str, Any]]:
+        """What each stage has actually proved it did, from observed events only.
+
+        Deliberately room-blind: this answers "did the code run, and is anything
+        still owed to it", not "should anything have been produced here" — whether
+        anybody in the meeting asked for translated audio is routing, and the
+        session owner holds that. `waiting` is the honest answer to "work arrived
+        and nothing has come back", which is what a stalled provider looks like
+        from in here; a hardcoded "active" reported that state as healthy.
+        """
+        out: dict[str, dict[str, Any]] = {}
+        now = self._clock() if self._clock is not None else _wall_ms()
+        for key in STAGE_CHAIN:
+            counts = self._stage_counts[key]
+            events, expected = counts["events"], counts["expected"]
+            failures = self._stage_failures[key]
+            ledger = self._pending[key]
+            # The oldest promise this stage has not answered.
+            owed_since = min(ledger.values(), default=0)
+            if events and failures:
+                status = "degraded"
+            elif events:
+                status = "ok"
+            elif failures:
+                status = "failing"
+            elif ledger:
+                status = "waiting"
+            else:
+                status = "not_yet_ran"
+            out[key] = {"status": status, "events": events, "expected": expected,
+                        "pending": len(ledger), "failures": failures,
+                        "last_event_ms": self._stage_event_ms[key],
+                        "last_failure_ms": self._stage_failure_ms[key],
+                        # "waiting" alone cannot tell a provider that stalled an
+                        # hour ago from a stage the pipeline reached 40 ms ago,
+                        # and neither can a reader. This can.
+                        "pending_ms": max(0, now - owed_since) if ledger else 0}
+        return out
+
     # ------------------------------------------------------------------ #
     def segment_report(self, correlation_id: str) -> dict[str, Any]:
         rec = self._record(correlation_id)
@@ -200,6 +349,14 @@ class Supervisor:
         self._active[correlation_id] = {
             "speaker_id": speaker_id, "sequence_number": sequence_number,
             "target_languages": list(target_languages)}
+        # Recorded here rather than derived from `_active`, which a barge-in
+        # releases: the pipeline has now promised one provider call per language,
+        # and translation is the only stage that can be owed work without an
+        # upstream event naming it.
+        now = self._clock() if self._clock is not None else _wall_ms()
+        for lang in {language for language in target_languages if language}:
+            self._stage_counts["translation"]["expected"] += 1
+            self._pending["translation"].setdefault((correlation_id, lang), now)
 
     def is_cancelled(self, correlation_id: str) -> bool:
         return correlation_id in self._cancelled
@@ -233,6 +390,7 @@ class Supervisor:
         for cid, meta in cancelled:
             self._cancelled.add(cid)
             self._active.pop(cid, None)
+            self._drop_pending(cid)
             self._metrics["interrupts"] += 1
             await self._emit_interrupt(speaker_id, cid, reason,
                                        meta.get("target_languages", []))
@@ -274,6 +432,7 @@ class Supervisor:
         self._records.pop(correlation_id, None)
         self._active.pop(correlation_id, None)
         self._cancelled.discard(correlation_id)
+        self._drop_pending(correlation_id)
 
     def health(self) -> dict[str, Any]:
         return {"closed": self._closed, "active_segments": len(self._active),

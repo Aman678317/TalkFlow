@@ -21,6 +21,7 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
+from typing import Any
 
 from sqlalchemy import func, select, update
 
@@ -77,6 +78,25 @@ def _ends_at_clause(text: str) -> bool:
     while stripped and stripped[-1] in '"\'”’」』)]}>':
         stripped = stripped[:-1].rstrip()
     return stripped.endswith(_CLAUSE_ENDINGS)
+
+
+def dev_flags() -> dict[str, bool]:
+    """Which AI tasks are answering from a dev stand-in right now.
+
+    Reading the module-level ``ai`` rather than importing it inside keeps the
+    seam testable, which is how the stage-health tests pin this to "real".
+    """
+    from gt_ai.types import Task
+    return {
+        "stt_dev_mode": ai.is_dev_mode(Task.STT),
+        "mt_dev_mode": ai.is_dev_mode(Task.MT),
+        "tts_dev_mode": ai.is_dev_mode(Task.TTS),
+    }
+
+
+#: Which provider task stands behind each stage of the chain.
+_DEV_FLAG_FOR_STAGE = {"listening": "stt_dev_mode", "translation": "mt_dev_mode",
+                       "voice": "tts_dev_mode"}
 
 
 @dataclass
@@ -212,6 +232,52 @@ class MeetingPipeline:
         self.translation_tasks.clear()
         await self.supervisor.close()
         await self.bus.close()
+
+    # ------------------------------------------------------------------ #
+    # Health
+    # ------------------------------------------------------------------ #
+    #: Statuses that are not a problem. `dev_stand_in` is deliberately absent: the
+    #: path ran, but not on an engine, which is precisely the thing a deployment
+    #: needs to see rather than sail past as green.
+    HEALTHY_STATUSES = frozenset({"ok", "not_yet_ran", "not_expected"})
+
+    def stage_health(self) -> dict[str, Any]:
+        """What this meeting's speech path has proved it did.
+
+        The supervisor's evidence is room-blind — chunks with no delivery look
+        identical to a lost socket — so the two facts only this class holds are
+        applied here: who in the room is owed audio at all, and whether the stage
+        ran on a real engine or a stand-in. Nothing in the payload is a claim
+        about intent; every field is derived from events that already happened.
+        """
+        flags = dev_flags()
+        stages = self.supervisor.stage_status()
+        audio_wanted = any(manager.audio_listener(p)
+                           for p in self.session.participants.values())
+        for state in stages.values():
+            # A stage that has produced before can still stall, and "ok" would
+            # hide it: outstanding work older than the staleness window is a
+            # stall whatever the history says.
+            if (state["status"] == "ok"
+                    and state["pending_ms"] >= settings.rt_stale_after_ms):
+                state["status"] = "waiting"
+        for key, state in stages.items():
+            if key == "delivery" and not audio_wanted and not state["events"]:
+                state["status"] = "not_expected"
+            elif state["status"] in ("ok", "degraded") and flags.get(
+                    _DEV_FLAG_FOR_STAGE.get(key, ""), False):
+                state["status"] = "dev_stand_in"
+        return {
+            "stages": stages,
+            "healthy": all(s["status"] in self.HEALTHY_STATUSES
+                           for s in stages.values()),
+            "dev_mode": flags,
+            "audio_listeners": sum(1 for p in self.session.participants.values()
+                                   if manager.audio_listener(p)),
+            "bus": self.bus.health(),
+            "supervisor": self.supervisor.health(),
+            "closed": self._closed,
+        }
 
     # ------------------------------------------------------------------ #
     # Audio ingestion
@@ -1119,3 +1185,26 @@ def get_pipeline(session: RtSession) -> MeetingPipeline:
     if session.pipeline is None:
         session.pipeline = MeetingPipeline(session)
     return session.pipeline
+
+
+def meeting_health(meeting_id: uuid.UUID) -> dict[str, Any]:
+    """Stage health for a meeting as seen from *this* process.
+
+    A pipeline lives in the process that accepted the websocket, so a second API
+    worker genuinely cannot answer this question. Saying so is the difference
+    between an unknown and a false "healthy" — the empty `stages` is what the
+    event ledger of a meeting with no session here actually looks like.
+    """
+    session = manager.get_session_for_meeting(meeting_id)
+    if session is None:
+        return {"live": False, "meeting_id": str(meeting_id), "stages": {},
+                "healthy": True,
+                "reason": "no session in this process"}
+    health = get_pipeline(session).stage_health()
+    return {**health,
+            "live": True,
+            "meeting_id": str(meeting_id),
+            "session_id": session.session_id,
+            "mode": session.mode,
+            "connected": sum(1 for p in session.participants.values() if p.connected),
+            "quality_degraded": session.quality_degraded}
