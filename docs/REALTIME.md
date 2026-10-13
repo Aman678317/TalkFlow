@@ -190,6 +190,46 @@ the room keeps the speaker's original text as the caption and the event names
 which layer gave up. When every voice fails, synthesis raises a stated
 `ProviderError` rather than handing out a stream that dies on the first frame.
 
+### Naming a failure
+
+An outage and a refused language pair are different answers, and before this the
+room could not tell them apart: the stage event said `provider_unavailable` for
+*every* exception while the wire event said the exception's own class name, so
+one caption carried two contradictory reasons and a listener who had simply
+picked a language this deployment has not enabled was told to wait.
+
+`app.realtime.agents.contracts.failure_reason()` is now the only classifier. It
+takes the code an `AppError` subclass already names itself with
+(`unsupported_language`, `provider_error`, `rate_limited`, `validation_error`),
+falls back to `timeout` for anything that is a `TimeoutError` — which is what
+`asyncio.wait_for`, `httpx` and the socket layer all raise — and only then
+reaches `provider_unavailable`, so the outage label is earned rather than
+assumed. The internal `stage.failed` event, the client-facing
+`translation.failed` code and the Prometheus `reason` label all call it, which is
+the only reason the three can be trusted to agree.
+
+`translation.failed` carries that code plus one sentence per reason
+(`_FAILED_MESSAGES` in `services/api/app/realtime/pipeline.py`), and every
+sentence names what still works — the original audio and captions — because that
+is the part a listener can act on. Two things deliberately do not go on *this*
+event:
+
+- the provider's own sentence. An unset `MT_HTTP_URL` is an operator's finding,
+  not something to show a browser, so it goes to the log; the `diagnostic` event
+  still carries a truncated copy, which is a leak with its own name. The removed
+  `detail` field was the old copy of it on `translation.failed` — clients that
+  read it must read `code` and `message` instead.
+- a traceback, unless nothing in the failure named itself. `log.exception` is
+  reserved for `provider_unavailable`, because a stack trace for a known refusal
+  every few seconds is how a real crash gets lost in the noise.
+
+`tests/unit/test_realtime_failure_reasons.py` drives the real stage body with a
+refusing engine and asserts the reason, the code and the sentence all match the
+failure — including that an unsupported pair still leaves the speaker's original
+caption on screen and never claims the pair is merely slow.
+Reconnection, participant identity and resume replay are covered by
+`tests/integration/test_realtime_reconnect.py`.
+
 ### Delivery backpressure
 
 Every frame the room sends to a participant — JSON event, base64 chunk, binary
@@ -318,13 +358,24 @@ says "not heard" instead of implying the listener heard a sentence they did not.
 ## Reconnect & resume
 
 - Client reconnects with `resume:true, last_sequence:N` → `session.resumed` marker then
-  replay of buffered events `> N` (ring buffer 2000 events; finals additionally persisted
-  in DB, so nothing is lost beyond the buffer — refetch transcript via REST).
+  replay of buffered events `> N` (ring buffer `rt_resume_buffer_size`, default 500
+  sequenced events per session; finals additionally persisted in DB, so nothing is
+  lost beyond the buffer — refetch transcript via REST). `N` must be greater than 0:
+  a client that has played nothing has no watermark, and the server treats `0` as
+  "there is nothing to catch you up on" rather than replaying the whole session.
+- A reconnect over `?token=` resolves back to the **same** `participant_id` the first
+  join issued, so the browser's caption attribution and its resume position stay
+  meaningful. The superseded socket's cleanup checks that the participant it is
+  closing is still the one it opened before releasing anything, which is what keeps
+  the departure release from deleting the new socket's speaker loop.
 - Preferences persist server-side (DB) and survive reconnects.
 - Exponential backoff + jitter client-side (`MeetingSocket`); 4401/4403 are permanent
   (no retry storm).
 - Idempotency: events carry `sequence`; clients dedupe by sequence. Replayed history
   arrives after the `session.resumed` marker; live events continue after it.
+- `tests/integration/test_realtime_reconnect.py` pins all three: identity across the
+  gap, a takeover that leaves the survivor's pipeline running, and a resume whose
+  `replayed` count is backed by the actual caption spoken during the disconnect.
 
 ## Multi-node note
 

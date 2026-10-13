@@ -33,7 +33,9 @@ from app.db.base import utcnow
 from app.db.session import db_session
 from app.errors import AppError
 from app.realtime.agents.bus import AgentBus
-from app.realtime.agents.contracts import TtsChunkReady, TranscriptSegment
+from app.realtime.agents.contracts import (
+    TtsChunkReady, TranscriptSegment, failure_reason,
+)
 from app.realtime.agents.listening import (
     MIN_AUDIO_BYTES, ListeningAgent, RealtimeSttProvider,
 )
@@ -60,6 +62,23 @@ AUDIO_QUEUE_MAX = 500          # ~50s of 100ms chunks — backpressure bound
 #: comma `,`: both appear inside a clause, and committing there splits a sentence
 #: in half. A tuple because `str.endswith` only accepts one.
 _CLAUSE_ENDINGS = ("。", "．", "！", "？", ".", "!", "?", "؟", "।", "॥")
+
+#: What a listener is told, per failure reason. One sentence used for every
+#: failure — "taking longer than expected" — is a promise to keep waiting for a
+#: pair this meeting will never serve. Each of these says what will still work,
+#: because that is the part the listener can act on.
+_FAILED_MESSAGES = {
+    "unsupported_language":
+        "Translation into your language is not available in this meeting. "
+        "The original audio and captions are still active.",
+    "timeout":
+        "Translation is taking longer than expected. "
+        "The original audio is still active.",
+    "rate_limited":
+        "Translation is busy. The original audio and captions are still active.",
+}
+_FAILED_GENERIC = ("Translation is unavailable right now. "
+                   "The original audio and captions are still active.")
 
 
 def _ends_at_clause(text: str) -> bool:
@@ -998,16 +1017,20 @@ class MeetingPipeline:
         try:
             done = await self.translating.translate_one(
                 source, target_lang, caption_recipients, prior_context=prev_context)
-        except AppError as e:
+        except Exception as e:
+            reason = failure_reason(e)
             self._broadcast_diag(self._diag(
                 "mt_failed", utt=str(u_id), seq=seq, speaker=speaker.participant_id,
                 source_lang=source_lang, target_lang=target_lang,
-                error_type=type(e).__name__, error=str(e)[:160]))
-            await self._translation_failed(segment_id, seq, target_lang, e)
-            return
-        except Exception as e:
-            log.exception("translation crashed")
-            await self._translation_failed(segment_id, seq, target_lang, e)
+                reason=reason, error_type=type(e).__name__, error=str(e)[:160]))
+            if reason == "provider_unavailable":
+                # Nothing in the failure named itself, so this is the surprise it
+                # looks like. A refused language pair or a deadline is a known
+                # answer, and a traceback for it every few seconds is how a real
+                # crash gets lost in the noise.
+                log.exception("translation crashed")
+            await self._translation_failed(segment_id, seq, source_lang,
+                                           target_lang, e)
             return
         trace.translation_ms = (time.perf_counter() - t0) * 1000
         translated = done.translated_text
@@ -1234,20 +1257,25 @@ class MeetingPipeline:
         await self._report_latency(trace)
 
     async def _translation_failed(self, segment_id: uuid.UUID, seq: int,
-                                  target_lang: str, e: Exception) -> None:
-        message = ("Translation is taking longer than expected. "
-                   "The original audio is still active.")
-        code = e.__class__.__name__
-        detail = getattr(e, "message", str(e))
-        if isinstance(e, AppError):
-            code = getattr(e, "code", code)
+                                  source_lang: str, target_lang: str,
+                                  e: Exception) -> None:
+        """Tell the room why translation stopped, in words that match the reason.
+
+        The provider's own sentence is deliberately not on the wire: it goes to
+        the log and the meeting's diagnostic stream, which is where an operator
+        reads it. What reaches a browser is a code, a sentence, and the promise
+        that holds for every one of them — the conversation continues.
+        """
+        reason = failure_reason(e)
         await manager.broadcast(
             self.session, ServerEventType.TRANSLATION_FAILED,
-            {"segment_id": str(segment_id), "seq": seq, "target_lang": target_lang,
-             "code": code, "message": message, "detail": detail[:200],
+            {"segment_id": str(segment_id), "seq": seq,
+             "source_lang": source_lang, "target_lang": target_lang,
+             "code": reason, "message": _FAILED_MESSAGES.get(reason,
+                                                             _FAILED_GENERIC),
              "recoverable": True})
-        met.TRANSLATION_FAILURES.labels(src="?", tgt=target_lang,
-                                        provider="router", reason=code).inc()
+        met.TRANSLATION_FAILURES.labels(src=source_lang, tgt=target_lang,
+                                        provider="router", reason=reason).inc()
 
     async def _report_latency(self, trace: LatencyTrace) -> None:
         await manager.broadcast(

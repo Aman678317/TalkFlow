@@ -25,7 +25,9 @@ from typing import Protocol
 
 from app.config import settings
 from app.realtime.agents.bus import AgentBus
-from app.realtime.agents.contracts import RealtimeEvent, Stage, TranscriptSegment, TranslationSegment
+from app.realtime.agents.contracts import (
+    RealtimeEvent, Stage, TranscriptSegment, TranslationSegment, failure_reason,
+)
 
 log = logging.getLogger("app.realtime.agents.translation")
 
@@ -127,7 +129,7 @@ class TranslationAgent:
                 text, segment.source_language, target_lang, prior,
                 segment_id=segment.segment_id, speaker_id=segment.speaker_id)
         except Exception as exc:
-            await self._fail(segment, target_lang, exc, reason="provider_unavailable")
+            await self._fail(segment, target_lang, exc)
             raise
         if not out.text.strip():
             error = ValueError("empty translation result")
@@ -199,7 +201,7 @@ class TranslationAgent:
         return produced
 
     async def _fail(self, segment: TranscriptSegment, target_lang: str,
-                    exc: Exception, *, reason: str = "provider_unavailable") -> None:
+                    exc: Exception, *, reason: str | None = None) -> None:
         # The provider's own message goes to the log, not to the event: an engine
         # that rejects a sentence usually quotes it back, and the exception text
         # would then sit in the meeting's trace as a second copy of the words.
@@ -211,14 +213,14 @@ class TranslationAgent:
             segment_id=segment.segment_id, sequence=segment.sequence_number,
             payload={"stage": "translation", "target_language": target_lang,
                      "source_language": segment.source_language,
-                     "reason": reason, "recoverable": True,
+                     # Named from the failure, not assumed: a pair this deployment
+                     # has not enabled is not an outage, and reporting it as one
+                     # sends an operator to look for a down provider.
+                     "reason": reason or failure_reason(exc),
+                     "recoverable": True,
                      "error_code": type(exc).__name__}))
 
     # ------------------------------------------------------------------ #
-    def note_language_change(self, speaker_id: str) -> None:
-        """The speaker switched language — their old context no longer applies."""
-        self._context.pop(speaker_id, None)
-
     def forget_speaker(self, speaker_id: str) -> None:
         """A speaker left the meeting. Their window goes with them.
 
