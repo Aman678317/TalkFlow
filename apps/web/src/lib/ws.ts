@@ -42,9 +42,14 @@ const TEXT_DECODER = new TextDecoder();
  * stripped and NUL padding, inside JSON events as a raw UUID, and (Tree B) padded
  * with the ASCII character "0". Every one of those collapses to this value, which
  * is what makes cross-transport dedup of the same TTS chunk possible at all.
+ *
+ * The 16-char cut comes FIRST and padding is stripped after it. Stripping first
+ * made the two transports disagree whenever a segment's 16th hex digit was a
+ * literal "0" — the JSON key kept it, the 16-char binary key lost it — and that
+ * chunk was played twice instead of deduped (~6% of segments).
  */
 export function normId(id: string): string {
-  return id.replace(/-/g, "").replace(/[\s0\u0000]+$/, "").slice(0, 16);
+  return id.replace(/-/g, "").slice(0, 16).replace(/[\s0\u0000]+$/, "");
 }
 
 export function decodeBinaryFrame(buf: ArrayBuffer): BinaryFrame {

@@ -292,7 +292,8 @@ async def test_json_chunk_and_binary_frame_agree_on_one_segment_identity(
     assert len(en.ws.frames) == 3
 
     def norm(raw: str) -> str:
-        return raw.replace("-", "").rstrip("\x00").rstrip("0")[:16]
+        """Mirror of the browser's normId(): cut to 16 chars, *then* strip padding."""
+        return raw.replace("-", "")[:16].rstrip("\x00").rstrip("0")
 
     for event, frame in zip(chunks, en.ws.frames):
         assert frame[0] == 0x54                      # 'T' — translated audio
