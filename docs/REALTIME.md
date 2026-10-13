@@ -105,6 +105,55 @@ per language pair at `/metrics` (`realtime_e2e_latency_ms`). The 1 GB-CPU sandbo
 runs ~8–12 s per utterance due to subprocess model isolation — documented, measured,
 never faked.
 
+### Measured baseline (first one, 2026-10-13)
+
+`speech end → first translated audio`, per language pair, over the
+`transcript.inject` path (`python tests/realtime/bench_latency.py`). Conditions,
+because a percentile without them is not a baseline:
+
+- Host `Windows-10-10.0.19045-SP0`, Intel64 Family 6 Model 158, Python 3.14.2.
+  Client and server on one machine over loopback, so no access-network term is
+  in the number — but the providers are reached over the public internet (below).
+- Backend `services/api` on `127.0.0.1:8126`, dev stand-in providers — the run
+  reports `stt_dev_mode/mt_dev_mode/tts_dev_mode: True` rather than asserting
+  which model answered.
+- Text injected, so there is no capture and no recogniser in these rows:
+  `audio_capture_ms` and `stt_final_ms` are absent, not zero.
+
+| pair | turns | p50 | p95 | of which translation p50 | TTS first frame p50 |
+| --- | --- | --- | --- | --- | --- |
+| `hi→en` | 20 | 1429 ms | 2217 ms | 1385 ms | 11 ms |
+| `mr→en` | 2 | 1339 ms | 1653 ms | — | — |
+| `bn→en` | 2 | 1507 ms | 1677 ms | — | — |
+| `ja→en` | 2 | 1870 ms | 2250 ms | — | — |
+| `ta→en` | 2 | 1958 ms | 2292 ms | — | — |
+
+Two runs, not one: the `hi→en` row is `--source hi --hear en` over 20 turns, the
+others are the two samples each that a mixed-source 10-turn run produced. A p95
+over two samples is a max wearing a percentile's name — it is here because the
+rollup reports it, not because it says anything. Translation and TTS columns are
+only broken out for the run that used one pair throughout.
+
+Every turn was anchored and delivered audio; none was dropped as stale. The
+server-side rollup for the 20-turn run reads `hi→en n=20 p50 1407 p95 2137`,
+which is the same distribution the harness measured, a few ms lower because it
+stops at the supervisor's own clock instead of the delivery.
+
+"Dev stand-in" does not mean nothing left the machine, and the rows say so: the
+`/metrics` for this server are `provider="neural_online"` for translation (a
+public HTTP translator, because no MT key is configured) and `provider="dev_tone"`
+for speech. Its `hi→en` translation counter stands at 48 calls over 70.6 s — a
+1470 ms mean, which is the whole of the headline number: the wait is that round
+trip. Voice synthesis itself was ~11 ms, and each turn first discovered twice
+over that `piper` and `kokoro` are not installed on this host.
+
+So this is a *pipeline* baseline measured over a live internet path, not a
+provider baseline: no microphone and no recogniser are in it (`audio_capture_ms`
+and `stt_final_ms` are absent, not zero), and no credentialed MT or neural voice
+answered. Both directions of a real two-browser call with real credentials are
+what Phase 6 gates on, and they need the items in
+`docs/REALTIME_DEPLOY_REQUIREMENTS.md` that are still unset on this machine.
+
 ## Pipeline stages (server)
 
 1. **Ingest** 50 ms PCM chunks (16 kHz mono) → EnergyVAD (or Silero) on 30 ms frames.
