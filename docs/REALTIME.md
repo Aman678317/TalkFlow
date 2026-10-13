@@ -221,6 +221,40 @@ configured bound and keeps the newest frames, that a caption is not dropped to
 save a stale audio frame, that events and their binary frames still arrive as an
 ordered pair, and that a reconnect does not inherit the dead socket's backlog.
 
+### What leaving a meeting releases
+
+`participant_id` is issued per join and never reused, so everything the meeting
+keys by it accumulates once per reconnect unless leaving means something.
+Hanging up used to stop the task that read the microphone and nothing else, which
+left four things behind for the life of the session: the speaker's translation
+context window (their recognised words, in memory, in a room they had left),
+their per-speaker sequence ledger, their stale-language marks, and the fan-out of
+the turn they abandoned mid-sentence — which went on producing audio for listeners
+that nobody had introduced.
+
+`MeetingPipeline.release_participant()` is now called from the socket handler's
+`finally` and from the REST leave route, and is idempotent because those two race.
+It is synchronous and announces nothing on purpose: it runs inside a task that is
+being cancelled, where an `await` can raise before it reaches the room, and
+`participant.left` already says who went away. Audio for the departed speaker's
+last turn is cancelled rather than flushed — the chunks already handed to a
+browser play out, and a flush the client cannot attribute to a live speaker would
+cut audio that was legitimately owed.
+
+Two per-turn tables are now bounded rather than merely drained, because a release
+path that races a cancellation cannot be counted on to be the thing that empties
+them: the supervisor's cancelled-correlation marker is capped at the observation
+window (`record_limit`, oldest first) like its segment records, and the detection
+record for a turn is taken before the transcript stage decides its outcome, so a
+turn whose language could not be resolved no longer keeps the only record of the
+detection that failed.
+
+`tests/unit/test_realtime_participant_release.py` and the departure case in
+`tests/integration/test_realtime_disconnect.py` pin this: no transcript text, no
+ledger entry, no agent dedup state and no abandoned run left alive for a departed
+participant, while the speaker who stayed in the room still receives every chunk
+of their own turn.
+
 ## Pipeline stages (server)
 
 1. **Ingest** 50 ms PCM chunks (16 kHz mono) → EnergyVAD (or Silero) on 30 ms frames.

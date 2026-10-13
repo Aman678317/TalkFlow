@@ -135,7 +135,10 @@ class Supervisor:
         self._bus: AgentBus | None = None
         self._records: dict[str, _SegmentRecord] = {}
         self._active: dict[str, dict[str, Any]] = {}
-        self._cancelled: set[str] = set()
+        # Insertion-ordered rather than a set: an id lands here when a run is
+        # cancelled and only leaves when that turn is pruned, which a barge-in
+        # does by hand. Bound it like every other per-turn table in here.
+        self._cancelled: dict[str, None] = {}
         self._stale_recipients: set[tuple[str, str]] = set()
         self._closed = False
         self._metrics = {
@@ -443,6 +446,14 @@ class Supervisor:
     def is_cancelled(self, correlation_id: str) -> bool:
         return correlation_id in self._cancelled
 
+    def _mark_cancelled(self, correlation_id: str) -> None:
+        """Remember that this turn's output is stale, for as long as it takes the
+        cancelled runs to report home — and no longer than the observation window
+        of any other per-turn table."""
+        self._cancelled[correlation_id] = None
+        while len(self._cancelled) > self.record_limit:
+            self._cancelled.pop(next(iter(self._cancelled)))
+
     def active_languages(self, speaker_id: str) -> list[str]:
         """Target languages still in flight for one speaker.
 
@@ -470,13 +481,36 @@ class Supervisor:
         cancelled = [(cid, meta) for cid, meta in self._active.items()
                      if meta["speaker_id"] == speaker_id]
         for cid, meta in cancelled:
-            self._cancelled.add(cid)
+            self._mark_cancelled(cid)
             self._active.pop(cid, None)
             self._drop_pending(cid)
             self._metrics["interrupts"] += 1
             await self._emit_interrupt(speaker_id, cid, reason,
                                        meta.get("target_languages", []))
         return [cid for cid, _ in cancelled]
+
+    def forget_participant(self, participant_id: str) -> list[str]:
+        """A participant left: release everything this meeting holds for them.
+
+        The synchronous twin of ``interrupt``, for a path that cannot await —
+        the WebSocket handler runs it inside a ``finally`` of a task being
+        cancelled. So it publishes nothing (the room learns who went away from
+        ``participant.left``) and simply stops owing their turn: the output is
+        marked stale, their language-switch marks go with them, and whatever was
+        still in flight is the caller's to cancel.
+
+        Returns the correlations it abandoned.
+        """
+        abandoned = [cid for cid, meta in self._active.items()
+                     if meta["speaker_id"] == participant_id]
+        for cid in abandoned:
+            self._mark_cancelled(cid)
+            self._active.pop(cid, None)
+            self._drop_pending(cid)
+        for key in [k for k in self._stale_recipients
+                    if k[0] == participant_id]:
+            self._stale_recipients.discard(key)
+        return abandoned
 
     async def recipient_changed(self, recipient_id: str, *, previous_language: str,
                                 new_language: str) -> None:
@@ -513,7 +547,7 @@ class Supervisor:
         """Release a finished utterance's bookkeeping."""
         self._records.pop(correlation_id, None)
         self._active.pop(correlation_id, None)
-        self._cancelled.discard(correlation_id)
+        self._cancelled.pop(correlation_id, None)
         self._drop_pending(correlation_id)
 
     def health(self) -> dict[str, Any]:

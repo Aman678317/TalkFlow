@@ -217,6 +217,11 @@ async def leave_meeting(
         session = manager.get_session_for_meeting(meeting_id)
         if session:
             manager.remove_participant(session, p_uuid)
+            if session.pipeline is not None:
+                # Only if a pipeline exists: leaving through REST and hanging up
+                # the socket are two orders of the same departure, and this one
+                # must not build the state it is meant to release.
+                session.pipeline.release_participant(p_uuid)
             with contextlib.suppress(Exception):
                 await manager.broadcast(
                     session,

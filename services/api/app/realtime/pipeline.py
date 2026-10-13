@@ -223,6 +223,37 @@ class MeetingPipeline:
         if task:
             task.cancel()
 
+    def release_participant(self, participant_id: uuid.UUID) -> None:
+        """Release everything this meeting holds for one departed participant.
+
+        ``stop_speaker`` only stops the loop that reads their microphone; it is
+        the right call for someone who put their microphone down and stayed in
+        the room. Leaving is a different question, and the meeting kept four
+        things afterwards: their translation context window — raw transcript text,
+        held for a room they are no longer in — their sequence ledger, their
+        language-switch marks, and the fan-out of a turn they abandoned
+        mid-sentence, which kept producing audio for a listener nobody introduced.
+
+        Deliberately synchronous and deliberately silent: the WebSocket handler
+        calls it from a ``finally`` of a task being cancelled, where an ``await``
+        can raise before it reaches the room, and ``participant.left`` already
+        says who went away. Idempotent, because a socket closing races an explicit
+        REST leave.
+        """
+        self.stop_speaker(participant_id)
+        pid = str(participant_id)
+        self._latest_final_seq.pop(participant_id, None)
+        self.translating.forget_speaker(pid)
+        for corr in self.supervisor.forget_participant(pid):
+            self._fanout_pending.pop(corr, None)
+            self._detected.pop(corr, None)
+            self.listening.reset_utterance(corr)
+            self.voice.forget_correlation(corr)
+            met.STALE_AUDIO_DROPPED.labels(reason="speaker_left").inc()
+        for (owner, _seq, _lang), task in list(self.translation_tasks.items()):
+            if owner == pid:
+                task.cancel()
+
     async def shutdown(self) -> None:
         self._closed = True
         for pid in list(self.speaker_tasks):
@@ -669,6 +700,11 @@ class MeetingPipeline:
             sequence_number=seq_num, audio=audio, start_ms=started_at_ms, end_ms=0,
             lang_hint=self._lang_hint(p, u))
         stt_ms = self.listening.take_provider_ms(corr)
+        # Taken before the outcome is known. Detection reports from inside the
+        # transcript stage and the stage can still decide it has no language to
+        # commit, so a record kept for the failure paths would outlive the only
+        # thing that was ever going to read it.
+        detected = self._take_detected_language(corr)
         if segment is None:
             failure = self.listening.take_failure(corr) or {}
             reason = failure.get("reason", "provider_unavailable")
@@ -696,7 +732,6 @@ class MeetingPipeline:
             u.locked_language = None
             return
         met.STT_LATENCY.labels(provider=segment.provider or "unknown").observe(stt_ms)
-        detected = self._take_detected_language(corr)
         if detected is not None:
             self._broadcast_diag(self._diag("lang_detect", utt=corr, seq=seq_num,
                                             speaker=p.participant_id, **detected))

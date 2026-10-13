@@ -62,3 +62,37 @@ def test_hanging_up_releases_the_speaker_and_the_database(services_app_client, u
         time.sleep(0.1)
     assert row is not None and row["status"] == "left", \
         f"disconnect cleanup never completed: {row}"
+
+
+def test_a_departed_speaker_leaves_no_words_in_the_meeting(services_app_client, user):
+    """What the disconnect handler is allowed to keep.
+
+    The speaker said something, so the meeting holds a sequence ledger and a
+    translation context window full of their recognised words — both keyed by a
+    `participant_id` that is issued per join and will never be reused. Hanging up
+    has to take that with it, or a room that runs for hours keeps the transcript
+    of everyone who ever stood in it.
+    """
+    meeting_id = _meeting(services_app_client, user["headers"])
+    join = services_app_client.post(
+        f"/api/v1/meetings/{meeting_id}/join", headers=user["headers"],
+        json={"display_name": "Host", "speak_lang": "hi", "hear_lang": "en",
+              "audio_mode": "translated"})
+    ticket = join.json()["rt_url"].split("ticket=")[1]
+
+    with services_app_client.websocket_connect(
+            f"/ws/meetings/{meeting_id}?ticket={ticket}") as ws:
+        ws.send_json({"type": "transcript.inject",
+                      "data": {"text": "नमस्ते, आज हम परियोजना की समीक्षा करेंगे।",
+                               "language": "hi"}})
+        for _ in range(40):
+            if ws.receive_json().get("type") == "transcript.final":
+                break
+
+    session = manager.get_session_for_meeting(uuid.UUID(meeting_id))
+    pipe = session.pipeline
+    assert pipe is not None, "the turn was never processed"
+    assert pipe.translating._context == {}, "their words stayed in the room"
+    assert pipe._latest_final_seq == {}
+    assert pipe.speaker_tasks == {} and pipe.utterances == {}
+    assert pipe._detected == {}
