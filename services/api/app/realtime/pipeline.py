@@ -739,7 +739,8 @@ class MeetingPipeline:
                                    start_wall_ms=int(time.time() * 1000),
                                    # An injected turn is complete the instant it
                                    # arrives, so its speech-end is its receipt.
-                                   speech_end_wall_ms=int(time.time() * 1000))
+                                   speech_end_wall_ms=int(time.time() * 1000),
+                                   injected=True)
 
     # ------------------------------------------------------------------ #
     # Canonical segment + fan-out
@@ -752,7 +753,8 @@ class MeetingPipeline:
                               start_wall_ms: int = 0, duration_ms: int = 0,
                               speech_end_wall_ms: int = 0,
                               utterance_id: uuid.UUID | None = None,
-                              seq_num: int | None = None) -> None:
+                              seq_num: int | None = None,
+                              injected: bool = False) -> None:
         session = self.session
         # --- persist canonical source (immutable) ---
         async with db_session() as db:
@@ -792,6 +794,17 @@ class MeetingPipeline:
 
         now_ms = int(time.time() * 1000)
         u_id = str(utterance_id) if utterance_id is not None else str(segment_id)
+        if injected:
+            # An injected turn replaces Agent 1's provider call, but the rest of
+            # the room is built to read Agent 1's stage event: the supervisor
+            # takes the source language of its latency rollup, its ordering
+            # ledger and its stage health from here. Skip it and the operator's
+            # number is labelled `unknown->en`.
+            await self.listening.note_injected_segment(
+                correlation_id=u_id, speaker_id=str(p.participant_id),
+                segment_id=str(segment_id), sequence_number=seq,
+                language=source_lang, text=text, provider=stt_provider,
+                model=stt_model)
         await manager.broadcast(
             session, ServerEventType.SPEECH_ENDED,
             {"timestamp_ms": start_ms, "utterance_id": u_id, "utteranceId": u_id,

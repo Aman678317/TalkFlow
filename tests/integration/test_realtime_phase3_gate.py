@@ -444,6 +444,49 @@ async def test_the_meeting_reports_p50_and_p95_of_the_listeners_wait(room):
 
 
 @pytest.mark.asyncio
+async def test_the_injected_turn_is_keyed_by_its_language_pair_too(room):
+    """`transcript.inject` is the path the benchmark and the dev console drive.
+
+    It stands in for Agent 1, so it owes Agent 1's bus contract: without a
+    transcript stage event the supervisor cannot name the source language, and
+    the operator's rollup reads `unknown->en` — which does not answer the guide's
+    question, "what is the p95 for this language pair". Observed in a live run.
+    """
+    await room.pipe.inject_transcript(room.aman,
+                                      "नमस्ते, आज हम योजना पर चर्चा करेंगे।", "hi")
+    await _drain(room.pipe)
+
+    latency = room.pipe.stage_health()["latency"]
+    assert set(latency["pairs"]) == {"hi->en"}, (
+        f"the injected turn was keyed {sorted(latency['pairs'])}")
+    assert latency["pairs"]["hi->en"]["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_injected_turns_accumulate_one_sample_each(room):
+    """Three turns in two source languages, because a percentile is a count
+    before it is a number: the live run reported `n=1` for twelve turns and the
+    single-turn test above could not see it.
+
+    Aman's Hindi goes only to Chen (Beth and Divya hear Hindi, so Hindi is their
+    own source language and not a translation). His Marathi turn is a translation
+    for all three listeners, and it counts once per *pair* — an English caption
+    and a Hindi caption are two different waits, and averaging them into one row
+    would hide whichever one is slow.
+    """
+    for text, lang in (("नमस्ते, आज हम योजना पर चर्चा करेंगे।", "hi"),
+                       ("आमची बैठक उद्या सकाळी आहे.", "mr"),
+                       ("दोनऱ्याची गोष्ट.", "hi")):
+        await room.pipe.inject_transcript(room.aman, text, lang)
+        await _drain(room.pipe)
+
+    latency = room.pipe.stage_health()["latency"]
+    assert {p: row["n"] for p, row in latency["pairs"].items()} == {
+        "hi->en": 2, "mr->en": 1, "mr->hi": 1}
+    assert latency["overall"]["n"] == 4
+
+
+@pytest.mark.asyncio
 async def test_an_unmeasured_meeting_reports_no_percentiles(room):
     """Before a single turn, the rollup has to be empty rather than zero. The
     Phase 4 gate is a number an operator is judged on; the honest answer to
