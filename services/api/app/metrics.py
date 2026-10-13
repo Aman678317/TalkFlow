@@ -27,6 +27,9 @@ TRANSLATION_FAILURES = Counter(
 STALE_AUDIO_DROPPED = Counter(
     "gt_stale_audio_dropped_total", "Stale translated audio dropped", ["reason"])
 RECONNECTS = Counter("gt_ws_reconnects_total", "WebSocket reconnects with resume")
+SEND_DROPPED = Counter(
+    "gt_ws_send_dropped_total",
+    "Frames dropped from a listener's bounded outbound queue", ["kind", "reason"])
 WS_CONNECTIONS = Gauge("gt_ws_connections_active", "Active WebSocket sessions")
 ACTIVE_MEETINGS = Gauge("gt_active_meetings", "Active meetings")
 ACTIVE_PARTICIPANTS = Gauge("gt_active_participants", "Active meeting participants")

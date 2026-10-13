@@ -195,6 +195,12 @@ async def _drain(pipe: P.MeetingPipeline) -> None:
     while pipe.translation_tasks and time.time() < deadline:
         await asyncio.gather(*list(pipe.translation_tasks.values()),
                              return_exceptions=True)
+        # The bookkeeping that empties `translation_tasks` is a done-callback, so
+        # it is *scheduled* when the task finishes — including when it finishes
+        # cancelled, which is how an interrupted turn ends. `gather` returning is
+        # not the same as that callback having run, and without this yield the
+        # loop below re-gathers the same finished task until the deadline.
+        await asyncio.sleep(0)
     assert not pipe.translation_tasks, "fan-out never came home"
 
 

@@ -274,6 +274,9 @@ class MeetingPipeline:
             "dev_mode": flags,
             "audio_listeners": sum(1 for p in self.session.participants.values()
                                    if manager.audio_listener(p)),
+            # A stage that produced everything and delivered none of it is not
+            # healthy, and only the send queues would know.
+            "send": manager.send_stats(self.session),
             "bus": self.bus.health(),
             "supervisor": self.supervisor.health(),
             # What the room has actually waited, not what the stages claim to
@@ -1097,11 +1100,7 @@ class MeetingPipeline:
             # apps/web/src/lib/audio.ts and MeetingRoom.tsx onBinary.
             bin_frame = bin_header + audio
             for listener in recipients:
-                if listener.connected and listener.ws is not None:
-                    try:
-                        await listener.ws.send_bytes(bin_frame)
-                    except Exception:
-                        pass
+                manager.send_audio(session, listener, bin_frame)
 
         def audio_still_wanted() -> bool:
             """Stop mid-stream if the speaker moved on or barged in, and report

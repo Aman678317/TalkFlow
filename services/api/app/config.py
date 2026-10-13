@@ -183,6 +183,13 @@ class Settings(BaseSettings):
     rt_max_chunk_ms: int = 2500
     rt_session_ttl_s: int = 3600
     rt_resume_buffer_size: int = 500  # events kept per session for reconnect replay
+    #: How far behind one listener a meeting will carry before it starts
+    #: dropping the oldest frame. At 50 ms chunks this is ~6 s of audio; past it
+    #: the frames describe a turn the listener has already lost.
+    rt_send_queue_size: int = 128
+    #: A socket that has not accepted a single frame in this long is dead, not
+    #: slow, and the writer stops pretending otherwise.
+    rt_send_timeout_s: float = 10.0
 
     # --- rate limits (count/period) ---
     rate_limit_translate: str = "60/minute"
