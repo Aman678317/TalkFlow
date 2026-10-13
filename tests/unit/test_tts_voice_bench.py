@@ -144,13 +144,19 @@ async def test_a_stream_that_yields_nothing_is_a_failure_not_a_zero() -> None:
 async def test_a_voice_too_slow_for_live_meeting_fails_the_gate_but_stays_measured() -> None:
     """Slowness is a result; unavailability is not. Only the first case can turn
     a voice into "unmeasured"."""
-    fake = FakeTts(chunks=1, frames_per_chunk=2400, first_delay=0.0)
-    fake.chunks = 1
+    # A voice that spends ~50 ms producing 300 ms of audio per chunk (rtf ≈ 0.06)
+    # judged against a 0.02 budget. The delay is made explicit rather than left to
+    # the machine: case timings are rounded to 0.1 ms, so on a fast runner a
+    # sub-millisecond synthesis rounds to zero and the gate passes on nothing —
+    # which is exactly how this test failed in CI the first time.
+    fake = FakeTts(chunks=3, frames_per_chunk=7200,   # 300 ms of audio each
+                   first_delay=0.05, rest_delay=0.0)
     report = await bench_voice(
-        fake, "hi", "hf_alpha", [("c1", HI)],
-        gates={**GATES, "max_realtime_factor": 0.0000001})
+        fake, "hi", "hf_alpha", [("c1", HI), ("c2", HI)],
+        gates={**GATES, "max_realtime_factor": 0.02})
     assert report.available and report.passed_gates is False
     assert report.gate_details["realtime_ok"] is False
+    assert report.realtime_factor > 0.05
 
 
 @pytest.mark.asyncio
