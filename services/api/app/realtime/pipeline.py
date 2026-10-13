@@ -367,7 +367,17 @@ class MeetingPipeline:
         in the realtime translation status banner — without this, a silent
         empty transcript on the prod Render deploy (faster-whisper not
         installed, dev_text returns empty text) looked like "translation
-        active" with zero output to the listener."""
+        active" with zero output to the listener.
+
+        A record may describe the pipeline, never the content that went through
+        it. `_broadcast_diag` sends this to *every* connected participant with no
+        role and no capability check, so a transcript fragment on a diagnostic is
+        a caption handed to people who have not been shown it yet — and a
+        provider's error string, which routinely quotes the sentence it refused,
+        is the same leak wearing a different name. Lengths, timings, providers,
+        models, language codes and error *class* names are all fair: they say how
+        the room is doing without saying what anyone said.
+        """
         rec: dict[str, object] = {
             "stage": stage,
             "meeting_id": str(self.session.meeting_id),
@@ -727,11 +737,16 @@ class MeetingPipeline:
         if segment is None:
             failure = self.listening.take_failure(corr) or {}
             reason = failure.get("reason", "provider_unavailable")
+            if reason != "empty_speech":
+                # The cause goes to the log, which the room does not read. A
+                # recogniser that fails usually says why in words that name the
+                # audio it failed on.
+                log.warning("stt failed (%s): %s", reason,
+                            failure.get("error", ""))
             self._broadcast_diag(self._diag(
                 "stt_empty" if reason == "empty_speech" else "stt_failed",
                 utt=corr, seq=seq_num, speaker=p.participant_id, reason=reason,
-                error_type=failure.get("error_code", ""),
-                error=str(failure.get("error", ""))[:160]))
+                error_type=failure.get("error_code", "")))
             if reason == "empty_speech":
                 # No words recognised is not an outage — the listener only needs
                 # to know the speech ended, so no error event is sent. The
@@ -759,7 +774,6 @@ class MeetingPipeline:
             provider=segment.provider, model=segment.model,
             stt_ms=round(stt_ms, 1),
             text_len=len(segment.recognized_text),
-            text_preview=segment.recognized_text[:80],
             language=segment.source_language, confidence=segment.confidence))
         u.locked_language = None  # Reset locked language for the next speech segment
         await self._commit_segment(
@@ -832,8 +846,12 @@ class MeetingPipeline:
             await db.commit()
             segment_id = segment.id
 
-        # optionally store audio artifact (retention-controlled)
-        if audio and settings.retention_audio_days:
+        # Store the turn's recording only if this room's window keeps audio at
+        # all — the number the lobby disclosed is the number that decides here.
+        audio_days = (session.retention_audio_days
+                      if session.retention_audio_days is not None
+                      else settings.retention_audio_days)
+        if audio and audio_days:
             try:
                 from app.storage import object_key, sha256_bytes, storage
                 from gt_ai.audio_utils import pcm16_to_wav
@@ -914,7 +932,7 @@ class MeetingPipeline:
         self._broadcast_diag(self._diag(
             "fanout_start", utt=str(u_id), seq=seq, speaker=p.participant_id,
             source_lang=source_lang, targets=sorted(targets),
-            text_preview=text[:80]))
+            text_len=len(text)))
         self._start_fanout(speaker=p, segment_id=segment_id, seq=seq,
                            utterance_id=str(u_id), text=text, source_lang=source_lang,
                            targets=targets, stt_ms=stt_ms, capture_ms=capture_ms,
@@ -1003,7 +1021,7 @@ class MeetingPipeline:
         self._broadcast_diag(self._diag(
             "mt_enter", utt=str(u_id), seq=seq, speaker=speaker.participant_id,
             source_lang=source_lang, target_lang=target_lang,
-            text_len=len(text), text_preview=text[:80]))
+            text_len=len(text)))
 
         # --- Agent 2: one provider call per (segment, target language) ---
         source = TranscriptSegment(
@@ -1022,7 +1040,7 @@ class MeetingPipeline:
             self._broadcast_diag(self._diag(
                 "mt_failed", utt=str(u_id), seq=seq, speaker=speaker.participant_id,
                 source_lang=source_lang, target_lang=target_lang,
-                reason=reason, error_type=type(e).__name__, error=str(e)[:160]))
+                reason=reason, error_type=type(e).__name__))
             if reason == "provider_unavailable":
                 # Nothing in the failure named itself, so this is the surprise it
                 # looks like. A refused language pair or a deadline is a known
@@ -1040,7 +1058,7 @@ class MeetingPipeline:
             source_lang=source_lang, target_lang=target_lang,
             provider=done.provider, model=done.model,
             translation_ms=round(trace.translation_ms, 1),
-            translated_text_preview=translated[:80]))
+            translated_len=len(translated)))
 
         # --- Phase 5 translation.segment.final + translation.final contract ---
         final_translation_event = {
@@ -1225,8 +1243,7 @@ class MeetingPipeline:
             self._broadcast_diag(self._diag(
                 "tts_failed", utt=str(u_id), seq=seq, speaker=speaker.participant_id,
                 target_lang=target_lang,
-                error_type=failure.get("error_code", ""),
-                error=str(failure.get("error", ""))[:160]))
+                error_type=failure.get("error_code", "")))
             await manager.broadcast(
                 session, ServerEventType.ERROR,
                 {"code": "tts_unavailable",

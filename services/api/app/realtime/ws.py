@@ -32,7 +32,7 @@ from app.realtime import pipeline as pl
 from app.realtime.protocol import ClientEventType, ServerEventType, parse_client_event
 from app.realtime.session_manager import RtParticipant, manager
 from app.security import verify_session_ticket
-from app.services import chat_service, meeting_service
+from app.services import chat_service, meeting_service, retention_service
 
 log = logging.getLogger("app.realtime.ws")
 
@@ -161,6 +161,11 @@ async def realtime_ws(
         org_id = meeting.org_id
         room_name = meeting.room_name
         mode = meeting.mode
+        # The room's own audio window, resolved once per connection by the same
+        # function the sweep deletes by: a disclosure and a deletion that
+        # disagree is a promise nobody keeps.
+        audio_days = retention_service.policy_for(
+            await db.get(M.Organization, meeting.org_id), meeting)["audio_days"]
         db_seq = (await db.execute(
             select(func.coalesce(func.max(M.TranscriptSegment.seq), 0))
             .where(M.TranscriptSegment.meeting_id == meeting.id))).scalar() or 0
@@ -201,7 +206,8 @@ async def realtime_ws(
     resumed = False
     if session is None:
         session = await manager.create_session(meeting_id_uuid, org_id, room_name,
-                                               mode, db_seq_start=db_seq)
+                                               mode, db_seq_start=db_seq,
+                                               retention_audio_days=audio_days)
         pl.get_pipeline(session)
     else:
         resumed = True
