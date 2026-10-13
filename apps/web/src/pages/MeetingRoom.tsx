@@ -2610,6 +2610,11 @@ export default function MeetingRoom() {
                         { value: "mixed", label: "Mixed", title: "Original and translated voices together" },
                       ]}
                     />
+                    {prefs.audio_mode !== "original" && (
+                      <p className="mt-1.5 text-slate-400 text-xs">
+                        Translated playback is a machine-generated voice, not the speaker.
+                      </p>
+                    )}
                   </div>
 
                   {/* Caption display */}

@@ -1,9 +1,14 @@
 # Database
 
 PostgreSQL in production (pgvector enabled), SQLite in dev — identical SQLAlchemy models,
-Alembic migration `d6049c5192e5_initial_schema` (39 tables) is the schema source of truth.
-UUID (CHAR(36)) primary keys, `created_at/updated_at` everywhere, FK cascades, deliberate
-indexes (tenant+time, meeting+sequence, lookup hashes).
+the Alembic revisions in `services/api/alembic/versions` (`eae02319e4b2_initial_schema`
++ `2202ca7dc080_harmonize_schema_models`, 43 tables) are the schema source of truth for the
+deployed backend. UUID (CHAR(36)) primary keys, `created_at/updated_at` everywhere, FK
+cascades, deliberate indexes (tenant+time, meeting+sequence, lookup hashes).
+
+**This document describes `services/api` (the deployed backend).** `apps/api` is a second,
+older tree with its own models and its own migration (`d6049c5192e5_initial_schema`); where
+it has a table this one does not, the section says so.
 
 ## ER overview (mermaid)
 
@@ -39,7 +44,6 @@ erDiagram
   organizations ||--o{ memory_items : ""
   organizations ||--o{ agent_sessions : ""
   organizations ||--o{ audit_logs : ""
-  users ||--o{ voice_consents : ""
 ```
 
 ## Table groups
@@ -59,8 +63,17 @@ participant_preferences ("I speak / I hear / audio_mode / caption_mode / latency
 the routing truth), audio_sessions (transport, dropouts, reconnects), transcript_segments
 (**canonical source**; immutable finals; sequence per meeting; audio_key under retention),
 translation_segments (**derivatives**; UNIQUE(source_segment_id, target_language) —
-the dedup guarantee at storage level), chat_messages (original immutable) +
-voice_consents (AI voice safety: granted/revoked/audit + synthetic flag).
+the dedup guarantee at storage level), chat_messages (original immutable).
+
+**Voice consent — not in this schema.** `apps/api` has a `voice_consents` table
+(`apps/api/globaltalk/models/__init__.py`, "AI voice safety: granted/revoked/audit +
+synthetic flag") and a cleanup worker that destroys samples for revoked rows
+(`apps/api/globaltalk/workers/cleanup.py`). The deployed backend has **neither**: no
+consent table, no voice enrollment, and `ff_voice_preservation` defaults to `False` with
+nothing behind it. Today no voice is cloned, preserved or re-used anywhere in `services/api`;
+translated speech is a stock TTS voice, marked per audio chunk with `is_dev` only when the
+engine is a dev stand-in. If voice preservation is ever built here, the consent table has to
+be built with it — see `docs/AI.md` and `docs/PHASE5_FACE_AND_VIDEO_DECISION.md`.
 
 **Documents** — documents (checksum, mime sniffed, versions_used: parser/model/glossary/
 style versions + QA result), document_jobs (stage machine + audit log), document_segments
