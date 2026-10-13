@@ -51,6 +51,32 @@ log = logging.getLogger("app.realtime.pipeline")
 
 AUDIO_QUEUE_MAX = 500          # ~50s of 100ms chunks — backpressure bound
 
+#: Characters that close a clause in the languages this product ships. A live
+#: caption ending on one of these has said something a translator can render on
+#: its own, so a long speaker does not have to stop for breath before the first
+#: words go out. Deliberately excludes ASCII `,` and `;`, and the Devanagari
+#: comma `,`: both appear inside a clause, and committing there splits a sentence
+#: in half. A tuple because `str.endswith` only accepts one.
+_CLAUSE_ENDINGS = ("。", "．", "！", "？", ".", "!", "?", "؟", "।", "॥")
+
+
+def _ends_at_clause(text: str) -> bool:
+    """Whether a partial transcript ends on a clause boundary.
+
+    Trailing quote/bracket characters are skipped because captions frequently
+    land as `…plan."` mid-utterance; the sentence still ended.
+
+    Accepts a false positive on a trailing abbreviation ("…the Mr.") in exchange
+    for not waiting on breath. It costs one short early segment, the speaker
+    keeps talking, and the next clause commits normally — which is the right way
+    round, because the alternative failure is a listener hearing nothing for
+    fifteen seconds.
+    """
+    stripped = text.rstrip()
+    while stripped and stripped[-1] in '"\'”’」』)]}>':
+        stripped = stripped[:-1].rstrip()
+    return stripped.endswith(_CLAUSE_ENDINGS)
+
 
 @dataclass
 class UtteranceState:
@@ -321,30 +347,20 @@ class MeetingPipeline:
                     cap_s = settings.vad_max_speech_ms / 1000.0
                     audio_ms = len(u.buffer) / 32.0  # 16 kHz mono PCM16
                     if (now - u.capture_started) >= cap_s and audio_ms >= cap_s * 1000 * 0.6:
-                        audio_payload = bytes(u.buffer)
-                        u.buffer = bytearray()
-                        start_ms = u.started_at_ms
-                        cap_start = u.capture_started
-                        curr_uid = u.utterance_id
-                        curr_seq = u.seq
-                        u.utterance_id = uuid.uuid4()
-                        u.seq += 1
-                        u.capture_started = now
-                        u.last_partial_at = now
-                        u.started_at_ms = getattr(vad, "clock_ms", int(now * 1000))
-                        u.partial_text = ""
-                        asyncio.create_task(
-                            self._finalize_utterance(
-                                p, u, forced=False, audio_bytes=audio_payload,
-                                start_ms=start_ms, capture_started=cap_start,
-                                utterance_id=curr_uid, seq=curr_seq
-                            ),
-                            name=f"split-finalize-{p.participant_id}-{start_ms}"
-                        )
+                        self._split_running_utterance(p, u, vad, reason="length_cap")
                     elif (now - u.last_partial_at >= settings.vad_partial_interval_ms / 1000.0
                           and len(u.buffer) > 16000 * 2 * 0.8):
                         u.last_partial_at = now
                         await self._emit_partial(p, u)
+                        # Phrase break: a caption that ends on a clause boundary
+                        # after `vad_phrase_commit_ms` of continuous speech is a
+                        # complete thought, so commit it now. Waiting for the
+                        # speaker's next breath is what made a long turn feel
+                        # like nothing had happened for fifteen seconds.
+                        if (settings.vad_phrase_commit_ms > 0
+                                and (now - u.capture_started) * 1000 >= settings.vad_phrase_commit_ms
+                                and _ends_at_clause(u.partial_text)):
+                            self._split_running_utterance(p, u, vad, reason="phrase_break")
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -358,6 +374,46 @@ class MeetingPipeline:
                                                                  seq=u.seq))
                 except Exception:
                     log.exception("flush on disconnect failed")
+
+    # ------------------------------------------------------------------ #
+    # Mid-speech commit (Phase 3): the length cap and the phrase break
+    # ------------------------------------------------------------------ #
+    def _split_running_utterance(self, p: RtParticipant, u: UtteranceState,
+                                 vad: object, *, reason: str) -> None:
+        """Commit what the speaker has said so far and keep listening.
+
+        Both mid-speech commits do the same thing: hand the audio captured up to
+        this instant to the finalization path, then rotate the utterance state so
+        the continuation becomes the next segment. The rotation happens *before*
+        the task runs, because the speaker is still talking — if the id and seq
+        stayed put, late audio would be appended to a segment already on its way
+        to translation.
+        """
+        audio_payload = bytes(u.buffer)
+        u.buffer = bytearray()
+        start_ms = u.started_at_ms
+        cap_start = u.capture_started
+        curr_uid = u.utterance_id
+        curr_seq = u.seq
+        now = time.perf_counter()
+        u.utterance_id = uuid.uuid4()
+        u.seq += 1
+        u.capture_started = now
+        u.last_partial_at = now
+        u.started_at_ms = getattr(vad, "clock_ms", int(now * 1000))
+        u.partial_text = ""
+        self._broadcast_diag(self._diag(
+            "mid_speech_commit", utt=str(curr_uid), seq=curr_seq,
+            speaker=p.participant_id, reason=reason,
+            audio_ms=round(len(audio_payload) / 32.0)))
+        asyncio.create_task(
+            self._finalize_utterance(
+                p, u, forced=False, audio_bytes=audio_payload,
+                start_ms=start_ms, capture_started=cap_start,
+                utterance_id=curr_uid, seq=curr_seq
+            ),
+            name=f"split-finalize-{p.participant_id}-{start_ms}"
+        )
 
     # ------------------------------------------------------------------ #
     # STT: partial + final

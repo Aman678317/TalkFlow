@@ -113,6 +113,13 @@ never faked.
    end-of-speech latency; a burst shorter than `vad_min_speech_ms` (250 ms) is a cough,
    not a turn; a speaker who never pauses is force-committed at `vad_max_speech_ms`
    (15 s). `tests/unit/test_vad_cadence.py` measures the latency each setting costs.
+   A fifth trigger commits a turn *mid-speech* once it has run
+   `vad_phrase_commit_ms` (4 s, `0` disables) and the live caption ends on a clause
+   boundary (`. ! ? । ॥ 。` — never a comma): a presenter no longer waits for a
+   breath before the first sentence is translated. The committed audio becomes one
+   segment and the continuation the next, so `seq` stays monotonic per speaker; the
+   trade is one occasional short early segment (an abbreviation ending in a period)
+   against fifteen seconds of nothing.
 3. **Partials** every `vad_partial_interval_ms` (default 1200 ms) for live captions;
    stale partials dropped via utterance generation counters (cancellation).
 4. **Final STT** → canonical `TranscriptSegment` persisted **before** broadcast.

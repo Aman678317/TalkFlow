@@ -142,6 +142,10 @@ class Settings(BaseSettings):
     vad_min_silence_ms: int = 500     # pause that ends a turn; also endpoint latency
     vad_max_speech_ms: int = 15000    # forced commit for a never-pausing speaker
     vad_partial_interval_ms: int = 1200  # live-caption cadence
+    # Once a turn has run this long, a clause terminator in the live caption
+    # commits it immediately instead of waiting for the speaker to breathe.
+    # 0 disables the early commit; turns still end on silence or the cap above.
+    vad_phrase_commit_ms: int = 4000
 
     gpu_available: bool = False
 
