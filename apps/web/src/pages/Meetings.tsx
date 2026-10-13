@@ -161,7 +161,7 @@ export default function Meetings() {
       bgColor: "bg-indigo-50 border-indigo-100",
       title: "Your meetings are private & safe",
       description:
-        "No one can join a room unless admitted by token or host. Media streams are end-to-end encrypted with self-hosted AI models and zero data retention.",
+        "No one can join a room unless admitted by token or host. Audio crosses an encrypted WebSocket to the server, where it is transcribed and translated, and any recording is kept only for the room's audio window — a meeting or an organization can set a shorter one.",
     },
   ];
 

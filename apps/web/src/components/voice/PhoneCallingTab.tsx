@@ -2959,10 +2959,10 @@ export default function PhoneCallingTab() {
               <div className="rounded-2xl bg-emerald-50 border border-emerald-200 p-3 text-emerald-900 space-y-1">
                 <div className="font-bold flex items-center gap-1.5">
                   <Lock className="h-3.5 w-3.5" />
-                  Zero Retention Voice Pipeline
+                  Nothing is recorded until you both agree
                 </div>
                 <div className="text-[11px]">
-                  Audio packets are transcribed and translated ephemerally in RAM (20ms frames) and are immediately discarded. No audio recordings are written to permanent disk storage.
+                  Call audio is transcribed and translated as it arrives, and with recording OFF no audio file is written. What is kept regardless: the call log (numbers, timings, per-stage cost). A call bound to a meeting room is kept under that room's transcript and audio windows.
                 </div>
               </div>
             </div>
