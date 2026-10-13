@@ -48,6 +48,30 @@ class Stage(StrEnum):
     SESSION_CLOSED = "session.closed"
 
 
+def failure_reason(exc: BaseException) -> str:
+    """Why a stage stopped, from what the failure itself said.
+
+    An outage and a refused language pair are different answers, and a room that
+    reports them with one word cannot tell an operator whether to add capacity or
+    to fix a capability row. `AppError` subclasses already name themselves, the
+    meeting's own deadline is a `TimeoutError`, and only what is left gets the
+    outage label — so the label is earned rather than assumed.
+
+    Both producers of a failure — the internal ``stage.failed`` event and the
+    client-facing ``translation.failed`` code — call this one function, which is
+    the only reason the two can be trusted to agree.
+    """
+    code = getattr(exc, "code", None)
+    if isinstance(code, str) and code:
+        return code
+    if isinstance(exc, TimeoutError):
+        # `asyncio.wait_for`, `httpx` and the socket layer all raise a timeout
+        # that is this type, so the meeting's own deadline and a provider that
+        # never answers are the same honest answer.
+        return "timeout"
+    return "provider_unavailable"
+
+
 def _now_ms() -> int:
     return int(time.time() * 1000)
 
