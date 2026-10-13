@@ -30,7 +30,7 @@ import { useLiveKitRoom } from "../hooks/useLiveKitRoom";
 import { AudioPlayer, MicCapture, b64ToBytes } from "../lib/audio";
 import { MeetingSocket, normId, type SocketState } from "../lib/ws";
 import { WebRTCManager, type SignalMessage } from "../lib/webrtc";
-import type { JoinMeetingResponse, Meeting, ParticipantInfo, Preferences, RealtimeEvent, TranscriptItem } from "../lib/types";
+import type { JoinMeetingResponse, Meeting, ParticipantInfo, Preferences, RealtimeEvent, RetentionPolicy, TranscriptItem } from "../lib/types";
 import { Button, ErrorState, SegmentedControl, Select, Spinner } from "../components/ui";
 import { VideoTile } from "../components/meeting/VideoTile";
 import { toast } from "../stores/toasts";
@@ -62,6 +62,31 @@ interface ChatLine {
 }
 
 const SAMPLE_RATE = 16000;
+
+/**
+ * What this room will keep after the call, in the numbers the server published.
+ * Say nothing rather than guess: if the room never reported a policy, the notice
+ * is absent, not assumed.
+ */
+function retentionNote(r?: RetentionPolicy | null): string | null {
+  if (!r || r.audio_days == null || r.transcript_days == null) return null;
+  const days = (n: number) => `${n} day${n === 1 ? "" : "s"}`;
+  if (r.audio_days <= 0) {
+    return `No audio from this call is stored. The words are kept for ${days(r.transcript_days)}, then deleted.`;
+  }
+  if (r.transcript_days <= 0) {
+    return `The recording is kept for ${days(r.audio_days)}, then deleted with the words.`;
+  }
+  return `This room keeps the recording for ${days(r.audio_days)} and the words for ${days(r.transcript_days)}, then deletes both.`;
+}
+
+/** The same windows, sized for a key/value row. */
+function retentionBadge(r?: RetentionPolicy | null): string | null {
+  if (!r || r.audio_days == null || r.transcript_days == null) return null;
+  const audio = r.audio_days <= 0 ? "no audio" : `${r.audio_days}d audio`;
+  const text = r.transcript_days <= 0 ? "no text" : `${r.transcript_days}d text`;
+  return `${audio} · ${text}`;
+}
 
 export default function MeetingRoom() {
   const { id = "" } = useParams();
@@ -1375,6 +1400,12 @@ export default function MeetingRoom() {
               </p>
             )}
 
+            {retentionNote(meetingQ.data.retention) && (
+              <p className="rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-[11px] leading-relaxed text-slate-400" role="note">
+                {retentionNote(meetingQ.data.retention)}
+              </p>
+            )}
+
             <Button
               variant="primary"
               className="w-full"
@@ -2266,6 +2297,12 @@ export default function MeetingRoom() {
                         <ShieldCheck className="h-3 w-3" /> Token Authenticated
                       </span>
                     </div>
+                    {retentionBadge(meetingQ.data?.retention) && (
+                      <div className="flex justify-between text-slate-400">
+                        <span>Kept for</span>
+                        <span className="text-white">{retentionBadge(meetingQ.data?.retention)}</span>
+                      </div>
+                    )}
                     <div className="flex justify-between text-slate-400">
                       <span>Engine</span>
                       <span className="text-white">LiveKit & Whisper Large v3</span>

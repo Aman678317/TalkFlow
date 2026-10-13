@@ -469,6 +469,9 @@ class MeetingDetailOut(MeetingOut):
     participants: list[ParticipantFullOut] = []
     livekit: dict | None = None
     livekit_url: str | None = None
+    # Derived by the router: the windows `retention_service.sweep()` will apply
+    # to this room, so a participant is told the truth before they speak.
+    retention: dict | None = None
 
 
 class JoinMeetingRequest(BaseModel):

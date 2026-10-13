@@ -26,7 +26,7 @@ from app.schemas import (
     VoiceSessionCreate,
 )
 from app.security import create_session_ticket
-from app.services import audit_service, meeting_service, webhook_service
+from app.services import audit_service, meeting_service, retention_service, webhook_service
 
 log = logging.getLogger("app.routers.meetings")
 
@@ -94,6 +94,8 @@ async def _detail(db: AsyncSession, meeting: M.Meeting,
     base = MeetingDetailOut.model_validate(meeting)
     base.transport = meeting.mode
     base.has_summary = bool(meeting.summary_json)
+    base.retention = retention_service.policy_for(
+        await db.get(M.Organization, meeting.org_id), meeting)
     if meeting.mode == "livekit" and livekit_bridge.enabled():
         base.livekit_url = livekit_bridge.public_url()
     base.participants = [
