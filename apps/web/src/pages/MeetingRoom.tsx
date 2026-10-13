@@ -1616,10 +1616,13 @@ export default function MeetingRoom() {
             Inject canned transcript → drive STT→MT→TTS pipeline:
           </span>
           {[
-            { text: "Hello, world.", lang: "en", label: "EN→Hindi" },
+            // Exact keys in gt_ai's dev translation table: any other wording
+            // falls through to the public web translator, so the caption a test
+            // asserts on would come from the internet instead of the fixture.
+            { text: "Hello world!", lang: "en", label: "EN→Hindi" },
             { text: "The meeting starts at 3pm.", lang: "en", label: "EN→Hindi (sentence)" },
             { text: "你好世界。", lang: "zh", label: "ZH→Hindi" },
-            { text: "नमस्ते दुनिया।", lang: "hi", label: "HI→English" },
+            { text: "नमस्ते दुनिया!", lang: "hi", label: "HI→English" },
           ].map((opt) => (
             <button
               key={`${opt.lang}:${opt.text}`}

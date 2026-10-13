@@ -61,6 +61,22 @@ jobs:
         run: |
           pip install psycopg[binary] asyncpg pgvector
           python -m pytest tests/integration -q
+      # `pytest tests/unit tests/integration` never collects the top-level files or
+      # tests/deployment, so 120 regression tests — every cross-tenant, migration,
+      # observability and render.yaml/vercel.json alignment check — only ever ran on
+      # whoever's machine was set up for them.
+      - name: Hardening + deployment regression (SQLite)
+        env:
+          APP_ENV: test
+          CACHE_BACKEND: memory
+          REDIS_URL: ""
+          JWT_SECRET: ci-jwt-secret-0123456789abcdef0123456789
+          RATE_LIMIT_AUTH: 100000/minute
+          RATE_LIMIT_TRANSLATE: 100000/minute
+        run: |
+          python -m pytest tests -q -rs \
+            --ignore=tests/unit --ignore=tests/integration \
+            --ignore=tests/realtime --ignore=tests/browser_e2e
 
   realtime-golden:
     runs-on: ubuntu-latest
@@ -106,6 +122,65 @@ jobs:
         run: npx vitest run
       - name: Build
         run: npx vite build
+
+  # tests/e2e was the one suite nothing ever ran: it is not pytest, not vitest,
+  # and not in any job. Its locators had drifted so far that all three specs
+  # failed on the first form field. This job is what keeps it honest.
+  browser-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      APP_ENV: development
+      DATABASE_URL: sqlite+aiosqlite:///browser_e2e.db
+      LOCAL_STORAGE_PATH: ./browser_e2e_storage
+      CACHE_BACKEND: memory
+      REDIS_URL: ""
+      JWT_SECRET: ci-jwt-secret-0123456789abcdef0123456789
+      SECRET_KEY: ci-secret-key-0123456789abcdef0123456789ab
+      STT_PROVIDER: dev_text
+      TRANSLATION_PROVIDER: dev_echo
+      TTS_PROVIDER: dev_tone
+      LANG_DETECT_PROVIDER: langdetect
+      LIVEKIT_ENABLED: "false"
+      METRICS_ENABLED: "false"
+      RATE_LIMIT_AUTH: 100000/minute
+      RATE_LIMIT_TRANSLATE: 100000/minute
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11", cache: pip }
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm, cache-dependency-path: apps/web/package-lock.json }
+      - name: Install the deployed backend tree
+        run: pip install -r services/api/requirements.txt
+      - name: Install web dependencies
+        working-directory: apps/web
+        run: npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+      - name: Install Playwright and Chromium
+        working-directory: tests/e2e
+        run: |
+          npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: Start backend and the Vite dev server
+        run: |
+          (cd services/api && python -m uvicorn app.main:app --host 127.0.0.1 --port 8088) \
+            > /tmp/backend.log 2>&1 &
+          (cd apps/web && npx vite --port 5173 --strictPort) > /tmp/vite.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -fs http://127.0.0.1:8088/health > /dev/null \
+              && curl -fs http://127.0.0.1:5173/ > /dev/null && break
+            sleep 2
+          done
+          curl -fs http://127.0.0.1:8088/health > /dev/null
+          curl -fs http://127.0.0.1:5173/ > /dev/null
+      - name: Golden demo, translate journey, document pipeline
+        working-directory: tests/e2e
+        env:
+          WEB_URL: http://localhost:5173
+        run: npx playwright test --reporter=line
+      - name: Backend log on failure
+        if: failure()
+        run: tail -80 /tmp/backend.log /tmp/vite.log
 
   docker:
     runs-on: ubuntu-latest
