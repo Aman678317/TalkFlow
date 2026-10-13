@@ -51,7 +51,9 @@ person's transcripts. Synthetic translated audio is flagged as such in events an
 ## Production hardening checklist
 
 - [ ] Rotate all default secrets (JWT_SECRET, SECRET_KEY, DB, MinIO, LiveKit)
-- [ ] Enable MALWARE_SCAN_ENABLED with ClamAV sidecar
+- [ ] Set CLAMAV_HOST (+ port) with a ClamAV sidecar — that is what enables the
+      ClamAV leg; Tree A has no MALWARE_SCAN_ENABLED flag, always rejects executable
+      magic bytes, and fails closed (rejects uploads) when ClamAV is unreachable
 - [ ] TLS at ingress (cert-manager), HSTS via ingress annotation
 - [ ] Postgres: TLS + least-privilege role; backups (pg_basebackup/WAL-G) + restore drills
 - [ ] Redis: AUTH + TLS; S3: bucket policy + SSE-KMS

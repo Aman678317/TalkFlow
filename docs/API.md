@@ -1,5 +1,12 @@
 # API Reference (v1)
 
+> **Which server.** This repo ships two backends. The deployed one is **Tree A**
+> (`services/api`, `app.*`, port 8088 locally / `$PORT` on Render) and it is the
+> subject of this page unless a line says otherwise. **Tree B** (`apps/api`,
+> `globaltalk.*`, port 8000, the Makefile + golden-test tree) has a few extra
+> internal endpoints, marked **[Tree B]** below — they return 404 on the deployed
+> service, so never script a production check against them.
+
 OpenAPI (interactive): `GET /docs` · schema: `GET /openapi.json`.
 Base URL: `/api/v1`. Auth: `Authorization: Bearer <JWT>` (users) or `X-API-Key: gtk_…`
 (developer keys). Org switcher for multi-org users: `X-Org-Id: <org>`.
@@ -88,24 +95,43 @@ ready│review│failed. See DOCUMENTS.md.
 
 ## Platform
 
+All paths below are relative to `/api/v1` on **Tree A** unless tagged **[Tree B]**.
+
 - `GET|POST /api-keys`, `POST /api-keys/{id}/rotate|revoke` (secret shown once; hash stored).
-- `GET /usage?days=30` (metered totals vs plan limits), `GET /billing/invoices`,
+- `GET /usage?days=30` (metered totals vs plan limits), `GET /usage/quota`.
+- Billing: `GET|POST /billing/subscription`, `GET /billing/events`,
+  `GET /billing/preview-invoice`. **[Tree B]** only: `GET /billing/invoices`,
   `POST /billing/checkout-preview`.
-- `GET|POST|DELETE /webhooks[…]`, `GET /webhooks/deliveries`. HMAC-SHA256 signature:
+- `POST|GET|DELETE /webhooks[…]`, `GET /webhooks/{id}/deliveries`,
+  `GET /webhooks/meta/events`. HMAC-SHA256 signature:
   `GlobalTalk-Signature: v1=<hmac(timestamp + "." + body)>`, `GlobalTalk-Timestamp`,
   retries at ~5 s/30 s/2 m/10 m/30 m, SSRF-guarded URLs in production.
-- `GET /org`, `GET|POST|DELETE /members[…]` (RBAC roles).
+- `POST /organizations` (create), `GET /organizations/current`, `GET /roles`,
+  `GET|POST /members`, `PUT /members/{id}/role`, `DELETE /members/{id}` (RBAC roles).
+  **[Tree B]** path spelling: `GET /org`.
 - `GET /search?q=` — meetings/transcripts/messages/documents/glossaries/TM (tenant-scoped).
-- `POST /feedback`.
-- `POST /bridge/turn?agents=agent-a:en,agent-b:ja` — agent-to-agent language bridge;
-  every agent projection derives independently from the canonical human text.
-- Admin (platform admins): `GET /admin/overview|users|audit-logs|security-events|feature-flags`,
-  `PUT /admin/feature-flags/{name}?enabled=&org_id=`, `POST /admin/users/{id}/deactivate`.
+- `POST /feedback` · `GET /flags` · `GET|POST|DELETE /integrations[…]`.
+- **[Tree B]** only: `POST /bridge/turn?agents=agent-a:en,agent-b:ja` — agent-to-agent
+  language bridge; every agent projection derives independently from the canonical
+  human text. `POST /api/v1/languages/refresh` is also **[Tree B]**; on Tree A the
+  startup probe reconciles the registry and an admin changes status with
+  `PUT /admin/languages/status`.
+- Admin (platform admins): `GET /admin/overview|users|organizations|audit-logs|languages|model-health|quality-evaluations`,
+  `PUT /admin/languages/status`, `PUT /admin/flags`, `POST /admin/users/{id}/suspend`.
+  (`/admin/security-events`, `/admin/feature-flags/{name}` and
+  `/admin/users/{id}/deactivate` were documented here previously and do not exist in
+  either tree — the real shapes are the ones above.)
 
 ## Ops endpoints
 
-`GET /health` (process) · `GET /ready` (deps: DB, cache, storage, LiveKit when configured —
-503 when a REQUIRED dep is down) · `GET /version` · `GET /metrics` (Prometheus text) ·
+**Tree A (deployed):** `GET /health` (also `/healthz`, `/api/v1/health`) ·
+`GET /ready` (deps: database, cache, queue, storage, plus LiveKit when configured —
+503 when a required dep is down; also `/readyz`) · `GET /version` ·
+`GET /metrics` (Prometheus text; 404 unless `METRICS_ENABLED`, token-gated in
+production) · `GET /api/v1/meetings/{id}/realtime/health` (per-meeting stage chain;
+see `docs/PRODUCTION_RUNBOOK.md` §5).
+
+**[Tree B]** only — these 404 on the deployed service:
 `GET /internal/components` (open-source component health + license review status) ·
 `GET /internal/audio-health` (VAD/STT/TTS/queues/GPU).
 

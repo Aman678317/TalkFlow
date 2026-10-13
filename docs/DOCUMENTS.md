@@ -4,8 +4,10 @@ Flow (each stage persisted on `document_jobs` with an audit log):
 
 ```
 Upload → MIME validation (magic bytes, never trust client header) → size limit
-      → malware scan (ClamAV INSTREAM when MALWARE_SCAN_ENABLED; fail-closed if required
-        but unavailable) → SHA-256 checksum → object storage (S3/MinIO or local FS)
+      → malware scan (executable magic-byte check always; ClamAV INSTREAM is added when
+        CLAMAV_HOST is set — there is no separate enable flag — and it fails CLOSED,
+        rejecting uploads if ClamAV is unreachable) → SHA-256 checksum
+      → object storage (S3/MinIO or local FS)
       → queue (Redis list / in-process) → document worker:
            parse (Docling when installed; else pypdf/python-docx/python-pptx/openpyxl/
            stdlib HTML/TXT) → CANONICAL DOCUMENT REPRESENTATION:

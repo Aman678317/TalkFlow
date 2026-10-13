@@ -76,7 +76,7 @@ jobs:
         run: |
           python -m pytest tests -q -rs \
             --ignore=tests/unit --ignore=tests/integration \
-            --ignore=tests/realtime --ignore=tests/browser_e2e
+            --ignore=tests/realtime
 
   realtime-golden:
     runs-on: ubuntu-latest
