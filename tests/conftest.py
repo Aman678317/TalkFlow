@@ -39,7 +39,9 @@ os.environ.update({
     "CACHE_BACKEND": _cache_backend,
     "S3_ENABLED": "false",
     "LOCAL_STORAGE_PATH": str(_TMP / "storage"),
-    "MODEL_CACHE_PATH": str(_TMP / "models"),
+    # An operator-supplied cache (CI's realtime-golden job) must survive: tests/realtime
+    # gates the acceptance test on the weights actually downloaded there.
+    "MODEL_CACHE_PATH": os.environ.get("MODEL_CACHE_PATH") or str(_TMP / "models"),
     "TRANSLATION_PROVIDER": "dev_echo",
     "STT_PROVIDER": "dev_text",
     "TTS_PROVIDER": "dev_tone",

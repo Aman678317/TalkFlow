@@ -16,7 +16,7 @@ def main() -> int:
     text = sys.stdin.read()
     os.environ.setdefault("ARGOS_DEVICE_TYPE", "cpu")
     cache = os.environ.get("MODEL_CACHE_PATH", "/tmp/globaltalk-models")
-    os.environ["ARGOS_PACKAGE_FOLDER"] = os.path.join(cache, "argos")
+    os.environ["ARGOS_PACKAGES_DIR"] = os.path.join(cache, "argos")
     # Lightweight SBD: stub stanza when absent (argos imports it unconditionally;
     # the real stanza drags in torch ≈ +250MB RSS which is unacceptable here).
     import types

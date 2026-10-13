@@ -41,13 +41,32 @@ REPO = Path(__file__).resolve().parents[2]
 PORT = 8765
 BASE = f"http://127.0.0.1:{PORT}"
 
-MODEL_CACHE = os.environ.get("MODEL_CACHE_PATH", "/tmp/globaltalk-models")
+MODEL_CACHE = Path(os.environ.get("MODEL_CACHE_PATH", "/tmp/globaltalk-models"))
+ARGOS_CACHE = MODEL_CACHE / "argos"
+
+
+def _argos_pair_installed(from_code: str, to_code: str) -> bool:
+    """True when download_models.sh put that pair in our cache.
+
+    Argos extracts each package into a version-suffixed directory (`argostranslate_en_hi-1.0`),
+    never into a directory named after the pair, so the pair has to be read from metadata.json.
+    """
+    for meta in ARGOS_CACHE.glob("*/metadata.json"):
+        try:
+            data = json.loads(meta.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if data.get("from_code") == from_code and data.get("to_code") == to_code:
+            return True
+    return False
 
 
 def _models_available() -> bool:
-    piper_ok = (Path(MODEL_CACHE) / "piper" / "hi_IN-pratham-medium.onnx").exists()
-    argos_ok = (Path(MODEL_CACHE) / "argos" / "en_hi").exists()
-    return piper_ok and argos_ok
+    if not (MODEL_CACHE / "piper" / "hi_IN-pratham-medium.onnx").exists():
+        return False
+    if not (MODEL_CACHE / "piper" / "en_US-lessac-medium.onnx").exists():
+        return False
+    return (_argos_pair_installed("hi", "en") and _argos_pair_installed("en", "hi"))
 
 
 def _port_free() -> bool:
@@ -58,7 +77,7 @@ def _port_free() -> bool:
 def _synth(text: str, voice_stem: str) -> bytes:
     """Real TTS subprocess → 16 kHz mono PCM16 (the WS transport format)."""
     import numpy as np
-    model = str(Path(MODEL_CACHE) / "piper" / f"{voice_stem}.onnx")
+    model = str(MODEL_CACHE / "piper" / f"{voice_stem}.onnx")
     with subprocess.Popen(
             [sys.executable, "-m", "piper", "--model", model, "--output_file", "/dev/stdout"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as proc:
@@ -76,11 +95,13 @@ def _synth(text: str, voice_stem: str) -> bytes:
 @pytest.fixture(scope="module")
 def server():
     if not _models_available():
-        pytest.skip("AI model weights not downloaded (run scripts/download_models.sh)")
+        pytest.skip(f"golden prerequisites missing under {MODEL_CACHE} "
+                    "(run MODEL_PROFILE=CPU bash scripts/download_models.sh)")
     if not _port_free():
         pytest.skip(f"port {PORT} busy")
     env = dict(os.environ,
                APP_ENV="test",
+               ARGOS_PACKAGES_DIR=str(ARGOS_CACHE),
                DATABASE_URL=f"sqlite:///{REPO / 'data' / 'golden.db'}",
                STORAGE_LOCAL_PATH=str(REPO / "data" / "golden-storage"),
                MALLOC_ARENA_MAX="2", OMP_NUM_THREADS="1",
