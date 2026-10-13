@@ -31,11 +31,20 @@ from app.db import models as M
 from app.db.base import utcnow
 from app.db.session import db_session
 from app.errors import AppError
+from app.realtime.agents.bus import AgentBus
+from app.realtime.agents.contracts import TtsChunkReady, TranscriptSegment
+from app.realtime.agents.listening import (
+    MIN_AUDIO_BYTES, ListeningAgent, RealtimeSttProvider,
+)
+from app.realtime.agents.supervisor import Supervisor
+from app.realtime.agents.translation import RealtimeTranslatorProvider, TranslationAgent
+from app.realtime.agents.voice import RealtimeTtsProvider, VoiceAgent
 from app.realtime.protocol import LatencyTrace, ServerEventType
 from app.realtime.session_manager import RtParticipant, RtSession, manager
 from app.services.translation_service import (
     TranslateContext, translate_text, validate_pair,
 )
+from gt_ai.types import RouteDecision
 from gt_ai.vad import EnergyVAD, VadState, create_vad
 
 log = logging.getLogger("app.realtime.pipeline")
@@ -60,6 +69,15 @@ class UtteranceState:
 
 
 class MeetingPipeline:
+    """Session owner for one meeting's speech path.
+
+    The four stages live in ``app.realtime.agents`` and are connected by the
+    typed event contract on ``self.bus``; this class keeps what it always owned:
+    VAD state, the durable transcript row, the wire protocol, listener routing,
+    replay sequencing and staleness. One path, not two — the agents are how this
+    class reaches a provider, not an alternative to it.
+    """
+
     def __init__(self, session: RtSession) -> None:
         self.session = session
         self.audio_queues: dict[uuid.UUID, asyncio.Queue] = {}
@@ -69,7 +87,52 @@ class MeetingPipeline:
         self.translation_tasks: dict[tuple[int, str], asyncio.Task] = {}
         self._closed = False
         self._latest_final_seq: dict[uuid.UUID, int] = {}
-        self._last_final_text: dict[uuid.UUID, str] = {}
+        self._detected: dict[str, dict] = {}
+        self._meeting_id = str(session.meeting_id)
+
+        # Agents 1-4 + the supervisor that observes them (Phase 2).
+        self.bus = AgentBus()
+        self.supervisor = Supervisor(meeting_id=self._meeting_id)
+        self.supervisor.attach(self.bus)
+        self.listening = ListeningAgent(
+            self.bus, RealtimeSttProvider(ai), meeting_id=self._meeting_id,
+            min_audio_bytes=MIN_AUDIO_BYTES, on_detect=self._on_language_detected)
+        self.translating = TranslationAgent(
+            self.bus,
+            RealtimeTranslatorProvider(db_session, self._translate_context,
+                                       translate_fn=lambda *a: translate_text(*a)),
+            meeting_id=self._meeting_id)
+        self.voice = VoiceAgent(self.bus, RealtimeTtsProvider(ai),
+                                meeting_id=self._meeting_id)
+
+    # ------------------------------------------------------------------ #
+    # Agent adapters: room scoping the agents cannot know on their own
+    # ------------------------------------------------------------------ #
+    def _translate_context(self, segment_id, context, speaker_id=None):
+        # The agent speaks in ids as strings; the durable translation, TM and
+        # metering rows key on UUIDs, so convert at this boundary.
+        try:
+            segment_uuid = uuid.UUID(str(segment_id)) if segment_id else None
+        except (ValueError, AttributeError, TypeError):
+            segment_uuid = None
+        speaker = self.session.participants.get(str(speaker_id)) if speaker_id else None
+        return TranslateContext(
+            org_id=self.session.org_id, user_id=speaker.user_id if speaker else None,
+            product="realtime", meeting_id=self.session.meeting_id,
+            segment_id=segment_uuid, intent="latency_optimized",
+            context=context[-1] if context else None,
+            persist=True, meter=True)
+
+    async def _on_language_detected(self, correlation_id: str, detected) -> None:
+        """Agent 1 ran detection on our behalf; the meeting's diagnostic stream
+        still has to say so, because that banner line is how an operator sees
+        which language the path committed to."""
+        self._detected[correlation_id] = {
+            "provider": detected.provider, "language": detected.language,
+            "confidence": detected.confidence}
+
+    def _take_detected_language(self, correlation_id: str) -> dict | None:
+        return self._detected.pop(correlation_id, None)
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -91,7 +154,6 @@ class MeetingPipeline:
         self.audio_queues.pop(participant_id, None)
         self.vads.pop(participant_id, None)
         self.utterances.pop(participant_id, None)
-        self._last_final_text.pop(participant_id, None)
         if task:
             task.cancel()
 
@@ -102,6 +164,8 @@ class MeetingPipeline:
         for t in list(self.translation_tasks.values()):
             t.cancel()
         self.translation_tasks.clear()
+        await self.supervisor.close()
+        await self.bus.close()
 
     # ------------------------------------------------------------------ #
     # Audio ingestion
@@ -199,6 +263,15 @@ class MeetingPipeline:
                              "created_at": now_ms,
                              "createdAt": now_ms},
                             speaker_id=str(p.participant_id))
+                        # Agent 1 opens the lifecycle chain, so capture ->
+                        # transcript -> translation -> speech -> delivery is one
+                        # queryable correlation rather than five separate logs.
+                        await self.listening.on_audio_captured(
+                            correlation_id=str(u.utterance_id),
+                            speaker_id=str(p.participant_id),
+                            segment_id=str(u.utterance_id),
+                            start_ms=ev.timestamp_ms, sequence_number=u.seq,
+                            audio_bytes=len(chunk))
                     else:  # SPEECH ended
                         if u.in_speech:
                             u.buffer.extend(chunk)
@@ -270,41 +343,38 @@ class MeetingPipeline:
         return None
 
     async def _emit_partial(self, p: RtParticipant, u: UtteranceState) -> None:
-        try:
-            chunk, _decision = await ai.transcribe(bytes(u.buffer), 16000,
-                                                   lang_hint=self._lang_hint(p, u))
-        except AppError as e:
-            log.debug("partial STT unavailable: %s", e.message)
+        corr = str(u.utterance_id)
+        segment = await self.listening.transcribe_partial(
+            correlation_id=corr, speaker_id=str(p.participant_id), segment_id=corr,
+            sequence_number=u.seq, audio=bytes(u.buffer),
+            lang_hint=self._lang_hint(p, u))
+        if segment is None:
+            # Agent 1 keeps the revision state, so an unchanged or failed partial
+            # simply produces no segment. A failed partial is deliberately not a
+            # wire event: speech is still in progress.
+            self.listening.take_failure(corr)
             return
-        except Exception as e:
-            log.debug("partial STT failed: %s", e)
-            return
-        if chunk.text and chunk.text != u.partial_text:
-            u.partial_text = chunk.text
-            # Phase 3 language locking: lock detected language once confidence threshold is reached
-            if not u.locked_language and chunk.language and (chunk.confidence or 0.0) >= 0.70:
-                u.locked_language = chunk.language
-            lang = u.locked_language or chunk.language or self._lang_hint(p, u) or "auto"
-            now_ms = int(time.time() * 1000)
-            await manager.broadcast(
-                self.session, ServerEventType.TRANSCRIPT_PARTIAL,
-                {"speaker_name": p.display_name,
-                 "display_name": p.display_name,
-                 "speaker_id": str(p.participant_id),
-                 "speakerId": str(p.participant_id),
-                 "session_id": str(self.session.meeting_id),
-                 "sessionId": str(self.session.meeting_id),
-                 "language": lang,
-                 "text": chunk.text,
-                 "is_final": False,
-                 "utterance_started_ms": u.started_at_ms,
-                 "utterance_id": str(u.utterance_id),
-                 "utteranceId": str(u.utterance_id),
-                 "sequence": u.seq,
-                 "seq": u.seq,
-                 "created_at": now_ms,
-                 "createdAt": now_ms},
-                speaker_id=str(p.participant_id))
+        u.partial_text = segment.recognized_text
+        now_ms = int(time.time() * 1000)
+        await manager.broadcast(
+            self.session, ServerEventType.TRANSCRIPT_PARTIAL,
+            {"speaker_name": p.display_name,
+             "display_name": p.display_name,
+             "speaker_id": str(p.participant_id),
+             "speakerId": str(p.participant_id),
+             "session_id": str(self.session.meeting_id),
+             "sessionId": str(self.session.meeting_id),
+             "language": segment.source_language,
+             "text": segment.recognized_text,
+             "is_final": False,
+             "utterance_started_ms": u.started_at_ms,
+             "utterance_id": str(u.utterance_id),
+             "utteranceId": str(u.utterance_id),
+             "sequence": u.seq,
+             "seq": u.seq,
+             "created_at": now_ms,
+             "createdAt": now_ms},
+            speaker_id=str(p.participant_id))
 
     async def _finalize_utterance(self, p: RtParticipant, u: UtteranceState,
                                   forced: bool = False,
@@ -327,61 +397,59 @@ class MeetingPipeline:
         cap_start = capture_started if capture_started is not None else u.capture_started
         capture_ms = (time.perf_counter() - cap_start) * 1000
         started_at_ms = start_ms if start_ms is not None else u.started_at_ms
-        t_stt = time.perf_counter()
+        corr = str(utterance_id or u.utterance_id)
+        seq_num = seq if seq is not None else u.seq
         self._broadcast_diag(self._diag(
-            "stt_enter", utt=str(utterance_id or u.utterance_id),
-            seq=seq or u.seq, speaker=p.participant_id,
+            "stt_enter", utt=corr, seq=seq_num, speaker=p.participant_id,
             audio_bytes=len(audio), lang_hint=self._lang_hint(p, u) or "auto"))
-        try:
-            chunk, decision = await ai.transcribe(audio, 16000,
-                                                   lang_hint=self._lang_hint(p, u))
-        except (AppError, Exception) as ex:
-            log.warning("STT transcription unavailable/failed for %s: %s", p.participant_id, ex)
+        segment = await self.listening.finalize(
+            correlation_id=corr, speaker_id=str(p.participant_id), segment_id=corr,
+            sequence_number=seq_num, audio=audio, start_ms=started_at_ms, end_ms=0,
+            lang_hint=self._lang_hint(p, u))
+        stt_ms = self.listening.take_provider_ms(corr)
+        if segment is None:
+            failure = self.listening.take_failure(corr) or {}
+            reason = failure.get("reason", "provider_unavailable")
             self._broadcast_diag(self._diag(
-                "stt_failed", utt=str(utterance_id or u.utterance_id),
-                seq=seq or u.seq, speaker=p.participant_id,
-                error_type=type(ex).__name__, error=str(ex)[:160]))
-            await manager.broadcast(
-                self.session, ServerEventType.ERROR,
-                {"code": "stt_unavailable", "message":
-                    "Speech recognition is temporarily unavailable. Captions and "
-                    "the original audio continue to work.",
-                 "recoverable": True}, speaker_id=str(p.participant_id))
+                "stt_empty" if reason == "empty_speech" else "stt_failed",
+                utt=corr, seq=seq_num, speaker=p.participant_id, reason=reason,
+                error_type=failure.get("error_code", ""),
+                error=str(failure.get("error", ""))[:160]))
+            if reason == "empty_speech":
+                # No words recognised is not an outage — the listener only needs
+                # to know the speech ended, so no error event is sent.
+                await manager.broadcast(
+                    self.session, ServerEventType.SPEECH_ENDED,
+                    {"empty": True}, speaker_id=str(p.participant_id))
+            else:
+                await manager.broadcast(
+                    self.session, ServerEventType.ERROR,
+                    {"code": "stt_unavailable", "message":
+                        "Speech recognition is temporarily unavailable. Captions and "
+                        "the original audio continue to work.",
+                     "recoverable": True}, speaker_id=str(p.participant_id))
             u.locked_language = None
             return
-        stt_ms = (time.perf_counter() - t_stt) * 1000
-        met.STT_LATENCY.labels(provider=decision.provider).observe(stt_ms)
-        text = (chunk.text or "").strip()
+        met.STT_LATENCY.labels(provider=segment.provider or "unknown").observe(stt_ms)
+        detected = self._take_detected_language(corr)
+        if detected is not None:
+            self._broadcast_diag(self._diag("lang_detect", utt=corr, seq=seq_num,
+                                            speaker=p.participant_id, **detected))
         self._broadcast_diag(self._diag(
-            "stt_exit", utt=str(utterance_id or u.utterance_id),
-            seq=seq or u.seq, speaker=p.participant_id,
-            provider=decision.provider, model=chunk.model or decision.model,
+            "stt_exit", utt=corr, seq=seq_num, speaker=p.participant_id,
+            provider=segment.provider, model=segment.model,
             stt_ms=round(stt_ms, 1),
-            text_len=len(text), text_preview=text[:80],
-            language=chunk.language, confidence=chunk.confidence))
-        if not text:
-            await manager.broadcast(
-                self.session, ServerEventType.SPEECH_ENDED,
-                {"empty": True}, speaker_id=str(p.participant_id))
-            u.locked_language = None
-            return
-        source_lang = u.locked_language or chunk.language or self._lang_hint(p, u) or "auto"
-        if source_lang == "auto":
-            det = await ai.detect_language(text)
-            source_lang = det.language
-            self._broadcast_diag(self._diag(
-                "lang_detect", utt=str(utterance_id or u.utterance_id),
-                seq=seq or u.seq, speaker=p.participant_id,
-                provider=det.provider, language=source_lang,
-                confidence=det.confidence))
+            text_len=len(segment.recognized_text),
+            text_preview=segment.recognized_text[:80],
+            language=segment.source_language, confidence=segment.confidence))
         u.locked_language = None  # Reset locked language for the next speech segment
         await self._commit_segment(
-            p, text=text, source_lang=source_lang, audio=audio,
-            confidence=chunk.confidence, stt_model=chunk.model or decision.model,
-            stt_provider=decision.provider, stt_ms=stt_ms, capture_ms=capture_ms,
-            start_ms=started_at_ms,
+            p, text=segment.recognized_text, source_lang=segment.source_language,
+            audio=audio, confidence=segment.confidence,
+            stt_model=segment.model or "", stt_provider=segment.provider or "",
+            stt_ms=stt_ms, capture_ms=capture_ms, start_ms=started_at_ms,
             utterance_id=utterance_id or u.utterance_id,
-            seq_num=seq or u.seq)
+            seq_num=seq_num)
 
     # ------------------------------------------------------------------ #
     # Dev/test text injection (guarded; STT stage marked 'injected')
@@ -398,7 +466,7 @@ class MeetingPipeline:
             return
         source_lang = language or (p.speak_lang if p.speak_lang != "auto" else "")
         if not source_lang:
-            det = await ai.detect_language(text)
+            det = await self.listening.detect_language(text)
             source_lang = det.language
         await self._commit_segment(p, text=text, source_lang=source_lang,
                                    audio=b"", confidence=1.0,
@@ -484,8 +552,9 @@ class MeetingPipeline:
         # --- compute deduplicated target set & fan out ---
         targets = manager.required_target_languages(
             session, source_lang, exclude_speaker=str(p.participant_id))
-        prev_context = self._last_final_text.get(p.participant_id, "")
-        self._last_final_text[p.participant_id] = text
+        # Pin the translation window before queueing the work, then advance it.
+        prev_context = self.translating.context_for(str(p.participant_id))
+        self.translating.note_source(str(p.participant_id), text)
         if not targets:
             self._broadcast_diag(self._diag(
                 "fanout_skipped", utt=str(u_id), seq=seq, speaker=p.participant_id,
@@ -516,7 +585,7 @@ class MeetingPipeline:
                                         speaker: RtParticipant, text: str,
                                         source_lang: str, target_lang: str,
                                         stt_ms: float, capture_ms: float,
-                                        prev_context: str = "",
+                                        prev_context: tuple[str, ...] = (),
                                         utterance_id: str | None = None) -> None:
         session = self.session
         trace = LatencyTrace(segment_id=str(segment_id), seq=seq,
@@ -540,16 +609,19 @@ class MeetingPipeline:
             "mt_enter", utt=str(u_id), seq=seq, speaker=speaker.participant_id,
             source_lang=source_lang, target_lang=target_lang,
             text_len=len(text), text_preview=text[:80]))
+
+        # --- Agent 2: one provider call per (segment, target language) ---
+        source = TranscriptSegment(
+            correlation_id=u_id, meeting_id=self._meeting_id,
+            speaker_id=str(speaker.participant_id), segment_id=str(segment_id),
+            sequence_number=seq, source_language=source_lang,
+            recognized_text=text, is_final=True)
+        caption_recipients = [str(x.participant_id) for x in
+                              manager.listeners_for_language(session, target_lang,
+                                                             want_audio=False)]
         try:
-            async with db_session() as db:
-                out = await translate_text(
-                    db, text, source_lang, target_lang,
-                    TranslateContext(
-                        org_id=session.org_id, user_id=speaker.user_id,
-                        product="realtime", meeting_id=session.meeting_id,
-                        segment_id=segment_id, intent="latency_optimized",
-                        context=prev_context,
-                        persist=True, meter=True))
+            done = await self.translating.translate_one(
+                source, target_lang, caption_recipients, prior_context=prev_context)
         except AppError as e:
             self._broadcast_diag(self._diag(
                 "mt_failed", utt=str(u_id), seq=seq, speaker=speaker.participant_id,
@@ -562,12 +634,12 @@ class MeetingPipeline:
             await self._translation_failed(segment_id, seq, target_lang, e)
             return
         trace.translation_ms = (time.perf_counter() - t0) * 1000
-        translated = out.result.text
+        translated = done.translated_text
         now_ms = int(time.time() * 1000)
         self._broadcast_diag(self._diag(
             "mt_exit", utt=str(u_id), seq=seq, speaker=speaker.participant_id,
             source_lang=source_lang, target_lang=target_lang,
-            provider=out.result.provider, model=out.result.model,
+            provider=done.provider, model=done.model,
             translation_ms=round(trace.translation_ms, 1),
             translated_text_preview=translated[:80]))
 
@@ -596,9 +668,9 @@ class MeetingPipeline:
             "translatedText": translated,
             "display_name": speaker.display_name,
             "speaker_name": speaker.display_name,
-            "model": out.result.model,
-            "quality_flags": out.result.quality_flags,
-            "latency_ms": out.result.latency_ms,
+            "model": done.model,
+            "quality_flags": done.quality_flags,
+            "latency_ms": done.latency_ms,
             "created_at": now_ms,
             "createdAt": now_ms,
             "dedup_key": f"{session.meeting_id}:{speaker.participant_id}:{seq}:{target_lang}",
@@ -648,85 +720,103 @@ class MeetingPipeline:
              "created_at": now_ms, "createdAt": now_ms},
             to=audio_listeners, speaker_id=str(speaker.participant_id))
         t_tts = time.perf_counter()
-        first = True
-        try:
-            stream, decision = await ai.synthesize_stream(translated, target_lang)
+        decision: RouteDecision | None = None
+        # Short id MUST be derived from the same id the JSON `tts.chunk` event
+        # carries (`segment_id`), otherwise the two transports produce different
+        # queue tags for one chunk and the client cannot dedup the duplicate.
+        short_id_bytes = str(segment_id).replace("-", "")[:16].ljust(16, "\x00").encode("utf-8")
+        lang_bytes = target_lang.encode("utf-8")
+        bin_header = b"\x54" + short_id_bytes + bytes([len(lang_bytes)]) + lang_bytes
+
+        async def deliver(ready: TtsChunkReady, audio: bytes,
+                          _recipients: list[str]) -> None:
+            """One declared chunk, on both transports, with the same ids."""
+            await manager.broadcast(
+                session, ServerEventType.TTS_CHUNK,
+                {"segment_id": str(segment_id), "utterance_id": u_id, "utteranceId": u_id,
+                 "seq": seq, "sequence": seq, "target_lang": target_lang, "target_language": target_lang,
+                 "chunk_index": ready.chunk_index, "chunkIndex": ready.chunk_index,
+                 "audio_base64": base64.b64encode(audio).decode(), "format": ready.codec,
+                 "sample_rate": ready.sample_rate,
+                 "is_dev": ready.is_dev, "model": ready.model,
+                 "created_at": now_ms, "createdAt": now_ms},
+                to=audio_listeners, speaker_id=str(speaker.participant_id))
+
+            # Binary frame delivery for lowest-latency audio playback.
+            # NOTE: payload = [tag][shortId][langLen][lang][WAV bytes].
+            # Frontend decodes via decodeBinaryFrame and routes TTS frames
+            # through AudioPlayer.enqueueWav (not enqueuePcm16) — see
+            # apps/web/src/lib/audio.ts and MeetingRoom.tsx onBinary.
+            bin_frame = bin_header + audio
+            for listener in audio_listeners:
+                if listener.connected and listener.ws is not None:
+                    try:
+                        await listener.ws.send_bytes(bin_frame)
+                    except Exception:
+                        pass
+
+        def audio_still_wanted() -> bool:
+            """Stop mid-stream if the speaker moved on, and report it once."""
+            if not self._is_stale(speaker.participant_id, seq):
+                return True
+            if not trace.stale_dropped:
+                trace.stale_dropped = True
+                met.STALE_AUDIO_DROPPED.labels(reason="mid_tts").inc()
+            return False
+
+        async def note_provider(route: RouteDecision) -> None:
+            nonlocal decision
+            decision = route
             self._broadcast_diag(self._diag(
                 "tts_provider", utt=str(u_id), seq=seq, speaker=speaker.participant_id,
                 target_lang=target_lang,
-                provider=decision.provider, model=decision.model))
-            chunk_idx = 0
-            # Short id MUST be derived from the same id the JSON `tts.chunk` event
-            # carries (`segment_id`), otherwise the two transports produce different
-            # queue tags for one chunk and the client cannot dedup the duplicate.
-            short_id_bytes = str(segment_id).replace("-", "")[:16].ljust(16, "\x00").encode("utf-8")
-            lang_bytes = target_lang.encode("utf-8")
-            bin_header = b"\x54" + short_id_bytes + bytes([len(lang_bytes)]) + lang_bytes
+                provider=route.provider, model=route.model))
 
-            async for audio in stream:
-                if self._is_stale(speaker.participant_id, seq):
-                    trace.stale_dropped = True
-                    met.STALE_AUDIO_DROPPED.labels(reason="mid_tts").inc()
-                    break
-                if first:
-                    trace.tts_first_audio_ms = (time.perf_counter() - t_tts) * 1000
-                    met.TTS_LATENCY.labels(provider=decision.provider).observe(
-                        trace.tts_first_audio_ms)
-                    self._broadcast_diag(self._diag(
-                        "tts_first_audio", utt=str(u_id), seq=seq,
-                        speaker=speaker.participant_id, target_lang=target_lang,
-                        provider=decision.provider,
-                        tts_first_audio_ms=round(trace.tts_first_audio_ms, 1),
-                        bytes=len(audio.data), sample_rate=audio.sample_rate,
-                        format=audio.format, is_dev=audio.is_dev))
-                    first = False
-                b64 = base64.b64encode(audio.data).decode()
-                await manager.broadcast(
-                    session, ServerEventType.TTS_CHUNK,
-                    {"segment_id": str(segment_id), "utterance_id": u_id, "utteranceId": u_id,
-                     "seq": seq, "sequence": seq, "target_lang": target_lang, "target_language": target_lang,
-                     "chunk_index": chunk_idx, "chunkIndex": chunk_idx,
-                     "audio_base64": b64, "format": audio.format,
-                     "sample_rate": audio.sample_rate,
-                     "is_dev": audio.is_dev, "model": audio.model,
-                     "created_at": now_ms, "createdAt": now_ms},
-                    to=audio_listeners, speaker_id=str(speaker.participant_id))
+        async def note_first_audio(ready: TtsChunkReady, _elapsed_ms: float) -> None:
+            # Measured from before the provider call, as this metric always was;
+            # Agent 3's own elapsed starts after the stream opens.
+            trace.tts_first_audio_ms = (time.perf_counter() - t_tts) * 1000
+            met.TTS_LATENCY.labels(provider=ready.provider).observe(
+                trace.tts_first_audio_ms)
+            self._broadcast_diag(self._diag(
+                "tts_first_audio", utt=str(u_id), seq=seq,
+                speaker=speaker.participant_id, target_lang=target_lang,
+                provider=ready.provider,
+                tts_first_audio_ms=round(trace.tts_first_audio_ms, 1),
+                bytes=ready.payload_bytes, sample_rate=ready.sample_rate,
+                format=ready.codec, is_dev=ready.is_dev))
 
-                # Binary frame delivery for lowest-latency audio playback.
-                # NOTE: payload = [tag][shortId][langLen][lang][WAV bytes].
-                # Frontend decodes via decodeBinaryFrame and routes TTS frames
-                # through AudioPlayer.enqueueWav (not enqueuePcm16) — see
-                # apps/web/src/lib/audio.ts and MeetingRoom.tsx onBinary.
-                bin_frame = bin_header + audio.data
-                for p in audio_listeners:
-                    if p.connected and p.ws is not None:
-                        try:
-                            await p.ws.send_bytes(bin_frame)
-                        except Exception:
-                            pass
-
-                chunk_idx += 1
+        # --- Agent 3: synthesize and deliver, deduplicating chunks ---
+        chunk_idx = await self.voice.synthesize(
+            done, recipients=[str(x.participant_id) for x in audio_listeners],
+            deliver=deliver, should_continue=audio_still_wanted,
+            on_provider=note_provider, on_first_audio=note_first_audio)
+        failure = self.voice.take_failure(done)
+        provider_name = decision.provider if decision else ""
+        if failure is None:
             await manager.broadcast(
                 session, ServerEventType.TTS_COMPLETED,
                 {"segment_id": str(segment_id), "utterance_id": str(segment_id),
                  "seq": seq, "target_lang": target_lang, "target_language": target_lang,
                  "chunks": chunk_idx, "stale_dropped": trace.stale_dropped,
-                 "provider": decision.provider},
+                 "provider": provider_name},
                 to=audio_listeners, speaker_id=str(speaker.participant_id))
             self._broadcast_diag(self._diag(
                 "tts_exit", utt=str(u_id), seq=seq, speaker=speaker.participant_id,
-                target_lang=target_lang, provider=decision.provider,
+                target_lang=target_lang, provider=provider_name,
                 chunks=chunk_idx, stale_dropped=trace.stale_dropped))
             # LiveKit mode: publish synthetic track (bridge no-ops in ws mode)
             from app.realtime import livekit_bridge
             await livekit_bridge.publish_translated_audio(
                 session, target_lang, translated, str(segment_id), seq)
-        except (AppError, Exception) as ex:
-            log.warning("TTS fan-out failed for target %s: %s", target_lang, ex)
+        else:
+            log.warning("TTS fan-out failed for target %s: %s", target_lang,
+                        failure.get("error", ""))
             self._broadcast_diag(self._diag(
                 "tts_failed", utt=str(u_id), seq=seq, speaker=speaker.participant_id,
                 target_lang=target_lang,
-                error_type=type(ex).__name__, error=str(ex)[:160]))
+                error_type=failure.get("error_code", ""),
+                error=str(failure.get("error", ""))[:160]))
             await manager.broadcast(
                 session, ServerEventType.ERROR,
                 {"code": "tts_unavailable",
