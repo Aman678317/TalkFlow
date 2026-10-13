@@ -40,7 +40,7 @@ const FAQS = [
   },
   {
     q: "Is my conversation or audio data stored or trained on?",
-    a: "No. GlobalTalk AI adheres to strict data privacy principles with zero third-party telemetry, ephemeral in-memory audio processing, and tenant isolation. Self-hosted deployments keep all audio and data completely on-premises.",
+    a: "Nothing is used for training, and how long anything is kept is a setting, not a secret. Speech crosses the socket in 16kHz PCM frames and is held in memory for one utterance; that utterance is written to storage only while the deployment's audio retention is above zero (seven days by default), after which a sweep deletes the recording and clears the pointer. The words themselves are stored as transcript rows for 365 days by default, and any organization or single meeting can set a shorter window. Self-hosting with local models keeps everything on your own hardware; hosted deployments send speech and text to the transcription, translation and voice providers configured on the server.",
   },
   {
     q: "What document formats are supported for translation?",
@@ -266,9 +266,9 @@ export default function Landing() {
               </span>
             </motion.h1>
 
-            {/* Strict Subtext Discipline: Exactly 18 words (<= 20 words constraint) */}
+            {/* Strict Subtext Discipline: 17 words (<= 20 words constraint) */}
             <motion.p variants={staggerItemVariants} className="mt-4 text-base sm:text-lg leading-relaxed text-slate-600 max-w-xl">
-              Translate speech, text, documents, and video meetings in real time with sub-second latency and zero data retention.
+              Translate speech, text, documents, and video meetings in real time, with sub-second latency and retention you set.
             </motion.p>
 
             <motion.div variants={staggerItemVariants} className="mt-7 flex flex-wrap items-center gap-3">
@@ -801,7 +801,7 @@ export default function Landing() {
                 <span className="font-bold text-dl-navy">GlobalTalk AI</span>
               </div>
               <p className="text-xs text-slate-600 leading-relaxed">
-                Real-time multilingual voice and text translation platform with sub-second latency and zero data retention.
+                Real-time multilingual voice and text translation platform with sub-second latency and retention you set.
               </p>
             </div>
 
@@ -839,7 +839,7 @@ export default function Landing() {
               <h4 className="text-xs font-semibold text-dl-muted mb-3">Governance</h4>
               <ul className="space-y-2 text-xs text-slate-600">
                 <li className="flex items-center gap-1.5"><CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" /> Self-hosted on-premises</li>
-                <li className="flex items-center gap-1.5"><CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" /> Ephemeral audio streams</li>
+                <li className="flex items-center gap-1.5"><CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" /> Time-bounded audio retention</li>
                 <li className="flex items-center gap-1.5"><CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" /> GDPR compliant</li>
                 <li className="flex items-center gap-1.5"><CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" /> Canonical Source Principle</li>
               </ul>
