@@ -43,6 +43,9 @@ MODEL_PROFILE=INDIC bash scripts/download_models.sh   # more Argos Indic pairs
 - `ARGOS_MAX_CACHED_PAIRS`, `PIPER_MAX_CACHED_VOICES` — warm-pool sizes.
 - `STT_MODEL` (`Systran/faster-whisper-tiny|base|small`), `STT_COMPUTE_TYPE=int8`.
 - `VAD_PROVIDER=energy|silero`, `REALTIME_LATENCY_MODE`.
+- `VAD_MIN_SPEECH_MS`, `VAD_MIN_SILENCE_MS`, `VAD_MAX_SPEECH_MS`,
+  `VAD_PARTIAL_INTERVAL_MS` — when a turn ends and how often live captions update.
+  `VAD_MIN_SILENCE_MS` is added directly to the latency before translation starts.
 - `REDIS_URL` — unset/unreachable ⇒ in-process cache/queue (single node).
 - `LIVEKIT_URL/API_KEY/API_SECRET` — set ⇒ LiveKit transport & tokens.
 

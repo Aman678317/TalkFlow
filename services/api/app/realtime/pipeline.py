@@ -50,7 +50,6 @@ from gt_ai.vad import EnergyVAD, VadState, create_vad
 log = logging.getLogger("app.realtime.pipeline")
 
 AUDIO_QUEUE_MAX = 500          # ~50s of 100ms chunks — backpressure bound
-PARTIAL_INTERVAL_S = 1.2       # run partial STT cadence during speech
 
 
 @dataclass
@@ -141,13 +140,29 @@ class MeetingPipeline:
     # ------------------------------------------------------------------ #
     # Lifecycle
     # ------------------------------------------------------------------ #
+    def _make_vad(self) -> object:
+        """One source of truth for when a turn begins and ends.
+
+        Both providers take the same three settings, so `vad_provider` cannot
+        silently change segmentation behaviour. ``vad_min_silence_ms`` is also
+        the end-of-speech *latency*: a turn is only declared over after that
+        much quiet has actually arrived, and tests/unit/test_vad_cadence.py
+        measures it instead of assuming it.
+        """
+        return create_vad(
+            settings.vad_provider,
+            sample_rate=16000,
+            min_speech_ms=settings.vad_min_speech_ms,
+            min_silence_ms=settings.vad_min_silence_ms,
+            max_speech_ms=settings.vad_max_speech_ms,
+        )
+
     def start_speaker(self, p: RtParticipant) -> None:
         if p.participant_id in self.speaker_tasks:
             return
         q: asyncio.Queue = asyncio.Queue(maxsize=AUDIO_QUEUE_MAX)
         self.audio_queues[p.participant_id] = q
-        self.vads[p.participant_id] = create_vad(settings.vad_provider,
-                                                 sample_rate=16000)
+        self.vads[p.participant_id] = self._make_vad()
         self.utterances[p.participant_id] = UtteranceState(participant_id=p.participant_id)
         task = asyncio.create_task(self._speaker_loop(p),
                                    name=f"pipeline-{p.participant_id}")
@@ -300,8 +315,12 @@ class MeetingPipeline:
                 if u.in_speech:
                     u.buffer.extend(chunk)
                     now = time.perf_counter()
-                    # Phase 2 bounded segment enforcement: split long monologues at 15s to prevent runaway buffering
-                    if (now - u.capture_started) >= 15.0 and len(u.buffer) >= 16000 * 2 * 10:
+                    # Bounded segment enforcement: a speaker who never pauses is
+                    # committed at the same cap the VAD uses, so there is one
+                    # turn-length setting and not two that disagree.
+                    cap_s = settings.vad_max_speech_ms / 1000.0
+                    audio_ms = len(u.buffer) / 32.0  # 16 kHz mono PCM16
+                    if (now - u.capture_started) >= cap_s and audio_ms >= cap_s * 1000 * 0.6:
                         audio_payload = bytes(u.buffer)
                         u.buffer = bytearray()
                         start_ms = u.started_at_ms
@@ -322,7 +341,8 @@ class MeetingPipeline:
                             ),
                             name=f"split-finalize-{p.participant_id}-{start_ms}"
                         )
-                    elif now - u.last_partial_at >= PARTIAL_INTERVAL_S and len(u.buffer) > 16000 * 2 * 0.8:
+                    elif (now - u.last_partial_at >= settings.vad_partial_interval_ms / 1000.0
+                          and len(u.buffer) > 16000 * 2 * 0.8):
                         u.last_partial_at = now
                         await self._emit_partial(p, u)
         except asyncio.CancelledError:

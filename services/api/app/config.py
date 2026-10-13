@@ -130,6 +130,19 @@ class Settings(BaseSettings):
     embedding_model: str = ""
     model_cache_path: str = "/tmp/model_cache" if _is_serverless() else "./model_cache"
     vad_provider: str = "webrtc_energy"
+
+    # --- turn segmentation (Phase 3) --------------------------------------- #
+    # One source of truth for when a turn ends. Before this the numbers lived in
+    # two places that never met: EnergyVAD's constructor defaults (250/500 ms,
+    # its own 20 s cap) and literals in the speaker loop (15 s force-split, 1.2 s
+    # partial cadence), so two turn-length limits disagreed and neither could be
+    # retuned per deployment without a code change.
+    # tests/unit/test_vad_cadence.py measures what each one costs.
+    vad_min_speech_ms: int = 250      # below this a burst is a cough, not a turn
+    vad_min_silence_ms: int = 500     # pause that ends a turn; also endpoint latency
+    vad_max_speech_ms: int = 15000    # forced commit for a never-pausing speaker
+    vad_partial_interval_ms: int = 1200  # live-caption cadence
+
     gpu_available: bool = False
 
     # realtime tuning (PDD §11.4)
