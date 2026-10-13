@@ -17,11 +17,13 @@ The rules this module enforces, all from the guide:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections import abc, defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from app.config import settings
 from app.realtime.agents.bus import AgentBus
 from app.realtime.agents.contracts import RealtimeEvent, Stage, TranscriptSegment, TranslationSegment
 
@@ -76,7 +78,14 @@ class RealtimeTranslatorProvider:
             translate_fn = self._translate_fn
         ctx = self._context_factory(segment_id, context, speaker_id)
         async with self._session_factory() as db:
-            out = await translate_fn(db, text, source_lang, target_lang, ctx)
+            # Agent 2 waits for the meeting, not for the provider. Past this
+            # point a late translation describes a turn the room has moved on
+            # from, and the fan-out task holding it is a task not working on the
+            # next one. Letting it go raises, which lands on the pipeline's
+            # existing failure path: the listener keeps the original caption.
+            out = await asyncio.wait_for(
+                translate_fn(db, text, source_lang, target_lang, ctx),
+                settings.rt_translate_timeout_s)
         r = out.result
         return ProviderTranslation(
             text=r.text, provider=r.provider, model=r.model,
