@@ -154,6 +154,42 @@ answered. Both directions of a real two-browser call with real credentials are
 what Phase 6 gates on, and they need the items in
 `docs/REALTIME_DEPLOY_REQUIREMENTS.md` that are still unset on this machine.
 
+### Provider failure policy
+
+Three bounded layers, all settings (`services/api/app/config.py`), none of them
+a promise that a provider is fast:
+
+1. **Deadline per call.** `ai_timeout_s` (8 s) caps one provider attempt,
+   `ai_retry_budget_s` (20 s) caps the whole failover walk for a turn, and the
+   realtime path tightens the first to `rt_translate_timeout_s` (5 s) — a
+   translation that misses that window is worth less to the room than the
+   original caption it is holding. A provider that accepts a request and then
+   stalls is now indistinguishable from a slow one for at most one deadline, and
+   the walk moves to the candidate behind it.
+2. **Finite retries.** The walk tries each candidate once, in router order,
+   ending in the local dev stand-in. It never loops: a provider that fails twice
+   is not asked twice in the same turn.
+3. **Circuit breaker.** Four failures in a rolling window (or one refusal the
+   facade can see directly — a healthcheck that says no, a voice that cannot
+   stream) opens that provider's circuit for `provider_cooldown_s` (30 s),
+   doubling per failed recovery probe up to `provider_max_cooldown_s` (600 s).
+   After a cooldown the provider is offered once, and that single outcome either
+   closes the circuit for the next turn or re-opens it for longer. Breakers
+   survive a model-registry reload; an operator's `mark_available` outranks
+   them.
+
+The measured reason for layer 3: the run above logged 35 refused `piper` probes
+and 35 refused `kokoro` probes for 20 turns — two internet-free healthchecks
+thrown away before every caption, and the same for every later turn a room is
+open. `tests/unit/test_provider_circuit_breaker.py` pins the cooldown, the
+backoff, the re-open, and that a turn still gets audio from the fallback while a
+dead voice is left alone.
+
+Failure is never silent and never fatal: when every translation candidate fails,
+the room keeps the speaker's original text as the caption and the event names
+which layer gave up. When every voice fails, synthesis raises a stated
+`ProviderError` rather than handing out a stream that dies on the first frame.
+
 ## Pipeline stages (server)
 
 1. **Ingest** 50 ms PCM chunks (16 kHz mono) → EnergyVAD (or Silero) on 30 ms frames.
