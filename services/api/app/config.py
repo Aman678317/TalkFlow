@@ -154,6 +154,22 @@ class Settings(BaseSettings):
 
     gpu_available: bool = False
 
+    # --- AI provider calls (finite retries + timeouts) ---
+    # Ceiling on ONE provider attempt. Providers set their own HTTP timeouts
+    # (8-12 s in gt_ai), which is longer than a meeting turn can afford, and a
+    # provider that hangs without refusing would otherwise hold a fan-out task
+    # open indefinitely. Refusing to answer is treated exactly like refusing:
+    # the next candidate gets tried, and the caller keeps the original text.
+    ai_timeout_s: float = 8.0
+    #: Ceiling on one *call*, failover included. Candidate lists are long on
+    #: purpose (seven MT providers), and seven per-attempt ceilings is not a
+    #: bound a total outage can hide behind.
+    ai_retry_budget_s: float = 20.0
+    # Ceiling on the whole realtime translation call, failover included. The
+    # meeting's own budget: past this the turn is late enough that a caption
+    # with the speaker's original words is worth more than a pending one.
+    rt_translate_timeout_s: float = 5.0
+
     # realtime tuning (PDD §11.4)
     rt_target_latency_ms: float = 2500.0
     rt_stale_after_ms: float = 6000.0

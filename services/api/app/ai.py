@@ -232,13 +232,32 @@ class AIFacade:
         return order
 
     async def _execute(self, task: Task, route_kw: dict, call):
-        """call(provider) -> result; failover across providers."""
+        """call(provider) -> result; failover across providers, on a clock.
+
+        The deadline is what makes the failover reachable. The loop moves on when
+        a provider *raises*, and a provider that accepts the request and then
+        stalls never does: without a ceiling, one wedged candidate is the end of
+        the walk, and the candidates behind it — including the local fallback —
+        are never tried.
+        """
         last_err: Exception | None = None
+        budget = settings.ai_retry_budget_s
+        cap = settings.ai_timeout_s
+        started = time.perf_counter()
         for decision in self._ordered_candidates(task, route_kw):
+            elapsed = time.perf_counter() - started
+            remaining = budget - elapsed
+            if remaining <= 0:
+                last_err = last_err or TimeoutError(
+                    f"retry budget of {budget:.1f}s exhausted")
+                log.warning("AI %s: retry budget of %.1fs exhausted after %.1fs; "
+                            "not trying further candidates", task, budget, elapsed)
+                break
             t0 = time.perf_counter()
             try:
                 provider = self.provider(task, decision.provider)
-                result = await call(provider)
+                result = await asyncio.wait_for(call(provider),
+                                                min(cap, remaining))
                 latency = (time.perf_counter() - t0) * 1000
                 if self.router is not None:
                     self.router.record_outcome(task, decision.provider, latency, ok=True)
@@ -250,6 +269,16 @@ class AIFacade:
                 last_err = e
                 log.warning("provider %s/%s unavailable (%s); failing over",
                             task, decision.provider, e)
+            except TimeoutError as e:
+                latency = (time.perf_counter() - t0) * 1000
+                if self.router is not None:
+                    self.router.record_outcome(task, decision.provider, latency, ok=False)
+                # `e` is empty for a wait_for cancellation; name what was cut, so
+                # the log says which provider to go and look at.
+                last_err = TimeoutError(
+                    f"{task}/{decision.provider} did not answer within {cap:.1f}s")
+                log.warning("provider %s/%s timed out after %.1fs; failing over",
+                            task, decision.provider, latency / 1000)
             except Exception as e:
                 latency = (time.perf_counter() - t0) * 1000
                 if self.router is not None:
@@ -306,29 +335,34 @@ class AIFacade:
         return result, decision
 
     async def synthesize_stream(self, text: str, lang: str, voice: str | None = None):
+        """Return (chunk iterator, decision) for the first voice that answers.
+
+        A stream is committed to once it is handed out: Agent 3 is already
+        waiting on its first frame and the room is waiting on Agent 3, so a
+        provider that only fails when somebody pulls a frame leaves the caller
+        with no candidate to fall back to. Checking here is cheap and is the last
+        moment the choice can still be changed.
+        """
         if self.router is None:
             raise ProviderError("AI router not initialized")
-        candidates = self._ordered_candidates(Task.TTS, {})
-        for name in candidates:
+        for decision in self._ordered_candidates(Task.TTS, {}):
+            name = decision.provider
             try:
                 provider = self.provider(Task.TTS, name)
-                if hasattr(provider, "healthcheck"):
-                    ok = await provider.healthcheck()
-                    if not ok:
-                        continue
-                if hasattr(provider, "synthesize_stream"):
-                    decision = self.router.route(Task.TTS, force_provider=name)
-                    return provider.synthesize_stream(text, lang, voice), decision  # type: ignore[attr-defined]
-            except Exception:
-                continue
-        try:
-            provider = self.provider(Task.TTS, "dev_tone")
-            decision = self.router.route(Task.TTS, force_provider="dev_tone")
-            return provider.synthesize_stream(text, lang, voice), decision  # type: ignore[attr-defined]
-        except Exception:
-            decision = self.router.route(Task.TTS)
-            provider = self.provider(Task.TTS, decision.provider)
-            return provider.synthesize_stream(text, lang, voice), decision  # type: ignore[attr-defined]
+                if not hasattr(provider, "synthesize_stream"):
+                    continue
+                if hasattr(provider, "healthcheck") and not await provider.healthcheck():
+                    log.info("TTS stream candidate %s is not answering; trying the "
+                             "next one", name)
+                    continue
+                return provider.synthesize_stream(text, lang, voice), decision
+            except Exception as exc:
+                log.warning("TTS stream candidate %s unusable: %s", name, exc)
+        # Saying so is the useful failure. Returning a stream that dies on the
+        # first frame turns "no voice on this host" into a per-turn mystery.
+        raise ProviderError(
+            "No text-to-speech voice is available. Translated captions remain "
+            "active.", details={"task": Task.TTS.value})
 
     async def summarize(self, text: str, instruction: str = "",
                         max_length: int = 400, lang: str = "en") -> str:
