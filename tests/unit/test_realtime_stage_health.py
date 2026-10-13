@@ -147,6 +147,25 @@ async def test_a_barge_in_stops_owing_the_cancelled_turn():
     assert translation["status"] == "not_yet_ran"
 
 
+@pytest.mark.asyncio
+async def test_pruning_a_turn_releases_it_from_every_ledger():
+    """`prune` runs inside a task's done-callback, where an exception is handed to
+    the event loop and thrown away. A test that only looks at what the meeting
+    produced therefore passes while the room goes on owing a stage forever — this
+    is exactly how a one-line change to the cancelled-marker table stopped
+    releasing any turn at all, and only showed up in a live server's log."""
+    bus, sup, _clock = _room()
+    await _healthy_chain(bus, sup)
+    assert await sup.interrupt(SPEAKER, reason="barge_in") == ["utt-1"]
+
+    sup.prune("utt-1")
+
+    assert sup._records == {} and sup._active == {}
+    assert not sup.is_cancelled("utt-1"), "the cancelled marker outlived its turn"
+    assert {key: len(ledger) for key, ledger in sup._pending.items()} == {
+        "listening": 0, "translation": 0, "voice": 0, "delivery": 0}
+
+
 # --------------------------------------------------------------------------- #
 # failures
 # --------------------------------------------------------------------------- #
@@ -383,8 +402,11 @@ async def test_outstanding_work_past_the_window_is_a_stall_whatever_the_history(
     owner does — it is the same staleness window that already decides whether
     late audio is still worth playing — so the upgrade from "ok" to "waiting"
     happens here."""
-    from app.config import settings
-    monkeypatch.setattr(settings, "rt_stale_after_ms", 0)
+    # Patched on the object the pipeline holds, not on `app.config.settings`:
+    # the session-scoped `app` fixture reloads that module, so any test running
+    # after an integration test would otherwise patch a settings object nobody
+    # reads and see a stale window applied.
+    monkeypatch.setattr(P.settings, "rt_stale_after_ms", 0)
     manager.add_participant(session, _listener("translated"))
     pipe = P.MeetingPipeline(session)
     await _publish(pipe.bus, Stage.TRANSLATION_READY, corr="utt-1",

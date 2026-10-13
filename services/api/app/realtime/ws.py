@@ -317,10 +317,10 @@ async def realtime_ws(
                 rp_in_session.connected = False
                 rp_in_session.ws = None
             # The socket is gone, so nothing will ever feed this participant's
-            # audio queue again. The queue, its VAD and its in-progress utterance
-            # stay allocated until the session itself closes — minutes later, and
-            # only if the session is ever closed.
-            pl.get_pipeline(session).stop_speaker(rp.participant_id)
+            # audio queue again — and nothing else in the meeting is allowed to
+            # keep holding what they said, or to keep producing audio for the
+            # turn they abandoned.
+            pl.get_pipeline(session).release_participant(rp.participant_id)
             with contextlib.suppress(Exception):
                 await manager.broadcast(
                     session, ServerEventType.PARTICIPANT_LEFT,

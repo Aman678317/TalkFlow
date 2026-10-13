@@ -218,3 +218,13 @@ class TranslationAgent:
     def note_language_change(self, speaker_id: str) -> None:
         """The speaker switched language — their old context no longer applies."""
         self._context.pop(speaker_id, None)
+
+    def forget_speaker(self, speaker_id: str) -> None:
+        """A speaker left the meeting. Their window goes with them.
+
+        The deque holds their recognised words, and a ``defaultdict`` never drops
+        a key on its own, so a room that runs for hours keeps the transcript text
+        of everyone who ever joined it — and ``participant_id`` is per join, so a
+        reconnecting speaker is counted again each time.
+        """
+        self._context.pop(speaker_id, None)
