@@ -94,6 +94,10 @@ class TranscriptSegment(BaseModel):
     is_final: bool = False
     confidence: float | None = None
     word_timestamps: list[dict[str, Any]] | None = None
+    # Provenance. The durable transcript row records which engine produced it,
+    # so a later "why is this caption wrong" question has an answer.
+    provider: str | None = None
+    model: str | None = None
 
     def to_event(self, stage: Stage) -> RealtimeEvent:
         return RealtimeEvent(
@@ -124,6 +128,10 @@ class TranslationSegment(BaseModel):
     # see (and a later stage can always re-translate from) the original words.
     source_text: str = ""
     alignment_metadata: dict[str, Any] | None = None
+    provider: str = ""
+    model: str = ""
+    latency_ms: float = 0.0
+    quality_flags: list[str] = Field(default_factory=list)
 
     def to_event(self) -> RealtimeEvent:
         return RealtimeEvent(
@@ -152,6 +160,12 @@ class TtsChunkReady(BaseModel):
     duration_ms: float = 0.0
     payload_bytes: int = 0
     recipient_ids: list[str] = Field(default_factory=list)
+    # Which engine produced this audio and whether it is a synthetic stand-in.
+    # The browser shows both, and the deployed wire events carry both, so the
+    # declaration has to hold them or the transport cannot reproduce the frame.
+    provider: str = ""
+    model: str = ""
+    is_dev: bool = False
 
     def to_event(self, *, duplicate: bool = False) -> RealtimeEvent:
         payload = self.model_dump(exclude_defaults=False)

@@ -10,6 +10,8 @@ this stage can fail produces an explicit event instead of silence.
 from __future__ import annotations
 
 import logging
+import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -62,22 +64,58 @@ class _SegmentState:
 class ListeningAgent:
     def __init__(self, bus: AgentBus, stt: SttProvider, *, meeting_id: str,
                  sample_rate: int = 16000,
-                 min_audio_bytes: int = MIN_AUDIO_BYTES) -> None:
+                 min_audio_bytes: int = MIN_AUDIO_BYTES,
+                 on_detect: Callable[[str, DetectionResult], Awaitable[None]] | None = None,
+                 ) -> None:
         self.bus = bus
         self.stt = stt
         self.meeting_id = meeting_id
         self.sample_rate = sample_rate
         self.min_audio_bytes = min_audio_bytes
+        self.on_detect = on_detect
         self._segments: dict[tuple[str, str], _SegmentState] = {}
+        self._failures: dict[str, dict] = {}
+        self._provider_ms: dict[str, float] = {}
 
     # ------------------------------------------------------------------ #
     def _state(self, correlation_id: str, segment_id: str) -> _SegmentState:
         return self._segments.setdefault((correlation_id, segment_id), _SegmentState())
 
+    def take_failure(self, correlation_id: str) -> dict | None:
+        """Pop the failure this stage last recorded for one utterance.
+
+        The session owner needs the *reason* to pick the right wire event: an
+        empty transcript is a normal outcome, an unavailable provider is a
+        recoverable error, and both look like `None` from here.
+        """
+        return self._failures.pop(correlation_id, None)
+
+    def take_provider_ms(self, correlation_id: str) -> float:
+        """Milliseconds the recognition call itself took, excluding detection."""
+        return self._provider_ms.pop(correlation_id, 0.0)
+
+    async def detect_language(self, text: str) -> DetectionResult:
+        """Recognise a language for text the pipeline already has.
+
+        The injected-transcript path needs detection without audio, and the
+        provider stays behind this stage: the session owner never calls an STT
+        provider directly.
+        """
+        return await self.stt.detect_language(text)
+
+    def _effective_hint(self, state: _SegmentState,
+                        lang_hint: str | None) -> str | None:
+        """A declared speak language wins over a lock inferred from audio."""
+        return lang_hint or state.locked_language
+
     async def _fail(self, *, correlation_id: str, speaker_id: str, segment_id: str,
                     sequence_number: int, reason: str, **extra) -> None:
         payload = {"stage": "stt", "reason": reason, "recoverable": True}
         payload.update(extra)
+        # Kept for the session owner so it can map a stage failure to the exact
+        # wire event the client expects ("speech.ended empty" vs "stt
+        # unavailable") without re-deriving it from a None return.
+        self._failures[correlation_id] = payload
         await self.bus.publish(RealtimeEvent(
             type=Stage.STAGE_FAILED, correlation_id=correlation_id,
             meeting_id=self.meeting_id, speaker_id=speaker_id, segment_id=segment_id,
@@ -103,9 +141,12 @@ class ListeningAgent:
         state = self._state(correlation_id, segment_id)
         if state.finalized:
             return None
+        # Once a language is locked it is fed back as the hint: recognising Hindi
+        # text without saying "Hindi" costs accuracy on every later partial.
+        hint = self._effective_hint(state, lang_hint)
         try:
-            chunk, _decision = await self.stt.transcribe(audio, self.sample_rate,
-                                                         lang_hint=lang_hint)
+            chunk, decision = await self.stt.transcribe(audio, self.sample_rate,
+                                                        lang_hint=hint)
         except Exception as exc:
             await self._fail(correlation_id=correlation_id, speaker_id=speaker_id,
                              segment_id=segment_id, sequence_number=sequence_number,
@@ -127,7 +168,9 @@ class ListeningAgent:
             sequence_number=sequence_number, transcript_revision=state.revision,
             source_language=state.locked_language or chunk.language or lang_hint or "auto",
             recognized_text=text, start_time_ms=chunk.start_ms, end_time_ms=chunk.end_ms,
-            is_final=False, confidence=chunk.confidence)
+            is_final=False, confidence=chunk.confidence,
+            provider=chunk.provider or decision.provider,
+            model=chunk.model or decision.model)
         await self.bus.publish(segment.to_event(Stage.TRANSCRIPT_PARTIAL))
         return segment
 
@@ -138,18 +181,22 @@ class ListeningAgent:
         state = self._state(correlation_id, segment_id)
         if state.finalized:
             return None
+        self._failures.pop(correlation_id, None)
         if len(audio) < self.min_audio_bytes:
             # Not speech — deliberately no transcript event, and no provider call.
             return None
+        t0 = time.perf_counter()
+        hint = self._effective_hint(state, lang_hint)
         try:
-            chunk, _decision = await self.stt.transcribe(audio, self.sample_rate,
-                                                         lang_hint=lang_hint)
+            chunk, decision = await self.stt.transcribe(audio, self.sample_rate,
+                                                        lang_hint=hint)
         except Exception as exc:
             await self._fail(correlation_id=correlation_id, speaker_id=speaker_id,
                              segment_id=segment_id, sequence_number=sequence_number,
                              reason="provider_unavailable",
                              error_code=type(exc).__name__, error=str(exc)[:160])
             return None
+        self._provider_ms[correlation_id] = (time.perf_counter() - t0) * 1000
 
         text = (chunk.text or "").strip()
         if not text:
@@ -163,6 +210,8 @@ class ListeningAgent:
             try:
                 detected = await self.stt.detect_language(text)
                 language = detected.language
+                if self.on_detect is not None:
+                    await self.on_detect(correlation_id, detected)
             except Exception as exc:
                 await self._fail(correlation_id=correlation_id, speaker_id=speaker_id,
                                  segment_id=segment_id, sequence_number=sequence_number,
@@ -184,7 +233,9 @@ class ListeningAgent:
             sequence_number=sequence_number, transcript_revision=state.revision,
             source_language=language, recognized_text=text,
             start_time_ms=start_ms, end_time_ms=end_ms or chunk.end_ms,
-            is_final=True, confidence=chunk.confidence)
+            is_final=True, confidence=chunk.confidence,
+            provider=chunk.provider or decision.provider,
+            model=chunk.model or decision.model)
         await self.bus.publish(segment.to_event(Stage.TRANSCRIPT_FINAL))
         self._prune()
         return segment

@@ -28,7 +28,10 @@ from app.realtime.agents.contracts import (
 )
 from app.realtime.agents.listening import ListeningAgent
 from app.realtime.agents.supervisor import Supervisor
-from app.realtime.agents.translation import TranslationAgent
+from app.realtime.agents.translation import (
+    ProviderTranslation,
+    TranslationAgent,
+)
 from app.realtime.agents.voice import VoiceAgent
 
 MEETING = str(uuid.uuid4())
@@ -97,11 +100,13 @@ class FakeTranslator:
 
     async def translate(self, text: str, source_lang: str, target_lang: str,
                         context: tuple[str, ...] = (), *,
-                        segment_id: str | None = None) -> str:
+                        segment_id: str | None = None,
+                        speaker_id: str | None = None):
         self.calls.append((source_lang, target_lang, tuple(context)))
         if self.fail_for == target_lang:
             raise LookupError(f"pair {source_lang}->{target_lang} is not supported")
-        return f"[{target_lang}] {text}"
+        return ProviderTranslation(text=f"[{target_lang}] {text}", provider="fake",
+                                   model="fake-mt", latency_ms=42.0)
 
 
 class FakeTts:
@@ -535,3 +540,45 @@ async def test_agent4_emits_session_closed_once():
     await supervisor.close()
     assert [e.type for e in bus.trace].count(Stage.SESSION_CLOSED) == 1
     assert supervisor.health()["closed"] is True
+
+@pytest.mark.asyncio
+async def test_stage_bookkeeping_stays_bounded_over_a_long_meeting():
+    """A room open for hours must not accumulate one entry per 40 ms frame.
+
+    Dedup and ordering state exist to catch a replay, which is a recent-history
+    question. Unbounded history is how a working meeting leaks.
+    """
+    bus = AgentBus()
+    supervisor = Supervisor(meeting_id=MEETING, record_limit=32)
+    supervisor.attach(bus)
+    voice = VoiceAgent(bus, FakeTts(chunks=2), meeting_id=MEETING, seen_limit=64)
+
+    async def deliver(chunk, audio, recipients):
+        return None
+
+    for i in range(200):
+        await voice.synthesize(_translation_segment(corr=f"utt-{i}", segment_id=f"seg-{i}"),
+                               recipients=[LISTENER_EN_1], deliver=deliver)
+
+    assert len(voice._seen) <= 64                  # oldest chunk keys evicted
+    assert voice._deliveries == {}                 # closed segments hold nothing
+    assert len(supervisor._records) <= 32          # and neither does Agent 4
+    assert supervisor.metrics["duplicate_chunks"] == 0
+
+@pytest.mark.asyncio
+async def test_an_interrupted_run_can_retry_without_being_judged_a_duplicate():
+    """Chunk dedup protects a live segment; an aborted one must be replayable."""
+    voice = VoiceAgent(AgentBus(), FakeTts(chunks=2), meeting_id=MEETING)
+    delivered: list[int] = []
+
+    async def deliver(chunk, audio, recipients):
+        delivered.append(chunk.chunk_index)
+
+    seg = _translation_segment(corr="utt-i", segment_id="seg-i")
+    await voice.synthesize(seg, recipients=[LISTENER_EN_1], deliver=deliver)
+    await voice.synthesize(seg, recipients=[LISTENER_EN_1], deliver=deliver)
+    assert delivered == [0, 1]                 # the replay is suppressed
+
+    voice.forget_segment("utt-i", "seg-i")     # the listener interrupted it
+    await voice.synthesize(seg, recipients=[LISTENER_EN_1], deliver=deliver)
+    assert delivered == [0, 1, 0, 1]           # so the retry is a fresh run

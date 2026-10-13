@@ -26,6 +26,9 @@ log = logging.getLogger("app.realtime.agents.supervisor")
 _REPORT_ORDER = [Stage.AUDIO_CAPTURED, Stage.TRANSCRIPT_PARTIAL, Stage.TRANSCRIPT_FINAL,
                  Stage.TRANSLATION_READY, Stage.TTS_CHUNK_READY, Stage.AUDIO_DELIVERED]
 
+#: How many utterance chains one meeting keeps ordering state for.
+DEFAULT_RECORD_LIMIT = 512
+
 
 @dataclass
 class _ChunkState:
@@ -54,9 +57,10 @@ class _SegmentRecord:
 
 class Supervisor:
     def __init__(self, clock: Callable[[], int] | None = None, *,
-                 meeting_id: str = "") -> None:
+                 meeting_id: str = "", record_limit: int = DEFAULT_RECORD_LIMIT) -> None:
         self._clock = clock
         self._meeting_id = meeting_id
+        self.record_limit = record_limit
         self._bus: AgentBus | None = None
         self._records: dict[str, _SegmentRecord] = {}
         self._active: dict[str, dict[str, Any]] = {}
@@ -83,6 +87,10 @@ class Supervisor:
         if rec is None:
             rec = _SegmentRecord(correlation_id=correlation_id)
             self._records[correlation_id] = rec
+            # A meeting runs for hours; the observation window is for the recent
+            # chain, not for every utterance since the room opened.
+            while len(self._records) > self.record_limit:
+                self._records.pop(next(iter(self._records)))
         return rec
 
     # ------------------------------------------------------------------ #
@@ -105,7 +113,8 @@ class Supervisor:
         elif event.type is Stage.TTS_CHUNK_READY:
             self._observe_chunk(rec, event)
         elif event.type is Stage.AUDIO_DELIVERED:
-            state = rec.chunks.get(event.segment_id or "")
+            state = rec.chunks.get((event.segment_id or "",
+                                    payload.get("target_language") or ""))
             if state:
                 self._metrics["segments_completed"] += 1
                 missing = (state.max_index + 1) - len(state.indexes)
@@ -121,7 +130,11 @@ class Supervisor:
         if index is None:
             return
         rec.target_language = payload.get("target_language") or rec.target_language
-        state = rec.chunks.setdefault(event.segment_id or "", _ChunkState())
+        # Chunk bookkeeping is per language run: one source segment streamed to
+        # Hindi and to Tamil has the same indexes, and neither is a duplicate.
+        state = rec.chunks.setdefault(
+            (event.segment_id or "", payload.get("target_language") or ""),
+            _ChunkState())
         if payload.get("duplicate"):
             self._metrics["duplicate_chunks"] += 1
             state.duplicates += 1

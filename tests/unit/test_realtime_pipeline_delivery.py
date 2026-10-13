@@ -49,12 +49,14 @@ def _decision(provider: str, task: str) -> RouteDecision:
 class FakeAI:
     def __init__(self, chunk: TranscriptChunk | None = None,
                  raise_stt: Exception | None = None,
-                 tts_chunks: int = 2, raise_tts: Exception | None = None) -> None:
+                 tts_chunks: int = 2, raise_tts: Exception | None = None,
+                 fail_tts_for: str | None = None) -> None:
         self.chunk = chunk or TranscriptChunk(
             text="नमस्ते", language="auto", is_final=True, confidence=0.9,
             model="fake-stt", provider="fake")
         self.raise_stt = raise_stt
         self.raise_tts = raise_tts
+        self.fail_tts_for = fail_tts_for
         self.tts_chunks = tts_chunks
         self.transcribe_calls: list[tuple[int, str | None]] = []
         self.synthesize_calls: list[tuple[str, str]] = []
@@ -71,8 +73,8 @@ class FakeAI:
 
     async def synthesize_stream(self, text: str, lang: str, voice: str | None = None):
         self.synthesize_calls.append((text, lang))
-        if self.raise_tts:
-            raise self.raise_tts
+        if self.raise_tts or self.fail_tts_for == lang:
+            raise self.raise_tts or RuntimeError(f"tts down for {lang}")
         n = self.tts_chunks
 
         async def stream():
@@ -116,6 +118,9 @@ def speaker():
                          display_name="Aman", speak_lang="hi", hear_lang="hi",
                          audio_mode="original", captions_enabled=True,
                          ws=FakeWs(), connected=True)
+
+
+PRIOR_TURN = "पहली बात"   # "the first thing"
 
 
 def _utt(speaker: RtParticipant) -> P.UtteranceState:
@@ -395,3 +400,79 @@ async def test_original_audio_relay_only_reaches_original_and_mixed_listeners(
     assert len(mixed.ws.frames) == 1
     assert translated.ws.frames == []
     assert original.ws.frames[0][0] == 0x4F               # 'O' — original audio
+
+
+@pytest.mark.asyncio
+async def test_one_languages_tts_failure_does_not_condemn_another(
+        session, speaker, no_db, monkeypatch):
+    """Two languages of one segment must not share failure or dedup state.
+
+    One source segment fans out to several target languages under one
+    correlation id. If the voice agent keys its dedup and failure bookkeeping on
+    the utterance alone, the second language's chunk 0 looks like a duplicate of
+    the first's and is never delivered, or a French outage silences Hindi
+    listeners too.
+    """
+    en, ur = _participant(hear="en"), _participant(hear="ur")
+    _join(session, speaker, en, ur)
+    monkeypatch.setattr(P, "ai", FakeAI(fail_tts_for="ur"))
+
+    async def fake_translate(db, text, src, tgt, ctx):
+        return SimpleNamespace(result=_translation_result(f"[{tgt}] {text}", src, tgt))
+
+    monkeypatch.setattr(P, "translate_text", fake_translate)
+    pipe = P.MeetingPipeline(session)
+    segment_id = uuid.uuid4()                      # one segment, two languages
+
+    await pipe._translate_and_synthesize(
+        segment_id=segment_id, seq=1, speaker=speaker, text="नमस्ते",
+        source_lang="hi", target_lang="ur", stt_ms=1.0, capture_ms=1.0)
+    await pipe._translate_and_synthesize(
+        segment_id=segment_id, seq=1, speaker=speaker, text="नमस्ते",
+        source_lang="hi", target_lang="en", stt_ms=1.0, capture_ms=1.0)
+
+    ur_errors = _events(ur.ws, "error")
+    assert ur_errors and ur_errors[0]["code"] == "tts_unavailable"
+    assert _events(ur.ws, "tts.chunk") == []
+    # English is neither suppressed as a "duplicate" nor blamed for Urdu's outage
+    assert len(_events(en.ws, "tts.chunk")) == 2
+    assert _events(en.ws, "error") == []
+    completed = _events(en.ws, "tts.completed")
+    assert completed and completed[0]["chunks"] == 2
+
+
+@pytest.mark.asyncio
+async def test_translation_context_keeps_the_room_scoping(session, speaker, no_db,
+                                                          monkeypatch):
+    """The durable row behind a caption still needs the room, the user and the
+    segment — the agent speaks in strings, the database speaks in UUIDs."""
+    en = _participant(hear="en")
+    _join(session, speaker, en)
+    monkeypatch.setattr(P, "ai", FakeAI())
+    captured: list = []
+
+    async def fake_translate(db, text, src, tgt, ctx):
+        captured.append(ctx)
+        return SimpleNamespace(result=_translation_result("Hello", src, tgt))
+
+    monkeypatch.setattr(P, "translate_text", fake_translate)
+    pipe = P.MeetingPipeline(session)
+    segment_id = uuid.uuid4()
+
+    # A turn is translated with the window the session owner pinned
+    # at fan-out time: the speaker's previous turn, never this one.
+    pipe.translating.note_source(str(speaker.participant_id), PRIOR_TURN)
+    prior = pipe.translating.context_for(str(speaker.participant_id))
+
+    await pipe._translate_and_synthesize(
+        segment_id=segment_id, seq=1, speaker=speaker, text="नमस्ते",
+        source_lang="hi", target_lang="en", stt_ms=1.0, capture_ms=1.0,
+        prev_context=prior)
+
+    ctx = captured[0]
+    assert ctx.org_id == session.org_id
+    assert ctx.user_id == speaker.user_id          # metering attributes to the speaker
+    assert ctx.meeting_id == session.meeting_id
+    assert ctx.segment_id == segment_id            # the durable transcript row
+    assert ctx.context == PRIOR_TURN      # the prior turn, not this one
+    assert ctx.product == "realtime" and ctx.persist and ctx.meter
