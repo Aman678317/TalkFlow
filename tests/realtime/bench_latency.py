@@ -56,11 +56,33 @@ _STAGES = ["audio_capture_ms", "stt_final_ms", "translation_ms",
            "tts_first_audio_ms", "delivery_ms", "total_e2e_latency_ms", "wall_ms"]
 
 
+#: Reports matched to the turn they describe. The sink keeps every event of the
+#: run, so matching is by identity and each report is spent once: matching on
+#: "is there any report in the sink" re-reads the first turn's report for every
+#: later utterance, which prints N identical rows, computes a percentile over one
+#: sample, and then appears to disagree with the server's own count. The meeting
+#: this harness drives has one speaker, so `seq` numbers its turns.
+def next_report(events: list[dict], *, hear: str,
+                taken: set[tuple[int, str]]) -> dict | None:
+    for e in events:
+        if e.get("type") != "latency.report":
+            continue
+        tr = e.get("data") or {}
+        key = (tr.get("seq", 0), tr.get("utterance_id", ""))
+        if tr.get("target_lang") == hear and key not in taken:
+            taken.add(key)
+            return tr
+    return None
+
+
 async def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default="http://127.0.0.1:8000")
     ap.add_argument("--utterances", type=int, default=20)
     ap.add_argument("--hear", default="mr")
+    ap.add_argument("--source", default="",
+                    help="restrict the turns to one source language, for a "
+                         "per-pair number an operator can actually quote")
     ap.add_argument("--network", default="not documented",
                     help="free text: what the run went over (LAN, city, VPN)")
     args = ap.parse_args()
@@ -105,7 +127,14 @@ async def main() -> int:
 
         # only utterances whose source differs from the listener's hear lang
         # produce a fan-out (and thus a latency report)
-        pool = [(t, l) for (t, l) in UTTERANCES if l != args.hear]
+        pool = [(t, l) for (t, l) in UTTERANCES
+                if l != args.hear and (not args.source or l == args.source)]
+        if not pool:
+            print(f"no utterance in the harness for source={args.source!r} "
+                  f"heard as {args.hear!r}")
+            return 1
+        taken: set[tuple[int, str]] = set()
+        missed = 0
         for i in range(args.utterances):
             text, lang = pool[i % len(pool)]
             t0 = time.perf_counter()
@@ -113,17 +142,18 @@ async def main() -> int:
                                        "data": {"text": text, "language": lang}}))
             # wait for the matching latency.report on the listener side
             deadline = time.time() + 15
-            seen = len(traces)
+            tr = None
             while time.time() < deadline:
-                for e in sink_b:
-                    if e.get("type") == "latency.report":
-                        tr = e["data"]
-                        if tr.get("target_lang") == args.hear and len(traces) == seen:
-                            tr["wall_ms"] = (time.perf_counter() - t0) * 1000
-                            traces.append(tr)
-                if len(traces) > seen:
+                tr = next_report(sink_b, hear=args.hear, taken=taken)
+                if tr is not None:
                     break
                 await asyncio.sleep(0.05)
+            if tr is None:
+                missed += 1
+                print(f"  turn {i + 1} ({lang}): no latency.report within 15s")
+            else:
+                tr["wall_ms"] = (time.perf_counter() - t0) * 1000
+                traces.append(tr)
 
         stop.set()
         ta.cancel()
@@ -163,14 +193,17 @@ async def main() -> int:
 
     anchored = [t for t in traces if t.get("speech_end_wall_ms")]
     audible = [t for t in traces if t.get("speech_end_to_first_audio_ms")]
-    print(f"\nbench: {len(traces)} utterances -> hear={args.hear}\n")
+    print(f"\nbench: {len(traces)} utterances -> hear={args.hear}"
+          f"{f' source={args.source}' if args.source else ''}\n")
     print(f"host        {platform.platform()} / {platform.processor()} "
           f"/ python {platform.python_version()}")
     print(f"server      {args.base}  (session live in that process: {live})")
     print(f"network     {args.network}")
     print(f"providers   {dev_flags or 'unknown'}")
-    print(f"sample      {len(traces)} turns, of which {len(anchored)} anchored "
-          f"(speech-end known) and {len(audible)} delivered translated audio")
+    print(f"sample      {len(traces) + missed} turns sent, {len(traces)} reported"
+          f"{f', {missed} never reported' if missed else ''}: {len(anchored)} "
+          f"anchored (speech-end known) and {len(audible)} delivered "
+          f"translated audio")
 
     def block(names: list[str]) -> None:
         print(f"\n{'stage':34s} {'n':>3s} {'p50':>9s} {'p95':>9s} {'mean':>9s}")
