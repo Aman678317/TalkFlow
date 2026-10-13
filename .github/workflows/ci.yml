@@ -86,7 +86,7 @@ jobs:
           REDIS_URL: ""
           RATE_LIMIT_AUTH: 100000/minute
           RATE_LIMIT_TRANSLATE: 100000/minute
-        run: python -m pytest tests/realtime -q
+        run: python -m pytest tests/realtime -q -rs
       - name: Verify AI stack report
         env: { MODEL_CACHE_PATH: "${{ runner.temp }}/models" }
         run: python scripts/verify_ai_stack.py

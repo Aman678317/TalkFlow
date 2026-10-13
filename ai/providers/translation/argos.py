@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+from pathlib import Path
 
 from ai.interfaces import ProviderUnavailable, TranslationResult
 
@@ -92,20 +93,35 @@ def evict_all() -> None:
     gc.collect()
 
 
+def _use_cache_dir(cache: str) -> None:
+    """Point Argos at our model cache for both reading and installing packages.
+
+    Argos only honours `ARGOS_PACKAGES_DIR` while `argostranslate.settings` is first
+    imported, and this module may import it before the cache path is known — so the
+    env var alone is not enough here; the resolved module attributes are re-pointed too.
+    """
+    os.environ["ARGOS_PACKAGES_DIR"] = cache
+    from argostranslate import settings as argos_settings
+    root = Path(cache)
+    root.mkdir(parents=True, exist_ok=True)
+    argos_settings.package_data_dir = root
+    if root not in argos_settings.package_dirs:
+        argos_settings.package_dirs.insert(0, root)
+
+
 def _ensure_installed():
     global _installed_pairs
     with _lock:
         if _installed_pairs is not None:
             return _installed_pairs
+        from globaltalk.core.config import settings
+        cache = str(settings.resolve(settings.model_cache_path) / "argos")
+        os.environ.setdefault("ARGOS_DEVICE_TYPE", "cpu")
         try:
             _at, argostranslate_package = _import_argos()
         except ImportError as exc:
             raise ProviderUnavailable("argos", f"not installed: {exc}")
-        from globaltalk.core.config import settings
-        os.environ.setdefault("ARGOS_DEVICE_TYPE", "cpu")
-        cache = str(settings.resolve(settings.model_cache_path) / "argos")
-        os.makedirs(cache, exist_ok=True)
-        os.environ["ARGOS_PACKAGE_FOLDER"] = cache
+        _use_cache_dir(cache)
         try:
             argostranslate_package.update_package_index()
             available = argostranslate_package.get_available_packages()
