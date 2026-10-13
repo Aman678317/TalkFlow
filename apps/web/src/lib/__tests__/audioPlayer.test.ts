@@ -12,6 +12,8 @@
  *   5. A barge-in flush is scoped to ONE speaker: cancelSpeaker must drop that
  *      speaker's queued chunks, live source and pending JSON fallback, and leave
  *      every other speaker's audio alone (Phase 3 gate).
+ *   6. Playback state is reported per TURN, from the player, because a caption
+ *      can only say "the listener heard this" if the audio actually played.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { normId } from "../ws";
@@ -293,5 +295,81 @@ describe("AudioPlayer.cancelSpeaker — barge-in is scoped to one speaker", () =
     expect(player.debugQueueLength()).toBe(0);
     expect(created[0].stopped).toBe(false);
     expect(player.debugPlayedCount()).toBe(before);
+  });
+});
+
+/**
+ * Phase 3: a caption shows what the listener has actually heard, so the player —
+ * the only component that knows — reports turn-level transitions. One event per
+ * turn, not per chunk: chunks of a turn share its identity, and a barge-in flush
+ * must read as "dropped", never as "played".
+ */
+describe("AudioPlayer playback state per turn", () => {
+  it("reports playing once per turn and played when its last chunk ends", async () => {
+    const { AudioPlayer } = await import("../audio");
+    const states: Array<[string, string]> = [];
+    const player = new AudioPlayer(undefined, (turn, state) => states.push([turn, state]));
+
+    await player.deliver(wav(10), "tts-ana", { ...anaOpts(0), utteranceId: "turn-ana" });
+    await player.deliver(wav(11), "tts-ana", { ...anaOpts(1), utteranceId: "turn-ana" });
+    await settle();
+
+    expect(states).toEqual([["turn-ana", "playing"]]);   // one event, not one per chunk
+
+    created[0].onended?.();
+    await settle();
+    expect(states).toEqual([["turn-ana", "playing"]]);   // the next chunk is the same turn
+
+    created[1].onended?.();
+    await settle();
+    expect(states[states.length - 1]).toEqual(["turn-ana", "played"]);
+  });
+
+  it("knows the turn of a binary chunk from the JSON event that names it", async () => {
+    const { AudioPlayer } = await import("../audio");
+    const states: Array<[string, string]> = [];
+    const player = new AudioPlayer(undefined, (turn, state) => states.push([turn, state]));
+
+    // The JSON event arrives first and carries the utterance; the binary frame
+    // carries only the segment's short id.
+    await player.deliver(wav(9), "tts-ana",
+      { ...anaOpts(0), utteranceId: "turn-ana", source: "json" });
+    await player.deliver(wav(10), "tts-ana", { ...anaOpts(0), source: "binary" });
+    await settle();
+
+    expect(states).toEqual([["turn-ana", "playing"]]);
+    expect(player.debugPlayedCount()).toBe(1);           // binary won, JSON fallback cancelled
+  });
+
+  it("marks a flushed turn dropped, never played, and keeps the other speaker playing", async () => {
+    const { AudioPlayer } = await import("../audio");
+    const states: Array<[string, string]> = [];
+    const player = new AudioPlayer(undefined, (turn, state) => states.push([turn, state]));
+
+    await player.deliver(wav(10), "tts-ana", { ...anaOpts(0), utteranceId: "turn-ana" });
+    await player.deliver(wav(11), "tts-ana", { ...anaOpts(1), utteranceId: "turn-ana" });
+    await player.deliver(wav(30), "tts-ben", { ...benOpts(0), utteranceId: "turn-ben" });
+    await settle();
+    states.length = 0;
+
+    expect(player.cancelSpeaker(ANA)).toBe(2);
+    await settle();
+
+    expect(states.filter(([turn]) => turn === "turn-ana"))
+      .toEqual([["turn-ana", "dropped"]]);
+    expect(states.some(([turn, state]) => turn === "turn-ben" && state === "playing"))
+      .toBe(true);
+  });
+
+  it("says nothing about audio that belongs to no turn", async () => {
+    const { AudioPlayer } = await import("../audio");
+    const states: Array<[string, string]> = [];
+    const player = new AudioPlayer(undefined, (turn, state) => states.push([turn, state]));
+
+    player.enqueuePcm16(new ArrayBuffer(8), 16000, `orig-${normId(ANA)}`);
+    await settle();
+
+    expect(states).toEqual([]);
+    expect(player.debugPlayedCount()).toBe(1);
   });
 });

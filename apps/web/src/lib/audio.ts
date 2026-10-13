@@ -223,13 +223,36 @@ export class AudioPlayer {
    * flush has to know to drop one speaker without silencing another.
    */
   private speakerByTag: Map<string, string> = new Map();
+  /**
+   * Queue tag -> turn (utterance id), learned the same way: the JSON event names
+   * both, the binary frame names neither. Playback state is reported per turn
+   * because that is what a caption is keyed by.
+   */
+  private turnByTag: Map<string, string> = new Map();
   private playedCount = 0;
+  private playingTurn: string | null = null;
 
-  constructor(private onPlaybackError?: (message: string) => void) {
+  constructor(
+    /** Decode/resume failures must reach the UI — a silent player is the bug we are fixing. */
+    private onPlaybackError?: (message: string) => void,
+    /** Turn-level transitions, so a caption can say what the listener has heard. */
+    private onPlaybackState?: (
+      turn: string,
+      state: "playing" | "played" | "dropped",
+    ) => void,
+  ) {
     this.ctx = new AudioContext();
   }
 
-  /** Decode/resume failures must reach the UI — a silent player is the bug we are fixing. */
+  /** One transition per turn: chunks of a turn are silent, and a cut turn is dropped. */
+  private noteTurn(turn: string | null) {
+    if (turn === this.playingTurn) return;
+    const previous = this.playingTurn;
+    this.playingTurn = turn;
+    if (previous) this.onPlaybackState?.(previous, "played");
+    if (turn) this.onPlaybackState?.(turn, "playing");
+  }
+
   private reportPlaybackError(err: unknown, stage: string) {
     const name = err instanceof Error ? err.name : "PlaybackError";
     const message =
@@ -288,7 +311,7 @@ export class AudioPlayer {
       tag,
       sequence: seq,
       chunkIndex: chunkIdx,
-      utteranceId: opts?.utteranceId,
+      utteranceId: opts?.utteranceId ?? this.turnByTag.get(tag),
       speakerId: this.speakerOf(tag, opts),
       enqueuedAt: Date.now(),
     });
@@ -345,10 +368,11 @@ export class AudioPlayer {
    * speaker's own short id, so they resolve directly.
    *
    * Returns how many chunks were dropped, which is what the caller reports.
+   * Each interrupted turn is additionally reported once as "dropped" — never as
+   * "played" — so its caption can say the listener did not hear it.
    */
   cancelSpeaker(speakerId: string): number {
     const tags = this.tagsOfSpeaker(speakerId);
-    let dropped = 0;
     for (const tag of tags) {
       const prefix = `${tag}:`;
       for (const key of [...this.pendingDeliveries.keys()]) {
@@ -358,11 +382,32 @@ export class AudioPlayer {
         if (key.startsWith(prefix)) this.deliveredChunks.delete(key);
       }
     }
-    const before = this.queue.length;
     const wanted = new Set(tags);
-    this.queue = this.queue.filter((q) => !wanted.has(q.tag));
-    dropped += before - this.queue.length;
-    for (const tag of tags) if (this.stopIfPlaying(tag)) dropped += 1;
+    const droppedTurns = new Set<string>();
+    let dropped = 0;
+    const kept: PlayQueueItem[] = [];
+    for (const item of this.queue) {
+      if (wanted.has(item.tag)) {
+        dropped += 1;
+        if (item.utteranceId) droppedTurns.add(item.utteranceId);
+      } else {
+        kept.push(item);
+      }
+    }
+    this.queue = kept;
+    for (const tag of tags) {
+      if (this.playingTag === tag && this.current) {
+        // Cleared before stopping: the chained playNext must not announce the
+        // audio it is about to cut off as having finished.
+        const liveTurn = this.playingTurn;
+        this.playingTurn = null;
+        if (this.stopIfPlaying(tag)) {
+          dropped += 1;
+          if (liveTurn) droppedTurns.add(liveTurn);
+        }
+      }
+    }
+    for (const turn of droppedTurns) this.onPlaybackState?.(turn, "dropped");
     return dropped;
   }
 
@@ -388,16 +433,22 @@ export class AudioPlayer {
   }
 
   /**
-   * Remember which speaker owns a queue tag. The binary TTS frame has no speaker
-   * field, so cross-transport cancellation depends on this.
+   * Remember whose audio and which turn a queue tag belongs to. The binary TTS
+   * frame carries only the segment's short id, so both cross-transport
+   * cancellation and per-turn playback state depend on what the JSON events name.
    */
-  noteSpeaker(tag: string, speakerId?: string) {
-    if (!speakerId) return;
-    this.speakerByTag.set(tag, speakerId);
-    while (this.speakerByTag.size > AudioPlayer.MAX_DELIVERIES) {
-      const oldest = this.speakerByTag.keys().next().value;
+  noteOwnership(tag: string, owner: { speakerId?: string; utteranceId?: string }) {
+    if (owner.speakerId) this.remember(this.speakerByTag, tag, owner.speakerId);
+    if (owner.utteranceId) this.remember(this.turnByTag, tag, owner.utteranceId);
+  }
+
+  /** FIFO-evicting registry, so a long meeting cannot grow these without bound. */
+  private remember<T>(map: Map<string, T>, key: string, value: T) {
+    map.set(key, value);
+    while (map.size > AudioPlayer.MAX_DELIVERIES) {
+      const oldest = map.keys().next().value;
       if (oldest === undefined) break;
-      this.speakerByTag.delete(oldest);
+      map.delete(oldest);
     }
   }
 
@@ -421,7 +472,7 @@ export class AudioPlayer {
   ): Promise<void> {
     const key = `${tag}:${opts.chunkIndex ?? 0}`;
     const source = opts.source ?? "binary";
-    this.noteSpeaker(tag, opts.speakerId);
+    this.noteOwnership(tag, opts);
     const winner = this.deliveredChunks.get(key);
     if (winner) {
       this.cancelDelivery(key);
@@ -495,6 +546,8 @@ export class AudioPlayer {
     if (this.current) return;
     const item = this.queue.shift();
     if (!item) {
+      // Nothing left to hear: whatever turn was playing has now finished.
+      this.noteTurn(null);
       onDone?.();
       return;
     }
@@ -523,6 +576,9 @@ export class AudioPlayer {
         void this.playNext();
       };
       src.start();
+      // Only after start(): a failed start re-queues the item and must not have
+      // claimed to the UI that the listener is hearing it.
+      this.noteTurn(item.utteranceId ?? null);
     } catch (err) {
       this.reportPlaybackError(err, "started");
       this.current = null;

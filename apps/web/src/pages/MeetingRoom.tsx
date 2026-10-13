@@ -45,19 +45,12 @@ import {
   downloadFile,
   type ExportTranscriptItem,
 } from "../lib/transcriptExporter";
-
-interface CaptionLine {
-  id: string;
-  speaker: string;
-  language: string;
-  original?: string;
-  originalFinal: boolean;
-  translated?: string;
-  translatedLang?: string;
-  partial: boolean;
-  failed?: string;
-  latencyMs?: number;
-}
+import {
+  reduceCaptions,
+  setPlayback,
+  type CaptionLine,
+  type CaptionView,
+} from "../lib/captions";
 
 interface ChatLine {
   id: string;
@@ -185,6 +178,14 @@ export default function MeetingRoom() {
         toast.info("No transcripts yet", "Transcripts will be available as soon as someone speaks.");
         return;
       }
+      // Cue times come from the turn's measured timeline, not from the wall clock
+      // of whoever happened to be reading the list: `startWallMs` is when the
+      // speaker started and `durationMs` how long the audio ran. Relative to the
+      // earliest turn, that is a real subtitle track.
+      const starts = captions
+        .map((c) => c.startWallMs)
+        .filter((ms): ms is number => typeof ms === "number");
+      const origin = starts.length > 0 ? Math.min(...starts) : 0;
       const exportItems: ExportTranscriptItem[] = captions.map((c, i) => ({
         id: c.id || `cap-${i}`,
         speakerName: c.speaker || "Speaker",
@@ -192,7 +193,12 @@ export default function MeetingRoom() {
         sourceLang: c.language || "en",
         translatedText: c.translated || c.original || "",
         targetLang: c.translatedLang || prefs.listening_language || "en",
-        timestamp: callTime || "00:00",
+        timestamp:
+          c.startWallMs !== undefined
+            ? new Date(c.startWallMs).toLocaleTimeString([], { hour12: false })
+            : callTime || "00:00",
+        startMs: c.startWallMs !== undefined ? c.startWallMs - origin : undefined,
+        durationMs: c.durationMs,
       }));
 
       const dateStr = new Date().toISOString().slice(0, 10);
@@ -320,6 +326,10 @@ export default function MeetingRoom() {
       setTranslationStatus("delayed");
       setTranslationMessage(message);
       setNotice(message);
+    }, (turn, state) => {
+      // Only the player knows what the listener actually heard, so the caption's
+      // playback state has to come from here rather than from an event.
+      setCaptions((prev) => setPlayback(prev, turn, state));
     });
     const socket = new MeetingSocket({
       meetingId: id,
@@ -459,6 +469,20 @@ export default function MeetingRoom() {
     });
   }, [cameraOn, screenOn, micOn, phase, socketState]);
 
+  /**
+   * What the caption reducer needs to know about this listener. Read from refs:
+   * the socket's event handler is the closure from the render that opened it, so
+   * a captured `prefs` would keep matching the language the room was joined with
+   * after the user changes it mid-meeting.
+   */
+  function captionView(): CaptionView {
+    return {
+      caption_mode: prefsRef.current.caption_mode,
+      listening_language: prefsRef.current.listening_language,
+      speakerNames: Object.fromEntries(namesRef.current),
+    };
+  }
+
   function handleEvent(evt: RealtimeEvent) {
     const t = evt.type;
     switch (t) {
@@ -536,10 +560,7 @@ export default function MeetingRoom() {
         // dropped by `playback.flush`, which carries the speaker id.
         if (evt.empty === true) {
           // The turn produced no words; the pending caption for it never will.
-          const uid = evt.utterance_id as string | undefined;
-          if (typeof uid === "string") {
-            setCaptions((prev) => prev.filter((c) => c.id !== uid && c.id !== `tr:${uid}`));
-          }
+          setCaptions((prev) => reduceCaptions(prev, evt, captionView()));
         }
         break;
       }
@@ -560,25 +581,7 @@ export default function MeetingRoom() {
       case "transcript.final": {
         const uid = evt.utterance_id as string;
         if (typeof uid === "string") utterLangRef.current.set(uid.slice(0, 16), evt.language as string);
-        const mine =
-          prefsRef.current.caption_mode !== "translated" || evt.language === prefsRef.current.listening_language;
-        if (!mine && t === "transcript.partial") break;
-        setCaptions((prev) => {
-          const line = prev.find((c) => c.id === uid);
-          const data: CaptionLine = line ?? {
-            id: uid,
-            speaker: (evt.display_name as string) || namesRef.current.get(evt.speaker_id as string) || "Speaker",
-            language: evt.language as string,
-            originalFinal: false,
-            partial: true,
-          };
-          if (mine) {
-            data.original = evt.text as string;
-            data.originalFinal = t === "transcript.final";
-          }
-          data.partial = t === "transcript.partial";
-          return line ? prev.map((c) => (c.id === uid ? { ...data } : c)) : [...prev.slice(-80), data];
-        });
+        setCaptions((prev) => reduceCaptions(prev, evt, captionView()));
         break;
       }
       case "translation.final": {
@@ -588,82 +591,21 @@ export default function MeetingRoom() {
           setTranslationMessage(null);
         }
         if (isDegradedNetwork) setIsDegradedNetwork(false);
-        if (evt.target_language !== prefsRef.current.listening_language) break;
-        if (prefsRef.current.caption_mode === "original") break;
-        const seg = evt.segment_id as string;
-        setCaptions((prev) => {
-          const existingIdx = prev.findIndex(
-            (c) => c.id === `tr:${seg}:${evt.target_language}` || (c.id === seg && c.translated)
-          );
-          if (existingIdx !== -1) {
-            return prev.map((c, i) =>
-              i === existingIdx
-                ? {
-                  ...c,
-                  translated: evt.text as string,
-                  translatedLang: evt.target_language as string,
-                  latencyMs: (evt.latency_ms as number) || c.latencyMs,
-                }
-                : c
-            );
-          }
-          const idx = [...prev]
-            .reverse()
-            .findIndex(
-              (c) =>
-                (c.id === seg ||
-                  c.speaker === ((evt.display_name as string) || namesRef.current.get(evt.speaker_id as string))) &&
-                !c.translated &&
-                !c.id.startsWith("tr:") &&
-                (!c.language || c.language === evt.source_language)
-            );
-          if (idx === -1) {
-            return [
-              ...prev.slice(-80),
-              {
-                id: `tr:${seg}:${evt.target_language}`,
-                speaker: (evt.display_name as string) || namesRef.current.get(evt.speaker_id as string) || "Speaker",
-                language: evt.source_language as string,
-                translated: evt.text as string,
-                translatedLang: evt.target_language as string,
-                originalFinal: true,
-                partial: false,
-                latencyMs: evt.latency_ms as number,
-              },
-            ];
-          }
-          const target = prev[prev.length - 1 - idx];
-          const updated = {
-            ...target,
-            translated: evt.text as string,
-            translatedLang: evt.target_language as string,
-            latencyMs: evt.latency_ms as number,
-          };
-          return prev.map((c) => (c === target ? updated : c));
-        });
+        setCaptions((prev) => reduceCaptions(prev, evt, captionView()));
         break;
       }
       case "translation.failed": {
+        // A failure to translate into somebody else's language is not a degraded
+        // experience here; the reducer applies the same rule to the caption.
         if (evt.target_language !== prefsRef.current.listening_language) break;
+        // The pipeline sends its wording under `message`; `user_message` is the
+        // older name some routes still use.
+        const why = (evt.user_message as string) ?? (evt.message as string)
+          ?? "Translation is taking longer than expected.";
         setTranslationStatus("unavailable");
-        setTranslationMessage((evt.user_message as string) ?? "Translation unavailable. Original audio is active.");
-        setNotice((evt.user_message as string) ?? "Translation delayed. The original audio is still active.");
-        const seg = evt.segment_id as string;
-        setCaptions((prev) =>
-          prev.some((c) => c.id === `fail:${seg}`)
-            ? prev
-            : [
-              ...prev.slice(-80),
-              {
-                id: `fail:${seg}`,
-                speaker: namesRef.current.get(evt.speaker_id as string) || "Speaker",
-                language: "",
-                originalFinal: true,
-                partial: false,
-                failed: (evt.user_message as string) ?? "Translation unavailable",
-              },
-            ]
-        );
+        setTranslationMessage(`${why} Original audio is active.`);
+        setNotice(why);
+        setCaptions((prev) => reduceCaptions(prev, evt, captionView()));
         break;
       }
       case "tts.chunk": {
@@ -683,6 +625,9 @@ export default function MeetingRoom() {
           sequence,
           chunkIndex,
           speakerId: (evt.speaker_id as string) ?? undefined,
+          // The caption key. This JSON event is the only transport that names the
+          // turn, so it is also what teaches the binary frames they share it.
+          utteranceId: (evt.utterance_id as string) ?? undefined,
         })).catch(() => { /* already surfaced through the player's error callback */ });
         break;
       }
@@ -701,6 +646,7 @@ export default function MeetingRoom() {
             sequence: Number(evt.sequence ?? 0),
             chunkIndex: 0,
             speakerId: (evt.speaker_id as string) ?? undefined,
+            utteranceId: (evt.utterance_id as string) ?? undefined,
           })).catch(() => { /* already surfaced through the player's error callback */ });
         }
         break;
@@ -720,12 +666,7 @@ export default function MeetingRoom() {
           setTranslationMessage(`High translation latency (~${Math.round(ms)}ms). Audio prioritized.`);
         }
         if (evt.target_language !== prefsRef.current.listening_language) break;
-        setCaptions((prev) => {
-          const idx = [...prev].reverse().findIndex((c) => c.translated && !c.latencyMs);
-          if (idx === -1) return prev;
-          const target = prev[prev.length - 1 - idx];
-          return prev.map((c) => (c === target ? { ...c, latencyMs: ms } : c));
-        });
+        setCaptions((prev) => reduceCaptions(prev, evt, captionView()));
         break;
       }
       case "error": {
@@ -2227,12 +2168,25 @@ export default function MeetingRoom() {
                         <div className="flex items-center justify-between text-[10px] text-slate-400">
                           <span className="font-semibold text-slate-200">{c.speaker}</span>
                           <div className="flex items-center gap-1.5">
+                            {/* Only the two states that need explaining: audio on now,
+                                and audio cut off before the listener heard it. */}
+                            {c.playback === "playing" && (
+                              <span className="flex items-center gap-1 text-sky-400">
+                                <Volume2 className="h-3 w-3" />
+                              </span>
+                            )}
+                            {c.playback === "dropped" && (
+                              <span className="text-slate-500" title="Interrupted before it finished playing">
+                                not heard
+                              </span>
+                            )}
                             {c.language && <span className="uppercase">{c.language}</span>}
                             {c.latencyMs != null && <span className="text-emerald-400">{Math.round(c.latencyMs)}ms</span>}
                           </div>
                         </div>
                         {c.original && <p className="text-slate-400 italic">{c.original}</p>}
                         {c.translated && <p className="text-white font-medium">{c.translated}</p>}
+                        {c.failed && <p className="text-amber-400">{c.failed}</p>}
                       </div>
                     ))}
                     {captions.length === 0 && (

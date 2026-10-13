@@ -117,6 +117,40 @@ describe("transcriptExporter - Pure Formatting Engine", () => {
     });
   });
 
+  describe("measured cue timing", () => {
+    // Phase 3: the pipeline puts the turn's real start and length on the caption,
+    // so an exported subtitle track says when the words were actually spoken
+    // instead of inventing a cadence from how long the text is.
+    const measured: ExportTranscriptItem[] = [
+      { ...sampleItems[0], startMs: 0, durationMs: 1400 },
+      { ...sampleItems[1], startMs: 30_000, durationMs: 2_250 },
+    ];
+
+    it("uses the turn's own start and duration for SRT cues", () => {
+      const cues = formatAsSrt(measured).trim().split("\n\n")
+        .map((block) => block.split("\n")[1]);
+      expect(cues).toEqual([
+        "00:00:00,000 --> 00:00:01,400",
+        "00:00:30,000 --> 00:00:32,250",
+      ]);
+    });
+
+    it("uses the turn's own start and duration for VTT cues", () => {
+      const cues = formatAsVtt(measured).trim().split("\n\n").slice(1)
+        .map((block) => block.split("\n")[1]);
+      expect(cues).toEqual([
+        "00:00:00.000 --> 00:00:01.400",
+        "00:00:30.000 --> 00:00:32.250",
+      ]);
+    });
+
+    it("falls back to the estimated cadence for a turn without timing", () => {
+      const srt = formatAsSrt([{ ...sampleItems[0] }]);
+      // 25 chars * 50ms, floored at the 2500ms minimum.
+      expect(srt).toContain("00:00:00,000 --> 00:00:02,500");
+    });
+  });
+
   describe("Multilingual / Unicode Integrity", () => {
     it("preserves non-Latin scripts (Hindi, Japanese, Arabic, German umlauts)", () => {
       const unicodeItems: ExportTranscriptItem[] = [

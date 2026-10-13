@@ -58,12 +58,42 @@ never by agents), monotonic across all participants.
 `speech.started/ended`, `transcript.partial/final`, `translation.started/partial/final`,
 `tts.started/completed` (base64 WAV in `audio`, `synthetic:true`), `audio.published`,
 `caption.updated`, `language.changed`, `chat.message`, `chat.translation`,
-`quality.latency` (per-stage breakdown), `quality.degraded` (recoverable, with
-`user_message`), `translation.failed`, `reconnect.required`, `error`, `pong`.
+`quality.degraded` (recoverable, with `user_message`), `translation.failed`,
+`playback.flush`, `latency.report`, `reconnect.required`, `error`, `pong`.
+
+### Caption identity and timeline
+
+Three events build one caption and they do not arrive together: `transcript.partial`
+while the speaker is still talking, `transcript.final` when they stop, then
+`translation.final` several hundred ms later — by which time another speaker may
+already have a line on screen. So arrival order is not turn order, and a client that
+joins them by display name can put a translation on the wrong person's caption.
+
+Every caption event therefore names the turn it describes (`utterance_id`, or
+`segment_id` — `ServerEvent.to_json` fills in the former from the latter), and
+`transcript.final`, `translation.final` and `latency.report` carry the turn's
+measured timeline:
+
+| field | meaning |
+| --- | --- |
+| `start_wall_ms` | epoch ms at which the turn began, computed as now minus how long the turn had been open when final STT landed |
+| `duration_ms` | how long that turn's audio ran (`16 kHz mono PCM16` byte count) |
+| `seq` | the speaker's own turn counter, for ordering within one speaker |
+
+`start_wall_ms` is not `start_ms` in the database row: the stored value is the VAD's
+per-speaker frame clock, which restarts with each connection and so cannot place two
+speakers on one timeline.
+
+Playback state is deliberately **not** on the wire. Only the browser's audio queue
+knows what a listener actually heard, so `AudioPlayer` reports `playing` / `played` /
+`dropped` per turn and `lib/captions.ts` attaches it to the line — which is also how a
+barge-in shows as "not heard" instead of silently deleting the caption.
 
 ## Latency contract
 
-`quality.latency` reports per-utterance, per-target-language:
+`latency.report` reports per-utterance, per-target-language, and carries the same
+turn identity and timeline as the captions it delayed (`utterance_id`,
+`start_wall_ms`, `duration_ms`):
 
 ```
 audio_capture_ms · stt_first_partial_ms · stt_final_ms · translation_ms ·
@@ -77,10 +107,14 @@ never faked.
 
 ## Pipeline stages (server)
 
-1. **Ingest** 100 ms PCM chunks → EnergyVAD (or Silero) probability.
-2. **Segmentation** start ≥0.18 prob, end after 700 ms hangover; min 350 ms, max 30 s.
-3. **Partials** every `partial_interval_ms` (800/1500/2500 by `latency_mode`); stale
-   partials dropped via utterance generation counters (cancellation).
+1. **Ingest** 50 ms PCM chunks (16 kHz mono) → EnergyVAD (or Silero) on 30 ms frames.
+2. **Segmentation** all four thresholds are settings, not literals (see `.env.example`):
+   turn ends after `vad_min_silence_ms` (default 500 ms) of silence, which is also the
+   end-of-speech latency; a burst shorter than `vad_min_speech_ms` (250 ms) is a cough,
+   not a turn; a speaker who never pauses is force-committed at `vad_max_speech_ms`
+   (15 s). `tests/unit/test_vad_cadence.py` measures the latency each setting costs.
+3. **Partials** every `vad_partial_interval_ms` (default 1200 ms) for live captions;
+   stale partials dropped via utterance generation counters (cancellation).
 4. **Final STT** → canonical `TranscriptSegment` persisted **before** broadcast.
 5. **Fan-out** one translation per `(segment, target_language)` — cached, deduplicated;
    5 listeners wanting English = 1 translation job.

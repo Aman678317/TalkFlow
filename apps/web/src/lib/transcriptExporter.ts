@@ -12,6 +12,14 @@ export interface ExportTranscriptItem {
   translatedText: string;
   targetLang: string;
   timestamp: string;
+  /**
+   * Measured cue timing, in ms from the start of the first turn. When the client
+   * has it, subtitles use the real audio timeline; when it is missing (an older
+   * transcript, or a turn that never carried timing) they fall back to a
+   * text-length estimate.
+   */
+  startMs?: number;
+  durationMs?: number;
 }
 
 export interface TextFormatOptions {
@@ -90,10 +98,10 @@ export function formatAsSrt(transcripts: ExportTranscriptItem[]): string {
     .map((item, index) => {
       const cueIndex = index + 1;
       const textLen = (item.originalText?.length || 0) + (item.translatedText?.length || 0);
-      const durationMs = Math.max(2500, Math.min(7000, Math.round(textLen * 50)));
-      const startMs = currentStartMs;
+      const durationMs = item.durationMs ?? Math.max(2500, Math.min(7000, Math.round(textLen * 50)));
+      const startMs = item.startMs ?? currentStartMs;
       const endMs = startMs + durationMs;
-      currentStartMs = endMs + 500; // 500ms gap between subtitle cues
+      currentStartMs = Math.max(currentStartMs, endMs) + 500; // 500ms gap between cues
 
       const timecode = `${formatTimecode(startMs, "srt")} --> ${formatTimecode(endMs, "srt")}`;
       const originalLine = `${item.speakerName} (${item.sourceLang.toUpperCase()}): ${item.originalText}`;
@@ -115,10 +123,10 @@ export function formatAsVtt(transcripts: ExportTranscriptItem[]): string {
   const cues = transcripts.map((item, index) => {
     const cueIndex = index + 1;
     const textLen = (item.translatedText?.length || 0);
-    const durationMs = Math.max(2500, Math.min(6000, Math.round(textLen * 55)));
-    const startMs = currentStartMs;
+    const durationMs = item.durationMs ?? Math.max(2500, Math.min(6000, Math.round(textLen * 55)));
+    const startMs = item.startMs ?? currentStartMs;
     const endMs = startMs + durationMs;
-    currentStartMs = endMs + 400;
+    currentStartMs = Math.max(currentStartMs, endMs) + 400;
 
     const timecode = `${formatTimecode(startMs, "vtt")} --> ${formatTimecode(endMs, "vtt")}`;
     const cueText = `<v ${item.speakerName}>${item.translatedText}`;

@@ -461,6 +461,12 @@ class MeetingPipeline:
             return
         cap_start = capture_started if capture_started is not None else u.capture_started
         capture_ms = (time.perf_counter() - cap_start) * 1000
+        # Absolute start of the turn. `started_at_ms` is the VAD's own frame clock,
+        # which is per-speaker and restarts with the connection, so it cannot put
+        # two speakers' captions on one timeline; capture_ms says how long this
+        # turn had been open when STT started, which pins it to wall time.
+        start_wall_ms = int(time.time() * 1000 - capture_ms)
+        duration_ms = round(len(audio) / 32.0)  # 16 kHz mono PCM16
         started_at_ms = start_ms if start_ms is not None else u.started_at_ms
         corr = str(utterance_id or u.utterance_id)
         seq_num = seq if seq is not None else u.seq
@@ -516,6 +522,7 @@ class MeetingPipeline:
             audio=audio, confidence=segment.confidence,
             stt_model=segment.model or "", stt_provider=segment.provider or "",
             stt_ms=stt_ms, capture_ms=capture_ms, start_ms=started_at_ms,
+            start_wall_ms=start_wall_ms, duration_ms=duration_ms,
             utterance_id=utterance_id or u.utterance_id,
             seq_num=seq_num)
 
@@ -539,7 +546,8 @@ class MeetingPipeline:
         await self._commit_segment(p, text=text, source_lang=source_lang,
                                    audio=b"", confidence=1.0,
                                    stt_model="injected", stt_provider="inject",
-                                   stt_ms=0.0, capture_ms=0.0, start_ms=0)
+                                   stt_ms=0.0, capture_ms=0.0, start_ms=0,
+                                   start_wall_ms=int(time.time() * 1000))
 
     # ------------------------------------------------------------------ #
     # Canonical segment + fan-out
@@ -549,6 +557,7 @@ class MeetingPipeline:
                               confidence: float | None, stt_model: str,
                               stt_provider: str, stt_ms: float,
                               capture_ms: float, start_ms: int,
+                              start_wall_ms: int = 0, duration_ms: int = 0,
                               utterance_id: uuid.UUID | None = None,
                               seq_num: int | None = None) -> None:
         session = self.session
@@ -608,6 +617,11 @@ class MeetingPipeline:
              "text": text, "source_text": text, "sourceText": text,
              "is_final": True, "confidence": confidence,
              "stt_model": stt_model,
+             # Timeline metadata a caption needs: when this turn started in wall
+             # time and how long it ran. A caption's place in the room comes from
+             # these, not from arrival order, which translation latency reorders.
+             "start_wall_ms": start_wall_ms, "startWallMs": start_wall_ms,
+             "duration_ms": duration_ms, "durationMs": duration_ms,
              "latency": {"audio_capture_ms": capture_ms, "stt_final_ms": stt_ms},
              "created_at": now_ms, "createdAt": now_ms,
              "dedup_key": f"{session.meeting_id}:{p.participant_id}:{seq}",
@@ -640,11 +654,13 @@ class MeetingPipeline:
         self._start_fanout(speaker=p, segment_id=segment_id, seq=seq,
                            utterance_id=str(u_id), text=text, source_lang=source_lang,
                            targets=targets, stt_ms=stt_ms, capture_ms=capture_ms,
+                           start_wall_ms=start_wall_ms, duration_ms=duration_ms,
                            prev_context=prev_context)
 
     def _start_fanout(self, *, speaker: RtParticipant, segment_id: uuid.UUID,
                       seq: int, utterance_id: str, text: str, source_lang: str,
                       targets: set[str], stt_ms: float, capture_ms: float,
+                      start_wall_ms: int = 0, duration_ms: int = 0,
                       prev_context: tuple[str, ...]) -> None:
         """Launch one language run per distinct target, and declare the turn
         active so a barge-in has something to cancel.
@@ -665,6 +681,7 @@ class MeetingPipeline:
                     segment_id=segment_id, seq=seq, speaker=speaker, text=text,
                     source_lang=source_lang, target_lang=target_lang,
                     stt_ms=stt_ms, capture_ms=capture_ms,
+                    start_wall_ms=start_wall_ms, duration_ms=duration_ms,
                     prev_context=prev_context, utterance_id=utterance_id),
                 name=f"fanout-{seq}-{target_lang}")
             self.translation_tasks[key] = task
@@ -690,10 +707,13 @@ class MeetingPipeline:
                                         speaker: RtParticipant, text: str,
                                         source_lang: str, target_lang: str,
                                         stt_ms: float, capture_ms: float,
+                                        start_wall_ms: int = 0, duration_ms: int = 0,
                                         prev_context: tuple[str, ...] = (),
                                         utterance_id: str | None = None) -> None:
         session = self.session
         trace = LatencyTrace(segment_id=str(segment_id), seq=seq,
+                             utterance_id=utterance_id or str(segment_id),
+                             start_wall_ms=start_wall_ms, duration_ms=duration_ms,
                              source_lang=source_lang, target_lang=target_lang,
                              audio_capture_ms=capture_ms, stt_final_ms=stt_ms)
         t0 = time.perf_counter()
@@ -771,6 +791,12 @@ class MeetingPipeline:
             "text": translated,
             "translated_text": translated,
             "translatedText": translated,
+            # The translated caption describes the same turn as the source
+            # caption, so it carries that turn's timeline, not its own arrival.
+            "start_wall_ms": start_wall_ms,
+            "startWallMs": start_wall_ms,
+            "duration_ms": duration_ms,
+            "durationMs": duration_ms,
             "display_name": speaker.display_name,
             "speaker_name": speaker.display_name,
             "model": done.model,
