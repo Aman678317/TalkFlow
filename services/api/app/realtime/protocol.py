@@ -160,6 +160,10 @@ class LatencyTrace(BaseModel):
     # Without them a latency report cannot be tied back to the caption it delayed.
     start_wall_ms: int = 0
     duration_ms: int = 0
+    #: When the speaker stopped producing audio for this turn, in wall time, when
+    #: the pipeline could say so. Everything below measured from it is what a
+    #: listener waited; the per-stage numbers measure our pipeline instead.
+    speech_end_wall_ms: int = 0
     source_lang: str = ""
     target_lang: str = ""
     audio_capture_ms: float = 0
@@ -168,5 +172,7 @@ class LatencyTrace(BaseModel):
     translation_ms: float = 0
     tts_first_audio_ms: float = 0
     delivery_ms: float = 0
+    speech_end_to_first_audio_ms: float = 0
+    speech_end_to_delivery_ms: float = 0
     total_e2e_latency_ms: float = 0
     stale_dropped: bool = False

@@ -72,6 +72,7 @@ export interface RealtimeStageHealth {
   closed: boolean;
   bus?: Record<string, number | boolean>;
   supervisor?: Record<string, number>;
+  latency?: LatencySummary;
   live?: boolean;
   meeting_id?: string;
   session_id?: string;
@@ -79,6 +80,24 @@ export interface RealtimeStageHealth {
   connected?: number;
   quality_degraded?: boolean;
   reason?: string;
+}
+
+export interface LatencyPercentiles {
+  n: number;
+  p50_ms: number;
+  p95_ms: number;
+  max_ms: number;
+}
+
+/**
+ * p50/p95 of speech-end to the first translated audio byte, per language pair,
+ * over a rolling window. A pair that has never produced audio is absent rather
+ * than zero — an unmeasured turn is not a fast turn.
+ */
+export interface LatencySummary {
+  window: number;
+  pairs: Record<string, LatencyPercentiles>;
+  overall?: LatencyPercentiles;
 }
 
 export interface SessionCreatedData {
@@ -150,6 +169,12 @@ export interface LatencyTrace {
   translation_ms: number;
   tts_first_audio_ms: number;
   delivery_ms: number;
+  /** Wall ms when the speaker stopped producing audio; 0 when unknown. */
+  speech_end_wall_ms: number;
+  /** What the listener waited for the first translated audio byte. */
+  speech_end_to_first_audio_ms: number;
+  /** What the listener waited for the whole turn to be delivered. */
+  speech_end_to_delivery_ms: number;
   total_e2e_latency_ms: number;
   stale_dropped: boolean;
 }

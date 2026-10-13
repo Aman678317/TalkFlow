@@ -14,6 +14,7 @@ re-implemented.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
@@ -26,6 +27,7 @@ from gt_ai.types import (
 )
 
 import app.realtime.pipeline as P
+from app.realtime.agents.contracts import RealtimeEvent, Stage
 from app.realtime.session_manager import RtParticipant, RtSession, manager
 
 
@@ -477,3 +479,169 @@ async def test_translation_context_keeps_the_room_scoping(session, speaker, no_d
     assert ctx.segment_id == segment_id            # the durable transcript row
     assert ctx.context == PRIOR_TURN      # the prior turn, not this one
     assert ctx.product == "realtime" and ctx.persist and ctx.meter
+
+
+# --------------------------------------------------------------------------- #
+# Phase 4: the number the histogram promises
+# --------------------------------------------------------------------------- #
+
+class RecordingHistogram:
+    """Stands in for ``gt_e2e_latency_ms`` so a test can read what was fed to it.
+
+    The metric's own name is a claim about which interval it holds, and until
+    now it was fed a sum of stage durations that started at the turn's first
+    audio frame. Reading the values is the only way to keep that honest.
+    """
+
+    def __init__(self) -> None:
+        self.observed: list[tuple[dict, float]] = []
+
+    def labels(self, **kwargs):
+        sink = self.observed
+
+        class _Child:
+            def observe(self, value):
+                sink.append((kwargs, value))
+
+        return _Child()
+
+
+@pytest.mark.asyncio
+async def test_the_latency_report_measures_the_listeners_wait(session, speaker,
+                                                              no_db, monkeypatch):
+    en = _participant(hear="en")
+    _join(session, speaker, en)
+    monkeypatch.setattr(P, "ai", FakeAI())
+
+    async def fake_translate(db, text, src, tgt, ctx):
+        return SimpleNamespace(result=_translation_result("Hello", src, tgt))
+
+    monkeypatch.setattr(P, "translate_text", fake_translate)
+    histogram = RecordingHistogram()
+    monkeypatch.setattr(P.met, "E2E_LATENCY", histogram)
+
+    pipe = P.MeetingPipeline(session)
+    anchor = int(time.time() * 1000) - 1_500
+    await pipe._translate_and_synthesize(
+        segment_id=uuid.uuid4(), seq=1, speaker=speaker, text="नमस्ते",
+        source_lang="hi", target_lang="en", stt_ms=1.0, capture_ms=700.0,
+        speech_end_wall_ms=anchor)
+
+    report = _events(en.ws, "latency.report")[-1]["data"]
+    assert report["speech_end_wall_ms"] == anchor
+    # The listener waited about 1.5 s for the first byte of translated audio.
+    assert report["speech_end_to_first_audio_ms"] >= 1_500
+    assert report["speech_end_to_delivery_ms"] >= report["speech_end_to_first_audio_ms"]
+    assert report["total_e2e_latency_ms"] == report["speech_end_to_delivery_ms"]
+    # ...and the 700 ms of speech in this turn's `audio_capture_ms` is the
+    # speaker's, not ours: it must not reappear in the total.
+    assert report["audio_capture_ms"] == 700.0
+    assert report["total_e2e_latency_ms"] < 1_600 + 700
+
+    (labels, value), = histogram.observed
+    assert labels == {"src": "hi", "tgt": "en"}
+    assert value == report["speech_end_to_delivery_ms"]
+
+
+@pytest.mark.asyncio
+async def test_a_turn_with_no_anchor_stays_out_of_the_histogram(session, speaker,
+                                                                no_db, monkeypatch):
+    """No speech-end means the interval has no start. Reporting a stage sum as
+    `total_e2e_latency_ms` is fine for the per-turn report; putting it in a
+    histogram labelled "speech end ->" would be a fabricated measurement."""
+    en = _participant(hear="en")
+    _join(session, speaker, en)
+    monkeypatch.setattr(P, "ai", FakeAI())
+
+    async def fake_translate(db, text, src, tgt, ctx):
+        return SimpleNamespace(result=_translation_result("Hello", src, tgt))
+
+    monkeypatch.setattr(P, "translate_text", fake_translate)
+    histogram = RecordingHistogram()
+    monkeypatch.setattr(P.met, "E2E_LATENCY", histogram)
+
+    pipe = P.MeetingPipeline(session)
+    await pipe._translate_and_synthesize(
+        segment_id=uuid.uuid4(), seq=1, speaker=speaker, text="नमस्ते",
+        source_lang="hi", target_lang="en", stt_ms=1.0, capture_ms=700.0)
+
+    report = _events(en.ws, "latency.report")[-1]["data"]
+    assert report["speech_end_wall_ms"] == 0
+    assert report["speech_end_to_delivery_ms"] == 0
+    assert report["total_e2e_latency_ms"] > 0
+    assert histogram.observed == []
+
+
+@pytest.mark.asyncio
+async def test_a_turn_that_never_produced_audio_produces_no_latency_number(
+        session, speaker, no_db, monkeypatch):
+    """A listener who was never answered did not wait a measurable time. The
+    stage timings still belong in the report; the total does not."""
+    en = _participant(hear="en")
+    _join(session, speaker, en)
+    monkeypatch.setattr(P, "ai", FakeAI(raise_tts=RuntimeError("voice missing")))
+
+    async def fake_translate(db, text, src, tgt, ctx):
+        return SimpleNamespace(result=_translation_result("Hello", src, tgt))
+
+    monkeypatch.setattr(P, "translate_text", fake_translate)
+    histogram = RecordingHistogram()
+    monkeypatch.setattr(P.met, "E2E_LATENCY", histogram)
+
+    pipe = P.MeetingPipeline(session)
+    await pipe._translate_and_synthesize(
+        segment_id=uuid.uuid4(), seq=1, speaker=speaker, text="नमस्ते",
+        source_lang="hi", target_lang="en", stt_ms=1.0, capture_ms=700.0,
+        speech_end_wall_ms=int(time.time() * 1000) - 500)
+
+    report = _events(en.ws, "latency.report")[-1]["data"]
+    assert report["speech_end_to_delivery_ms"] == 0
+    assert report["total_e2e_latency_ms"] == 0
+    assert report["translation_ms"] > 0, "the stages that did run lost their timing"
+    assert histogram.observed == []
+
+
+@pytest.mark.asyncio
+async def test_the_first_chunk_of_the_turn_is_what_reaches_the_rollup(session,
+                                                                     speaker,
+                                                                     no_db,
+                                                                     monkeypatch):
+    """The per-turn report and the meeting's p50 have to agree, or the headline
+    number is not one the operator can trace back to a turn they watched.
+
+    Driven through ``_start_fanout``, the real composition point, because that is
+    the call that decides whether the speech-end anchor survives to the agent.
+    """
+    en = _participant(hear="en")
+    _join(session, speaker, en)
+    monkeypatch.setattr(P, "ai", FakeAI(tts_chunks=4))
+
+    async def fake_translate(db, text, src, tgt, ctx):
+        return SimpleNamespace(result=_translation_result("Hello", src, tgt))
+
+    monkeypatch.setattr(P, "translate_text", fake_translate)
+    pipe = P.MeetingPipeline(session)
+    anchor = int(time.time() * 1000) - 1_200
+    corr, segment_id = str(uuid.uuid4()), uuid.uuid4()
+
+    # What _commit_segment does on the bus before it fans the turn out.
+    await pipe.bus.publish(RealtimeEvent(
+        type=Stage.TRANSCRIPT_FINAL, correlation_id=corr,
+        meeting_id=pipe._meeting_id, speaker_id=str(speaker.participant_id),
+        segment_id=str(segment_id), payload={"source_language": "hi"}))
+
+    pipe._start_fanout(speaker=speaker, segment_id=segment_id, seq=1,
+                       utterance_id=corr, text="नमस्ते", source_lang="hi",
+                       targets={"en"}, stt_ms=1.0, capture_ms=700.0,
+                       speech_end_wall_ms=anchor, prev_context=())
+    await asyncio.gather(*list(pipe.translation_tasks.values()),
+                         return_exceptions=True)
+
+    report = _events(en.ws, "latency.report")[-1]["data"]
+    row = pipe.stage_health()["latency"]["pairs"]["hi->en"]
+    assert row["n"] == 1, "four chunks of one turn sampled more than once"
+    assert abs(row["max_ms"] - report["speech_end_to_first_audio_ms"]) <= 1
+    # The measurement outlives the turn it came from. A finished fan-out
+    # releases its per-stage record — a meeting runs for hours, and ordering
+    # state is bounded per room — so the percentile could not live there.
+    assert pipe.supervisor.segment_report(corr)["stages"] == []
