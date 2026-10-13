@@ -84,7 +84,11 @@ class MeetingPipeline:
         self.speaker_tasks: dict[uuid.UUID, asyncio.Task] = {}
         self.vads: dict[uuid.UUID, object] = {}
         self.utterances: dict[uuid.UUID, UtteranceState] = {}
-        self.translation_tasks: dict[tuple[int, str], asyncio.Task] = {}
+        # Keyed by speaker as well as sequence: ``seq`` is a per-speaker counter,
+        # so (seq, target_lang) alone lets one speaker's turn overwrite another's
+        # and leaves the overwritten task uncancellable.
+        self.translation_tasks: dict[tuple[str, int, str], asyncio.Task] = {}
+        self._fanout_pending: dict[str, int] = {}
         self._closed = False
         self._latest_final_seq: dict[uuid.UUID, int] = {}
         self._detected: dict[str, dict] = {}
@@ -244,6 +248,9 @@ class MeetingPipeline:
                 events = vad.process(chunk)  # type: ignore[attr-defined]
                 for ev in events:
                     if ev.state == VadState.SPEECH:
+                        # Barge-in before this turn opens: whatever is still
+                        # queued for this speaker's earlier turns is now stale.
+                        await self._handle_barge_in(p)
                         u.in_speech = True
                         u.utterance_id = uuid.uuid4()
                         u.seq += 1
@@ -342,6 +349,44 @@ class MeetingPipeline:
             return u.locked_language
         return None
 
+    # ------------------------------------------------------------------ #
+    # Barge-in (Phase 3): cancel one speaker's stale output, nobody else's
+    # ------------------------------------------------------------------ #
+    async def _handle_barge_in(self, p: RtParticipant) -> list[str]:
+        """The speaker started a new turn, so translated audio still in flight
+        for their earlier turns would talk over their own voice.
+
+        The scope is deliberate: cancellations are keyed per correlation and only
+        this speaker's correlations are touched, so a barge-in cannot silence
+        another speaker's audio. Returns the cancelled correlation ids; an empty
+        list means nothing was in flight, so nothing is announced — a flush the
+        browser cannot attribute to a speaker would only drop live audio.
+        """
+        pid = str(p.participant_id)
+        languages = self.supervisor.active_languages(pid)
+        cancelled = await self.supervisor.interrupt(pid, reason="barge_in")
+        if not cancelled:
+            return []
+        for corr in cancelled:
+            self._fanout_pending.pop(corr, None)
+            self.listening.reset_utterance(corr)
+            self.voice.forget_correlation(corr)
+            met.STALE_AUDIO_DROPPED.labels(reason="barge_in").inc()
+        for (owner, _seq, _lang), task in list(self.translation_tasks.items()):
+            if owner == pid:
+                task.cancel()
+        self._broadcast_diag(self._diag(
+            "barge_in", speaker=p.participant_id, cancelled=len(cancelled),
+            target_languages=languages))
+        await manager.broadcast(
+            self.session, ServerEventType.PLAYBACK_FLUSH,
+            {"speaker_id": pid, "speakerId": pid, "reason": "barge_in",
+             "scope": "speaker", "recoverable": True,
+             "target_languages": languages, "correlation_ids": cancelled,
+             "message": "Translation of the interrupted turn was dropped."},
+            speaker_id=pid)
+        return cancelled
+
     async def _emit_partial(self, p: RtParticipant, u: UtteranceState) -> None:
         corr = str(u.utterance_id)
         segment = await self.listening.transcribe_partial(
@@ -417,10 +462,13 @@ class MeetingPipeline:
                 error=str(failure.get("error", ""))[:160]))
             if reason == "empty_speech":
                 # No words recognised is not an outage — the listener only needs
-                # to know the speech ended, so no error event is sent.
+                # to know the speech ended, so no error event is sent. The
+                # utterance id rides along so the browser can retire the partial
+                # caption that this turn will never complete.
                 await manager.broadcast(
                     self.session, ServerEventType.SPEECH_ENDED,
-                    {"empty": True}, speaker_id=str(p.participant_id))
+                    {"empty": True, "utterance_id": corr, "utteranceId": corr},
+                    speaker_id=str(p.participant_id))
             else:
                 await manager.broadcast(
                     self.session, ServerEventType.ERROR,
@@ -569,17 +617,54 @@ class MeetingPipeline:
             "fanout_start", utt=str(u_id), seq=seq, speaker=p.participant_id,
             source_lang=source_lang, targets=sorted(targets),
             text_preview=text[:80]))
+        self._start_fanout(speaker=p, segment_id=segment_id, seq=seq,
+                           utterance_id=str(u_id), text=text, source_lang=source_lang,
+                           targets=targets, stt_ms=stt_ms, capture_ms=capture_ms,
+                           prev_context=prev_context)
+
+    def _start_fanout(self, *, speaker: RtParticipant, segment_id: uuid.UUID,
+                      seq: int, utterance_id: str, text: str, source_lang: str,
+                      targets: set[str], stt_ms: float, capture_ms: float,
+                      prev_context: tuple[str, ...]) -> None:
+        """Launch one language run per distinct target, and declare the turn
+        active so a barge-in has something to cancel.
+
+        Without ``note_active_segment`` the supervisor's ``interrupt`` has no
+        record of whose output is in flight — which is how barge-in stayed
+        unwired for a whole phase.
+        """
+        self.supervisor.note_active_segment(str(speaker.participant_id),
+                                            correlation_id=utterance_id,
+                                            sequence_number=seq,
+                                            target_languages=sorted(targets))
+        self._fanout_pending[utterance_id] = len(targets)
         for target_lang in sorted(targets):
-            key = (seq, target_lang)
+            key = (str(speaker.participant_id), seq, target_lang)
             task = asyncio.create_task(
                 self._translate_and_synthesize(
-                    segment_id=segment_id, seq=seq, speaker=p, text=text,
+                    segment_id=segment_id, seq=seq, speaker=speaker, text=text,
                     source_lang=source_lang, target_lang=target_lang,
                     stt_ms=stt_ms, capture_ms=capture_ms,
-                    prev_context=prev_context, utterance_id=u_id),
+                    prev_context=prev_context, utterance_id=utterance_id),
                 name=f"fanout-{seq}-{target_lang}")
             self.translation_tasks[key] = task
-            task.add_done_callback(lambda _t, k=key: self.translation_tasks.pop(k, None))
+            task.add_done_callback(
+                lambda _t, k=key, c=utterance_id: self._finish_fanout_task(k, c))
+
+    def _finish_fanout_task(self, key: tuple[str, int, str], correlation_id: str) -> None:
+        """Release one language run, and the whole correlation once they are all
+        home. An interrupted run is pruned by ``_handle_barge_in``, which must
+        not be second-guessed by a late callback here."""
+        self.translation_tasks.pop(key, None)
+        remaining = self._fanout_pending.get(correlation_id)
+        if remaining is None:
+            return
+        remaining -= 1
+        if remaining > 0:
+            self._fanout_pending[correlation_id] = remaining
+            return
+        self._fanout_pending.pop(correlation_id, None)
+        self.supervisor.prune(correlation_id)
 
     async def _translate_and_synthesize(self, *, segment_id: uuid.UUID, seq: int,
                                         speaker: RtParticipant, text: str,
@@ -592,12 +677,12 @@ class MeetingPipeline:
                              source_lang=source_lang, target_lang=target_lang,
                              audio_capture_ms=capture_ms, stt_final_ms=stt_ms)
         t0 = time.perf_counter()
+        u_id = utterance_id or str(segment_id)
         # --- stale check before starting (speaker already moved on?) ---
-        if self._is_stale(speaker.participant_id, seq):
+        if self._is_stale(speaker.participant_id, seq, u_id):
             trace.stale_dropped = True
             met.STALE_AUDIO_DROPPED.labels(reason="pre_translation").inc()
             return
-        u_id = utterance_id or str(segment_id)
         now_ms = int(time.time() * 1000)
         await manager.broadcast(
             session, ServerEventType.TRANSLATION_STARTED,
@@ -685,7 +770,7 @@ class MeetingPipeline:
             final_translation_event,
             speaker_id=str(speaker.participant_id))
 
-        if self._is_stale(speaker.participant_id, seq):
+        if self._is_stale(speaker.participant_id, seq, u_id):
             trace.stale_dropped = True
             met.STALE_AUDIO_DROPPED.labels(reason="pre_tts").inc()
             await self._report_latency(trace)
@@ -756,8 +841,9 @@ class MeetingPipeline:
                         pass
 
         def audio_still_wanted() -> bool:
-            """Stop mid-stream if the speaker moved on, and report it once."""
-            if not self._is_stale(speaker.participant_id, seq):
+            """Stop mid-stream if the speaker moved on or barged in, and report
+            it once."""
+            if not self._is_stale(speaker.participant_id, seq, u_id):
                 return True
             if not trace.stale_dropped:
                 trace.stale_dropped = True
@@ -851,10 +937,18 @@ class MeetingPipeline:
             self.session, ServerEventType.LATENCY_REPORT,
             trace.model_dump(), sequenced=False)
 
-    def _is_stale(self, speaker_id: uuid.UUID, seq: int) -> bool:
+    def _is_stale(self, speaker_id: uuid.UUID, seq: int,
+                  correlation_id: str | None = None) -> bool:
         """Stale output detection (PDD §10): a newer final segment from the
         same speaker plus an elapsed budget means late audio would talk over
-        current speech — drop it instead."""
+        current speech — drop it instead.
+
+        Cancellation is the other half, and the one barge-in needs: when a
+        speaker cuts themselves off, their *next* turn has not been transcribed
+        yet, so the sequence comparison still reports the old turn as current.
+        """
+        if correlation_id is not None and self.supervisor.is_cancelled(correlation_id):
+            return True
         latest = self._latest_final_seq.get(speaker_id, seq)
         if seq >= latest:
             return False

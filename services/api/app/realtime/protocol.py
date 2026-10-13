@@ -39,6 +39,7 @@ class ServerEventType(StrEnum):
     CAPTION_UPDATED = "caption.updated"
     LANGUAGE_CHANGED = "language.changed"
     QUALITY_DEGRADED = "quality.degraded"
+    PLAYBACK_FLUSH = "playback.flush"
     TRANSLATION_FAILED = "translation.failed"
     RECONNECT_REQUIRED = "reconnect.required"
     CHAT_MESSAGE = "chat.message"

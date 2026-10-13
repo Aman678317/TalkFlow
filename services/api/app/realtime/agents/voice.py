@@ -240,3 +240,18 @@ class VoiceAgent:
             for key in [k for k in table
                         if k[0] == correlation_id and k[1] == segment_id]:
                 table.pop(key, None)
+
+    def forget_correlation(self, correlation_id: str) -> None:
+        """Barge-in: drop every language run of one utterance.
+
+        ``forget_segment`` needs the durable segment id, but an interruption can
+        land before the transcript row exists, and a cancelled task never runs
+        ``finish_delivery``, so that run's totals would otherwise be kept for
+        the life of the meeting — and a retried chunk 0 would be judged a
+        duplicate of audio that never finished playing.
+        """
+        for key in [k for k in self._seen if k[0] == correlation_id]:
+            self._seen.pop(key, None)
+        for table in (self._deliveries, self._failures):
+            for key in [k for k in table if k[0] == correlation_id]:
+                table.pop(key, None)

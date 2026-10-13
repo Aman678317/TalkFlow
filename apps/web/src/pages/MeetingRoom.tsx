@@ -130,7 +130,9 @@ export default function MeetingRoom() {
   });
 
   const [screenOn, setScreenOn] = React.useState(false);
-  const [speakingNow, setSpeakingNow] = React.useState<string | null>(null);
+  /** Speakers with a turn currently open. A set: two people can talk at once,
+   *  and a single value let one speaker's "ended" clear the other's indicator. */
+  const [speakingNow, setSpeakingNow] = React.useState<Set<string>>(() => new Set());
   const [captions, setCaptions] = React.useState<CaptionLine[]>([]);
   const [showCaptionsOverlay, setShowCaptionsOverlay] = React.useState(true);
   const [chat, setChat] = React.useState<ChatLine[]>([]);
@@ -511,14 +513,49 @@ export default function MeetingRoom() {
         }
         break;
       }
-      case "speech.started":
-        setSpeakingNow(evt.speaker_id as string);
+      case "speech.started": {
+        // The pipeline fires this on VAD onset, which is also when it declares the
+        // interrupted speaker's earlier translated audio stale.
+        const sid = evt.speaker_id as string | undefined;
+        if (sid) setSpeakingNow((prev) => (prev.has(sid) ? prev : new Set(prev).add(sid)));
         break;
-      case "speech.ended":
-        setSpeakingNow(null);
-        if (typeof evt.utterance_id === "string")
-          playerRef.current?.cancelTag(`orig-${(evt.utterance_id as string).slice(0, 16)}`);
+      }
+      case "speech.ended": {
+        const sid = evt.speaker_id as string | undefined;
+        if (sid) {
+          setSpeakingNow((prev) => {
+            if (!prev.has(sid)) return prev;
+            const next = new Set(prev);
+            next.delete(sid);
+            return next;
+          });
+        }
+        // No cancellation here on purpose. The original-relay queue tag is the
+        // SPEAKER's short id, while this event names an UTTERANCE, so any tag
+        // built from `utterance_id` can only ever match nothing. Stale output is
+        // dropped by `playback.flush`, which carries the speaker id.
+        if (evt.empty === true) {
+          // The turn produced no words; the pending caption for it never will.
+          const uid = evt.utterance_id as string | undefined;
+          if (typeof uid === "string") {
+            setCaptions((prev) => prev.filter((c) => c.id !== uid && c.id !== `tr:${uid}`));
+          }
+        }
         break;
+      }
+      case "playback.flush": {
+        // Barge-in: the named speaker started a new turn, so translated audio
+        // still queued for their PREVIOUS turn would talk over their own voice.
+        // Scope is one speaker — anybody else's in-flight audio keeps playing.
+        const sid = (evt.speaker_id as string) ?? (evt.speakerId as string) ?? "";
+        if (!sid) break;
+        const dropped = playerRef.current?.cancelSpeaker(sid) ?? 0;
+        if (dropped > 0 && import.meta.env.DEV) {
+          // eslint-disable-next-line no-console
+          console.debug(`[playback.flush] dropped ${dropped} stale chunk(s) of ${sid}`);
+        }
+        break;
+      }
       case "transcript.partial":
       case "transcript.final": {
         const uid = evt.utterance_id as string;
@@ -1464,7 +1501,7 @@ export default function MeetingRoom() {
           self: peer.self,
           speakingLanguage,
           listeningLanguage,
-          speaking: speakingNow === peer.id || (peer.self && micOn && !!speakingNow),
+          speaking: speakingNow.has(peer.id) && (!peer.self || micOn),
           muted: peer.self ? !micOn : !peer.microphoneOn,
           isVirtualCamera: peer.self ? usingVirtualCamera : false,
         };
@@ -1480,7 +1517,7 @@ export default function MeetingRoom() {
           self: isSelf,
           speakingLanguage: participant.speaking_language,
           listeningLanguage: participant.listening_language,
-          speaking: speakingNow === participant.id || (isSelf && micOn && !!speakingNow),
+          speaking: speakingNow.has(participant.id) && (!isSelf || micOn),
           muted: isSelf ? !micOn : media ? !media.mic : true,
           isVirtualCamera: isSelf ? usingVirtualCamera : false,
         };
@@ -1498,7 +1535,7 @@ export default function MeetingRoom() {
         self: true,
         speakingLanguage: prefs.speaking_language,
         listeningLanguage: prefs.listening_language,
-        speaking: micOn && !!speakingNow,
+        speaking: micOn && speakingNow.has(myParticipantId || ""),
         muted: !micOn,
         isVirtualCamera: usingVirtualCamera,
       },

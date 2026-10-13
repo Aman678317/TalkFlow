@@ -204,6 +204,17 @@ class Supervisor:
     def is_cancelled(self, correlation_id: str) -> bool:
         return correlation_id in self._cancelled
 
+    def active_languages(self, speaker_id: str) -> list[str]:
+        """Target languages still in flight for one speaker.
+
+        Asked *before* an interruption, because the answer is what the browser
+        has to drop — after ``interrupt`` the bookkeeping is gone.
+        """
+        return sorted({lang
+                       for cid, meta in self._active.items()
+                       if meta["speaker_id"] == speaker_id
+                       for lang in meta.get("target_languages", [])})
+
     def is_stale_for(self, recipient_id: str, target_language: str) -> bool:
         """A listener who switched language must not receive the old language."""
         return (recipient_id, target_language) in self._stale_recipients
