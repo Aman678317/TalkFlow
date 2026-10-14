@@ -455,10 +455,13 @@ async def test_one_language_being_cancelled_does_not_condemn_the_other(
     next_corr = str(uuid.uuid4())
     await _fan_out(pipe, a, seq=2, corr=next_corr, targets={"en", "ur"},
                    segment_id=uuid.uuid4())
-    await _wait_for(lambda: len(_events(en.ws, "tts.chunk")) >= 2
-                    and len(_events(ur.ws, "tts.chunk")) >= 2,
-                    "the speaker's next turn to deliver")
-    assert len(en.ws.frames) >= 2 and len(ur.ws.frames) >= 2
+    # Wait on the audio, not on the caption events: `tts.chunk` and its binary
+    # frame are one pair in the writer's queue, so an event-only wait can see the
+    # second event in the moment before the second frame is handed to the socket.
+    await _wait_for(lambda: len(en.ws.frames) >= 2 and len(ur.ws.frames) >= 2,
+                   "the speaker's next turn to deliver audio")
+    assert len(_events(en.ws, "tts.chunk")) >= 2
+    assert len(_events(ur.ws, "tts.chunk")) >= 2
 
 
 # --------------------------------------------------------------------------- #

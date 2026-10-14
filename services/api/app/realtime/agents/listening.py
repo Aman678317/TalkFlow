@@ -114,12 +114,15 @@ class ListeningAgent:
         payload.update(extra)
         # Kept for the session owner so it can map a stage failure to the exact
         # wire event the client expects ("speech.ended empty" vs "stt
-        # unavailable") without re-deriving it from a None return.
+        # unavailable") without re-deriving it from a None return. The raw cause
+        # stays in this record — a provider's message quotes the audio it failed
+        # on often enough that it has no business in the meeting's trace.
         self._failures[correlation_id] = payload
         await self.bus.publish(RealtimeEvent(
             type=Stage.STAGE_FAILED, correlation_id=correlation_id,
             meeting_id=self.meeting_id, speaker_id=speaker_id, segment_id=segment_id,
-            sequence=sequence_number, payload=payload))
+            sequence=sequence_number,
+            payload={k: v for k, v in payload.items() if k != "error"}))
 
     # ------------------------------------------------------------------ #
     async def on_audio_captured(self, *, correlation_id: str, speaker_id: str,
@@ -239,6 +242,26 @@ class ListeningAgent:
         await self.bus.publish(segment.to_event(Stage.TRANSCRIPT_FINAL))
         self._prune()
         return segment
+
+    # ------------------------------------------------------------------ #
+    async def note_injected_segment(self, *, correlation_id: str, speaker_id: str,
+                                    segment_id: str, sequence_number: int,
+                                    language: str, text: str, provider: str,
+                                    model: str) -> None:
+        """Publish the transcript stage event for a turn that arrived as text.
+
+        `transcript.inject` stands in for this agent's provider call, so the
+        stage event it would have emitted has to come from here: the supervisor
+        reads the source language of its latency rollup, its ordering ledger and
+        the listening stage's health off this one event.
+        """
+        segment = TranscriptSegment(
+            correlation_id=correlation_id, meeting_id=self.meeting_id,
+            speaker_id=speaker_id, segment_id=segment_id,
+            sequence_number=sequence_number, source_language=language,
+            recognized_text=text, is_final=True, confidence=1.0,
+            provider=provider, model=model)
+        await self.bus.publish(segment.to_event(Stage.TRANSCRIPT_FINAL))
 
     # ------------------------------------------------------------------ #
     def _prune(self) -> None:

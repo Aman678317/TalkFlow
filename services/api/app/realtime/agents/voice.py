@@ -123,6 +123,7 @@ class VoiceAgent:
                             meeting_id=self.meeting_id, speaker_id=translation.speaker_id,
                             segment_id=translation.source_segment_id,
                             target_language=translation.target_language, chunk_index=0,
+                            sequence_number=translation.source_sequence_number,
                             codec=chunk.format, sample_rate=chunk.sample_rate,
                             channels=self.channels, duration_ms=chunk.duration_ms,
                             payload_bytes=len(chunk.data), recipient_ids=list(recipients),
@@ -168,6 +169,7 @@ class VoiceAgent:
             correlation_id=translation.correlation_id, meeting_id=self.meeting_id,
             speaker_id=translation.speaker_id, segment_id=translation.source_segment_id,
             target_language=translation.target_language, chunk_index=index,
+            sequence_number=translation.source_sequence_number,
             codec=codec, sample_rate=sample_rate, channels=self.channels,
             duration_ms=duration_ms, payload_bytes=len(audio),
             recipient_ids=list(recipients), provider=provider, model=model,
@@ -225,7 +227,11 @@ class VoiceAgent:
         await self.bus.publish(RealtimeEvent(
             type=Stage.STAGE_FAILED, correlation_id=translation.correlation_id,
             meeting_id=self.meeting_id, speaker_id=translation.speaker_id,
-            segment_id=translation.source_segment_id, payload=payload))
+            segment_id=translation.source_segment_id,
+            sequence=translation.source_sequence_number,
+            # The message stays in the record above, which the session owner
+            # reads and logs. `take_failure` hands it out; the trace does not.
+            payload={k: v for k, v in payload.items() if k != "error"}))
 
     def take_failure(self, translation: TranslationSegment) -> dict | None:
         """Pop the failure this stage recorded for one language run, so the

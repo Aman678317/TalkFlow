@@ -95,6 +95,38 @@ mandatory on every vector query — cross-tenant retrieval is structurally impos
 
 ## Retention
 
-Per-org policy (`organizations.retention_policy`, defaults from env): audio (7 d),
-transcripts (90 d), documents (90 d). `workers/cleanup.py` deletes objects + rows,
-revoked voice-consent samples destroyed on sweep. Every deletion auditable via job logs.
+Three layers, narrowest wins: the deployment's `RETENTION_*_DAYS` defaults, an
+organization's `organizations.retention_json`, one room's `meetings.retention_json`.
+Defaults are audio 7 d, transcripts 365 d, documents 90 d, usage 730 d; a `null`
+value in a policy means that kind of data is not on a clock.
+
+`app.services.retention_service.sweep()` is the only thing that deletes. It runs
+hourly from the API's background loop (`app.main._retention_loop`) and from
+`workers/cleanup-worker`, once per bucket of rooms that resolve to the same windows:
+
+* **audio** — objects behind `transcript_segments.audio_object_key` and
+  `audio_sessions.audio_object_key` are deleted and the column set to NULL. The
+  caption row stays, because its window is the longer one on purpose. The realtime
+  write path reads the same resolved number before storing a turn's WAV, so a room
+  with `audio_days: 0` never writes one.
+* **transcripts** — rows past the room's `transcript_days` go, and so do the
+  `translation_segments` made from them. Derived rows are deleted by `segment_id`
+  explicitly rather than trusted to `ondelete=CASCADE`: SQLite in tests enforces no
+  foreign keys at all.
+* **documents** — rows with `expires_at` in the past lose both objects and are
+  marked `deleted`.
+* **usage / sessions / refresh tokens / memory items** — purged on their own clocks.
+
+The `counts` dict (`audio_objects`, `transcripts`, `translations`, `documents`,
+`usage`, `expired_tokens`) is logged every pass; it is the only evidence an operator
+gets that a policy ran rather than merely was configured. An object that refuses to
+delete is logged and its pointer left in place.
+
+The same resolved numbers are what the room tells its participants:
+`GET /api/v1/meetings/{id}` returns them under `retention`, and the lobby shows them
+before anyone speaks — a guest joining by link sees them too, and that is the person
+whose voice is being kept.
+
+Tests: `tests/integration/test_retention_sweep.py`,
+`tests/integration/test_meeting_retention_disclosure.py`,
+`tests/unit/test_realtime_audio_retention.py`.

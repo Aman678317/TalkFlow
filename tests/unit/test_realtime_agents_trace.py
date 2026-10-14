@@ -250,13 +250,16 @@ async def test_agent2_calls_the_provider_once_per_distinct_language_per_recipien
     assert sum(1 for t in out if t.target_language == "en") == 2
     assert {e.type for e in bus.trace} == {Stage.TRANSLATION_READY}
     assert len(bus.trace) == 3
-    # the two English recipients share one provider result, not two calls
-    en_texts = {e.payload["translated_text"] for e in bus.trace
-                if e.payload["target_language"] == "en"}
-    assert en_texts == {f"[en] {HINDI}"}
+    # the two English recipients share one provider result, not two calls.
+    # This used to be proved by comparing `payload["translated_text"]`, which
+    # only worked because the trace held a copy of the sentence; identical
+    # lengths plus one call per language proves the same thing without the words.
+    en_events = [e for e in bus.trace if e.payload["target_language"] == "en"]
+    assert len(en_events) == 2
+    assert {e.payload["translated_chars"] for e in en_events} == \
+        {len(f"[en] {HINDI}")}
     assert {e.recipient_id for e in bus.trace} == {LISTENER_EN_1, LISTENER_EN_2, LISTENER_UR}
-    # canonical source text is preserved alongside the translation
-    assert bus.trace[0].payload["source_text"] == HINDI
+    assert HINDI not in str([(e.type, e.payload) for e in bus.trace])
 
 
 @pytest.mark.asyncio

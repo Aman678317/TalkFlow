@@ -33,6 +33,13 @@ export interface TranslateResponse {
   alternatives?: string[];
 }
 
+export interface RetentionPolicy {
+  audio_days: number | null;
+  transcript_days: number | null;
+  document_days: number | null;
+  usage_days: number | null;
+}
+
 export interface Meeting {
   id: string;
   title: string;
@@ -45,6 +52,8 @@ export interface Meeting {
   has_summary: boolean;
   transport: "websocket" | "livekit";
   livekit_url?: string | null;
+  /** The windows the server's retention sweep will apply to this room. */
+  retention?: RetentionPolicy | null;
 }
 
 export interface JoinMeetingRequest {

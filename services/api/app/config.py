@@ -154,6 +154,28 @@ class Settings(BaseSettings):
 
     gpu_available: bool = False
 
+    # --- AI provider calls (finite retries + timeouts) ---
+    # Ceiling on ONE provider attempt. Providers set their own HTTP timeouts
+    # (8-12 s in gt_ai), which is longer than a meeting turn can afford, and a
+    # provider that hangs without refusing would otherwise hold a fan-out task
+    # open indefinitely. Refusing to answer is treated exactly like refusing:
+    # the next candidate gets tried, and the caller keeps the original text.
+    ai_timeout_s: float = 8.0
+    #: Ceiling on one *call*, failover included. Candidate lists are long on
+    #: purpose (seven MT providers), and seven per-attempt ceilings is not a
+    #: bound a total outage can hide behind.
+    ai_retry_budget_s: float = 20.0
+    # Ceiling on the whole realtime translation call, failover included. The
+    # meeting's own budget: past this the turn is late enough that a caption
+    # with the speaker's original words is worth more than a pending one.
+    rt_translate_timeout_s: float = 5.0
+    #: How long a tripped provider is left alone before it is probed again, and
+    #: the ceiling that probe backs off to. Without a cooldown a provider that
+    #: is simply absent from this host is asked again on every turn: a measured
+    #: run here paid two refused voice probes per utterance.
+    provider_cooldown_s: float = 30.0
+    provider_max_cooldown_s: float = 600.0
+
     # realtime tuning (PDD §11.4)
     rt_target_latency_ms: float = 2500.0
     rt_stale_after_ms: float = 6000.0
@@ -161,6 +183,13 @@ class Settings(BaseSettings):
     rt_max_chunk_ms: int = 2500
     rt_session_ttl_s: int = 3600
     rt_resume_buffer_size: int = 500  # events kept per session for reconnect replay
+    #: How far behind one listener a meeting will carry before it starts
+    #: dropping the oldest frame. At 50 ms chunks this is ~6 s of audio; past it
+    #: the frames describe a turn the listener has already lost.
+    rt_send_queue_size: int = 128
+    #: A socket that has not accepted a single frame in this long is dead, not
+    #: slow, and the writer stops pretending otherwise.
+    rt_send_timeout_s: float = 10.0
 
     # --- rate limits (count/period) ---
     rate_limit_translate: str = "60/minute"
