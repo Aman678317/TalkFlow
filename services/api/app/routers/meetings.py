@@ -189,7 +189,32 @@ async def leave_meeting(
     principal: Principal | None = Depends(get_principal_optional),
     db: AsyncSession = Depends(get_db),
 ):
-    """Cleanly mark participant as left and broadcast participant.left event."""
+    """Cleanly mark participant as left and broadcast participant.left event.
+
+    Phase 3: a supplied participant_id is only honored when it belongs to THIS
+    meeting and the caller is authorized (the participant themself, a member of
+    the meeting's org, or an unauthenticated guest holding the join capability).
+    Foreign meetings/orgs get a uniform 404 — never a 403 or a silent cross-
+    tenant write (previously any participant_id from any meeting was accepted).
+    """
+    meeting = await db.get(M.Meeting, meeting_id)
+    if meeting is None:
+        raise NotFoundError("Meeting not found.")
+
+    caller_org_member = bool(
+        principal and principal.org_id and str(meeting.org_id) == str(principal.org_id)
+    )
+    own_row: M.Participant | None = None
+    if principal and principal.user_id:
+        res = await db.execute(
+            select(M.Participant).where(
+                M.Participant.meeting_id == meeting_id,
+                M.Participant.user_id == principal.user_id,
+                M.Participant.status == "joined",
+            )
+        )
+        own_row = res.scalars().first()
+
     p_id_str = body.get("participant_id")
     if not p_id_str:
         p_id_str = request.headers.get("x-participant-id") or request.query_params.get("participant_id")
@@ -199,17 +224,20 @@ async def leave_meeting(
         with contextlib.suppress(Exception):
             p_uuid = uuid.UUID(str(p_id_str))
 
-    if p_uuid is None and principal and principal.user_id:
-        res = await db.execute(
-            select(M.Participant).where(
-                M.Participant.meeting_id == meeting_id,
-                M.Participant.user_id == principal.user_id,
-                M.Participant.status == "joined",
-            )
-        )
-        p_row = res.scalars().first()
-        if p_row:
-            p_uuid = p_row.id
+    if p_uuid is not None:
+        target = await db.get(M.Participant, p_uuid)
+        is_self = bool(principal and principal.user_id and target and target.user_id == principal.user_id)
+        is_participant = own_row is not None
+        if target is None or target.meeting_id != meeting_id:
+            # Unknown or foreign-meeting participant: uniform 404, no action.
+            raise NotFoundError("Meeting not found.")
+        if not (principal is None or caller_org_member or is_self or is_participant):
+            raise NotFoundError("Meeting not found.")
+    elif own_row is not None:
+        p_uuid = own_row.id
+    else:
+        # Cannot identify who is leaving (no participant_id, no joined row).
+        raise NotFoundError("Meeting not found.")
 
     if p_uuid:
         await meeting_service.leave_participant(db, p_uuid)
