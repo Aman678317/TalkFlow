@@ -101,6 +101,7 @@ export default function MeetingRoom() {
 
   const [micOn, setMicOn] = React.useState(false);
   const [micPermissionBlocked, setMicPermissionBlocked] = React.useState(false);
+  const [micLost, setMicLost] = React.useState(false);
   const [showMicGuide, setShowMicGuide] = React.useState(false);
 
   const [cameraOn, setCameraOn] = React.useState(false);
@@ -296,6 +297,7 @@ export default function MeetingRoom() {
 
   const socketRef = React.useRef<MeetingSocket | null>(null);
   const micRef = React.useRef<MicCapture | null>(null);
+  const micRecoveringRef = React.useRef(false);
   const playerRef = React.useRef<AudioPlayer | null>(null);
   const mediaRoomStateRef = React.useRef(mediaRoom.state);
   mediaRoomStateRef.current = mediaRoom.state;
@@ -343,6 +345,13 @@ export default function MeetingRoom() {
         setSocketState(s);
         if (s === "reconnecting") setNotice("Connection lost — reconnecting. Your transcript and preferences are safe.");
         if (s === "joined") setNotice(null);
+      },
+      onQuality: (rtt) => {
+        // Measured rather than inferred: a half-second round trip is what a
+        // listener feels as translated speech arriving late, and the room must
+        // say so while it is still happening instead of after the fact.
+        if (rtt > 400) setIsDegradedNetwork(true);
+        else if (rtt < 250) setIsDegradedNetwork(false);
       },
       onBinary: (frame) => {
         const player = playerRef.current!;
@@ -778,6 +787,7 @@ export default function MeetingRoom() {
           echoCancellation: dspSettings.echoCancellation,
           noiseSuppression: dspSettings.noiseSuppression,
           autoGainControl: dspSettings.autoGainControl,
+          onLost: handleMicLost,
         }
       );
       micRef.current = mic;
@@ -789,6 +799,7 @@ export default function MeetingRoom() {
       }
       setMicOn(true);
       setMicPermissionBlocked(false);
+      setMicLost(false);
       toast.success(
         "Microphone active",
         "Speaking in " +
@@ -848,6 +859,61 @@ export default function MeetingRoom() {
     toast.success("Speaker updated", "Audio playback routed to selected device.");
   }
 
+  /**
+   * The capture track died under us — unplugged, handed to another app, or
+   * muted by the OS. Re-acquire the default input once; if that fails, say so
+   * out loud, because a microphone that stopped mid-sentence with no message
+   * is the failure users blame the room for.
+   */
+  async function handleMicLost(reason: "ended" | "mute") {
+    // A removed device can report `mute` and then `ended` for the same track.
+    // One recovery at a time, or the second attempt stops the first one's
+    // freshly opened microphone.
+    if (micRecoveringRef.current) return;
+    micRecoveringRef.current = true;
+    try {
+      await recoverMic(reason);
+    } finally {
+      micRecoveringRef.current = false;
+    }
+  }
+
+  async function recoverMic(reason: "ended" | "mute") {
+    micRef.current?.stop();
+    micRef.current = null;
+    void refreshDevices();
+    try {
+      const mic = new MicCapture();
+      await mic.start(
+        SAMPLE_RATE,
+        (frame) => socketRef.current?.sendAudio(frame),
+        {
+          echoCancellation: dspSettings.echoCancellation,
+          noiseSuppression: dspSettings.noiseSuppression,
+          autoGainControl: dspSettings.autoGainControl,
+          onLost: handleMicLost,
+        }
+      );
+      micRef.current = mic;
+      const track = mic.mediaStream?.getAudioTracks()[0];
+      if (track && mediaRoom.state === "connected") {
+        try {
+          await mediaRoom.publishMicrophone(track);
+        } catch { }
+      }
+      setMicLost(false);
+      toast.success("Microphone recovered", "Input device re-acquired — keep speaking.");
+    } catch {
+      setMicOn(false);
+      setMicLost(true);
+      socketRef.current?.sendJson({ type: "audio.stopped" });
+      toast.error(
+        reason === "mute" ? "Microphone muted by the system" : "Microphone disconnected",
+        "Your input device stopped mid-speech. Pick a microphone to keep speaking."
+      );
+    }
+  }
+
   async function restartMicWithSettings(options: {
     micId?: string;
     dsp?: { echoCancellation: boolean; noiseSuppression: boolean; autoGainControl: boolean };
@@ -870,6 +936,7 @@ export default function MeetingRoom() {
           echoCancellation: activeDsp.echoCancellation,
           noiseSuppression: activeDsp.noiseSuppression,
           autoGainControl: activeDsp.autoGainControl,
+          onLost: handleMicLost,
         }
       );
       micRef.current = mic;
@@ -879,9 +946,19 @@ export default function MeetingRoom() {
           await mediaRoom.publishMicrophone(newTrack);
         } catch { }
       }
+      setMicLost(false);
       toast.success("Audio settings updated", "Microphone DSP and input updated.");
     } catch (err: any) {
+      // The chosen device may have been unplugged between listing it and opening
+      // it, and the previous capture is already stopped by then. Saying "not
+      // switched" would leave the mic button lying about a dead microphone.
       console.warn("Could not restart mic with new settings", err);
+      micRef.current = null;
+      setMicOn(false);
+      setMicLost(true);
+      socketRef.current?.sendJson({ type: "audio.stopped" });
+      toast.error("Microphone stopped", "That input device could not be opened. Pick another one.");
+      void refreshDevices();
     }
   }
 
@@ -1100,6 +1177,7 @@ export default function MeetingRoom() {
     setP2pStreams({});
     setRemoteMedia({});
     setMicOn(false);
+    setMicLost(false);
     setPhase("lobby");
     setSocketState("connecting");
   }
@@ -1753,6 +1831,24 @@ export default function MeetingRoom() {
                   </div>
                 </div>
               )}
+            </div>
+          )}
+
+          {/* Input device disappeared mid-call (unplugged / taken by another app) */}
+          {micLost && (
+            <div className="mx-auto mb-3 w-full max-w-4xl rounded-2xl border border-amber-500/30 bg-amber-950/70 p-3 shadow-lg backdrop-blur-md flex items-center justify-between gap-3 text-amber-200" role="status">
+              <div className="flex items-center gap-3">
+                <MicOff className="h-4 w-4 shrink-0" aria-hidden />
+                <div className="text-xs">
+                  <span className="font-semibold">Microphone disconnected</span>
+                  <span className="mx-1.5 opacity-60">·</span>
+                  <span>Your input device stopped. Listeners can no longer hear you until you pick one.</span>
+                </div>
+              </div>
+              <Button size="sm" variant="secondary" onClick={() => void toggleMic()}>
+                <Mic className="h-3.5 w-3.5 mr-1" />
+                Re-enable microphone
+              </Button>
             </div>
           )}
 
