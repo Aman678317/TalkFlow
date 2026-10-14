@@ -48,6 +48,18 @@ PORT = 8766
 BASE = f"http://127.0.0.1:{PORT}"
 WS_URL = f"ws://127.0.0.1:{PORT}"
 
+# Same file the fixture writes the server's stdout/stderr to, and the same one a
+# failure message quotes from. Module scope because `Client` reports out of the
+# middle of a test body that has no handle on the subprocess.
+GOLDEN_DIR = REPO / "data" / "golden-services"
+SERVER_LOG = GOLDEN_DIR / "server.log"
+
+# What `apps/web/src/lib/ws.ts:233` does, and what the server's receive loop
+# expects: `services/api/app/realtime/ws.py:42` closes any socket that has not
+# sent a frame for RECEIVE_TIMEOUT_S = 90, so a client that joins and listens is
+# cut off with `reconnect.required` long before a slow pipeline answers.
+HEARTBEAT_S = 20
+
 MODEL_CACHE = Path(os.environ.get("MODEL_CACHE_PATH", "/tmp/globaltalk-models"))
 ARGOS_CACHE = MODEL_CACHE / "argos"
 PIPER_DIR = MODEL_CACHE / "piper"
@@ -90,7 +102,7 @@ def deployed_server():
     if not _port_free():
         pytest.skip(f"port {PORT} busy")
 
-    tmp = REPO / "data" / "golden-services"
+    tmp = GOLDEN_DIR
     tmp.mkdir(parents=True, exist_ok=True)
     db = tmp / "golden.db"
     if db.exists():
@@ -111,7 +123,8 @@ def deployed_server():
                RATE_LIMIT_AUTH="100000/minute", RATE_LIMIT_TRANSLATE="100000/minute",
                MALLOC_ARENA_MAX="2", OMP_NUM_THREADS="1",
                PYTHONPATH=str(SERVICES_API))
-    log_path = tmp / "server.log"
+    log_path = SERVER_LOG
+    log_path.unlink(missing_ok=True)
     proc = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "app.main:app",
          "--host", "127.0.0.1", "--port", str(PORT), "--log-level", "warning"],
@@ -160,6 +173,7 @@ class Client:
         self.participant_id: str | None = None
         self._queue: asyncio.Queue = asyncio.Queue()
         self._reader_task = None
+        self._ping_task = None
 
     async def connect(self, meeting_id: str, ticket: str) -> dict:
         import websockets
@@ -167,6 +181,7 @@ class Client:
             f"{WS_URL}/ws/meetings/{meeting_id}?ticket={ticket}",
             max_size=32 * 1024 * 1024, ping_interval=None)
         self._reader_task = asyncio.create_task(self._reader())
+        self._ping_task = asyncio.create_task(self._pinger())
         created = await self.expect(lambda e: e["type"] == "session.created",
                                     timeout=30)
         self.participant_id = _d(created, "participant_id")
@@ -184,6 +199,21 @@ class Client:
         except Exception:
             pass
 
+    async def _pinger(self):
+        """Keep the socket alive the way the browser does.
+
+        A listener sends nothing after its own turn, and the server's receive loop
+        times out on silence, so without this the run is defeated by an idle timer
+        rather than by the pipeline under test.
+        """
+        try:
+            while True:
+                await asyncio.sleep(HEARTBEAT_S)
+                await self.ws.send(json.dumps(
+                    {"version": 1, "type": "ping", "ts": time.time()}))
+        except Exception:
+            pass
+
     async def expect(self, pred, timeout: float = 240, what: str = "") -> dict:
         for e in self.events:
             if pred(e):
@@ -197,9 +227,28 @@ class Client:
                 break
             if pred(evt):
                 return evt
+        raise AssertionError(self._failure(what or "?", timeout))
+
+    def _failure(self, what: str, timeout: float) -> str:
+        """Name the stage that stopped, from what the server actually reported.
+
+        The bare event-type list told us only that a transcript was missing; the
+        `diagnostic` frames the server emits for every stage carry the provider,
+        the outcome and the reason, and the server log carries the traceback the
+        pipeline refused to put on the wire.
+        """
         got = [e.get("type") for e in self.events]
-        raise AssertionError(f"[{self.name}] no event matching {what or '?'} "
-                             f"within {timeout}s; saw: {got[-30:]}")
+        # Whole frames, not `data`: Tree A flattens its payload onto the frame for
+        # pipeline events but nests the heartbeat one, so picking either key alone
+        # would print `{}` for half of what the server said.
+        lines = [f"[{self.name}] no event matching {what} within {timeout:.0f}s;",
+                 f"  saw: {got[-30:]}"]
+        for e in self.events:
+            t = str(e.get("type", ""))
+            if t == "diagnostic" or "failed" in t or t in ("error", "reconnect.required"):
+                lines.append(f"  {t}: {json.dumps(e, default=str)[:600]}")
+        lines.append(f"  server log tail:\n{_server_log_tail()}")
+        return "\n".join(lines)
 
     async def speak(self, pcm: bytes) -> None:
         chunk = 3200  # 100 ms of 16 kHz mono PCM16
@@ -212,10 +261,19 @@ class Client:
             await asyncio.sleep(0.02)
 
     async def close(self):
+        if self._ping_task:
+            self._ping_task.cancel()
         if self._reader_task:
             self._reader_task.cancel()
         if self.ws:
             await self.ws.close()
+
+
+def _server_log_tail(chars: int = 4000) -> str:
+    try:
+        return SERVER_LOG.read_text(encoding="utf-8", errors="replace")[-chars:]
+    except OSError as exc:
+        return f"(unreadable: {exc})"
 
 
 def _d(evt: dict, key: str):
