@@ -23,9 +23,11 @@ path-traversal guard on local storage backend.
 
 ## WebSocket authorization
 
-JWT (org membership verified) or meeting join_token (guest scope: that meeting only).
-Close codes: 4401 unauthorized, 4404 not found, 4408 join timeout. No secrets in URLs
-besides the scoped join token; tokens are single-meeting and rotatable.
+JWT (org membership verified) or a single-use signed ticket minted from the seat's
+server-issued session key via `POST /meetings/{id}/join-ticket` (guest scope: that seat
+in that meeting only). Close codes: 4401 unauthorized, 4403 wrong room, 4404 not found,
+4408 join timeout, 4409 superseded, 4410 not joinable. Tickets expire in 120 s and are
+replay-rejected; no long-lived credential ever appears in a WebSocket URL.
 
 ## API keys
 

@@ -6,7 +6,7 @@
  * - heartbeat ping/pong with connection-quality estimate
  */
 import type { Preferences, RealtimeEvent } from "./types";
-import { getAccessToken, getApiBaseUrl } from "./api";
+import { api, getAccessToken, getApiBaseUrl } from "./api";
 
 export type BinaryFrameKind = "original" | "tts";
 export interface BinaryFrame {
@@ -21,7 +21,8 @@ type BinListener = (frame: BinaryFrame) => void;
 
 export interface MeetingSocketOptions {
   meetingId: string;
-  joinToken?: string;
+  /** server-issued seat key; every (re)connect mints a fresh single-use ticket from it */
+  sessionKey?: string;
   ticket?: string;
   displayName: string;
   preferences: Preferences;
@@ -73,6 +74,8 @@ export class MeetingSocket {
   private everJoined = false;
   private attempt = 0;
   private quickFailures = 0;
+  private mintFailures = 0;
+  private pendingTicket: string | null = null;
   private connectStartedAt = 0;
   private closedByUser = false;
   private pingTimer: number | undefined;
@@ -85,61 +88,40 @@ export class MeetingSocket {
 
   connect() {
     this.closedByUser = false;
-    this.open();
+    void this.open();
   }
 
-  private wsUrl(): string {
-    const proto = location.protocol === "https:" ? "wss" : "ws";
-    const params = new URLSearchParams();
-    if (this.opts.ticket) {
-      params.set("ticket", this.opts.ticket);
-    } else if (this.opts.joinToken) {
-      // An explicit guest key always wins over the tab's JWT so a signed-in
-      // user can open a separate guest seat (second person, same browser).
-      params.set("join_token", this.opts.joinToken);
-    } else {
-      const jwt = getAccessToken();
-      if (jwt) {
-        params.set("token", jwt);
-      } else {
-        let jt: string | undefined;
-        try {
-          jt = sessionStorage.getItem(`gt_guest_${this.opts.meetingId}`) || undefined;
-          if (!jt) {
-            jt = `guest-${Math.random().toString(36).substring(2, 10)}${Date.now().toString(36)}`;
-            sessionStorage.setItem(`gt_guest_${this.opts.meetingId}`, jt);
-          }
-        } catch {
-          // ignore storage errors
-        }
-        if (jt) params.set("join_token", jt);
-      }
+  private async mintTicket(): Promise<string | null> {
+    if (!this.opts.sessionKey) return null;
+    try {
+      const r = await api<{ ticket: string }>(
+        `/api/v1/meetings/${this.opts.meetingId}/join-ticket`,
+        { method: "POST", body: { session_key: this.opts.sessionKey } },
+      );
+      return r?.ticket ?? null;
+    } catch {
+      return null;
     }
-    const q = params.toString();
-    // Resolve the API host exactly like REST traffic does (api.ts). A Vercel
-    // preview build has no baked VITE_API_BASE_URL, so without this the REST
-    // calls would hit same-origin while the WS fell back to Render and failed.
-    const rawBase = getApiBaseUrl();
-    let host = location.host;
-    let customProto = proto;
-    if (rawBase) {
-      try {
-        const parsed = new URL(rawBase);
-        host = parsed.host;
-        customProto = parsed.protocol === "https:" ? "wss" : "ws";
-      } catch {
-        host = rawBase.replace(/^https?:\/\//, "").replace(/\/+$/, "");
-      }
-    }
-    return `${customProto}://${host}/ws/meetings/${this.opts.meetingId}${q ? `?${q}` : ""}`;
   }
 
-  private setState(s: SocketState) {
-    this.opts.onStateChange(s);
-  }
-
-  private open() {
+  private async open() {
     this.setState(this.everJoined ? "reconnecting" : "connecting");
+    if (this.opts.sessionKey) {
+      // Tickets are single-use and expire in 120s, so every (re)connect mints
+      // a fresh one; the WS URL never carries a long-lived credential.
+      const ticket = await this.mintTicket();
+      if (!ticket) {
+        this.mintFailures += 1;
+        if (this.mintFailures >= 5) {
+          this.setState("error");
+          return;
+        }
+        this.scheduleReconnect();
+        return;
+      }
+      this.mintFailures = 0;
+      this.pendingTicket = ticket;
+    }
     const ws = new WebSocket(this.wsUrl());
     ws.binaryType = "arraybuffer";
     this.ws = ws;
@@ -215,6 +197,40 @@ export class MeetingSocket {
     ws.onerror = () => {
       /* onclose follows; state handled there */
     };
+  }
+
+  private wsUrl(): string {
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    const params = new URLSearchParams();
+    if (this.opts.sessionKey && this.pendingTicket) {
+      params.set("ticket", this.pendingTicket);
+    } else if (this.opts.ticket) {
+      params.set("ticket", this.opts.ticket);
+    } else {
+      const jwt = getAccessToken();
+      if (jwt) params.set("token", jwt);
+    }
+    const q = params.toString();
+    // Resolve the API host exactly like REST traffic does (api.ts). A Vercel
+    // preview build has no baked VITE_API_BASE_URL, so without this the REST
+    // calls would hit same-origin while the WS fell back to Render and failed.
+    const rawBase = getApiBaseUrl();
+    let host = location.host;
+    let customProto = proto;
+    if (rawBase) {
+      try {
+        const parsed = new URL(rawBase);
+        host = parsed.host;
+        customProto = parsed.protocol === "https:" ? "wss" : "ws";
+      } catch {
+        host = rawBase.replace(/^https?:\/\//, "").replace(/\/+$/, "");
+      }
+    }
+    return `${customProto}://${host}/ws/meetings/${this.opts.meetingId}${q ? `?${q}` : ""}`;
+  }
+
+  private setState(s: SocketState) {
+    this.opts.onStateChange(s);
   }
 
   private scheduleReconnect() {

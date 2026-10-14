@@ -381,7 +381,7 @@ async def _golden_ws_demo(c: httpx.AsyncClient, join_a: dict, join_c: dict,
     r = await c.post(f"/api/v1/meetings/{meeting_id}/join", headers=hdr(access),
                      json={"display_name": "Listener B", "speak_lang": "en",
                            "hear_lang": "hi", "audio_mode": "translated",
-                           "guest_key": "b-seat"})
+                           "as_guest": True})
     join_b = r.json()
     ok("B joins as guest seat", r.status_code == 200
        and join_b["participant_id"] != join_a["participant_id"], r.text[:200])
