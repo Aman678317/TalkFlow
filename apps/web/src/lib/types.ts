@@ -38,7 +38,6 @@ export interface Meeting {
   title: string;
   status: string;
   room_name: string;
-  join_token: string;
   created_at: string;
   started_at?: string | null;
   ended_at?: string | null;
@@ -52,7 +51,10 @@ export interface JoinMeetingRequest {
   speak_lang: string;
   hear_lang: string;
   audio_mode?: AudioMode;
-  guest_key?: string;
+  /** server-issued seat continuation key ("" = new seat) */
+  session_key?: string;
+  /** open an additional unbound guest seat (logged-in user, second person) */
+  as_guest?: boolean;
 }
 
 export interface JoinMeetingResponse {
@@ -111,8 +113,10 @@ export type RealtimeEventType =
   | "tts.started" | "tts.chunk" | "tts.completed" | "translation.tts.ready" | "audio.published"
   | "caption.updated" | "language.changed"
   | "chat.message" | "chat.translation"
-  | "quality.degraded" | "quality.latency" | "translation.failed" | "translation.error"
-  | "reconnect.required" | "error" | "pong" | "signal";
+  | "media.state"
+  | "quality.degraded" | "quality.latency" | "latency.report" | "translation.failed" | "translation.error"
+  | "playback.flush"
+  | "reconnect.required" | "error" | "pong" | "signal" | "diagnostic";
 
 export interface RealtimeEvent {
   version: number;

@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { api, ApiError, setTokens, setUnauthorizedHandler, persistTokens, loadPersistedTokens } from "../lib/api";
+import { api, ApiError, setTokens, setUnauthorizedHandler, getAccessToken, tryRefresh } from "../lib/api";
 
 export interface AuthUser {
   id: string;
@@ -35,7 +35,10 @@ interface AuthState {
   initialized: boolean;
   status: "loading" | "authed" | "unauthed";
   login: (email: string, password: string) => Promise<void>;
-  socialLogin: (provider: "google" | "github" | "apple", details?: { email?: string; name?: string }) => Promise<void>;
+  socialLogin: (
+    provider: "google" | "github" | "apple",
+    payload?: { token?: string; code?: string; nonce?: string; redirect_uri?: string },
+  ) => Promise<void>;
   signup: (data: { email: string; password: string; full_name: string; organization_name: string }) => Promise<void>;
   logout: () => Promise<void>;
   refreshMe: () => Promise<void>;
@@ -51,32 +54,34 @@ function normalizeUser(u: any): AuthUser | null {
   };
 }
 
-function getInitialAuth() {
+function getCachedIdentity() {
+  // Cache is identity-only (name/org for instant paint). It is NEVER the source of
+  // "am I logged in?" — that is decided by the cookie-based refresh in refreshMe().
   try {
     if (typeof localStorage === "undefined") {
-      return { user: null, org: null, authed: false };
+      return { user: null as AuthUser | null, org: null as AuthOrg | null };
     }
     const rawUser = localStorage.getItem("gt.local_user");
     const rawOrg = localStorage.getItem("gt.local_org");
-    const hasTokens = Boolean(localStorage.getItem("gt.access") || localStorage.getItem("gt.refresh"));
-    const user = rawUser && hasTokens ? JSON.parse(rawUser) : null;
-    const org = rawOrg && hasTokens ? JSON.parse(rawOrg) : null;
-    return { user, org, authed: Boolean(user && hasTokens) };
+    return {
+      user: rawUser ? (JSON.parse(rawUser) as AuthUser) : null,
+      org: rawOrg ? (JSON.parse(rawOrg) as AuthOrg) : null,
+    };
   } catch {
-    return { user: null, org: null, authed: false };
+    return { user: null as AuthUser | null, org: null as AuthOrg | null };
   }
 }
 
-const initialAuth = getInitialAuth();
+const cachedIdentity = getCachedIdentity();
 
 export const useAuth = create<AuthState>((set, get) => ({
-  user: initialAuth.user,
-  org: initialAuth.org,
-  organizations: initialAuth.org ? [{ org: initialAuth.org, role: "owner" }] : [],
+  user: cachedIdentity.user,
+  org: cachedIdentity.org,
+  organizations: cachedIdentity.org ? [{ org: cachedIdentity.org, role: "owner" }] : [],
   role: "owner",
   permissions: [],
-  initialized: initialAuth.authed,
-  status: initialAuth.authed ? "authed" : "loading",
+  initialized: false,
+  status: "loading",
 
   async login(email, password) {
     const r = await api("/api/v1/auth/login", {
@@ -84,8 +89,7 @@ export const useAuth = create<AuthState>((set, get) => ({
       body: { email, password },
       timeoutMs: 10000,
     });
-    setTokens(r.tokens.access_token, r.tokens.refresh_token);
-    persistTokens();
+    setTokens(r.tokens.access_token);
     const user = normalizeUser(r.user);
     const org = r.membership?.org ?? null;
     if (user) localStorage.setItem("gt.local_user", JSON.stringify(user));
@@ -102,14 +106,18 @@ export const useAuth = create<AuthState>((set, get) => ({
     void get().refreshMe().catch(() => {});
   },
 
-  async socialLogin(provider, details) {
+  async socialLogin(
+    provider: "google" | "github" | "apple",
+    payload?: { token?: string; code?: string; nonce?: string; redirect_uri?: string },
+  ) {
     const r = await api("/api/v1/auth/social-login", {
       method: "POST",
-      body: { provider, ...details },
+      // Phase 2: the server only accepts provider-verified credentials. Any
+      // client-asserted email/name is neither sent nor honored.
+      body: { provider, ...(payload ?? {}) },
       timeoutMs: 10000,
     });
-    setTokens(r.tokens.access_token, r.tokens.refresh_token);
-    persistTokens();
+    setTokens(r.tokens.access_token);
     const user = normalizeUser(r.user);
     const org = r.membership?.org ?? null;
     if (user) localStorage.setItem("gt.local_user", JSON.stringify(user));
@@ -137,8 +145,7 @@ export const useAuth = create<AuthState>((set, get) => ({
       },
       timeoutMs: 10000,
     });
-    setTokens(r.tokens.access_token, r.tokens.refresh_token);
-    persistTokens();
+    setTokens(r.tokens.access_token);
     const user = normalizeUser(r.user);
     const org = r.organization ?? r.membership?.org ?? null;
     if (user) localStorage.setItem("gt.local_user", JSON.stringify(user));
@@ -158,9 +165,7 @@ export const useAuth = create<AuthState>((set, get) => ({
     try {
       await api("/api/v1/auth/logout", { method: "POST", body: {}, timeoutMs: 3000 });
     } catch { /* best effort */ }
-    setTokens(null, null);
-    localStorage.removeItem("gt.access");
-    localStorage.removeItem("gt.refresh");
+    setTokens(null);
     localStorage.removeItem("gt.local_user");
     localStorage.removeItem("gt.local_org");
     localStorage.setItem("gt.logged_out", "true");
@@ -176,20 +181,34 @@ export const useAuth = create<AuthState>((set, get) => ({
   },
 
   async refreshMe() {
-    loadPersistedTokens();
+    // Silent cookie bootstrap. This tab holds no in-memory access token on a fresh
+    // load, so if the browser still carries a valid HttpOnly refresh cookie, exchange
+    // it for an access token before querying /me. An explicit logout (gt.logged_out)
+    // skips the bootstrap until the user signs back in. No credential is read from
+    // storage — presence of the cookie is the only signal.
+    const loggedOut =
+      typeof localStorage !== "undefined" && localStorage.getItem("gt.logged_out");
+    if (!getAccessToken() && !loggedOut) {
+      await tryRefresh();
+    }
 
-    const hasStoredTokens = Boolean(
-      typeof localStorage !== "undefined" &&
-      (localStorage.getItem("gt.access") || localStorage.getItem("gt.refresh"))
-    );
-    const hasCachedUser = Boolean(
-      typeof localStorage !== "undefined" && localStorage.getItem("gt.local_user")
-    );
-    if (!hasStoredTokens && !hasCachedUser) {
-      set((state) => ({
+    // No access token (no valid cookie) and no explicit sign-back-in: there is no
+    // live session. Drop any stale cached identity so we never paint a previous
+    // user, then resolve as unauthed.
+    if (!getAccessToken()) {
+      if (typeof localStorage !== "undefined") {
+        localStorage.removeItem("gt.local_user");
+        localStorage.removeItem("gt.local_org");
+      }
+      set({
+        user: null,
+        org: null,
+        organizations: [],
+        role: null,
+        permissions: [],
         initialized: true,
-        status: state.user ? "authed" : "unauthed",
-      }));
+        status: "unauthed",
+      });
       return;
     }
 
@@ -213,8 +232,7 @@ export const useAuth = create<AuthState>((set, get) => ({
     } catch (err: any) {
       if (err instanceof ApiError && err.status === 401) {
         // Prevent displaying stale cached identities when authentication fails
-        setTokens(null, null);
-        persistTokens();
+        setTokens(null);
         localStorage.removeItem("gt.local_user");
         localStorage.removeItem("gt.local_org");
         set({
@@ -238,8 +256,7 @@ export const useAuth = create<AuthState>((set, get) => ({
 }));
 
 setUnauthorizedHandler(() => {
-  setTokens(null, null);
-  persistTokens();
+  setTokens(null);
   if (typeof localStorage !== "undefined") {
     localStorage.removeItem("gt.local_user");
     localStorage.removeItem("gt.local_org");

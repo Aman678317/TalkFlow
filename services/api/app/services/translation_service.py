@@ -28,7 +28,6 @@ from dataclasses import dataclass, field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import context
 from app.ai import ai
 from app.db import models as M
 from app.errors import UnsupportedLanguageError, ValidationError

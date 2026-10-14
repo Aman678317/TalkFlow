@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+from pathlib import Path
 
 from ai.interfaces import ProviderUnavailable, TranslationResult
 
@@ -92,20 +93,35 @@ def evict_all() -> None:
     gc.collect()
 
 
+def _use_cache_dir(cache: str) -> None:
+    """Point Argos at our model cache for both reading and installing packages.
+
+    Argos only honours `ARGOS_PACKAGES_DIR` while `argostranslate.settings` is first
+    imported, and this module may import it before the cache path is known — so the
+    env var alone is not enough here; the resolved module attributes are re-pointed too.
+    """
+    os.environ["ARGOS_PACKAGES_DIR"] = cache
+    from argostranslate import settings as argos_settings
+    root = Path(cache)
+    root.mkdir(parents=True, exist_ok=True)
+    argos_settings.package_data_dir = root
+    if root not in argos_settings.package_dirs:
+        argos_settings.package_dirs.insert(0, root)
+
+
 def _ensure_installed():
     global _installed_pairs
     with _lock:
         if _installed_pairs is not None:
             return _installed_pairs
+        from globaltalk.core.config import settings
+        cache = str(settings.resolve(settings.model_cache_path) / "argos")
+        os.environ.setdefault("ARGOS_DEVICE_TYPE", "cpu")
         try:
             _at, argostranslate_package = _import_argos()
         except ImportError as exc:
             raise ProviderUnavailable("argos", f"not installed: {exc}")
-        from globaltalk.core.config import settings
-        os.environ.setdefault("ARGOS_DEVICE_TYPE", "cpu")
-        cache = str(settings.resolve(settings.model_cache_path) / "argos")
-        os.makedirs(cache, exist_ok=True)
-        os.environ["ARGOS_PACKAGE_FOLDER"] = cache
+        _use_cache_dir(cache)
         try:
             argostranslate_package.update_package_index()
             available = argostranslate_package.get_available_packages()
@@ -130,6 +146,27 @@ def _ensure_installed():
                     pass  # pair stays NOT_CONFIGURED — registry honesty over optimism
         _installed_pairs = have
         return have
+
+
+_PIVOT_HUBS = ("en", "es", "zh")  # the languages Argos indexes the most pairs around
+
+
+def _pivot_hub(src: str, tgt: str, pairs: set[tuple[str, str]]) -> str | None:
+    """Intermediate language for a pair Argos ships no direct model for, else None.
+
+    Argos refuses to translate an uninstalled pair outright (its own lookup is
+    single-hop), so Chinese->Hindi has to chain zh->en->hi here. Every such route is
+    reported `pivoted=True` + `pivoted_via_intermediate`, because routing policy is
+    allowed to reject two-hop output for a premium realtime lane.
+    """
+    if (src, tgt) in pairs:
+        return None
+    for hub in _PIVOT_HUBS:
+        if hub in (src, tgt):
+            continue
+        if (src, hub) in pairs and (hub, tgt) in pairs:
+            return hub
+    return None
 
 
 class ArgosTranslation:
@@ -159,25 +196,32 @@ class ArgosTranslation:
             return TranslationResult(text=text, source_language=src, target_language=tgt,
                                      provider=self.name, model="identity")
         started = time.perf_counter()
-        from ai.memory_guard import is_lowmem
-        if is_lowmem():
-            return self._translate_subprocess(text, src, tgt, started, pairs)
-        try:
-            pivoted = (src, tgt) not in pairs
-            translation = _get_translation(src, tgt)
-            translated = translation.translate(text)
-        except Exception as exc:
-            raise ProviderUnavailable(self.name, f"translate failed: {exc}")
+        hub = _pivot_hub(src, tgt, pairs)
+        out = text
+        models = []
+        for s, t in ([(src, hub), (hub, tgt)] if hub else [(src, tgt)]):
+            out, model = self._hop(out, s, t)
+            models.append(model)
+        pivoted = hub is not None or (src, tgt) not in pairs
         return TranslationResult(
-            text=translated, source_language=src, target_language=tgt,
-            provider=self.name, model=f"argos-{src}-{tgt}",
+            text=out, source_language=src, target_language=tgt,
+            provider=self.name, model="argos-" + "+".join(models),
             latency_ms=(time.perf_counter() - started) * 1000,
             confidence=0.9 if not pivoted else 0.6,
             quality_flags=(["pivoted_via_intermediate"] if pivoted else []),
             pivoted=pivoted)
 
-    def _translate_subprocess(self, text: str, src: str, tgt: str, started: float,
-                              pairs: set) -> TranslationResult:
+    def _hop(self, text: str, src: str, tgt: str) -> tuple[str, str]:
+        """One installed pair, in-process or in a subprocess depending on RAM headroom."""
+        from ai.memory_guard import is_lowmem
+        if is_lowmem():
+            return self._translate_subprocess(text, src, tgt), f"{src}-{tgt}(subprocess)"
+        try:
+            return _get_translation(src, tgt).translate(text), f"{src}-{tgt}"
+        except Exception as exc:
+            raise ProviderUnavailable(self.name, f"translate failed: {exc}")
+
+    def _translate_subprocess(self, text: str, src: str, tgt: str) -> str:
         """Low-RAM mode: fresh subprocess per call; ~5s cold but bounded memory.
 
         A module-level lock serializes MT subprocesses: two concurrent 530MB model
@@ -223,11 +267,4 @@ class ArgosTranslation:
                 out = json.loads(proc.stdout.decode("utf-8").strip().splitlines()[-1])
             except (json.JSONDecodeError, IndexError) as exc:
                 raise ProviderUnavailable(self.name, f"bad subprocess output: {exc}")
-        pivoted = bool(out.get("pivoted")) or (src, tgt) not in pairs
-        return TranslationResult(
-            text=out["text"], source_language=src, target_language=tgt,
-            provider=self.name, model=f"argos-{src}-{tgt}(subprocess)",
-            latency_ms=(time.perf_counter() - started) * 1000,
-            confidence=0.9 if not pivoted else 0.6,
-            quality_flags=(["pivoted_via_intermediate"] if pivoted else []),
-            pivoted=pivoted)
+        return out["text"]

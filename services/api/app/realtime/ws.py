@@ -49,9 +49,10 @@ async def realtime_ws(
     meeting_id: str = "",
     ticket: str = Query(default=""),
     token: str = Query(default=""),
-    join_token: str = Query(default=""),
 ):
-    # ---- authenticate via ticket, JWT access token, or join_token ------- #
+    # ---- authenticate via signed ticket or member JWT ---------------------- #
+    # (Phase 4: the static guest join_token is gone — guests mint single-use
+    # tickets from their server-issued session_key via POST /join-ticket.)
     user_id: uuid.UUID | None = None
     participant_id: uuid.UUID | None = None
     target_meeting_id: uuid.UUID | None = None
@@ -82,11 +83,8 @@ async def realtime_ws(
         except Exception as e:
             await ws.close(code=4401, reason=f"Invalid token: {e}")
             return
-    elif join_token:
-        # Proceed to validate existing participant with matching guest_key
-        pass
     else:
-        await ws.close(code=4401, reason="Authentication required (valid ticket, token, or join_token required)")
+        await ws.close(code=4401, reason="Authentication required (valid ticket or token required)")
         return
 
     async with db_session() as db:
@@ -119,22 +117,10 @@ async def realtime_ws(
                     await ws.close(code=4403, reason="Forbidden: not a member of the meeting organization")
                     return
                 dname = (user.name if user and user.name else (user.email.split("@")[0] if user else "Participant"))
-                from app.services import meeting_service
                 participant, _, _ = await meeting_service.join_meeting(
                     db, meeting, user_id=user_id, display_name=dname,
                     speak_lang="auto", hear_lang="en", audio_mode="translated"
                 )
-        elif join_token and target_meeting_id is not None:
-            res = await db.execute(
-                select(M.Participant).where(
-                    M.Participant.meeting_id == target_meeting_id,
-                    M.Participant.guest_key == join_token,
-                )
-            )
-            participant = res.scalars().first()
-            if participant is None:
-                await ws.close(code=4401, reason="Invalid guest join token. Please join meeting via REST join endpoint first.")
-                return
 
         if participant is None:
             await ws.close(code=4404, reason="participant not found")
@@ -323,23 +309,13 @@ async def realtime_ws(
                     {"participant_id": str(rp.participant_id)},
                     to=[v for v in session.participants.values() if v.connected])
             # Mark participant status as left in database so GET /participants stays clean
-            with contextlib.suppress(Exception):
+            try:
                 async with db_session() as db:
                     await meeting_service.leave_participant(db, rp.participant_id)
+            except Exception:
+                log.exception("failed to mark participant %s as left", rp.participant_id)
         log.info("ws closed for participant %s (session %s)", rp.participant_id,
                  session.session_id)
-
-
-def _auth(ticket: str, meeting_id: str) -> tuple[str, uuid.UUID]:
-    if not ticket:
-        raise AuthenticationError("Missing realtime ticket.")
-    try:
-        sid, pid = verify_session_ticket(ticket, consume=True)
-        return sid, uuid.UUID(pid)
-    except AuthenticationError:
-        raise
-    except Exception as e:
-        raise AuthenticationError(f"Invalid ticket: {e}")
 
 
 def _dev_flags() -> dict:
@@ -457,8 +433,8 @@ async def _handle_event(ws: WebSocket, session, rp: RtParticipant, event) -> Non
         hear = data.get("hear_lang") or data.get("listening_language")
         audio_mode = data.get("audio_mode")
         captions = data.get("captions_enabled")
+        previous_hear_lang = rp.hear_lang
         async with db_session() as db:
-            from app.services import meeting_service
             pref = await meeting_service.update_preference(
                 db, rp.participant_id, speak_lang=speak, hear_lang=hear,
                 audio_mode=audio_mode, captions_enabled=captions)
@@ -470,6 +446,13 @@ async def _handle_event(ws: WebSocket, session, rp: RtParticipant, event) -> Non
             rp.audio_mode = audio_mode
         if captions is not None:
             rp.captions_enabled = bool(captions)
+        # Translated audio already in flight was made for the language this
+        # listener just left. Scope matters: it stops their playback and marks
+        # their (recipient, language) pair stale, and nobody else's delivery.
+        if rp.hear_lang != previous_hear_lang and previous_hear_lang:
+            await pipe.recipient_changed(
+                rp.participant_id, previous_language=previous_hear_lang,
+                new_language=rp.hear_lang)
         await manager.broadcast(session, ServerEventType.LANGUAGE_CHANGED, {
             "participant_id": str(rp.participant_id),
             "display_name": rp.display_name,

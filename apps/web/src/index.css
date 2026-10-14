@@ -14,6 +14,17 @@
   --dl-focus:       #0A66C2;
   --dl-radius:      10px;
   --sidebar-w:      230px;
+
+  /* Apple-inspired material + elevation */
+  --material-bg:      rgba(255, 255, 255, 0.72);
+  --material-border:  rgba(15, 43, 70, 0.08);
+  --material-blur:    20px;
+
+  /* House motion curves (used by CSS transitions; JS springs live in lib/motion.ts) */
+  --ease-emphasized:  cubic-bezier(0.2, 0, 0, 1);
+  --ease-standard:    cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast:         150ms;
+  --dur-medium:       250ms;
 }
 
 /* ─── Base ─────────────────────────────────────────────────────── */
@@ -26,12 +37,23 @@ body {
   font-size: 14px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
+
+/* Apple-style optical tracking: tighten as type grows (WWDC "Details of UI Typography") */
+h1 { letter-spacing: -0.022em; }
+h2 { letter-spacing: -0.017em; }
+h3 { letter-spacing: -0.012em; }
+h1, h2, h3, h4 { text-wrap: balance; }
 
 *:focus-visible {
   outline: 2px solid var(--dl-focus);
   outline-offset: 2px;
   border-radius: 6px;
+}
+
+::selection {
+  background: rgba(10, 102, 194, 0.16);
 }
 
 /* ─── Scrollbar ─────────────────────────────────────────────────── */
@@ -56,6 +78,21 @@ body {
     box-shadow: 0 1px 3px rgba(15,43,70,.05), 0 0 0 1px #E4E7EB;
   }
 
+  /* Frosted translucent material (Apple HIG: content scrolls under chrome) */
+  .material-bar {
+    background: var(--material-bg);
+    backdrop-filter: blur(var(--material-blur)) saturate(180%);
+    -webkit-backdrop-filter: blur(var(--material-blur)) saturate(180%);
+    border-bottom: 1px solid var(--material-border);
+  }
+  @media (prefers-reduced-transparency: reduce) {
+    .material-bar {
+      background: #fff;
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
+  }
+
   /* Labels */
   .dl-label {
     @apply block text-xs font-semibold uppercase tracking-wider text-dl-muted mb-1.5;
@@ -65,8 +102,10 @@ body {
   .dl-input {
     @apply w-full rounded-xl border border-dl-border bg-white px-3 py-2 text-sm text-dl-navy
            placeholder:text-dl-faint
-           focus:border-dl-blue focus:ring-2 focus:ring-dl-blue/20
-           transition disabled:opacity-50 disabled:cursor-not-allowed;
+           focus:border-dl-blue focus:ring-4 focus:ring-dl-blue/10
+           disabled:opacity-50 disabled:cursor-not-allowed;
+    transition: border-color var(--dur-fast) var(--ease-standard),
+                box-shadow var(--dur-fast) var(--ease-standard);
   }
 
   /* Language pill button (inactive) */
@@ -105,6 +144,26 @@ body {
   /* Chip / badge */
   .dl-chip {
     @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-medium;
+  }
+
+  /* gt-* vocabulary (used by auth pages and ui/index primitives) — previously undefined */
+  .gt-card {
+    @apply rounded-2xl border border-dl-border bg-white shadow-card;
+  }
+  .gt-label {
+    @apply mb-1.5 block text-sm font-medium text-slate-700;
+  }
+  .gt-input {
+    @apply w-full rounded-xl border border-dl-border bg-white px-3 py-2 text-sm text-dl-navy
+           placeholder:text-dl-faint
+           focus:border-dl-blue focus:ring-4 focus:ring-dl-blue/10
+           disabled:opacity-50 disabled:cursor-not-allowed;
+    transition: border-color var(--dur-fast) var(--ease-standard),
+                box-shadow var(--dur-fast) var(--ease-standard);
+  }
+  .gt-chip {
+    @apply inline-flex items-center gap-1 rounded-full border border-dl-border bg-dl-bg-alt
+           px-2.5 py-0.5 text-[11px] font-medium text-dl-muted;
   }
 }
 

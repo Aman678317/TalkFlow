@@ -34,23 +34,31 @@ export default function ChatRooms() {
     enabled: !!activeId,
   });
 
+  const activeMeeting = (meetingsQ.data ?? []).find((m) => m.id === activeId);
+  const roomEnded = !!activeMeeting && activeMeeting.status === "ended";
+
+  function pickTranslation(row: any): string | undefined {
+    const t = row.translations ?? row.translations_json ?? {};
+    const entry = t[listenLang];
+    return typeof entry === "string" ? entry : entry?.text || undefined;
+  }
+
   React.useEffect(() => {
     if (historyQ.data) {
       setLines(historyQ.data.map((m) => ({
-        id: m.id, sender: m.sender, original: m.original_text, language: m.language,
-        translated: m.translated_text ?? undefined, mine: false,
+        id: m.id, sender: m.sender_name, original: m.original_text, language: m.detected_lang,
+        translated: pickTranslation(m), mine: false,
       })));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [historyQ.data]);
 
   React.useEffect(() => {
-    if (!activeId) return;
-    const meeting = (meetingsQ.data ?? []).find((m) => m.id === activeId);
-    if (!meeting) return;
+    socketRef.current = null;
+    setConnected(false);
+    if (!activeId || !activeMeeting || roomEnded) return;
     const socket = new MeetingSocket({
       meetingId: activeId,
-      joinToken: meeting.join_token,
       displayName: user?.full_name || "Guest",
       preferences: {
         speaking_language: "AUTO", listening_language: listenLang,
@@ -60,14 +68,21 @@ export default function ChatRooms() {
       onBinary: () => { /* chat-only */ },
       onEvent: (evt: RealtimeEvent) => {
         if (evt.type === "chat.message") {
-          setLines((prev) => prev.some((l) => l.id === evt.message_id) ? prev : [...prev, {
-            id: evt.message_id as string, sender: (evt.display_name as string) || "?",
-            original: evt.original_text as string, language: (evt.language as string) || "",
+          const d: any = (evt as any).data ?? {};
+          const id = (d.id ?? d.message_id) as string;
+          if (!id) return;
+          const translations: any = d.translations ?? {};
+          const entry = translations[listenLang];
+          setLines((prev) => prev.some((l) => l.id === id) ? prev : [...prev, {
+            id, sender: d.sender_name ?? d.display_name ?? "?",
+            original: d.original_text ?? "", language: d.detected_lang ?? "",
+            translated: typeof entry === "string" ? entry : entry?.text || undefined,
             mine: false,
           }]);
         } else if (evt.type === "chat.translation") {
+          const d: any = (evt as any).data ?? {};
           setLines((prev) => prev.map((l) =>
-            l.id === evt.message_id ? { ...l, translated: evt.text as string } : l));
+            l.id === d.message_id ? { ...l, translated: d.text as string } : l));
         }
       },
     });
@@ -79,11 +94,27 @@ export default function ChatRooms() {
 
   React.useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [lines]);
 
-  function send(e: React.FormEvent) {
+  async function send(e: React.FormEvent) {
     e.preventDefault();
-    if (!draft.trim()) return;
-    socketRef.current?.sendChat(draft.trim());
-    setDraft("");
+    const text = draft.trim();
+    if (!text || !activeId) return;
+    if (socketRef.current && connected) {
+      socketRef.current.sendChat(text);
+      setDraft("");
+      return;
+    }
+    // REST fallback keeps chat working when the live socket is absent (ended room)
+    // or still connecting; the draft is kept on failure so nothing is lost.
+    try {
+      const msg = await api<any>(`/api/v1/meetings/${activeId}/chat`, {
+        method: "POST", body: { text, target_langs: [listenLang] },
+      });
+      setDraft("");
+      setLines((prev) => prev.some((l) => l.id === msg.id) ? prev : [...prev, {
+        id: msg.id, sender: msg.sender_name, original: msg.original_text,
+        language: msg.detected_lang, translated: pickTranslation(msg), mine: true,
+      }]);
+    } catch { /* keep draft for retry */ }
   }
 
   return (
@@ -107,7 +138,9 @@ export default function ChatRooms() {
         <Card className="flex h-[70vh] flex-col !p-0" title={
           <span className="flex items-center gap-2">
             {(meetingsQ.data ?? []).find((m) => m.id === activeId)?.title}
-            <Badge tone={connected ? "good" : "warn"}>{connected ? "● connected" : "connecting…"}</Badge>
+            <Badge tone={connected ? "good" : roomEnded ? "neutral" : "warn"}>
+              {connected ? "● connected" : roomEnded ? "meeting ended · history" : "connecting…"}
+            </Badge>
           </span>}
           action={
             <label className="flex items-center gap-1.5 text-xs text-ink-500">
@@ -137,7 +170,7 @@ export default function ChatRooms() {
           <form onSubmit={send} className="flex gap-2 border-t border-ink-100 p-3">
             <Input value={draft} onChange={(e) => setDraft(e.target.value)} aria-label="Chat message"
                    placeholder="Write in any language — readers see it in theirs" className="flex-1" />
-            <Button type="submit" disabled={!connected || !draft.trim()}>Send</Button>
+            <Button type="submit" disabled={!draft.trim()}>Send</Button>
           </form>
         </Card>
       ) : (

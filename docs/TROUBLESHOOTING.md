@@ -29,8 +29,10 @@ Japanese TTS needs `pyopenjtalk` (source build); Marathi has no open voice yet �
 shows "captions" next to those languages and emits `quality.degraded` (recoverable).
 
 **WebSocket closes immediately (4401/4404/4408)**
-4401: bad/expired JWT or join_token. 4404: meeting id wrong. 4408: client didn't send
-`session.join` within 15 s. Guest links use `?join=<token>` from Meetings → Copy invite.
+4401: bad/expired JWT or ticket — the client re-mints a ticket from its seat session
+key and retries. 4404: meeting id wrong. 4408: client didn't send `session.join` within
+15 s. Invite links carry no token; the seat is created on join and its session key
+stays in the joining tab only.
 
 **Reconnect duplicates messages?**
 It shouldn't: events carry monotonic `sequence`; resume replays only `> last_sequence`.
@@ -53,3 +55,17 @@ The HF repo is gated from some networks — Kokoro stays OPTIONAL; Piper is the 
 **LiveKit NOT_CONFIGURED**
 Expected without LIVEKIT_* env; the platform runs the WebSocket transport. For prod,
 set LIVEKIT_URL/API_KEY/API_SECRET and start the livekit service (compose file included).
+
+**"Connected · Realtime Translation Active" but no translated audio**
+Translated-speech-not-being-heard in a 2-person meeting. Almost always one of:
+1. `faster-whisper` not in `requirements.txt` → STT silently falls to `dev_text`
+   and returns empty transcripts; no `translation.final` fan-out follows.
+2. Render disk is ephemeral → model weights wiped each redeploy → cold-start
+   download hangs / OOMs.
+3. Render starter plan (512 MB) is too small for `faster-whisper small`.
+4. Piper binary frame issue (fixed in `fix/share-link-p2p-default-camera`):
+   backend emitted WAV bytes; frontend treated them as raw PCM16. Solution
+   ships in commit `7eb472f`; verify by checking `MeetingRoom.tsx` calls
+   `player.enqueueWav` (not `enqueuePcm16`) for the `0x54` tag.
+
+Full operator checklist: `docs/REALTIME_DEPLOY_REQUIREMENTS.md`.

@@ -13,6 +13,18 @@ import pytest
 from app.config import settings
 
 
+@pytest.fixture(autouse=True)
+def _opt_in_mock_social_tokens():
+    """Mock/unsigned provider tokens are only accepted behind the explicit
+    allow_test_auth opt-in. This suite tests the mock-provider path, so it opts in
+    on the exact settings object the social service reads, then restores it."""
+    import app.services.social_auth_service as _svc
+    prev = _svc.settings.allow_test_auth
+    _svc.settings.allow_test_auth = True
+    yield
+    _svc.settings.allow_test_auth = prev
+
+
 def test_social_login_rejects_missing_credential(services_app_client):
     res = services_app_client.post("/api/v1/auth/social-login", json={
         "provider": "google",

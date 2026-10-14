@@ -1,10 +1,12 @@
 import React from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
+import { motion } from "motion/react";
 import { Logo } from "../components/Layout";
 import { Button, Field, Input } from "../components/ui";
 import { SocialAuthButtons } from "../components/auth/SocialAuthButtons";
 import { useAuth } from "../stores/auth";
 import { ApiError } from "../lib/api";
+import { springSoft } from "../lib/motion";
 
 export default function Login() {
   const { login, user, status } = useAuth();
@@ -44,10 +46,15 @@ export default function Login() {
 
   return (
     <div className="flex min-h-full items-center justify-center bg-ink-50 p-6">
-      <div className="w-full max-w-sm">
+      <motion.div
+        className="w-full max-w-sm"
+        initial={{ opacity: 0, y: 16 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={springSoft}
+      >
         <div className="mb-8 flex flex-col items-center gap-2">
           <Logo className="h-10 w-10" />
-          <h1 className="text-xl font-bold text-ink-900">Welcome back</h1>
+          <h1 className="text-xl font-bold tracking-title text-ink-900">Welcome back</h1>
           <p className="text-sm text-ink-400">Sign in to GlobalTalk AI</p>
         </div>
         <div className="gt-card space-y-4 p-6">
@@ -90,61 +97,12 @@ export default function Login() {
             <Button type="submit" className="w-full" loading={busy}>
               Sign in
             </Button>
-            <Button
-              type="button"
-              variant="secondary"
-              className="w-full justify-center text-xs"
-              disabled={busy}
-              onClick={async () => {
-                setBusy(true);
-                setError("");
-                try {
-                  await login("demo@globaltalk.local", "demo1234");
-                  nav(loc.state?.from ?? "/dashboard", { replace: true });
-                } catch (err: any) {
-                  // If live API is blocked by CORS on preview domain, grant instant demo session
-                  const fallbackUser = {
-                    id: "guest-user",
-                    email: "demo@globaltalk.local",
-                    name: "Demo Guest",
-                    full_name: "Demo Guest",
-                    is_platform_admin: false,
-                    email_verified: true,
-                    default_language: "en",
-                  };
-                  const fallbackOrg = {
-                    id: "guest-org",
-                    name: "Demo Workspace",
-                    slug: "demo-workspace",
-                    plan: "pro",
-                  };
-                  try {
-                    localStorage.setItem("gt.local_user", JSON.stringify(fallbackUser));
-                    localStorage.setItem("gt.local_org", JSON.stringify(fallbackOrg));
-                    localStorage.removeItem("gt.logged_out");
-                  } catch {}
-                  useAuth.setState({
-                    user: fallbackUser,
-                    org: fallbackOrg,
-                    organizations: [{ org: fallbackOrg, role: "owner" }],
-                    role: "owner",
-                    initialized: true,
-                    status: "authed",
-                  });
-                  nav(loc.state?.from ?? "/dashboard", { replace: true });
-                } finally {
-                  setBusy(false);
-                }
-              }}
-            >
-              Use demo account
-            </Button>
             <p className="text-center text-xs text-ink-400">
               No account? <Link to="/signup" className="font-medium text-signal-700 hover:underline">Create one</Link>
             </p>
           </form>
         </div>
-      </div>
+      </motion.div>
     </div>
   );
 }

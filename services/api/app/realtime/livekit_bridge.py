@@ -36,6 +36,15 @@ def enabled() -> bool:
                 and settings.livekit_api_key and settings.livekit_api_secret)
 
 
+def public_url() -> str:
+    """WebSocket URL a browser can actually reach.
+
+    `livekit_url` is the server-side address; inside docker that is something
+    like ws://livekit:7880, which is meaningless to the client.
+    """
+    return settings.livekit_public_url or settings.livekit_url
+
+
 async def ensure_room(room_name: str) -> bool:
     """Create room via LiveKit server API (idempotent)."""
     if not enabled():
@@ -83,7 +92,7 @@ def join_token(room_name: str, identity: str, name: str, metadata: dict, ttl_sec
                   "canSubscribe": True},
     }
     token = pyjwt.encode(payload, settings.livekit_api_secret, algorithm="HS256")
-    return {"url": settings.livekit_url, "token": token}
+    return {"url": public_url(), "token": token}
 
 
 async def publish_translated_audio(session: RtSession, target_lang: str,

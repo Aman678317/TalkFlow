@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import time
+import uuid
 from pathlib import Path
 
 # Fix Windows console UTF-8 output
@@ -23,14 +24,21 @@ REPO = Path(__file__).resolve().parents[2]
 SCREENSHOTS_DIR = REPO / "tests" / "browser_e2e" / "screenshots"
 SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
 
-def resolve_browser_executable(candidates: tuple[Path, ...] | None = None) -> str:
-    """Find a Chromium-compatible Edge install on this Windows host.
+import shutil
 
-    Developer machines may have regular Edge, EdgeCore, or both.  Keep the
-    browser checklist runnable across those layouts instead of hard-coding one
-    version-specific install location.
+def resolve_browser_executable(candidates: tuple[Path, ...] | None = None) -> str:
+    """Find a Chromium-compatible browser (Edge / Chrome / Chromium) install.
+
+    Developer machines or CI environments may have regular Edge, Chrome, or
+    Chromium on Windows or Linux. Keep the browser checklist runnable across
+    those layouts.
     """
     if candidates is None:
+        for cmd in ("msedge", "google-chrome", "chromium", "chromium-browser"):
+            found = shutil.which(cmd)
+            if found:
+                return found
+
         edgecore_root = Path(r"C:\Program Files (x86)\Microsoft\EdgeCore")
         candidates = (
             Path(r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"),
@@ -38,13 +46,17 @@ def resolve_browser_executable(candidates: tuple[Path, ...] | None = None) -> st
             *sorted(edgecore_root.glob("*/msedge.exe"), reverse=True),
         )
     for candidate in candidates:
-        if candidate.is_file():
-            return str(candidate)
+        candidate_path = Path(candidate)
+        if candidate_path.is_file():
+            return str(candidate_path)
     searched = ", ".join(str(candidate) for candidate in candidates)
-    raise FileNotFoundError(f"Microsoft Edge was not found. Searched: {searched}")
+    raise FileNotFoundError(f"Microsoft Edge or Chromium browser was not found. Searched: {searched}")
 
 
-EDGE_PATH = resolve_browser_executable()
+try:
+    EDGE_PATH = resolve_browser_executable()
+except FileNotFoundError:
+    EDGE_PATH = None
 BASE_URL = "http://localhost:5173"
 API_URL = "http://127.0.0.1:8088"
 
@@ -145,24 +157,31 @@ def run_tests():
             record_result("TEST-1-LANDING", f"{BASE_URL}/", "Landing Page", "Load cleanly", str(e), "FAIL", errs_1, net_1)
 
         # -------------------------------------------------------------
-        # AUTHENTICATE WITH DEMO ACCOUNT FOR APP FLOWS
+        # AUTHENTICATE WITH A REAL SIGN-UP FOR APP FLOWS
+        # Phase 1: no demo account and no test-only credential path. We create a
+        # throwaway tenant through the real /signup form, which is the same journey
+        # a production user takes. Works with ALLOW_SEED=false / ALLOW_TEST_AUTH=false.
         # -------------------------------------------------------------
         logs_auth, errs_auth, net_auth = [], [], []
         attach_listeners(page, logs_auth, errs_auth, net_auth)
+        e2e_email = f"e2e_{uuid.uuid4().hex[:10]}@example.com"
+        e2e_password = "E2ePassword123"
         try:
-            page.goto(f"{BASE_URL}/login", wait_until="networkidle")
-            demo_btn = page.locator('button:has-text("Use demo account")')
-            if demo_btn.is_visible():
-                demo_btn.click()
-                page.wait_for_timeout(2000)
-            else:
-                page.fill('input[type="email"]', "demo@globaltalk.local")
-                page.fill('input[type="password"]', "demo1234")
-                page.click('button[type="submit"]')
-                page.wait_for_timeout(2000)
-            print("Auth state:", page.url)
+            page.goto(f"{BASE_URL}/signup", wait_until="networkidle")
+            page.get_by_label("Full name").fill("E2E Tester")
+            page.get_by_label("Work email").fill(e2e_email)
+            page.get_by_label("Organization").fill(f"E2E Org {uuid.uuid4().hex[:6]}")
+            page.get_by_label("Password").fill(e2e_password)
+            page.get_by_role("button", name="Create account").click()
+            # Signup redirects to /dashboard once the access token is in memory.
+            try:
+                page.wait_for_url("**/dashboard**", timeout=15000)
+            except Exception:
+                pass
+            page.wait_for_timeout(1500)
+            print("Auth state:", page.url, "user:", e2e_email)
         except Exception as e:
-            print("Login error:", e)
+            print("Signup error:", e)
 
         # -------------------------------------------------------------
         # TEST 2: Text Translate (/translate)

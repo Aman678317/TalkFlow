@@ -262,8 +262,13 @@ async def get_provider_status() -> dict[str, Any]:
 async def get_voice_access_token(
     request: Request,
     identity: str = Query(default=""),
+    principal: Principal = Depends(require_org_user),
 ) -> dict[str, Any]:
-    """Generate short-lived Twilio Voice Access Token for browser client registration."""
+    """Generate short-lived Twilio Voice Access Token for browser client registration.
+
+    Phase 3: authenticated org users only — this endpoint previously minted valid
+    Twilio credentials for any identity to anonymous callers.
+    """
     from app.telephony.twilio_token import TwilioTokenService
 
     base_url = str(request.base_url).rstrip("/")

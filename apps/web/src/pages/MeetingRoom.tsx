@@ -28,12 +28,14 @@ import { api } from "../lib/api";
 import { useLanguages, languageLabel } from "../hooks/useLanguages";
 import { useLiveKitRoom } from "../hooks/useLiveKitRoom";
 import { AudioPlayer, MicCapture, b64ToBytes } from "../lib/audio";
-import { MeetingSocket, type SocketState } from "../lib/ws";
-import type { Meeting, ParticipantInfo, Preferences, RealtimeEvent, TranscriptItem } from "../lib/types";
+import { MeetingSocket, normId, type SocketState } from "../lib/ws";
+import { WebRTCManager, type SignalMessage } from "../lib/webrtc";
+import type { JoinMeetingResponse, Meeting, ParticipantInfo, Preferences, RealtimeEvent, TranscriptItem } from "../lib/types";
 import { Button, ErrorState, SegmentedControl, Select, Spinner } from "../components/ui";
 import { VideoTile } from "../components/meeting/VideoTile";
 import { toast } from "../stores/toasts";
 import { useAuth } from "../stores/auth";
+import { friendlyMessage } from "../lib/api";
 import { createVirtualCameraStream } from "../lib/virtualCamera";
 import {
   formatAsTxt,
@@ -43,19 +45,12 @@ import {
   downloadFile,
   type ExportTranscriptItem,
 } from "../lib/transcriptExporter";
-
-interface CaptionLine {
-  id: string;
-  speaker: string;
-  language: string;
-  original?: string;
-  originalFinal: boolean;
-  translated?: string;
-  translatedLang?: string;
-  partial: boolean;
-  failed?: string;
-  latencyMs?: number;
-}
+import {
+  reduceCaptions,
+  setPlayback,
+  type CaptionLine,
+  type CaptionView,
+} from "../lib/captions";
 
 interface ChatLine {
   id: string;
@@ -79,11 +74,15 @@ export default function MeetingRoom() {
   const localVideoStreamRef = React.useRef<MediaStream | null>(null);
   localVideoStreamRef.current = localVideoStream;
 
+  const [myParticipantId, setMyParticipantId] = React.useState<string | undefined>();
+
   const meetingQ = useQuery({ queryKey: ["meeting", id], queryFn: () => api<Meeting>(`/api/v1/meetings/${id}`) });
   const participantsQ = useQuery({
-    queryKey: ["meeting", id, "participants"],
-    queryFn: () => api<ParticipantInfo[]>(`/api/v1/meetings/${id}/participants`),
-    refetchInterval: 10_000,
+    queryKey: ["meeting", id, "participants", myParticipantId],
+    queryFn: () =>
+      api<ParticipantInfo[]>(`/api/v1/meetings/${id}/participants?participant_id=${myParticipantId}`),
+    enabled: !!myParticipantId,
+    refetchInterval: 5_000,
   });
 
   // ---------------- local state ----------------
@@ -102,6 +101,7 @@ export default function MeetingRoom() {
 
   const [micOn, setMicOn] = React.useState(false);
   const [micPermissionBlocked, setMicPermissionBlocked] = React.useState(false);
+  const [micLost, setMicLost] = React.useState(false);
   const [showMicGuide, setShowMicGuide] = React.useState(false);
 
   const [cameraOn, setCameraOn] = React.useState(false);
@@ -124,7 +124,9 @@ export default function MeetingRoom() {
   });
 
   const [screenOn, setScreenOn] = React.useState(false);
-  const [speakingNow, setSpeakingNow] = React.useState<string | null>(null);
+  /** Speakers with a turn currently open. A set: two people can talk at once,
+   *  and a single value let one speaker's "ended" clear the other's indicator. */
+  const [speakingNow, setSpeakingNow] = React.useState<Set<string>>(() => new Set());
   const [captions, setCaptions] = React.useState<CaptionLine[]>([]);
   const [showCaptionsOverlay, setShowCaptionsOverlay] = React.useState(true);
   const [chat, setChat] = React.useState<ChatLine[]>([]);
@@ -139,11 +141,39 @@ export default function MeetingRoom() {
 
   const [notice, setNotice] = React.useState<string | null>(null);
   const [summary, setSummary] = React.useState<any>(null);
-  const [myParticipantId, setMyParticipantId] = React.useState<string | undefined>();
   const [displayName, setDisplayName] = React.useState(user?.full_name || "Guest");
   const [inviteCopied, setInviteCopied] = React.useState(false);
   const [callTime, setCallTime] = React.useState("00:00");
   const [currentLatencyMs, setCurrentLatencyMs] = React.useState<number | null>(null);
+
+  // ---------------- pre-join lobby + guest seat state ----------------
+  const [phase, setPhase] = React.useState<"lobby" | "joining" | "in">("lobby");
+  const [joinError, setJoinError] = React.useState<string | null>(null);
+  const [guestSeat, setGuestSeat] = React.useState(!user);
+  const [p2pStreams, setP2pStreams] = React.useState<Record<string, MediaStream>>({});
+  const [remoteMedia, setRemoteMedia] = React.useState<Record<string, { mic: boolean; camera: boolean }>>({});
+  /** server-issued session_key of this tab's seat; null = member seat (JWT) */
+  const seatSessionKeyRef = React.useRef<string | null>(null);
+  const rtcRef = React.useRef<WebRTCManager | null>(null);
+  const myParticipantIdRef = React.useRef<string | undefined>(undefined);
+  myParticipantIdRef.current = myParticipantId;
+
+  function storedSeatKey(): string {
+    try {
+      return sessionStorage.getItem(`gt_seat_${id}`) || "";
+    } catch {
+      return "";
+    }
+  }
+
+  function rememberSeatKey(key: string) {
+    try {
+      sessionStorage.setItem(`gt_seat_${id}`, key);
+    } catch {
+      // ignore storage errors
+    }
+    seatSessionKeyRef.current = key || null;
+  }
 
   const handleExportTranscript = React.useCallback(
     (format: "txt" | "srt" | "vtt" | "json") => {
@@ -151,6 +181,14 @@ export default function MeetingRoom() {
         toast.info("No transcripts yet", "Transcripts will be available as soon as someone speaks.");
         return;
       }
+      // Cue times come from the turn's measured timeline, not from the wall clock
+      // of whoever happened to be reading the list: `startWallMs` is when the
+      // speaker started and `durationMs` how long the audio ran. Relative to the
+      // earliest turn, that is a real subtitle track.
+      const starts = captions
+        .map((c) => c.startWallMs)
+        .filter((ms): ms is number => typeof ms === "number");
+      const origin = starts.length > 0 ? Math.min(...starts) : 0;
       const exportItems: ExportTranscriptItem[] = captions.map((c, i) => ({
         id: c.id || `cap-${i}`,
         speakerName: c.speaker || "Speaker",
@@ -158,7 +196,12 @@ export default function MeetingRoom() {
         sourceLang: c.language || "en",
         translatedText: c.translated || c.original || "",
         targetLang: c.translatedLang || prefs.listening_language || "en",
-        timestamp: callTime || "00:00",
+        timestamp:
+          c.startWallMs !== undefined
+            ? new Date(c.startWallMs).toLocaleTimeString([], { hour12: false })
+            : callTime || "00:00",
+        startMs: c.startWallMs !== undefined ? c.startWallMs - origin : undefined,
+        durationMs: c.durationMs,
       }));
 
       const dateStr = new Date().toISOString().slice(0, 10);
@@ -254,6 +297,7 @@ export default function MeetingRoom() {
 
   const socketRef = React.useRef<MeetingSocket | null>(null);
   const micRef = React.useRef<MicCapture | null>(null);
+  const micRecoveringRef = React.useRef(false);
   const playerRef = React.useRef<AudioPlayer | null>(null);
   const mediaRoomStateRef = React.useRef(mediaRoom.state);
   mediaRoomStateRef.current = mediaRoom.state;
@@ -261,6 +305,8 @@ export default function MeetingRoom() {
   prefsRef.current = prefs;
   /** utterance short-id → language (to decide original-relay playback) */
   const utterLangRef = React.useRef<Map<string, string>>(new Map());
+  /** binary TTS frames carry no chunk index — count arrivals per segment id */
+  const ttsChunkSeqRef = React.useRef<Map<string, number>>(new Map());
   const namesRef = React.useRef<Map<string, string>>(new Map());
 
   React.useEffect(() => {
@@ -279,24 +325,39 @@ export default function MeetingRoom() {
 
   // ---------------- websocket lifecycle ----------------
   React.useEffect(() => {
-    if (!meetingQ.data) return;
-    const meeting = meetingQ.data;
-    playerRef.current = new AudioPlayer();
+    if (!meetingQ.data || phase !== "in") return;
+    playerRef.current = new AudioPlayer((message) => {
+      setTranslationStatus("delayed");
+      setTranslationMessage(message);
+      setNotice(message);
+    }, (turn, state) => {
+      // Only the player knows what the listener actually heard, so the caption's
+      // playback state has to come from here rather than from an event.
+      setCaptions((prev) => setPlayback(prev, turn, state));
+    });
     const socket = new MeetingSocket({
       meetingId: id,
-      joinToken: meeting.join_token,
+      sessionKey: seatSessionKeyRef.current ?? undefined,
       displayName,
       preferences: { ...prefsRef.current },
-      participantId: myParticipantId,
+      participantId: myParticipantIdRef.current,
       onStateChange: (s) => {
         setSocketState(s);
         if (s === "reconnecting") setNotice("Connection lost — reconnecting. Your transcript and preferences are safe.");
         if (s === "joined") setNotice(null);
       },
+      onQuality: (rtt) => {
+        // Measured rather than inferred: a half-second round trip is what a
+        // listener feels as translated speech arriving late, and the room must
+        // say so while it is still happening instead of after the fact.
+        if (rtt > 400) setIsDegradedNetwork(true);
+        else if (rtt < 250) setIsDegradedNetwork(false);
+      },
       onBinary: (frame) => {
         const player = playerRef.current!;
         const mode = prefsRef.current.audio_mode;
         if (frame.kind === "original") {
+          // Original-audio relay: backend sends raw PCM16 mono @ 16 kHz.
           const lang = utterLangRef.current.get(frame.shortId);
           const understoodNatively = lang && lang === prefsRef.current.listening_language;
           const liveKitConnected = mediaRoomStateRef.current === "connected";
@@ -308,8 +369,24 @@ export default function MeetingRoom() {
             player.enqueuePcm16(frame.pcm, SAMPLE_RATE, `orig-${frame.shortId}`);
           }
         } else {
+          // TTS audio: backend serializes the provider's WAV bytes (with the
+          // standard 44-byte RIFF/fmt/data header) inside the binary payload,
+          // so decode it through the WAV path — NOT enqueuePcm16, which treats
+          // its input as raw PCM and would play the header as 22ms of garbage.
           if (mode === "translated" || mode === "mixed") {
-            player.enqueuePcm16(frame.pcm, SAMPLE_RATE, `tts-${frame.shortId}`);
+            const wavBytes = new Uint8Array(frame.pcm);
+            const tag = normId(frame.shortId);
+            // The binary frame carries no chunk index; the WebSocket delivers an
+            // utterance's chunks in order, so count them here. The JSON event for
+            // the same chunk carries the server's `chunk_index`, and both must
+            // agree or dedup silently fails and the chunk plays twice.
+            const next = ttsChunkSeqRef.current.get(tag) ?? 0;
+            ttsChunkSeqRef.current.set(tag, next + 1);
+            void player.deliver(wavBytes, tag, {
+              source: "binary",
+              sequence: 0,
+              chunkIndex: next,
+            });
           }
         }
       },
@@ -328,9 +405,94 @@ export default function MeetingRoom() {
       if (localVideoStreamRef.current) {
         localVideoStreamRef.current.getTracks().forEach((t) => t.stop());
       }
+      setMicOn(false);
+      setCameraOn(false);
+      setScreenOn(false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [meetingQ.data?.id]);
+  }, [meetingQ.data?.id, phase]);
+
+  // ---------------- P2P video mesh (WS transport, signaling over the meeting socket) ----------------
+  const isLiveKitMedia = meetingQ.data?.transport === "livekit" && !!meetingQ.data.livekit_url;
+
+  React.useEffect(() => {
+    if (phase !== "in" || !myParticipantId || isLiveKitMedia) return;
+    const rtc = new WebRTCManager({
+      localParticipantId: myParticipantId,
+      onRemoteStream: (pid, stream) => setP2pStreams((prev) => ({ ...prev, [pid]: stream })),
+      onRemoteStreamRemoved: (pid) =>
+        setP2pStreams((prev) => {
+          if (!(pid in prev)) return prev;
+          const next = { ...prev };
+          delete next[pid];
+          return next;
+        }),
+      sendSignal: (targetId, signal) =>
+        socketRef.current?.sendJson({ type: "signal", target_id: targetId, signal }),
+    });
+    rtcRef.current = rtc;
+    // Seed the manager with whatever local tracks are already available so
+    // the very first createPeerConnection (driven by the roster effect below)
+    // attaches the camera + mic BEFORE the initial offer SDP is generated.
+    // Without this, the existing camera/mic effect had already run while
+    // rtcRef.current was null (during the lobby phase) and never re-runs
+    // for the in-room phase — leaving every first offer without a track,
+    // and the remote tile stuck black.
+    const videoTrack = localVideoStream?.getVideoTracks()[0] ?? null;
+    if (videoTrack) rtc.setVideoTrack(videoTrack);
+    const audioTrack = micRef.current?.mediaStream?.getAudioTracks()[0] ?? null;
+    if (audioTrack) rtc.setAudioTrack(audioTrack);
+    return () => {
+      rtc.dispose();
+      if (rtcRef.current === rtc) rtcRef.current = null;
+      setP2pStreams({});
+    };
+  }, [phase, myParticipantId, isLiveKitMedia]);
+
+  // Open a peer connection with every joined participant as the roster changes.
+  React.useEffect(() => {
+    const rtc = rtcRef.current;
+    if (!rtc || !myParticipantId || isLiveKitMedia || socketState !== "joined") return;
+    for (const p of participantsQ.data ?? []) {
+      if (p.status === "joined" && p.id !== myParticipantId && !rtc.hasPeer(p.id)) {
+        void rtc.initiateCallTo(p.id);
+      }
+    }
+  }, [participantsQ.data, myParticipantId, isLiveKitMedia, socketState]);
+
+  // Push the local camera/screen track into the mesh when it changes.
+  React.useEffect(() => {
+    const rtc = rtcRef.current;
+    if (!rtc) return;
+    const track = cameraOn || screenOn ? localVideoStream?.getVideoTracks()[0] ?? null : null;
+    rtc.setVideoTrack(track);
+  }, [cameraOn, screenOn, localVideoStream]);
+
+  // Tell the room about mic/camera state so remote tiles stay accurate.
+  React.useEffect(() => {
+    if (phase !== "in" || socketState !== "joined") return;
+    socketRef.current?.sendJson({
+      type: "media.state",
+      camera: cameraOn,
+      screen: screenOn,
+      mic: micOn,
+      hand: false,
+    });
+  }, [cameraOn, screenOn, micOn, phase, socketState]);
+
+  /**
+   * What the caption reducer needs to know about this listener. Read from refs:
+   * the socket's event handler is the closure from the render that opened it, so
+   * a captured `prefs` would keep matching the language the room was joined with
+   * after the user changes it mid-meeting.
+   */
+  function captionView(): CaptionView {
+    return {
+      caption_mode: prefsRef.current.caption_mode,
+      listening_language: prefsRef.current.listening_language,
+      speakerNames: Object.fromEntries(namesRef.current),
+    };
+  }
 
   function handleEvent(evt: RealtimeEvent) {
     const t = evt.type;
@@ -349,42 +511,96 @@ export default function MeetingRoom() {
       case "participant.joined": {
         namesRef.current.set(evt.participant_id as string, evt.display_name as string);
         qc.invalidateQueries({ queryKey: ["meeting", id, "participants"] });
+        if (!isLiveKitMedia && rtcRef.current && evt.participant_id !== myParticipantIdRef.current) {
+          void rtcRef.current.initiateCallTo(evt.participant_id as string);
+        }
         break;
       }
-      case "participant.left":
+      case "participant.left": {
+        const goneId = evt.participant_id as string;
+        rtcRef.current?.removePeer(goneId);
+        setRemoteMedia((prev) => {
+          if (!(goneId in prev)) return prev;
+          const next = { ...prev };
+          delete next[goneId];
+          return next;
+        });
         qc.invalidateQueries({ queryKey: ["meeting", id, "participants"] });
         break;
-      case "speech.started":
-        setSpeakingNow(evt.speaker_id as string);
+      }
+      case "signal": {
+        // The relay pushes raw JSON (no top-level merge): fields live under `data`.
+        const data = (evt.data as { sender_id?: string; signal?: SignalMessage } | undefined) ?? {};
+        const senderId = data.sender_id ?? (evt.sender_id as string | undefined);
+        const signal = data.signal ?? (evt.signal as SignalMessage | undefined);
+        if (senderId && signal && senderId !== myParticipantIdRef.current) {
+          rtcRef.current?.handleSignal(senderId, signal);
+        }
         break;
-      case "speech.ended":
-        setSpeakingNow(null);
-        if (typeof evt.utterance_id === "string")
-          playerRef.current?.cancelTag(`orig-${(evt.utterance_id as string).slice(0, 16)}`);
+      }
+      case "media.state": {
+        const pid = ((evt.participant_id as string) || (evt.speaker_id as string) || "") as string;
+        if (pid && pid !== myParticipantIdRef.current) {
+          setRemoteMedia((prev) => ({
+            ...prev,
+            [pid]: { mic: !!evt.mic, camera: !!(evt.camera || evt.screen) },
+          }));
+        }
         break;
+      }
+      case "speech.started": {
+        // The pipeline fires this on VAD onset, which is also when it declares the
+        // interrupted speaker's earlier translated audio stale.
+        const sid = evt.speaker_id as string | undefined;
+        if (sid) setSpeakingNow((prev) => (prev.has(sid) ? prev : new Set(prev).add(sid)));
+        break;
+      }
+      case "speech.ended": {
+        const sid = evt.speaker_id as string | undefined;
+        if (sid) {
+          setSpeakingNow((prev) => {
+            if (!prev.has(sid)) return prev;
+            const next = new Set(prev);
+            next.delete(sid);
+            return next;
+          });
+        }
+        // No cancellation here on purpose. The original-relay queue tag is the
+        // SPEAKER's short id, while this event names an UTTERANCE, so any tag
+        // built from `utterance_id` can only ever match nothing. Stale output is
+        // dropped by `playback.flush`, which carries the speaker id.
+        if (evt.empty === true) {
+          // The turn produced no words; the pending caption for it never will.
+          setCaptions((prev) => reduceCaptions(prev, evt, captionView()));
+        }
+        break;
+      }
+      case "playback.flush": {
+        const scope = evt.scope as string | undefined;
+        if (scope === "recipient") {
+          // This listener changed what they want to hear, so every chunk still
+          // queued for them is in a language they no longer want. The server
+          // only ever sends this event to their own socket.
+          void playerRef.current?.stopAll();
+          break;
+        }
+        // Barge-in: the named speaker started a new turn, so translated audio
+        // still queued for their PREVIOUS turn would talk over their own voice.
+        // Scope is one speaker — anybody else's in-flight audio keeps playing.
+        const sid = (evt.speaker_id as string) ?? (evt.speakerId as string) ?? "";
+        if (!sid) break;
+        const dropped = playerRef.current?.cancelSpeaker(sid) ?? 0;
+        if (dropped > 0 && import.meta.env.DEV) {
+          // eslint-disable-next-line no-console
+          console.debug(`[playback.flush] dropped ${dropped} stale chunk(s) of ${sid}`);
+        }
+        break;
+      }
       case "transcript.partial":
       case "transcript.final": {
         const uid = evt.utterance_id as string;
         if (typeof uid === "string") utterLangRef.current.set(uid.slice(0, 16), evt.language as string);
-        const mine =
-          prefsRef.current.caption_mode !== "translated" || evt.language === prefsRef.current.listening_language;
-        if (!mine && t === "transcript.partial") break;
-        setCaptions((prev) => {
-          const line = prev.find((c) => c.id === uid);
-          const data: CaptionLine = line ?? {
-            id: uid,
-            speaker: (evt.display_name as string) || namesRef.current.get(evt.speaker_id as string) || "Speaker",
-            language: evt.language as string,
-            originalFinal: false,
-            partial: true,
-          };
-          if (mine) {
-            data.original = evt.text as string;
-            data.originalFinal = t === "transcript.final";
-          }
-          data.partial = t === "transcript.partial";
-          return line ? prev.map((c) => (c.id === uid ? { ...data } : c)) : [...prev.slice(-80), data];
-        });
+        setCaptions((prev) => reduceCaptions(prev, evt, captionView()));
         break;
       }
       case "translation.final": {
@@ -394,82 +610,21 @@ export default function MeetingRoom() {
           setTranslationMessage(null);
         }
         if (isDegradedNetwork) setIsDegradedNetwork(false);
-        if (evt.target_language !== prefsRef.current.listening_language) break;
-        if (prefsRef.current.caption_mode === "original") break;
-        const seg = evt.segment_id as string;
-        setCaptions((prev) => {
-          const existingIdx = prev.findIndex(
-            (c) => c.id === `tr:${seg}:${evt.target_language}` || (c.id === seg && c.translated)
-          );
-          if (existingIdx !== -1) {
-            return prev.map((c, i) =>
-              i === existingIdx
-                ? {
-                  ...c,
-                  translated: evt.text as string,
-                  translatedLang: evt.target_language as string,
-                  latencyMs: (evt.latency_ms as number) || c.latencyMs,
-                }
-                : c
-            );
-          }
-          const idx = [...prev]
-            .reverse()
-            .findIndex(
-              (c) =>
-                (c.id === seg ||
-                  c.speaker === ((evt.display_name as string) || namesRef.current.get(evt.speaker_id as string))) &&
-                !c.translated &&
-                !c.id.startsWith("tr:") &&
-                (!c.language || c.language === evt.source_language)
-            );
-          if (idx === -1) {
-            return [
-              ...prev.slice(-80),
-              {
-                id: `tr:${seg}:${evt.target_language}`,
-                speaker: (evt.display_name as string) || namesRef.current.get(evt.speaker_id as string) || "Speaker",
-                language: evt.source_language as string,
-                translated: evt.text as string,
-                translatedLang: evt.target_language as string,
-                originalFinal: true,
-                partial: false,
-                latencyMs: evt.latency_ms as number,
-              },
-            ];
-          }
-          const target = prev[prev.length - 1 - idx];
-          const updated = {
-            ...target,
-            translated: evt.text as string,
-            translatedLang: evt.target_language as string,
-            latencyMs: evt.latency_ms as number,
-          };
-          return prev.map((c) => (c === target ? updated : c));
-        });
+        setCaptions((prev) => reduceCaptions(prev, evt, captionView()));
         break;
       }
       case "translation.failed": {
+        // A failure to translate into somebody else's language is not a degraded
+        // experience here; the reducer applies the same rule to the caption.
         if (evt.target_language !== prefsRef.current.listening_language) break;
+        // The pipeline sends its wording under `message`; `user_message` is the
+        // older name some routes still use.
+        const why = (evt.user_message as string) ?? (evt.message as string)
+          ?? "Translation is taking longer than expected.";
         setTranslationStatus("unavailable");
-        setTranslationMessage((evt.user_message as string) ?? "Translation unavailable. Original audio is active.");
-        setNotice((evt.user_message as string) ?? "Translation delayed. The original audio is still active.");
-        const seg = evt.segment_id as string;
-        setCaptions((prev) =>
-          prev.some((c) => c.id === `fail:${seg}`)
-            ? prev
-            : [
-              ...prev.slice(-80),
-              {
-                id: `fail:${seg}`,
-                speaker: namesRef.current.get(evt.speaker_id as string) || "Speaker",
-                language: "",
-                originalFinal: true,
-                partial: false,
-                failed: (evt.user_message as string) ?? "Translation unavailable",
-              },
-            ]
-        );
+        setTranslationMessage(`${why} Original audio is active.`);
+        setNotice(why);
+        setCaptions((prev) => reduceCaptions(prev, evt, captionView()));
         break;
       }
       case "tts.chunk": {
@@ -478,10 +633,21 @@ export default function MeetingRoom() {
         if (mode !== "translated" && mode !== "mixed") break;
         const audio = (evt.audio_base64 as string) || (evt.audio as string);
         if (!audio) break;
-        const uid =
-          (evt.utterance_id as string | undefined)?.slice(0, 16) ?? (evt.segment_id as string)?.slice(0, 16);
+        // Identity MUST match the binary frame's short id (UUID-hex, dashes
+        // stripped, first 16) or the same chunk arrives twice.
+        const tag = normId((evt.segment_id as string) ?? String(evt.utterance_id ?? ""));
+        const chunkIndex = Number(evt.chunk_index ?? 0);
+        const sequence = Number(evt.sequence ?? 0);
         void playerRef.current?.resumeContext();
-        void playerRef.current?.enqueueWav(b64ToBytes(audio), `tts-${uid}`);
+        void Promise.resolve(playerRef.current?.deliver(b64ToBytes(audio), tag, {
+          source: "json",
+          sequence,
+          chunkIndex,
+          speakerId: (evt.speaker_id as string) ?? undefined,
+          // The caption key. This JSON event is the only transport that names the
+          // turn, so it is also what teaches the binary frames they share it.
+          utteranceId: (evt.utterance_id as string) ?? undefined,
+        })).catch(() => { /* already surfaced through the player's error callback */ });
         break;
       }
       case "tts.completed": {
@@ -490,10 +656,17 @@ export default function MeetingRoom() {
         if (mode !== "translated" && mode !== "mixed") break;
         const audio = evt.audio as string;
         if (audio) {
-          const uid =
-            (evt.utterance_id as string | undefined)?.slice(0, 16) ?? (evt.segment_id as string)?.slice(0, 16);
+          // Whole-utterance payload: it is one chunk, and it must dedup against
+          // the streamed halves the same segment already delivered over binary.
+          const tag = normId((evt.segment_id as string) ?? String(evt.utterance_id ?? ""));
           void playerRef.current?.resumeContext();
-          void playerRef.current?.enqueueWav(b64ToBytes(audio), `tts-${uid}`);
+          void Promise.resolve(playerRef.current?.deliver(b64ToBytes(audio), tag, {
+            source: "json",
+            sequence: Number(evt.sequence ?? 0),
+            chunkIndex: 0,
+            speakerId: (evt.speaker_id as string) ?? undefined,
+            utteranceId: (evt.utterance_id as string) ?? undefined,
+          })).catch(() => { /* already surfaced through the player's error callback */ });
         }
         break;
       }
@@ -503,7 +676,7 @@ export default function MeetingRoom() {
         setTranslationMessage((evt.user_message as string) ?? "Live translation is experiencing latency degradation.");
         setNotice((evt.user_message as string) ?? "Live translation is temporarily degraded.");
         break;
-      case "quality.latency": {
+      case "latency.report": {
         const ms = (evt.total_e2e_latency_ms as number) || 0;
         if (ms > 0) setCurrentLatencyMs(Math.round(ms));
         if (ms > 2000) {
@@ -512,12 +685,7 @@ export default function MeetingRoom() {
           setTranslationMessage(`High translation latency (~${Math.round(ms)}ms). Audio prioritized.`);
         }
         if (evt.target_language !== prefsRef.current.listening_language) break;
-        setCaptions((prev) => {
-          const idx = [...prev].reverse().findIndex((c) => c.translated && !c.latencyMs);
-          if (idx === -1) return prev;
-          const target = prev[prev.length - 1 - idx];
-          return prev.map((c) => (c === target ? { ...c, latencyMs: ms } : c));
-        });
+        setCaptions((prev) => reduceCaptions(prev, evt, captionView()));
         break;
       }
       case "error": {
@@ -528,30 +696,63 @@ export default function MeetingRoom() {
         }
         break;
       }
-      case "chat.message":
+      case "chat.message": {
+        const msgId = ((evt.id as string) || (evt.message_id as string) || String(Date.now())) as string;
+        const translations = evt.translations as Record<string, { text?: string | null }> | undefined;
+        const hear = prefsRef.current.listening_language;
         setChat((prev) => {
-          if (prev.some((c) => c.id === (evt.message_id as string))) return prev;
+          if (prev.some((c) => c.id === msgId)) return prev;
           return [
             ...prev,
             {
-              id: evt.message_id as string,
-              sender: (evt.display_name as string) || "Unknown",
+              id: msgId,
+              sender: (evt.sender_name as string) || (evt.display_name as string) || "Unknown",
               original: evt.original_text as string,
-              language: (evt.language as string) || "",
-              mine: evt.participant_id === myParticipantId,
+              language: (evt.detected_lang as string) || (evt.language as string) || "",
+              translated: translations?.[hear]?.text ?? undefined,
+              mine: ((evt.speaker_id as string) || (evt.participant_id as string)) === myParticipantIdRef.current,
             },
           ];
         });
         break;
-      case "chat.translation":
-        if (evt.target_language !== prefsRef.current.listening_language) break;
-        setChat((prev) =>
-          prev.map((c) => (c.id === evt.message_id ? { ...c, translated: evt.text as string } : c))
-        );
-        break;
+      }
       case "language.changed":
         qc.invalidateQueries({ queryKey: ["meeting", id, "participants"] });
         break;
+      case "diagnostic": {
+        // Surface pipeline-stage signals so translation "silence" stops
+        // looking like a transport bug. STT_enter/exit, MT_enter/exit,
+        // TTS_enter/exit each carry provider/model so we can tell at a
+        // glance whether production is actually running real models or
+        // silently falling back to dev_*.
+        const stage = String(evt.stage || "");
+        const provider = evt.provider ? String(evt.provider) : null;
+        if (import.meta.env.DEV) {
+          // eslint-disable-next-line no-console
+          console.debug(`[pipeline:${stage}]`, evt);
+        }
+        // Update the translation status banner with a concise one-liner so
+        // the user sees *something* (e.g. "STT ready" or "TTS → dev_tone").
+        if (stage === "stt_exit" && provider) {
+          setTranslationStatus("normal");
+          setTranslationMessage(`Listening · STT: ${provider}`);
+        } else if (stage === "tts_provider" && provider) {
+          setTranslationMessage(
+            `Voice: ${provider}${provider.startsWith("dev_") ? " (placeholder audio)" : ""}`,
+          );
+        } else if (stage === "stt_failed" || stage === "mt_failed" || stage === "tts_failed") {
+          setTranslationStatus("unavailable");
+          setTranslationMessage(
+            `${stage.toUpperCase()} failed${evt.error_type ? ` (${evt.error_type})` : ""}`,
+          );
+        } else if (stage === "fanout_skipped" || stage === "tts_skipped") {
+          setTranslationStatus("unavailable");
+          setTranslationMessage(
+            String(evt.reason || stage),
+          );
+        }
+        break;
+      }
       default:
         break;
     }
@@ -586,6 +787,7 @@ export default function MeetingRoom() {
           echoCancellation: dspSettings.echoCancellation,
           noiseSuppression: dspSettings.noiseSuppression,
           autoGainControl: dspSettings.autoGainControl,
+          onLost: handleMicLost,
         }
       );
       micRef.current = mic;
@@ -597,6 +799,7 @@ export default function MeetingRoom() {
       }
       setMicOn(true);
       setMicPermissionBlocked(false);
+      setMicLost(false);
       toast.success(
         "Microphone active",
         "Speaking in " +
@@ -656,6 +859,61 @@ export default function MeetingRoom() {
     toast.success("Speaker updated", "Audio playback routed to selected device.");
   }
 
+  /**
+   * The capture track died under us — unplugged, handed to another app, or
+   * muted by the OS. Re-acquire the default input once; if that fails, say so
+   * out loud, because a microphone that stopped mid-sentence with no message
+   * is the failure users blame the room for.
+   */
+  async function handleMicLost(reason: "ended" | "mute") {
+    // A removed device can report `mute` and then `ended` for the same track.
+    // One recovery at a time, or the second attempt stops the first one's
+    // freshly opened microphone.
+    if (micRecoveringRef.current) return;
+    micRecoveringRef.current = true;
+    try {
+      await recoverMic(reason);
+    } finally {
+      micRecoveringRef.current = false;
+    }
+  }
+
+  async function recoverMic(reason: "ended" | "mute") {
+    micRef.current?.stop();
+    micRef.current = null;
+    void refreshDevices();
+    try {
+      const mic = new MicCapture();
+      await mic.start(
+        SAMPLE_RATE,
+        (frame) => socketRef.current?.sendAudio(frame),
+        {
+          echoCancellation: dspSettings.echoCancellation,
+          noiseSuppression: dspSettings.noiseSuppression,
+          autoGainControl: dspSettings.autoGainControl,
+          onLost: handleMicLost,
+        }
+      );
+      micRef.current = mic;
+      const track = mic.mediaStream?.getAudioTracks()[0];
+      if (track && mediaRoom.state === "connected") {
+        try {
+          await mediaRoom.publishMicrophone(track);
+        } catch { }
+      }
+      setMicLost(false);
+      toast.success("Microphone recovered", "Input device re-acquired — keep speaking.");
+    } catch {
+      setMicOn(false);
+      setMicLost(true);
+      socketRef.current?.sendJson({ type: "audio.stopped" });
+      toast.error(
+        reason === "mute" ? "Microphone muted by the system" : "Microphone disconnected",
+        "Your input device stopped mid-speech. Pick a microphone to keep speaking."
+      );
+    }
+  }
+
   async function restartMicWithSettings(options: {
     micId?: string;
     dsp?: { echoCancellation: boolean; noiseSuppression: boolean; autoGainControl: boolean };
@@ -678,6 +936,7 @@ export default function MeetingRoom() {
           echoCancellation: activeDsp.echoCancellation,
           noiseSuppression: activeDsp.noiseSuppression,
           autoGainControl: activeDsp.autoGainControl,
+          onLost: handleMicLost,
         }
       );
       micRef.current = mic;
@@ -687,9 +946,19 @@ export default function MeetingRoom() {
           await mediaRoom.publishMicrophone(newTrack);
         } catch { }
       }
+      setMicLost(false);
       toast.success("Audio settings updated", "Microphone DSP and input updated.");
     } catch (err: any) {
+      // The chosen device may have been unplugged between listing it and opening
+      // it, and the previous capture is already stopped by then. Saying "not
+      // switched" would leave the mic button lying about a dead microphone.
       console.warn("Could not restart mic with new settings", err);
+      micRef.current = null;
+      setMicOn(false);
+      setMicLost(true);
+      socketRef.current?.sendJson({ type: "audio.stopped" });
+      toast.error("Microphone stopped", "That input device could not be opened. Pick another one.");
+      void refreshDevices();
     }
   }
 
@@ -865,85 +1134,53 @@ export default function MeetingRoom() {
     onSuccess: (r) => setSummary(r),
   });
 
-  // ---------------- render calculations ----------------
-  if (meetingQ.isError) {
-    const err = meetingQ.error as any;
-    return (
-      <div className="p-6 bg-slate-900 min-h-screen text-white flex flex-col items-center justify-center gap-4">
-        <ErrorState
-          title={err?.message || "Meeting Not Found or Inaccessible"}
-          detail={err?.code || "The meeting session could not be retrieved. Please verify your connection or join link."}
-        />
-        <div className="flex items-center gap-3 mt-2">
-          <Button variant="secondary" onClick={() => nav("/meetings")}>
-            ← Back to Meetings
-          </Button>
-          <Button variant="primary" onClick={() => meetingQ.refetch()}>
-            Retry Connection
-          </Button>
-        </div>
-      </div>
-    );
+  /** Meet-style pre-join: REST join first (creates/joins the participant row,
+   * flips the meeting live), then the socket effect connects with that seat's credential. */
+  async function joinNow() {
+    if (!meetingQ.data) return;
+    setPhase("joining");
+    setJoinError(null);
+    const asGuestSeat = !user || guestSeat;
+    try {
+      const resp = await api<JoinMeetingResponse>(`/api/v1/meetings/${id}/join`, {
+        method: "POST",
+        body: {
+          display_name: displayName.trim() || (asGuestSeat ? "Guest" : undefined),
+          speak_lang: prefs.speaking_language,
+          hear_lang: prefs.listening_language,
+          audio_mode: prefs.audio_mode,
+          session_key: storedSeatKey(),
+          as_guest: asGuestSeat,
+        },
+      });
+      // The server-issued session key is the seat's only reconnect credential;
+      // it is exchanged (over HTTPS) for single-use WS tickets, never sent in
+      // a WebSocket URL.
+      rememberSeatKey(resp.session_key);
+      setMyParticipantId(resp.participant_id);
+      void meetingQ.refetch();
+      qc.invalidateQueries({ queryKey: ["meetings"] });
+      setPhase("in");
+      toast.success("Joining meeting", "Your live seat is ready.");
+    } catch (err) {
+      setJoinError(friendlyMessage(err));
+      setPhase("lobby");
+    }
   }
 
-  const participants = (participantsQ.data ?? []).filter((participant) => participant.status === "joined");
-  const participantsById = new Map(participants.map((participant) => [participant.id, participant]));
-
-  const callTiles =
-    mediaRoom.state === "connected"
-      ? mediaRoom.peers.map((peer) => {
-        const participant = participantsById.get(peer.id);
-        const speakingLanguage = participant?.speaking_language ?? (peer.self ? prefs.speaking_language : "AUTO");
-        const listeningLanguage = participant?.listening_language ?? (peer.self ? prefs.listening_language : "en");
-        return {
-          id: peer.id,
-          name: peer.name,
-          stream: peer.self ? peer.stream || localVideoStream : peer.stream,
-          isScreenShare: peer.isScreenShare,
-          self: peer.self,
-          speakingLanguage,
-          listeningLanguage,
-          speaking: speakingNow === peer.id || (peer.self && micOn && !!speakingNow),
-          muted: peer.self ? !micOn : !peer.microphoneOn,
-          isVirtualCamera: peer.self ? usingVirtualCamera : false,
-        };
-      })
-      : participants.map((participant) => {
-        const isSelf = participant.id === myParticipantId;
-        return {
-          id: participant.id,
-          name: participant.display_name,
-          stream: isSelf ? localVideoStream : null,
-          isScreenShare: false,
-          self: isSelf,
-          speakingLanguage: participant.speaking_language,
-          listeningLanguage: participant.listening_language,
-          speaking: speakingNow === participant.id || (isSelf && micOn && !!speakingNow),
-          muted: isSelf ? !micOn : true,
-          isVirtualCamera: isSelf ? usingVirtualCamera : false,
-        };
-      });
-
-  const hasSelfTile = callTiles.some((t) => t.self);
-  const finalTiles = hasSelfTile
-    ? callTiles
-    : [
-      {
-        id: myParticipantId || "me",
-        name: displayName + " (You)",
-        stream: localVideoStream,
-        isScreenShare: screenOn,
-        self: true,
-        speakingLanguage: prefs.speaking_language,
-        listeningLanguage: prefs.listening_language,
-        speaking: micOn && !!speakingNow,
-        muted: !micOn,
-        isVirtualCamera: usingVirtualCamera,
-      },
-      ...callTiles,
-    ];
-
-  const latestCaption = captions.length > 0 ? captions[captions.length - 1] : null;
+  function backToLobby() {
+    socketRef.current?.close();
+    socketRef.current = null;
+    rtcRef.current?.dispose();
+    rtcRef.current = null;
+    seatSessionKeyRef.current = null;
+    setP2pStreams({});
+    setRemoteMedia({});
+    setMicOn(false);
+    setMicLost(false);
+    setPhase("lobby");
+    setSocketState("connecting");
+  }
 
   const connectionInfo = React.useMemo(() => {
     if (!isOnline) {
@@ -994,6 +1231,350 @@ export default function MeetingRoom() {
       canRetry: false,
     };
   }, [isOnline, socketState, mediaRoom.state, mediaRoom.error, isDegradedNetwork]);
+
+  // ---------------- render calculations ----------------
+  if (meetingQ.isError) {
+    const err = meetingQ.error as any;
+    return (
+      <div className="p-6 bg-slate-900 min-h-screen text-white flex flex-col items-center justify-center gap-4">
+        <ErrorState
+          title={err?.message || "Meeting Not Found or Inaccessible"}
+          detail={err?.code || "The meeting session could not be retrieved. Please verify your connection or join link."}
+        />
+        <div className="flex items-center gap-3 mt-2">
+          <Button variant="secondary" onClick={() => nav("/meetings")}>
+            ← Back to Meetings
+          </Button>
+          <Button variant="primary" onClick={() => meetingQ.refetch()}>
+            Retry Connection
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!meetingQ.data) {
+    return (
+      <div className="min-h-screen bg-[#131314] text-white flex flex-col items-center justify-center gap-3">
+        <Spinner />
+        <p className="text-sm text-slate-400">Loading meeting…</p>
+      </div>
+    );
+  }
+
+  if (meetingQ.data.status === "ended") {
+    return (
+      <div className="min-h-screen bg-[#131314] text-white flex flex-col items-center justify-center gap-4 p-6">
+        <div className="rounded-2xl border border-white/10 bg-[#1E1F22] p-8 max-w-md w-full text-center space-y-4 shadow-2xl">
+          <div className="mx-auto h-12 w-12 rounded-full bg-red-500/15 flex items-center justify-center">
+            <PhoneOff className="h-6 w-6 text-red-400" />
+          </div>
+          <h1 className="text-xl font-semibold">{meetingQ.data.title}</h1>
+          <p className="text-sm text-slate-400">
+            This meeting has ended. Reconnect audio, video and live translation is no longer available for this room.
+          </p>
+          <div className="flex items-center justify-center gap-3 pt-2">
+            <Button variant="secondary" onClick={() => nav("/meetings")}>
+              ← Back to Meetings
+            </Button>
+            <Button variant="primary" onClick={() => nav("/")}>
+              Start a new meeting
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ---------------- lobby (pre-join gate, Google Meet style) ----------------
+  if (phase === "lobby" || phase === "joining") {
+    return (
+      <div className="min-h-screen bg-[#131314] text-white flex items-center justify-center p-4 sm:p-8">
+        <div className="w-full max-w-3xl grid gap-5 md:grid-cols-[1.1fr_1fr] items-start">
+          {/* Self preview */}
+          <div className="flex flex-col gap-3">
+            <div className="relative aspect-video rounded-2xl bg-black/70 border border-white/10 overflow-hidden flex items-center justify-center">
+              {localVideoStream && (cameraOn || screenOn) ? (
+                <video
+                  autoPlay
+                  playsInline
+                  muted
+                  className="h-full w-full object-cover"
+                  ref={(el) => {
+                    if (el) el.srcObject = localVideoStream;
+                  }}
+                />
+              ) : (
+                <div className="flex flex-col items-center gap-3 text-slate-400">
+                  <div className="h-20 w-20 rounded-full bg-white/10 flex items-center justify-center text-3xl font-semibold text-slate-200">
+                    {(displayName || "G").trim().charAt(0).toUpperCase()}
+                  </div>
+                  <p className="text-sm">{usingVirtualCamera ? "Virtual camera" : "Camera off"}</p>
+                </div>
+              )}
+              {usingVirtualCamera && (
+                <span className="absolute left-3 top-3 rounded-full bg-amber-500/20 border border-amber-400/40 px-2 py-0.5 text-[11px] text-amber-200">
+                  Virtual camera active
+                </span>
+              )}
+            </div>
+            <div className="flex items-center justify-center gap-3">
+              <button
+                type="button"
+                onClick={() => void toggleMic()}
+                aria-label={micOn ? "Microphone on — click to mute" : "Microphone off — click to unmute"}
+                className={`h-12 w-12 rounded-full flex items-center justify-center border transition-colors ${micOn
+                  ? "bg-white text-[#131314] border-white"
+                  : "bg-white/10 text-white border-white/15 hover:bg-white/15"
+                  }`}
+              >
+                {micOn ? <Mic className="h-5 w-5" /> : <MicOff className="h-5 w-5" />}
+              </button>
+              <button
+                type="button"
+                onClick={() => void toggleCamera()}
+                aria-label={cameraOn ? "Camera on — click to turn off" : "Camera off — click to turn on"}
+                className={`h-12 w-12 rounded-full flex items-center justify-center border transition-colors ${cameraOn
+                  ? "bg-white text-[#131314] border-white"
+                  : "bg-white/10 text-white border-white/15 hover:bg-white/15"
+                  }`}
+              >
+                {cameraOn ? <Camera className="h-5 w-5" /> : <CameraOff className="h-5 w-5" />}
+              </button>
+            </div>
+            <p className="text-center text-[11px] text-slate-500">
+              {(!micOn || !cameraOn) ? (
+                <>Tip: turn on your {(!micOn && !cameraOn) ? "mic and camera" : (!micOn ? "mic" : "camera")} so the other party joining from a shared link can see and hear you. They auto-enable when you tap <span className="text-slate-300 font-medium">Add to call</span>.</>
+              ) : (
+                <>Mic and camera are on — both will appear in the room.</>
+              )}
+            </p>
+            <p className="text-center text-xs text-slate-400">
+              {meetingQ.data.title} · room {meetingQ.data.room_name || id.slice(0, 8)}
+            </p>
+          </div>
+
+          {/* Join card */}
+          <div className="rounded-2xl border border-white/10 bg-[#1E1F22] p-5 space-y-4 shadow-2xl">
+            <div>
+              <h1 className="text-lg font-semibold leading-tight">{meetingQ.data.title}</h1>
+              <p className="text-xs text-slate-400 mt-1">
+                Choose your name and languages, then join. Everyone hears speech translated live.
+              </p>
+            </div>
+
+            <div>
+              <label htmlFor="lobby-name" className="block mb-1.5 font-semibold uppercase tracking-wider text-slate-300 text-[11px]">
+                Your name
+              </label>
+              <input
+                id="lobby-name"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                placeholder={user ? user.full_name || "Your name" : "Guest"}
+                className="w-full rounded-xl bg-[#282A2D] border border-white/15 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-dl-blue"
+              />
+            </div>
+
+            <div>
+              <label className="block mb-1.5 font-semibold uppercase tracking-wider text-slate-300 text-[11px]">
+                I speak
+              </label>
+              <Select
+                aria-label="I speak"
+                className="!bg-[#282A2D] !text-white !border-white/15 w-full rounded-xl"
+                value={prefs.speaking_language}
+                onChange={(e) => setPrefs((p) => ({ ...p, speaking_language: e.target.value }))}
+              >
+                <option value="AUTO">Auto detect</option>
+                {caps
+                  .filter((c) => c.speech_input_supported)
+                  .map((c) => (
+                    <option key={c.code} value={c.code}>
+                      {c.name} ({c.native_name})
+                    </option>
+                  ))}
+              </Select>
+            </div>
+
+            <div>
+              <label className="block mb-1.5 font-semibold uppercase tracking-wider text-slate-300 text-[11px]">
+                Translate incoming speech into
+              </label>
+              <Select
+                aria-label="Translate incoming speech into"
+                className="!bg-[#282A2D] !text-white !border-white/15 w-full rounded-xl"
+                value={prefs.listening_language}
+                onChange={(e) => setPrefs((p) => ({ ...p, listening_language: e.target.value }))}
+              >
+                {caps
+                  .filter((c) => c.translation_supported || c.speech_input_supported)
+                  .map((c) => (
+                    <option key={c.code} value={c.code}>
+                      {c.name} ({c.native_name})
+                      {c.speech_output_supported ? "" : " — captions only"}
+                    </option>
+                  ))}
+              </Select>
+            </div>
+
+            <div>
+              <label className="block mb-1.5 font-semibold uppercase tracking-wider text-slate-300 text-[11px]">
+                Audio
+              </label>
+              <SegmentedControl
+                ariaLabel="Audio mode"
+                value={prefs.audio_mode}
+                onChange={(v) => setPrefs((p) => ({ ...p, audio_mode: v }))}
+                options={[
+                  { value: "original", label: "Original" },
+                  { value: "translated", label: "Translated" },
+                  { value: "mixed", label: "Both" },
+                ]}
+              />
+            </div>
+
+            {user && (
+              <label className="flex items-start gap-2 text-xs text-slate-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={guestSeat}
+                  onChange={(e) => setGuestSeat(e.target.checked)}
+                  className="mt-0.5 rounded border-white/20 bg-white/10"
+                />
+                <span>
+                  Join as a separate guest seat.
+                  <span className="block text-slate-400">
+                    Use this to bring a second person in from this same browser — they get their own video tile,
+                    languages and translated audio.
+                  </span>
+                </span>
+              </label>
+            )}
+
+            {joinError && (
+              <p className="rounded-lg border border-red-500/30 bg-red-950/50 px-3 py-2 text-xs text-red-200" role="alert">
+                {joinError}
+              </p>
+            )}
+
+            <Button
+              variant="primary"
+              className="w-full"
+              disabled={phase === "joining"}
+              onClick={async () => {
+                // "Add to call" is the user-gesture we need to request camera
+                // and mic. Auto-enable them so the other party joining from a
+                // shared link actually sees and hears you, instead of landing
+                // in the room with a black tile + red mic and a one-way
+                // silence. toggleCamera() falls back to the virtual camera
+                // when permission is denied; toggleMic() surfaces a
+                // permission guide on denial. Either way the toggles must
+                // never block the join — a stuck permission dialog shouldn't
+                // strand the user in the lobby.
+                const safeToggle = (fn: () => Promise<void>) =>
+                  fn().catch(() => {/* toggleX already toasts / sets blocked state */});
+                await Promise.all([
+                  cameraOn ? Promise.resolve() : safeToggle(toggleCamera),
+                  micOn ? Promise.resolve() : safeToggle(toggleMic),
+                ]);
+                await joinNow();
+              }}
+            >
+              {phase === "joining" ? "Joining…" : "Add to call"}
+            </Button>
+            <button
+              type="button"
+              onClick={() => nav("/meetings")}
+              className="w-full text-center text-xs text-slate-400 hover:text-white"
+            >
+              Back to meetings
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ---------------- permanent handshake failure ----------------
+  if (socketState === "error") {
+    return (
+      <div className="min-h-screen bg-[#131314] text-white flex flex-col items-center justify-center gap-4 p-6">
+        <ErrorState
+          title="Couldn't connect to this meeting"
+          detail="Your seat was rejected by the room — the meeting may have ended, the link may be stale, or your session credential expired."
+        />
+        <div className="flex items-center gap-3 mt-2">
+          <Button variant="secondary" onClick={backToLobby}>
+            Back to lobby
+          </Button>
+          <Button variant="primary" onClick={() => socketRef.current?.reconnectNow()}>
+            Retry connection
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  const participants = (participantsQ.data ?? []).filter((participant) => participant.status === "joined");
+  const participantsById = new Map(participants.map((participant) => [participant.id, participant]));
+
+  const callTiles =
+    mediaRoom.state === "connected"
+      ? mediaRoom.peers.map((peer) => {
+        const participant = participantsById.get(peer.id);
+        const speakingLanguage = participant?.speaking_language ?? (peer.self ? prefs.speaking_language : "AUTO");
+        const listeningLanguage = participant?.listening_language ?? (peer.self ? prefs.listening_language : "en");
+        return {
+          id: peer.id,
+          name: peer.name,
+          stream: peer.self ? peer.stream || localVideoStream : peer.stream,
+          isScreenShare: peer.isScreenShare,
+          self: peer.self,
+          speakingLanguage,
+          listeningLanguage,
+          speaking: speakingNow.has(peer.id) && (!peer.self || micOn),
+          muted: peer.self ? !micOn : !peer.microphoneOn,
+          isVirtualCamera: peer.self ? usingVirtualCamera : false,
+        };
+      })
+      : participants.map((participant) => {
+        const isSelf = participant.id === myParticipantId;
+        const media = remoteMedia[participant.id];
+        return {
+          id: participant.id,
+          name: participant.display_name,
+          stream: isSelf ? localVideoStream : p2pStreams[participant.id] ?? null,
+          isScreenShare: false,
+          self: isSelf,
+          speakingLanguage: participant.speaking_language,
+          listeningLanguage: participant.listening_language,
+          speaking: speakingNow.has(participant.id) && (!isSelf || micOn),
+          muted: isSelf ? !micOn : media ? !media.mic : true,
+          isVirtualCamera: isSelf ? usingVirtualCamera : false,
+        };
+      });
+
+  const hasSelfTile = callTiles.some((t) => t.self);
+  const finalTiles = hasSelfTile
+    ? callTiles
+    : [
+      {
+        id: myParticipantId || "me",
+        name: displayName + " (You)",
+        stream: localVideoStream,
+        isScreenShare: screenOn,
+        self: true,
+        speakingLanguage: prefs.speaking_language,
+        listeningLanguage: prefs.listening_language,
+        speaking: micOn && speakingNow.has(myParticipantId || ""),
+        muted: !micOn,
+        isVirtualCamera: usingVirtualCamera,
+      },
+      ...callTiles,
+    ];
+
+  const latestCaption = captions.length > 0 ? captions[captions.length - 1] : null;
 
   return (
     <div className="flex h-screen w-full flex-col overflow-hidden bg-[#131314] text-white select-none">
@@ -1073,6 +1654,43 @@ export default function MeetingRoom() {
           </div>
         </div>
       </div>
+
+      {/* Dev-only: inject a test transcript so the translation + TTS fan-out
+          can be verified end-to-end on environments without a real STT model
+          (e.g. Render where faster-whisper isn't installed). Stripped from
+          production builds via import.meta.env.DEV. */}
+      {import.meta.env.DEV && phase === "in" && (
+        <div className="flex items-center gap-2 border-b border-violet-500/30 bg-violet-950/40 px-4 py-1.5 text-[11px] text-violet-100 shrink-0">
+          <span className="font-semibold uppercase tracking-wider text-violet-300">
+            Dev
+          </span>
+          <span className="text-violet-200/80">
+            Inject canned transcript → drive STT→MT→TTS pipeline:
+          </span>
+          {[
+            { text: "Hello, world.", lang: "en", label: "EN→Hindi" },
+            { text: "The meeting starts at 3pm.", lang: "en", label: "EN→Hindi (sentence)" },
+            { text: "你好世界。", lang: "zh", label: "ZH→Hindi" },
+            { text: "नमस्ते दुनिया।", lang: "hi", label: "HI→English" },
+          ].map((opt) => (
+            <button
+              key={`${opt.lang}:${opt.text}`}
+              type="button"
+              onClick={() => {
+                socketRef.current?.injectTranscript(opt.text, opt.lang);
+                toast.info(
+                  "Injected transcript",
+                  `${opt.label}: "${opt.text}"`,
+                );
+              }}
+              className="rounded-md border border-violet-400/40 bg-violet-500/15 px-2 py-0.5 text-violet-100 hover:bg-violet-500/30"
+              title={`Server treats this as a final STT segment; MT fans out to hear_lang listeners; TTS delivers en→hi audio to you.`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      )}
 
       {notice && (
         <div className="flex items-center gap-2 border-b border-amber-500/20 bg-amber-950/60 px-4 py-2 text-xs text-amber-200 shrink-0" role="status">
@@ -1213,6 +1831,24 @@ export default function MeetingRoom() {
                   </div>
                 </div>
               )}
+            </div>
+          )}
+
+          {/* Input device disappeared mid-call (unplugged / taken by another app) */}
+          {micLost && (
+            <div className="mx-auto mb-3 w-full max-w-4xl rounded-2xl border border-amber-500/30 bg-amber-950/70 p-3 shadow-lg backdrop-blur-md flex items-center justify-between gap-3 text-amber-200" role="status">
+              <div className="flex items-center gap-3">
+                <MicOff className="h-4 w-4 shrink-0" aria-hidden />
+                <div className="text-xs">
+                  <span className="font-semibold">Microphone disconnected</span>
+                  <span className="mx-1.5 opacity-60">·</span>
+                  <span>Your input device stopped. Listeners can no longer hear you until you pick one.</span>
+                </div>
+              </div>
+              <Button size="sm" variant="secondary" onClick={() => void toggleMic()}>
+                <Mic className="h-3.5 w-3.5 mr-1" />
+                Re-enable microphone
+              </Button>
             </div>
           )}
 
@@ -1641,12 +2277,25 @@ export default function MeetingRoom() {
                         <div className="flex items-center justify-between text-[10px] text-slate-400">
                           <span className="font-semibold text-slate-200">{c.speaker}</span>
                           <div className="flex items-center gap-1.5">
+                            {/* Only the two states that need explaining: audio on now,
+                                and audio cut off before the listener heard it. */}
+                            {c.playback === "playing" && (
+                              <span className="flex items-center gap-1 text-sky-400">
+                                <Volume2 className="h-3 w-3" />
+                              </span>
+                            )}
+                            {c.playback === "dropped" && (
+                              <span className="text-slate-500" title="Interrupted before it finished playing">
+                                not heard
+                              </span>
+                            )}
                             {c.language && <span className="uppercase">{c.language}</span>}
                             {c.latencyMs != null && <span className="text-emerald-400">{Math.round(c.latencyMs)}ms</span>}
                           </div>
                         </div>
                         {c.original && <p className="text-slate-400 italic">{c.original}</p>}
                         {c.translated && <p className="text-white font-medium">{c.translated}</p>}
+                        {c.failed && <p className="text-amber-400">{c.failed}</p>}
                       </div>
                     ))}
                     {captions.length === 0 && (
@@ -1755,7 +2404,7 @@ export default function MeetingRoom() {
           <button
             type="button"
             onClick={toggleMic}
-            className={`h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center transition-all ${micOn
+            className={`h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center transition-all duration-150 active:scale-95 ${micOn
               ? "bg-[#3C4043] hover:bg-[#434649] text-white"
               : "bg-red-600 hover:bg-red-700 text-white ring-2 ring-red-500/30"
               }`}
@@ -1769,7 +2418,7 @@ export default function MeetingRoom() {
           <button
             type="button"
             onClick={toggleCamera}
-            className={`h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center transition-all relative ${cameraOn
+            className={`h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center transition-all duration-150 active:scale-95 relative ${cameraOn
               ? usingVirtualCamera
                 ? "bg-sky-600 hover:bg-sky-500 text-white ring-2 ring-sky-400/50 shadow-md shadow-sky-600/30"
                 : "bg-[#3C4043] hover:bg-[#434649] text-white"
@@ -1799,7 +2448,7 @@ export default function MeetingRoom() {
           <button
             type="button"
             onClick={() => setShowCaptionsOverlay((prev) => !prev)}
-            className={`h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center transition-all ${showCaptionsOverlay
+            className={`h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center transition-all duration-150 active:scale-95 ${showCaptionsOverlay
               ? "bg-dl-blue text-white shadow-md shadow-dl-blue/30"
               : "bg-[#3C4043] hover:bg-[#434649] text-white"
               }`}
@@ -1813,7 +2462,7 @@ export default function MeetingRoom() {
           <button
             type="button"
             onClick={toggleScreen}
-            className={`h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center transition-all ${screenOn
+            className={`h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center transition-all duration-150 active:scale-95 ${screenOn
               ? "bg-dl-blue text-white shadow-md shadow-dl-blue/30"
               : "bg-[#3C4043] hover:bg-[#434649] text-white"
               }`}
@@ -1827,7 +2476,7 @@ export default function MeetingRoom() {
           <button
             type="button"
             onClick={() => setSettingsOpen(true)}
-            className="h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center bg-[#3C4043] hover:bg-[#434649] text-white transition-all"
+            className="h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center bg-[#3C4043] hover:bg-[#434649] text-white transition-all duration-150 active:scale-95"
             aria-label="Language & Audio settings"
             title="Language & Audio Translation preferences"
           >

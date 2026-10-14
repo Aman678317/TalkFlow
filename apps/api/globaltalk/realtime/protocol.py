@@ -41,6 +41,7 @@ class EventType:
     RECONNECT_REQUIRED = "reconnect.required"
     ERROR = "error"
     PONG = "pong"
+    DIAGNOSTIC = "diagnostic"
 
 
 def iso_now() -> str:

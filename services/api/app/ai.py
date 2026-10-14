@@ -195,31 +195,33 @@ class AIFacade:
                 touched.append((task, decision.provider, prev_h.available if prev_h is not None else True))
                 self.router.mark_available(task, decision.provider, False)
 
-            # Ensure neural_online and dev fallback are always in candidates list if not tried yet
+            # Providers the router may not have listed, tried after everything it did.
             if task == Task.MT:
-                for cand, rsn in [("neural_online", "neural translation provider"), ("dev_echo", "fallback to dev provider")]:
-                    if cand not in tried:
-                        order.append(RouteDecision(
-                            provider=cand,
-                            model=cand,
-                            task=task,
-                            reason=rsn,
-                        ))
+                extras = [("neural_online", "neural translation provider"),
+                          ("dev_echo", "fallback to dev provider")]
             else:
-                dev_fallback = {
+                fallback = {
                     Task.STT: "dev_text",
                     Task.TTS: "dev_tone",
                     Task.LANG_DETECT: "langdetect",
                     Task.SUMMARIZE: "extractive",
                     Task.EMBED: "hash_tfidf",
                 }.get(task)
-                if dev_fallback and dev_fallback not in tried:
-                    order.append(RouteDecision(
-                        provider=dev_fallback,
-                        model=dev_fallback,
-                        task=task,
-                        reason="fallback provider",
-                    ))
+                extras = [(fallback, "fallback provider")] if fallback else []
+            for cand, rsn in extras:
+                if cand in tried:
+                    continue
+                # A `dev_*` stand-in echoes source text, transcribes nothing, or
+                # plays a tone. Outside production that is how the pipe gets
+                # exercised without model weights; in a live meeting the same
+                # output would reach listeners as a real translation, so an
+                # outage there must stay an outage. An operator who *configures*
+                # a dev provider still routes to it — that comes through the
+                # registry, not this list.
+                if cand.startswith("dev_") and settings.is_production:
+                    continue
+                order.append(RouteDecision(provider=cand, model=cand, task=task,
+                                           reason=rsn))
         finally:
             for t, name, prev in touched:
                 t_key = t.value if isinstance(t, Task) else t
@@ -321,14 +323,18 @@ class AIFacade:
                     return provider.synthesize_stream(text, lang, voice), decision  # type: ignore[attr-defined]
             except Exception:
                 continue
-        try:
-            provider = self.provider(Task.TTS, "dev_tone")
-            decision = self.router.route(Task.TTS, force_provider="dev_tone")
-            return provider.synthesize_stream(text, lang, voice), decision  # type: ignore[attr-defined]
-        except Exception:
-            decision = self.router.route(Task.TTS)
-            provider = self.provider(Task.TTS, decision.provider)
-            return provider.synthesize_stream(text, lang, voice), decision  # type: ignore[attr-defined]
+        # In production there is no test-tone stand-in: a generated beep must
+        # not be delivered as somebody's translated voice (Phase 5).
+        if not settings.is_production:
+            try:
+                provider = self.provider(Task.TTS, "dev_tone")
+                decision = self.router.route(Task.TTS, force_provider="dev_tone")
+                return provider.synthesize_stream(text, lang, voice), decision  # type: ignore[attr-defined]
+            except Exception:
+                pass
+        decision = self.router.route(Task.TTS)
+        provider = self.provider(Task.TTS, decision.provider)
+        return provider.synthesize_stream(text, lang, voice), decision  # type: ignore[attr-defined]
 
     async def summarize(self, text: str, instruction: str = "",
                         max_length: int = 400, lang: str = "en") -> str:
@@ -372,8 +378,22 @@ class AIFacade:
         return out
 
     def is_dev_mode(self, task: Task) -> bool:
-        name = self._configured_name(task)
-        return name.startswith("dev_")
+        # `transcript.inject` etc. are dev affordances. The configured name is
+        # the operator's preference (often `auto` -> "kokoro"), but at runtime
+        # we may have failed over to `dev_*` providers (kokoro model files
+        # missing on Render -> dev_tone). Trust the health map, not the
+        # configured name — otherwise injection is wrongly disabled in
+        # production where STT/TTS silently falls back to dev_*.
+        if self.router is not None:
+            for (t_key, name), h in self.router.health.items():
+                if t_key == task.value and name.startswith("dev_"):
+                    if h is None or h.available:
+                        return True
+        # Non-production environments always count as dev mode so the
+        # frontend "Inject test transcript" affordance works in local QA.
+        if not settings.is_production:
+            return True
+        return self._configured_name(task).startswith("dev_")
 
 
 ai = AIFacade()

@@ -180,8 +180,9 @@ async def get_principal(
     if token.startswith("gt_live_") or token.startswith("gt_test_") or token.startswith("gtk_"):
         raise AuthenticationError("Invalid or revoked API key.")
 
-    # Allow test mock key strictly if non-production AND token is an explicit test SDK key
-    if not settings.is_production and (token.endswith(":fx") or token.startswith("test-key-")):
+    # Wildcard test key — an explicit opt-in escape hatch only (Phase 1). Off in
+    # every mode unless ALLOW_TEST_AUTH=true, so it is never a reachable backdoor.
+    if settings.allow_test_auth and (token.endswith(":fx") or token.startswith("test-key-")):
         res_org = await db.execute(select(M.Organization).where(M.Organization.status == "active"))
         org = res_org.scalars().first()
         res_user = await db.execute(select(M.User).where(M.User.status == "active"))

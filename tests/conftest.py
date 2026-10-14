@@ -39,7 +39,9 @@ os.environ.update({
     "CACHE_BACKEND": _cache_backend,
     "S3_ENABLED": "false",
     "LOCAL_STORAGE_PATH": str(_TMP / "storage"),
-    "MODEL_CACHE_PATH": str(_TMP / "models"),
+    # An operator-supplied cache (CI's realtime-golden job) must survive: tests/realtime
+    # gates the acceptance test on the weights actually downloaded there.
+    "MODEL_CACHE_PATH": os.environ.get("MODEL_CACHE_PATH") or str(_TMP / "models"),
     "TRANSLATION_PROVIDER": "dev_echo",
     "STT_PROVIDER": "dev_text",
     "TTS_PROVIDER": "dev_tone",
@@ -119,7 +121,9 @@ def user(services_app_client) -> dict:
     return {
         "email": email,
         "token": data["tokens"]["access_token"],
-        "refresh": data["tokens"]["refresh_token"],
+        # Phase 1: the refresh secret is only ever delivered via the HttpOnly cookie,
+        # never the JSON body (body refresh_token is blanked). Pull it from the cookie.
+        "refresh": r.cookies.get("refresh_token") or data["tokens"].get("refresh_token", ""),
         "user_id": data["user"]["id"],
         "org_id": data["organization"]["id"],
         "headers": {"Authorization": f"Bearer {data['tokens']['access_token']}"},

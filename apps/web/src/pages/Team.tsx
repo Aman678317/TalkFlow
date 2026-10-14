@@ -5,7 +5,10 @@ import { Badge, Button, Card, Field, Input, Modal, Select } from "../components/
 import { useToasts } from "../stores/toast";
 import { useAuth } from "../stores/auth";
 
-interface Member { user_id: string; email: string; full_name: string; role: string; joined_at: string; }
+interface Member {
+  id: string; user_id: string; role: string; status: string; created_at: string;
+  user: { id: string; email: string; name?: string } | null;
+}
 const ROLES = ["owner", "admin", "manager", "member", "viewer"];
 const ROLE_DESC: Record<string, string> = {
   owner: "Full control incl. billing & security",
@@ -23,7 +26,7 @@ export default function Team() {
   const [form, setForm] = React.useState({ email: "", role: "member" });
 
   const membersQ = useQuery({ queryKey: ["members"], queryFn: () => api<Member[]>("/api/v1/members") });
-  const orgQ = useQuery({ queryKey: ["org"], queryFn: () => api<any>("/api/v1/org") });
+  const orgQ = useQuery({ queryKey: ["org"], queryFn: () => api<any>("/api/v1/organizations/current") });
 
   const add = useMutation({
     mutationFn: () => api("/api/v1/members", { method: "POST", body: form }),
@@ -31,13 +34,13 @@ export default function Team() {
     onError: (e: any) => push({ kind: "error", title: "Could not add member", body: e.message }),
   });
   const changeRole = useMutation({
-    mutationFn: ({ email, role }: { email: string; role: string }) =>
-      api("/api/v1/members", { method: "POST", body: { email, role } }),
+    mutationFn: ({ memberId, role }: { memberId: string; role: string }) =>
+      api(`/api/v1/members/${memberId}/role`, { method: "PUT", body: { role } }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["members"] }),
     onError: (e: any) => push({ kind: "error", title: "Role change failed", body: e.message }),
   });
   const removeMember = useMutation({
-    mutationFn: (uid: string) => api(`/api/v1/members/${uid}`, { method: "DELETE" }),
+    mutationFn: (memberId: string) => api(`/api/v1/members/${memberId}`, { method: "DELETE" }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["members"] }); push({ kind: "success", title: "Member removed" }); },
     onError: (e: any) => push({ kind: "error", title: "Cannot remove", body: e.message }),
   });
@@ -60,28 +63,31 @@ export default function Team() {
             </tr>
           </thead>
           <tbody>
-            {(membersQ.data ?? []).map((m) => (
-              <tr key={m.user_id} className="border-b border-ink-50">
+            {(membersQ.data ?? []).map((m) => {
+              const email = m.user?.email ?? "unknown";
+              return (
+              <tr key={m.id} className="border-b border-ink-50">
                 <td className="py-2.5">
-                  <p className="font-medium text-ink-900">{m.full_name || m.email}</p>
-                  <p className="text-[11px] text-ink-400">{m.email}</p>
+                  <p className="font-medium text-ink-900">{m.user?.name || email}</p>
+                  <p className="text-[11px] text-ink-400">{email}</p>
                 </td>
                 <td>
-                  <Select aria-label={`Role for ${m.email}`} className="!w-32 !py-1 text-xs" value={m.role}
-                          onChange={(e) => changeRole.mutate({ email: m.email, role: e.target.value })}>
+                  <Select aria-label={`Role for ${email}`} className="!w-32 !py-1 text-xs" value={m.role}
+                          onChange={(e) => changeRole.mutate({ memberId: m.id, role: e.target.value })}>
                     {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
                   </Select>
                 </td>
                 <td className="max-w-[220px] text-[11px] text-ink-400">{ROLE_DESC[m.role]}</td>
-                <td className="text-xs text-ink-400">{new Date(m.joined_at).toLocaleDateString()}</td>
+                <td className="text-xs text-ink-400">{new Date(m.created_at).toLocaleDateString()}</td>
                 <td className="text-right">
                   {m.role !== "owner" && (
-                    <Button size="sm" variant="ghost" onClick={() => removeMember.mutate(m.user_id)}
-                            aria-label={`Remove ${m.email}`}>Remove</Button>
+                    <Button size="sm" variant="ghost" onClick={() => removeMember.mutate(m.id)}
+                            aria-label={`Remove ${email}`}>Remove</Button>
                   )}
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </Card>

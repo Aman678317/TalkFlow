@@ -1,4 +1,4 @@
-"""Meeting service: meetings, participants, preferences, LiveKit tokens.
+"""Meeting service: meetings, participants, preferences.
 
 Canonical routing rule lives here (PDD §12): routing key =
 (participant_id, hear_lang); translation fan-out key = (segment_id, target_lang).
@@ -13,7 +13,6 @@ from datetime import datetime, timezone
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
 from app.db import models as M
 from app.db.base import utcnow
 from app.errors import ConflictError, NotFoundError
@@ -71,29 +70,34 @@ async def _add_participant(db: AsyncSession, meeting: M.Meeting, *,
 async def join_meeting(db: AsyncSession, meeting: M.Meeting, *,
                        user_id: uuid.UUID | None, display_name: str,
                        speak_lang: str, hear_lang: str, audio_mode: str,
-                       guest_key: str = "") -> tuple[M.Participant, M.ParticipantPreference, str]:
-    """Idempotent join: same user/guest_key reuses the participant row.
+                       session_key: str = "", as_guest: bool = False
+                       ) -> tuple[M.Participant, M.ParticipantPreference, str]:
+    """Idempotent join: resume by server-issued session_key, else by the
+    caller's user seat, else create a new seat.
 
-    Lookup priority: guest_key (when provided) wins over user_id so a single
-    authenticated user can open additional guest seats (multi-browser demo,
-    QA personas) without hijacking their own participant row.
+    Seat capabilities are always server-generated (Phase 4): the client can
+    only present a session_key it received from a previous /join response.
+    `as_guest` opens an additional unbound guest seat for an authenticated
+    user (second person, same browser) instead of resuming their own seat.
     """
     p = None
-    if guest_key:
-        res = await db.execute(select(M.Participant).where(
-            M.Participant.meeting_id == meeting.id,
-            M.Participant.guest_key == guest_key))
+    if session_key:
+        res = await db.execute(
+            select(M.Participant)
+            .join(M.AudioSession, M.AudioSession.participant_id == M.Participant.id)
+            .where(M.AudioSession.session_key == session_key,
+                   M.Participant.meeting_id == meeting.id))
         p = res.scalars().first()
-    if p is None and user_id and not guest_key:
+    if p is None and user_id and not as_guest:
         res = await db.execute(select(M.Participant).where(
             M.Participant.meeting_id == meeting.id,
             M.Participant.user_id == user_id))
         p = res.scalars().first()
     if p is None:
-        p, pref = await _add_participant(db, meeting, user_id=user_id,
+        p, pref = await _add_participant(db, meeting,
+                                         user_id=None if as_guest else user_id,
                                          display_name=display_name, role="member",
-                                         speak_lang=speak_lang, hear_lang=hear_lang,
-                                         guest_key=guest_key)
+                                         speak_lang=speak_lang, hear_lang=hear_lang)
     else:
         pref = (await db.execute(select(M.ParticipantPreference).where(
             M.ParticipantPreference.participant_id == p.id))).scalars().first()
@@ -183,45 +187,3 @@ async def end_meeting(db: AsyncSession, meeting: M.Meeting) -> None:
     meeting.status = "ended"
     meeting.ended_at = utcnow()
     await db.commit()
-
-
-def livekit_join_token(room_name: str, identity: str, name: str,
-                       metadata: dict) -> dict | None:
-    """Mint a short-lived LiveKit access token server-side (secrets never leave
-    the backend). Returns None when LiveKit is disabled."""
-    if not settings.livekit_enabled:
-        return None
-    try:
-        from livekit import api as lk_api  # type: ignore
-    except ImportError:
-        # fallback: hand-rolled JWT (LiveKit tokens are standard JWTs)
-        return _manual_livekit_token(room_name, identity, name, metadata)
-    import time as _t
-    from datetime import timedelta as _td
-    at = lk_api.AccessToken(settings.livekit_api_key, settings.livekit_api_secret)
-    at = at.with_identity(identity).with_name(name).with_metadata(
-        __import__("json").dumps(metadata)
-    ).with_grants(lk_api.VideoGrants(room_join=True, room=room_name))  # type: ignore[attr-defined]
-    at.ttl = _td(seconds=1800)
-    return {"url": settings.livekit_url, "token": at.to_jwt()}
-
-
-def _manual_livekit_token(room_name: str, identity: str, name: str,
-                          metadata: dict) -> dict:
-    import json
-    import time as _time
-    from app.security import create_token
-    import jwt as pyjwt
-    now = int(_time.time())
-    payload = {
-        "iss": settings.livekit_api_key,
-        "sub": identity,
-        "name": name,
-        "metadata": json.dumps(metadata),
-        "nbf": now - 10,
-        "exp": now + 1800,
-        "video": {"roomJoin": True, "room": room_name},
-        "jti": secrets.token_hex(8),
-    }
-    token = pyjwt.encode(payload, settings.livekit_api_secret, algorithm="HS256")
-    return {"url": settings.livekit_url, "token": token}

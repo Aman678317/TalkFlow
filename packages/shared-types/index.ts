@@ -37,7 +37,6 @@ export interface Meeting {
   title: string;
   status: string;
   room_name: string;
-  join_token: string;
   created_at: string;
   started_at?: string | null;
   ended_at?: string | null;

@@ -26,6 +26,20 @@ def test_render_yaml_configuration():
     assert "JWT_SECRET" in env_vars
     assert "CORS_ORIGINS" in env_vars
 
+    # app.config's production validator refuses startup without a strong
+    # SECRET_KEY and any REDIS_URL, so the Blueprint must supply both —
+    # otherwise a fresh Render deploy crashes before the API boots.
+    assert env_vars["SECRET_KEY"].get("generateValue") is True
+    assert env_vars["JWT_SECRET"].get("generateValue") is True
+    assert "REDIS_URL" in env_vars
+
+    redis = next(
+        (d for d in (content.get("databases") or []) if d.get("type") == "redis"), None
+    )
+    assert redis is not None, "render.yaml must declare a Redis instance for REDIS_URL"
+    assert redis.get("region") == api_service.get("region"), \
+        "Redis must share the API's region for private networking"
+
 
 def test_supabase_db_url_normalization():
     # 1. postgres:// prefix -> postgresql+asyncpg:// with pgbouncer stripping

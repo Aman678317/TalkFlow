@@ -32,7 +32,7 @@ import os
 os.environ.setdefault("ARGOS_DEVICE_TYPE", "cpu")
 cache = os.path.join(os.environ.get("MODEL_CACHE_PATH", "/tmp/globaltalk-models"), "argos")
 os.makedirs(cache, exist_ok=True)
-os.environ["ARGOS_PACKAGE_FOLDER"] = cache
+os.environ["ARGOS_PACKAGES_DIR"] = cache  # Argos reads this name, at settings-import time
 import argostranslate.package as pkg
 pkg.update_package_index()
 available = pkg.get_available_packages()

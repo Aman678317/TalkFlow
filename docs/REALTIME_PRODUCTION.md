@@ -93,11 +93,12 @@ sequenceDiagram
 
 | Failure Condition | System Behavior | User Visible Feedback |
 |---|---|---|
-| **STT Engine Failure** | Original call audio continues uninterrupted. No hallucinated transcript is generated. | "Transcription temporarily delayed" status banner. |
-| **MT Engine Failure** | Canonical source text remains visible in captions. Translation fan-out fails gracefully. | `translation.failed` flag emitted; original captions retained. |
+| **STT Engine Failure** | Original call audio continues uninterrupted. No hallucinated transcript is generated. | `error` with code `stt_unavailable` → "Translation Unavailable" banner; captions stay. |
+| **MT Engine Failure** | Canonical source text remains visible in captions. Translation fan-out fails gracefully. | `translation.failed` per target language, carrying the real source language; original captions retained. |
 | **TTS Engine Failure** | Translated text captions continue streaming to listeners. Audio synthesis is bypassed. | Captions active; audio remains in original language. |
-| **Network Degradation / Packet Loss** | AudioWorklet adjusts jitter buffer; WebRTC lowers resolution. | Visible "Network Degraded" indicator in meeting UI. |
-| **WebSocket Disconnection** | Reconnection loop attempts exponential reconnect (up to 5 attempts); session replay buffer replays missed events. | Visible "Reconnecting..." badge with reconnect spinner. |
+| **Network Degradation / Packet Loss** | The client caps its own send buffer: PCM frames beyond 64 KB queued are dropped so latency stays real-time, reported as `quality.degraded`. Round-trip time is measured from the socket's ping/pong — over 400 ms marks the link degraded, under 250 ms clears it. There is no jitter buffer and no adaptive codec in the browser: mic audio is a raw PCM16 stream over the meeting WebSocket. | "Degraded Network" pill; "Translation Delayed" banner. |
+| **WebSocket Disconnection** | Exponential backoff with jitter (500 ms → 30 s cap); missed events are replayed by `last_sequence` on resume. A socket that stays `OPEN` but receives nothing for 65 s is closed on purpose — a half-open link is exactly what `readyState` cannot detect. A credential rejected at the handshake stops retrying after 5 quick failures rather than spinning forever. | "Reconnecting… Audio & transcript preserved" pill, cleared when the session resumes. |
+| **Microphone removed or muted mid-speech** | The capture track's `ended`/`mute` events are watched; the default input is re-opened once. `MicCapture.stop()` is excluded from that signal, so a deliberate device switch is not reported as a failure. If recovery fails the room stops claiming the microphone is live. | "Microphone recovered" toast, or "Microphone disconnected" banner with a re-enable action. |
 | **Redis Outage** | In-memory session manager continues serving local worker connections. | Degradation alert logged to metrics; cluster scaling gated. |
 
 ---
@@ -105,6 +106,10 @@ sequenceDiagram
 ## 5. Verification & Automated Test Evidence
 
 Automated test suites validating realtime security and pipeline behavior:
+- `apps/web/src/lib/__tests__/mediaResilience.test.ts`:
+  - ping/pong round trip measured; silent-but-OPEN socket declared dead and
+    reconnected; any inbound frame counts as proof of life
+  - microphone `ended`/`mute` reach the UI, and our own `stop()` does not
 - `tests/test_realtime_security.py`:
   - `test_unauthenticated_websocket_connection_rejected` (PASS - Close code 4401)
   - `test_authenticated_ticket_websocket_connection` (PASS - Ticket authorized)

@@ -92,6 +92,10 @@ class Settings(BaseSettings):
     def is_sqlite(self) -> bool:
         return self.database_url.startswith("sqlite")
 
+    @property
+    def is_production(self) -> bool:
+        return self.app_env.strip().lower() == "production"
+
 
 @lru_cache
 def get_settings() -> Settings:

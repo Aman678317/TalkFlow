@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from globaltalk.core.config import settings
 from globaltalk.core.db import SessionLocal
+from globaltalk.core.dev_mode import is_dev_mode
 from globaltalk.core.logging import get_logger
 from globaltalk.core.security import decode_token, sha256
 from globaltalk.models import (ChatMessage, Meeting, OrganizationMember, Participant,
@@ -251,6 +252,9 @@ async def _event_loop(ws: WebSocket, db: Session, session, conn: ParticipantConn
             evt = session.record(EventType.AUDIO_STOPPED, speaker_id=conn.participant_id)
             await session.broadcast(evt)
 
+        elif etype == "transcript.inject":
+            await _handle_inject(ws, session, conn, data)
+
         else:
             await ws.send_json({"version": 1, "type": EventType.ERROR,
                                 "error": {"code": "unknown_event", "received": etype}})
@@ -277,6 +281,31 @@ async def _handle_chat(ws: WebSocket, db: Session, session, conn: ParticipantCon
     # Translate original → each distinct listening language present (dedup), never mutate it.
     spawn(translate_chat_for_listeners(session, db, row.id, original, detected),
           name=f"chat-translate-{row.id[:8]}")
+
+
+async def _handle_inject(ws: WebSocket, session, conn: ParticipantConn,
+                         data: dict) -> None:
+    """Dev affordance: synthesize a canonical transcript segment without
+    STT/audio. Mirrors Tree A's `pipe.inject_transcript`. Gated by
+    `is_dev_mode("stt")` so it's harmless in production unless STT
+    has actually failovered to a dev_* provider.
+    """
+    if not is_dev_mode("stt") and getattr(settings, "app_env", "development") != "test":
+        await ws.send_json({"version": 1, "type": EventType.ERROR,
+                            "error": {"code": "inject_disabled",
+                                      "message": "transcript injection is dev-only"}})
+        return
+    text = str(data.get("text", ""))[:4000].strip()
+    if not text:
+        return
+    language = str(data.get("language", "") or "")[:8]
+    pipeline = session.pipelines.get(conn.participant_id)
+    if pipeline is None:
+        await ws.send_json({"version": 1, "type": EventType.ERROR,
+                            "error": {"code": "no_pipeline",
+                                      "message": "audio pipeline not initialized"}})
+        return
+    await pipeline.inject_transcript(text=text, language=language)
 
 
 async def _leave(db: Session, session, conn: ParticipantConn,

@@ -16,14 +16,14 @@ from app.db import models as M
 from app.db.base import utcnow
 from app.db.session import get_db
 from app.deps import Principal, get_principal_optional, require_org_user, require_scope
-from app.errors import NotFoundError, ValidationError
+from app.errors import AuthenticationError, NotFoundError, ValidationError
 from app.realtime import livekit_bridge
 from app.realtime.protocol import ServerEventType
 from app.schemas import (
-    JoinMeetingRequest, JoinMeetingResponse, MeetingCreate, MeetingDetailOut,
-    MeetingOut, ParticipantFullOut, ParticipantOut, PreferenceOut,
-    PreferenceUpdate, PreferenceUpdate as _PrefUpd, TranscriptSegmentOut,
-    VoiceSessionCreate,
+    JoinMeetingRequest, JoinMeetingResponse, JoinTicketRequest, JoinTicketResponse,
+    MeetingCreate, MeetingDetailOut, MeetingOut, ParticipantFullOut, ParticipantOut,
+    PreferenceOut, PreferenceUpdate, PreferenceUpdate as _PrefUpd,
+    TranscriptSegmentOut, VoiceSessionCreate,
 )
 from app.security import create_session_ticket
 from app.services import audit_service, meeting_service, webhook_service
@@ -77,13 +77,25 @@ async def list_meetings(principal: Principal = Depends(require_org_user),
     if status:
         q = q.where(M.Meeting.status == status)
     res = await db.execute(q.order_by(M.Meeting.created_at.desc()).limit(limit))
-    return [MeetingOut.model_validate(m) for m in res.scalars().all()]
+    return [_meeting_out(m) for m in res.scalars().all()]
+
+
+def _meeting_out(meeting: M.Meeting) -> MeetingOut:
+    """Serialize a meeting with the derived fields the web client expects."""
+    out = MeetingOut.model_validate(meeting)
+    out.transport = meeting.mode
+    out.has_summary = bool(meeting.summary_json)
+    return out
 
 
 async def _detail(db: AsyncSession, meeting: M.Meeting,
                   principal: Principal | None = None) -> MeetingDetailOut:
     participants = await meeting_service.list_participants(db, meeting.id)
     base = MeetingDetailOut.model_validate(meeting)
+    base.transport = meeting.mode
+    base.has_summary = bool(meeting.summary_json)
+    if meeting.mode == "livekit" and livekit_bridge.enabled():
+        base.livekit_url = livekit_bridge.public_url()
     base.participants = [
         ParticipantFullOut(
             participant=ParticipantOut.model_validate(p),
@@ -144,7 +156,8 @@ async def join_meeting(meeting_id: uuid.UUID, body: JoinMeetingRequest,
     p, pref, session_key = await meeting_service.join_meeting(
         db, meeting, user_id=user_id, display_name=display,
         speak_lang=body.speak_lang, hear_lang=body.hear_lang,
-        audio_mode=body.audio_mode, guest_key=body.guest_key or "")
+        audio_mode=body.audio_mode, session_key=body.session_key,
+        as_guest=body.as_guest)
 
     if meeting.status == "live" and meeting.started_at:
         pass  # webhook fired on transition below
@@ -169,6 +182,52 @@ async def join_meeting(meeting_id: uuid.UUID, body: JoinMeetingRequest,
     return resp
 
 
+TICKET_TTL_S = 120
+
+
+@router.post("/meetings/{meeting_id}/join-ticket", response_model=JoinTicketResponse)
+async def meeting_join_ticket(meeting_id: uuid.UUID,
+                              body: JoinTicketRequest,
+                              principal: Principal | None = Depends(get_principal_optional),
+                              db: AsyncSession = Depends(get_db)):
+    """Mint a signed, single-use, 120s realtime ticket (roadmap Phase 4 task 1).
+
+    Guests present the server-issued `session_key` from their /join response —
+    the only guest credential, and it never travels in a WS URL. Authenticated
+    callers re-mint for the seat they joined. The WebSocket layer accepts
+    tickets (and member JWTs) only; static join tokens are gone.
+    """
+    meeting = await db.get(M.Meeting, meeting_id)
+    if meeting is None:
+        raise NotFoundError("Meeting not found.")
+    if meeting.status not in ("scheduled", "live"):
+        raise ValidationError("Meeting is not joinable.",
+                              details={"status": meeting.status})
+    participant: M.Participant | None = None
+    if body.session_key:
+        res = await db.execute(
+            select(M.Participant)
+            .join(M.AudioSession, M.AudioSession.participant_id == M.Participant.id)
+            .where(M.AudioSession.session_key == body.session_key,
+                   M.Participant.meeting_id == meeting.id))
+        participant = res.scalars().first()
+        if participant is None:
+            raise AuthenticationError("Invalid or expired session key.")
+    else:
+        if principal is None or not principal.user_id:
+            raise AuthenticationError("Authentication or session key required.")
+        participants = await meeting_service.list_participants(db, meeting.id)
+        participant = next((p for p, _ in participants
+                            if p.user_id == principal.user_id), None)
+        if participant is None:
+            raise NotFoundError("Join the meeting first.")
+    ticket = create_session_ticket(meeting.room_name, str(participant.id),
+                                   ttl_s=TICKET_TTL_S)
+    return JoinTicketResponse(
+        ticket=ticket, ws_url=f"/ws/realtime?ticket={ticket}",
+        participant_id=participant.id, expires_in=TICKET_TTL_S)
+
+
 @router.post("/meetings/{meeting_id}/leave", status_code=204)
 async def leave_meeting(
     meeting_id: uuid.UUID,
@@ -177,7 +236,32 @@ async def leave_meeting(
     principal: Principal | None = Depends(get_principal_optional),
     db: AsyncSession = Depends(get_db),
 ):
-    """Cleanly mark participant as left and broadcast participant.left event."""
+    """Cleanly mark participant as left and broadcast participant.left event.
+
+    Phase 3: a supplied participant_id is only honored when it belongs to THIS
+    meeting and the caller is authorized (the participant themself, a member of
+    the meeting's org, or an unauthenticated guest holding the join capability).
+    Foreign meetings/orgs get a uniform 404 — never a 403 or a silent cross-
+    tenant write (previously any participant_id from any meeting was accepted).
+    """
+    meeting = await db.get(M.Meeting, meeting_id)
+    if meeting is None:
+        raise NotFoundError("Meeting not found.")
+
+    caller_org_member = bool(
+        principal and principal.org_id and str(meeting.org_id) == str(principal.org_id)
+    )
+    own_row: M.Participant | None = None
+    if principal and principal.user_id:
+        res = await db.execute(
+            select(M.Participant).where(
+                M.Participant.meeting_id == meeting_id,
+                M.Participant.user_id == principal.user_id,
+                M.Participant.status == "joined",
+            )
+        )
+        own_row = res.scalars().first()
+
     p_id_str = body.get("participant_id")
     if not p_id_str:
         p_id_str = request.headers.get("x-participant-id") or request.query_params.get("participant_id")
@@ -187,17 +271,20 @@ async def leave_meeting(
         with contextlib.suppress(Exception):
             p_uuid = uuid.UUID(str(p_id_str))
 
-    if p_uuid is None and principal and principal.user_id:
-        res = await db.execute(
-            select(M.Participant).where(
-                M.Participant.meeting_id == meeting_id,
-                M.Participant.user_id == principal.user_id,
-                M.Participant.status == "joined",
-            )
-        )
-        p_row = res.scalars().first()
-        if p_row:
-            p_uuid = p_row.id
+    if p_uuid is not None:
+        target = await db.get(M.Participant, p_uuid)
+        is_self = bool(principal and principal.user_id and target and target.user_id == principal.user_id)
+        is_participant = own_row is not None
+        if target is None or target.meeting_id != meeting_id:
+            # Unknown or foreign-meeting participant: uniform 404, no action.
+            raise NotFoundError("Meeting not found.")
+        if not (principal is None or caller_org_member or is_self or is_participant):
+            raise NotFoundError("Meeting not found.")
+    elif own_row is not None:
+        p_uuid = own_row.id
+    else:
+        # Cannot identify who is leaving (no participant_id, no joined row).
+        raise NotFoundError("Meeting not found.")
 
     if p_uuid:
         await meeting_service.leave_participant(db, p_uuid)
@@ -274,6 +361,45 @@ async def meeting_token(meeting_id: uuid.UUID,
             meeting.room_name, mine.livekit_identity or str(mine.id),
             mine.display_name, {"participant_id": str(mine.id)})
     return out
+
+
+@router.post("/meetings/{meeting_id}/media-token", response_model=dict)
+async def meeting_media_token(meeting_id: uuid.UUID,
+                              participant_id: uuid.UUID = Query(...),
+                              principal: Principal = Depends(require_org_user),
+                              db: AsyncSession = Depends(get_db)):
+    """LiveKit SFU credentials for an already-joined participant.
+
+    `/tokens` hands out a websocket ticket; the browser media layer instead
+    needs the {url, token} pair that livekit-client connects with.
+    """
+    if not livekit_bridge.enabled():
+        raise ValidationError(
+            "Video calling is not configured for this server.",
+            details={"code": "media_transport_unavailable"})
+    meeting = await _meeting_or_404(db, meeting_id, principal)
+    if meeting.mode != "livekit":
+        raise ValidationError(
+            "This meeting runs on the websocket transport.",
+            details={"code": "media_transport_unavailable", "mode": meeting.mode})
+    participants = await meeting_service.list_participants(db, meeting.id)
+    mine = next((p for p, _ in participants if p.id == participant_id), None)
+    if mine is None:
+        raise NotFoundError("Join the meeting first.")
+    # Mint only for the caller's own identity unless they manage members;
+    # otherwise any org user could join the room as someone else.
+    if not (principal.user_id and mine.user_id == principal.user_id):
+        principal.require("manage_members")
+    credentials = livekit_bridge.join_token(
+        meeting.room_name, mine.livekit_identity or str(mine.id),
+        mine.display_name,
+        {"meeting_id": str(meeting.id), "participant_id": str(mine.id)})
+    if credentials is None:
+        raise ValidationError("Video calling is not configured for this server.",
+                              details={"code": "media_transport_unavailable"})
+    return {"url": credentials["url"], "room": meeting.room_name,
+            "identity": mine.livekit_identity or str(mine.id),
+            "token": credentials["token"]}
 
 
 @router.put("/meetings/{meeting_id}/participants/{participant_id}/preferences",

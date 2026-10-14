@@ -352,7 +352,7 @@ export default function JoinCall() {
         </div>
 
         {/* Card */}
-        <div className="bg-slate-800/80 backdrop-blur border border-slate-700 rounded-2xl p-6 shadow-2xl">
+        <div className="bg-slate-800/80 backdrop-blur border border-slate-700 rounded-2xl p-6 shadow-2xl animate-fadeIn">
 
           {/* LOADING */}
           {pageState === 'loading' && (

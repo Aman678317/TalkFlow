@@ -59,14 +59,14 @@ class LoginRequest(BaseModel):
 
 
 class SocialLoginRequest(BaseModel):
+    """Phase 2: identity comes ONLY from provider-verified credentials. There is no
+    client-supplied email/name/avatar field — a verified token or authorization code
+    is required, and every identity attribute is read from the verified claims."""
     provider: Literal["google", "github", "apple"]
     token: str | None = None
     code: str | None = None
     redirect_uri: str | None = None
-    email: str | None = None
-    name: str | None = None
-    avatar_url: str | None = None
-    provider_user_id: str | None = None
+    nonce: str | None = None
 
 
 class UserIdentityOut(ORMModel):
@@ -219,54 +219,9 @@ class DetectResponse(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
-# Desi Write & Dictionary Schemas
+# Desi Write & Dictionary Schemas — canonical definitions live near the bottom
+# of this module; the earlier duplicate block was removed (F811).
 # --------------------------------------------------------------------------- #
-
-class WriteRequest(BaseModel):
-    text: str = Field(min_length=1, max_length=50_000)
-    language: str = "en"
-    style: str = "business"    # business | academic | casual | simple | creative
-    tone: str = "professional" # professional | friendly | confident | diplomatic | direct
-    corrections_only: bool = False
-
-
-class WriteDiff(BaseModel):
-    original: str
-    replacement: str
-    diff_type: str  # grammar | vocabulary | style | phrasing
-    explanation: str
-    alternatives: list[str] = []
-
-
-class WriteResponse(BaseModel):
-    original_text: str
-    improved_text: str
-    language: str
-    style: str
-    tone: str
-    changes_count: int
-    diffs: list[WriteDiff] = []
-    alternatives: list[str] = []
-
-
-class DictionaryRequest(BaseModel):
-    word: str = Field(min_length=1, max_length=100)
-    source_lang: str = "en"
-    target_lang: str = "en"
-
-
-class DictionaryEntry(BaseModel):
-    word: str
-    pos: str
-    definitions: list[str] = []
-    synonyms: list[str] = []
-    examples: list[str] = []
-
-
-class DictionaryResponse(BaseModel):
-    query: str
-    entries: list[DictionaryEntry] = []
-
 
 # --------------------------------------------------------------------------- #
 # Languages
@@ -504,11 +459,16 @@ class MeetingOut(ORMModel):
     created_at: datetime
     started_at: datetime | None
     ended_at: datetime | None
+    # Derived by the router; the web client switches its transport and summary
+    # UI on these rather than on `mode`/`summary_json`.
+    transport: str = "ws"
+    has_summary: bool = False
 
 
 class MeetingDetailOut(MeetingOut):
     participants: list[ParticipantFullOut] = []
     livekit: dict | None = None
+    livekit_url: str | None = None
 
 
 class JoinMeetingRequest(BaseModel):
@@ -516,7 +476,22 @@ class JoinMeetingRequest(BaseModel):
     speak_lang: str = "auto"
     hear_lang: str = "en"
     audio_mode: Literal["original", "translated", "mixed", "captions_only"] = "translated"
-    guest_key: str = ""
+    # Seat continuation is the server-issued session_key from a previous /join
+    # ("" = open a new seat). Client-chosen seat keys are never accepted: they
+    # were a static, never-expiring WS credential (roadmap Phase 4 task 1).
+    session_key: str = ""
+    as_guest: bool = False
+
+
+class JoinTicketRequest(BaseModel):
+    session_key: str = ""
+
+
+class JoinTicketResponse(BaseModel):
+    ticket: str
+    ws_url: str
+    participant_id: uuid.UUID
+    expires_in: int
 
 
 class JoinMeetingResponse(BaseModel):

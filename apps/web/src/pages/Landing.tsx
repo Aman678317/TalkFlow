@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
+import { AnimatePresence, motion } from "motion/react";
 import {
   ArrowRight,
   Bot,
@@ -22,6 +23,8 @@ import {
   ExternalLink,
 } from "lucide-react";
 import { Logo } from "../components/Layout";
+import { Reveal } from "../components/Motion";
+import { staggerContainerVariants, staggerItemVariants, springSoft } from "../lib/motion";
 import { useAuth } from "../stores/auth";
 
 const LANGS = [
@@ -60,8 +63,8 @@ export default function Landing() {
 
   return (
     <div className="min-h-full bg-white text-dl-navy selection:bg-dl-blue selection:text-white">
-      {/* HEADER NAVBAR */}
-      <header className="sticky top-0 z-50 border-b border-dl-border/80 bg-white/95 backdrop-blur-md">
+      {/* HEADER NAVBAR — frosted material, content scrolls under */}
+      <header className="material-bar sticky top-0 z-50">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-3.5">
           <Link to="/" className="flex items-center gap-3 group">
             <Logo className="h-8 w-8 text-dl-blue transition-transform group-hover:scale-105" />
@@ -166,8 +169,16 @@ export default function Landing() {
         </div>
 
         {/* Mobile Navigation Drawer */}
-        {mobileMenuOpen && (
-          <div className="md:hidden border-t border-dl-border bg-white px-6 py-4 space-y-2">
+        <AnimatePresence initial={false}>
+          {mobileMenuOpen && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={springSoft}
+              className="md:hidden overflow-hidden border-t border-dl-border bg-white"
+            >
+              <div className="px-6 py-4 space-y-2">
             <Link
               to="/translate"
               onClick={() => setMobileMenuOpen(false)}
@@ -222,16 +233,18 @@ export default function Landing() {
                 {user ? "Go to Dashboard" : "Start Free"}
               </Link>
             </div>
-          </div>
-        )}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </header>
 
       {/* HERO SECTION */}
       <main className="mx-auto max-w-7xl px-6">
         <section className="py-12 lg:py-16 grid gap-12 lg:grid-cols-2 lg:items-center">
-          <div>
+          <motion.div variants={staggerContainerVariants} initial="hidden" animate="visible">
             {/* Hero Eyebrows */}
-            <div className="mb-4 flex flex-wrap items-center gap-2.5">
+            <motion.div variants={staggerItemVariants} className="mb-4 flex flex-wrap items-center gap-2.5">
               <div className="inline-flex items-center gap-2 rounded-full border border-dl-border bg-dl-bg-alt px-3.5 py-1 text-xs font-semibold text-slate-700">
                 <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
                 Sub-second voice and text translation pipeline
@@ -244,21 +257,21 @@ export default function Landing() {
                 <span>New: Multi-Agent Studio (LangGraph + CrewAI)</span>
                 <ArrowRight className="h-3 w-3 ml-0.5" />
               </Link>
-            </div>
+            </motion.div>
 
-            <h1 className="text-4xl font-extrabold tracking-tight sm:text-6xl text-dl-navy leading-[1.1]">
+            <motion.h1 variants={staggerItemVariants} className="text-4xl font-extrabold tracking-tight sm:text-6xl text-dl-navy leading-[1.1]">
               One conversation.{" "}
               <span className="text-dl-blue">
                 Every language.
               </span>
-            </h1>
+            </motion.h1>
 
             {/* Strict Subtext Discipline: Exactly 18 words (<= 20 words constraint) */}
-            <p className="mt-4 text-base sm:text-lg leading-relaxed text-slate-600 max-w-xl">
+            <motion.p variants={staggerItemVariants} className="mt-4 text-base sm:text-lg leading-relaxed text-slate-600 max-w-xl">
               Translate speech, text, documents, and video meetings in real time with sub-second latency and zero data retention.
-            </p>
+            </motion.p>
 
-            <div className="mt-7 flex flex-wrap items-center gap-3">
+            <motion.div variants={staggerItemVariants} className="mt-7 flex flex-wrap items-center gap-3">
               <Link
                 to="/dashboard"
                 className="btn-tactile flex items-center gap-2 rounded-xl bg-dl-blue px-6 py-3.5 text-base font-semibold text-white shadow-sm hover:bg-dl-blue-hover"
@@ -278,9 +291,9 @@ export default function Landing() {
               >
                 Try Translator
               </Link>
-            </div>
+            </motion.div>
 
-            <div className="mt-9 border-t border-dl-border/80 pt-5">
+            <motion.div variants={staggerItemVariants} className="mt-9 border-t border-dl-border/80 pt-5">
               <p className="text-xs font-semibold text-dl-muted mb-2.5">
                 Supported Across 100+ Languages
               </p>
@@ -294,11 +307,16 @@ export default function Landing() {
                   </span>
                 ))}
               </div>
-            </div>
-          </div>
+            </motion.div>
+          </motion.div>
 
           {/* INTERACTIVE WORKSPACE PREVIEW WIDGET */}
-          <div className="rounded-2xl border border-dl-border/90 bg-white p-5 shadow-card hover:shadow-pop transition-shadow duration-300">
+          <motion.div
+            initial={{ opacity: 0, y: 24, scale: 0.985 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            transition={{ ...springSoft, delay: 0.15 }}
+            className="rounded-2xl border border-dl-border/90 bg-white p-5 shadow-card hover:shadow-pop transition-shadow duration-300"
+          >
             {/* Widget Header & Mode Switcher */}
             <div className="flex items-center justify-between border-b border-dl-border/80 pb-3.5 mb-4">
               <div className="flex items-center gap-2">
@@ -424,21 +442,21 @@ export default function Landing() {
                 </div>
               </div>
             )}
-          </div>
+          </motion.div>
         </section>
 
         {/* 5 CORE PILLARS BENTO GRID (Section 4.7 Rhythm & Exact Cell Count) */}
         <section className="border-t border-dl-border/80 py-16 lg:py-20">
-          <div className="text-center max-w-2xl mx-auto mb-12">
+          <Reveal className="text-center max-w-2xl mx-auto mb-12">
             <h2 className="text-3xl font-extrabold sm:text-4xl text-dl-navy tracking-tight">
               Five Core Capabilities in One Platform
             </h2>
             <p className="mt-3 text-slate-600 text-sm">
               Engineered with privacy-first self-hosted neural models, sub-second latency, and intuitive workspaces.
             </p>
-          </div>
+          </Reveal>
 
-          <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+          <Reveal className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
             {/* Tile 1: Flagship Live Voice Translation (Col-span 2 on desktop) */}
             <Link
               to="/voice"
@@ -612,12 +630,12 @@ export default function Landing() {
                 Translate Documents <ArrowRight className="h-3.5 w-3.5 ml-1 transition-transform group-hover:translate-x-1" />
               </div>
             </Link>
-          </div>
+          </Reveal>
         </section>
 
         {/* MULTI-AGENT SYSTEMS STUDIO SHOWCASE */}
         <section className="border-t border-dl-border/80 py-16 lg:py-20" aria-labelledby="multi-agent-heading">
-          <div className="text-center max-w-3xl mx-auto mb-12">
+          <Reveal className="text-center max-w-3xl mx-auto mb-12">
             <div className="inline-flex items-center gap-2 rounded-full border border-indigo-200 bg-indigo-50 px-3.5 py-1 text-xs font-semibold text-indigo-800 mb-3">
               <Bot className="h-3.5 w-3.5 text-indigo-600" />
               Autonomous Agent Orchestration
@@ -628,9 +646,9 @@ export default function Landing() {
             <p className="mt-3 text-slate-600 text-sm max-w-2xl mx-auto">
               Explore 3 production agent architectures powered by LangGraph state machines and CrewAI role-playing personas. Interactive, live, and inspectable in real time.
             </p>
-          </div>
+          </Reveal>
 
-          <div className="grid gap-6 md:grid-cols-3 mb-10">
+          <Reveal className="grid gap-6 md:grid-cols-3 mb-10">
             {/* Card 1: Customer Support Triage Graph */}
             <div className="group rounded-2xl border border-dl-border bg-white p-6 shadow-xs hover:border-indigo-300 hover:shadow-card transition-all flex flex-col justify-between">
               <div>
@@ -723,9 +741,9 @@ export default function Landing() {
                 Deploy Crew <ArrowRight className="h-3.5 w-3.5 ml-1 transition-transform group-hover:translate-x-1" />
               </Link>
             </div>
-          </div>
+          </Reveal>
 
-          <div className="rounded-2xl border border-indigo-200/80 bg-gradient-to-r from-indigo-50/60 via-white to-purple-50/60 p-6 flex flex-col sm:flex-row items-center justify-between gap-4">
+          <Reveal className="rounded-2xl border border-indigo-200/80 bg-gradient-to-r from-indigo-50/60 via-white to-purple-50/60 p-6 flex flex-col sm:flex-row items-center justify-between gap-4">
             <div>
               <h4 className="text-base font-bold text-dl-navy">
                 Interactive Multi-Agent Studio with Real-time Visualizer
@@ -740,21 +758,21 @@ export default function Landing() {
             >
               Open Agent Studio <ArrowRight className="h-4 w-4" />
             </Link>
-          </div>
+          </Reveal>
         </section>
 
         {/* FREQUENTLY ASKED QUESTIONS */}
         <section className="border-t border-dl-border/80 py-16 lg:py-20" aria-labelledby="faq-heading">
-          <div className="text-center max-w-2xl mx-auto mb-12">
+          <Reveal className="text-center max-w-2xl mx-auto mb-12">
             <h2 id="faq-heading" className="text-3xl font-extrabold sm:text-4xl text-dl-navy tracking-tight">
               Frequently Asked Questions
             </h2>
             <p className="mt-3 text-slate-600 text-sm">
               In-depth details on latency, privacy standards, supported document types, and translation architecture.
             </p>
-          </div>
+          </Reveal>
 
-          <div className="max-w-3xl mx-auto space-y-3.5">
+          <Reveal className="max-w-3xl mx-auto space-y-3.5">
             {FAQS.map((faq) => (
               <details
                 key={faq.q}
@@ -769,7 +787,7 @@ export default function Landing() {
                 </p>
               </details>
             ))}
-          </div>
+          </Reveal>
         </section>
       </main>
 

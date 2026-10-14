@@ -121,14 +121,28 @@ class EnergyVAD:
 
 
 class SileroVAD:
-    """Optional Silero VAD adapter (torch). Same interface as EnergyVAD."""
+    """Optional Silero VAD adapter (torch). Same interface and same turn rules
+    as EnergyVAD.
 
-    def __init__(self, sample_rate: int = 16000, threshold: float = 0.5) -> None:
+    The raw model probability flips on every window, so without the debounce
+    below a pause of one window would end a turn mid-sentence — and the
+    pipeline's segmentation settings would silently apply to one provider and
+    not the other.
+    """
+
+    def __init__(self, sample_rate: int = 16000, threshold: float = 0.5, *,
+                 min_speech_ms: int = 250, min_silence_ms: int = 500,
+                 max_speech_ms: int = 20000) -> None:
         self.sample_rate = sample_rate
         self.threshold = threshold
+        self.min_speech_ms = min_speech_ms
+        self.min_silence_ms = min_silence_ms
+        self.max_speech_ms = max_speech_ms
         self._model: Any = None
         self._clock_ms = 0
         self._state = VadState.SILENCE
+        self._speech_ms = 0
+        self._silence_ms = 0
 
     async def load(self) -> None:
         if self._model is None:
@@ -145,19 +159,37 @@ class SileroVAD:
         if self._model is None:
             raise RuntimeError("SileroVAD.load() not awaited")
         audio = torch.from_numpy(np.frombuffer(pcm16, dtype=np.int16).astype(np.float32) / 32768.0)
-        self._clock_ms += int(len(audio) / self.sample_rate * 1000)
+        dur_ms = int(len(audio) / self.sample_rate * 1000)
+        self._clock_ms += dur_ms
         prob = float(self._model(audio, self.sample_rate).item())
+        speaking = prob >= self.threshold
         events: list[SpeechEvent] = []
-        if self._state == VadState.SILENCE and prob >= self.threshold:
-            self._state = VadState.SPEECH
-            events.append(SpeechEvent(VadState.SPEECH, self._clock_ms, prob))
-        elif self._state == VadState.SPEECH and prob < self.threshold:
-            self._state = VadState.SILENCE
-            events.append(SpeechEvent(VadState.SILENCE, self._clock_ms, prob))
+
+        if self._state == VadState.SILENCE:
+            if speaking:
+                self._speech_ms += dur_ms
+                self._silence_ms = 0
+                if self._speech_ms >= self.min_speech_ms:
+                    self._state = VadState.SPEECH
+                    events.append(SpeechEvent(VadState.SPEECH,
+                                              self._clock_ms - self._speech_ms, prob))
+            else:
+                self._speech_ms = 0
+        else:
+            self._speech_ms += dur_ms
+            self._silence_ms = self._silence_ms + dur_ms if not speaking else 0
+            if (self._silence_ms >= self.min_silence_ms
+                    or self._speech_ms >= self.max_speech_ms):
+                self._state = VadState.SILENCE
+                events.append(SpeechEvent(VadState.SILENCE, self._clock_ms, prob))
+                self._speech_ms = 0
+                self._silence_ms = 0
         return events
 
     def reset(self) -> None:
         self._state = VadState.SILENCE
+        self._speech_ms = 0
+        self._silence_ms = 0
         if self._model is not None:
             self._model.reset_states()
 

@@ -6,7 +6,7 @@
  * - heartbeat ping/pong with connection-quality estimate
  */
 import type { Preferences, RealtimeEvent } from "./types";
-import { getAccessToken } from "./api";
+import { api, getAccessToken, getApiBaseUrl } from "./api";
 
 export type BinaryFrameKind = "original" | "tts";
 export interface BinaryFrame {
@@ -21,7 +21,8 @@ type BinListener = (frame: BinaryFrame) => void;
 
 export interface MeetingSocketOptions {
   meetingId: string;
-  joinToken?: string;
+  /** server-issued seat key; every (re)connect mints a fresh single-use ticket from it */
+  sessionKey?: string;
   ticket?: string;
   displayName: string;
   preferences: Preferences;
@@ -29,16 +30,37 @@ export interface MeetingSocketOptions {
   onEvent: Listener;
   onBinary: BinListener;
   onStateChange: (state: SocketState) => void;
+  /** Round trip time from the last ping/pong exchange, in ms. */
+  onQuality?: (rttMs: number) => void;
 }
 
 export type SocketState = "connecting" | "joined" | "reconnecting" | "closed" | "error";
 
 const TEXT_DECODER = new TextDecoder();
 
+/**
+ * Canonical 16-char id used as the audio queue tag.
+ *
+ * The server writes it three ways: inside binary frames as UUID-hex with dashes
+ * stripped and NUL padding, inside JSON events as a raw UUID, and (Tree B) padded
+ * with the ASCII character "0". Every one of those collapses to this value, which
+ * is what makes cross-transport dedup of the same TTS chunk possible at all.
+ *
+ * The 16-char cut comes FIRST and padding is stripped after it. Stripping first
+ * made the two transports disagree whenever a segment's 16th hex digit was a
+ * literal "0" — the JSON key kept it, the 16-char binary key lost it — and that
+ * chunk was played twice instead of deduped (~6% of segments).
+ */
+export function normId(id: string): string {
+  return id.replace(/-/g, "").slice(0, 16).replace(/[\s0\u0000]+$/, "");
+}
+
 export function decodeBinaryFrame(buf: ArrayBuffer): BinaryFrame {
   const view = new Uint8Array(buf);
   const kind: BinaryFrameKind = view[0] === 0x4f ? "original" : "tts";
-  const shortId = TEXT_DECODER.decode(view.slice(1, 17)).replace(/0+$/, "");
+  // Tree A pads with NUL, Tree B with the ASCII character "0" — strip both so the
+  // binary tag matches the JSON tag for the same audio and dedup can work.
+  const shortId = normId(TEXT_DECODER.decode(view.slice(1, 17)));
   if (kind === "tts") {
     const n = view[17];
     const language = TEXT_DECODER.decode(view.slice(18, 18 + n));
@@ -48,13 +70,21 @@ export function decodeBinaryFrame(buf: ArrayBuffer): BinaryFrame {
 }
 
 export class MeetingSocket {
+  /** No inbound frame for this long, on an OPEN socket, means the link died. */
+  static readonly LIVENESS_TIMEOUT_MS = 65_000;
   private ws: WebSocket | null = null;
   private opts: MeetingSocketOptions;
   private lastSequence = 0;
   private everJoined = false;
   private attempt = 0;
+  private quickFailures = 0;
+  private mintFailures = 0;
+  private pendingTicket: string | null = null;
+  private connectStartedAt = 0;
   private closedByUser = false;
   private pingTimer: number | undefined;
+  /** When the last inbound frame arrived — the only proof the socket is alive. */
+  private lastServerContact = 0;
   /** utterance short-id → speaker participant id (from speech.started events) */
   readonly utteranceSpeakers = new Map<string, string>();
 
@@ -64,61 +94,47 @@ export class MeetingSocket {
 
   connect() {
     this.closedByUser = false;
-    this.open();
+    void this.open();
   }
 
-  private wsUrl(): string {
-    const proto = location.protocol === "https:" ? "wss" : "ws";
-    const params = new URLSearchParams();
-    if (this.opts.ticket) {
-      params.set("ticket", this.opts.ticket);
-    } else {
-      const jwt = getAccessToken();
-      if (jwt) {
-        params.set("token", jwt);
-      } else {
-        let jt = this.opts.joinToken;
-        if (!jt) {
-          try {
-            jt = sessionStorage.getItem(`gt_guest_${this.opts.meetingId}`) || undefined;
-            if (!jt) {
-              jt = `guest-${Math.random().toString(36).substring(2, 10)}${Date.now().toString(36)}`;
-              sessionStorage.setItem(`gt_guest_${this.opts.meetingId}`, jt);
-            }
-          } catch {
-            // ignore storage errors
-          }
-        }
-        if (jt) params.set("join_token", jt);
-      }
+  private async mintTicket(): Promise<string | null> {
+    if (!this.opts.sessionKey) return null;
+    try {
+      const r = await api<{ ticket: string }>(
+        `/api/v1/meetings/${this.opts.meetingId}/join-ticket`,
+        { method: "POST", body: { session_key: this.opts.sessionKey } },
+      );
+      return r?.ticket ?? null;
+    } catch {
+      return null;
     }
-    const q = params.toString();
-    const rawBase = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() || (import.meta.env.PROD ? "https://talkflow-csbw.onrender.com" : "");
-    let host = location.host;
-    let customProto = proto;
-    if (rawBase) {
-      try {
-        const parsed = new URL(rawBase);
-        host = parsed.host;
-        customProto = parsed.protocol === "https:" ? "wss" : "ws";
-      } catch {
-        host = rawBase.replace(/^https?:\/\//, "").replace(/\/+$/, "");
-      }
-    }
-    return `${customProto}://${host}/ws/meetings/${this.opts.meetingId}${q ? `?${q}` : ""}`;
   }
 
-  private setState(s: SocketState) {
-    this.opts.onStateChange(s);
-  }
-
-  private open() {
+  private async open() {
     this.setState(this.everJoined ? "reconnecting" : "connecting");
+    if (this.opts.sessionKey) {
+      // Tickets are single-use and expire in 120s, so every (re)connect mints
+      // a fresh one; the WS URL never carries a long-lived credential.
+      const ticket = await this.mintTicket();
+      if (!ticket) {
+        this.mintFailures += 1;
+        if (this.mintFailures >= 5) {
+          this.setState("error");
+          return;
+        }
+        this.scheduleReconnect();
+        return;
+      }
+      this.mintFailures = 0;
+      this.pendingTicket = ticket;
+    }
     const ws = new WebSocket(this.wsUrl());
     ws.binaryType = "arraybuffer";
     this.ws = ws;
+    this.connectStartedAt = Date.now();
 
     ws.onopen = () => {
+      this.lastServerContact = Date.now();
       const p = this.opts.preferences;
       ws.send(
         JSON.stringify({
@@ -138,12 +154,23 @@ export class MeetingSocket {
     };
 
     ws.onmessage = (msg) => {
+      this.lastServerContact = Date.now();
       if (typeof msg.data !== "string") {
         const frame = decodeBinaryFrame(msg.data as ArrayBuffer);
         this.opts.onBinary(frame);
         return;
       }
       const evt = JSON.parse(msg.data) as RealtimeEvent;
+      if (evt.type === "pong") {
+        // The server echoes our own timestamp, so the round trip is measured
+        // against a single clock and needs no clock sync with the backend.
+        // This frame is hand-built in the ws router, so its payload is nested
+        // under `data` rather than merged into the envelope.
+        const sent = Number((evt.data as Record<string, unknown> | undefined)?.client_ts ?? evt.client_ts ?? 0);
+        if (Number.isFinite(sent) && sent > 0) {
+          this.opts.onQuality?.(Math.max(0, Date.now() - sent));
+        }
+      }
       if (typeof evt.sequence === "number" && evt.sequence > this.lastSequence) {
         this.lastSequence = evt.sequence;
       }
@@ -154,6 +181,7 @@ export class MeetingSocket {
         evt.type === "session.resumed") {
         this.everJoined = true;
         this.attempt = 0;
+        this.quickFailures = 0;
         this.setState("joined");
         this.startHeartbeat();
       }
@@ -171,12 +199,56 @@ export class MeetingSocket {
         this.setState("error");
         return;
       }
+      // A server that rejects the handshake pre-accept surfaces as 1006 with
+      // the close code lost. Never-joined quick failures mean the credential
+      // or room state is bad — stop after 5 instead of retrying forever.
+      if (!this.everJoined && Date.now() - this.connectStartedAt < 3_000) {
+        this.quickFailures += 1;
+        if (this.quickFailures >= 5) {
+          this.setState("error");
+          return;
+        }
+      }
       this.scheduleReconnect();
     };
 
     ws.onerror = () => {
       /* onclose follows; state handled there */
     };
+  }
+
+  private wsUrl(): string {
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    const params = new URLSearchParams();
+    if (this.opts.sessionKey && this.pendingTicket) {
+      params.set("ticket", this.pendingTicket);
+    } else if (this.opts.ticket) {
+      params.set("ticket", this.opts.ticket);
+    } else {
+      const jwt = getAccessToken();
+      if (jwt) params.set("token", jwt);
+    }
+    const q = params.toString();
+    // Resolve the API host exactly like REST traffic does (api.ts). A Vercel
+    // preview build has no baked VITE_API_BASE_URL, so without this the REST
+    // calls would hit same-origin while the WS fell back to Render and failed.
+    const rawBase = getApiBaseUrl();
+    let host = location.host;
+    let customProto = proto;
+    if (rawBase) {
+      try {
+        const parsed = new URL(rawBase);
+        host = parsed.host;
+        customProto = parsed.protocol === "https:" ? "wss" : "ws";
+      } catch {
+        host = rawBase.replace(/^https?:\/\//, "").replace(/\/+$/, "");
+      }
+    }
+    return `${customProto}://${host}/ws/meetings/${this.opts.meetingId}${q ? `?${q}` : ""}`;
+  }
+
+  private setState(s: SocketState) {
+    this.opts.onStateChange(s);
   }
 
   private scheduleReconnect() {
@@ -193,9 +265,16 @@ export class MeetingSocket {
   private startHeartbeat() {
     this.stopHeartbeat();
     this.pingTimer = window.setInterval(() => {
-      if (this.ws?.readyState === WebSocket.OPEN) {
-        this.ws.send(JSON.stringify({ version: 1, type: "ping", ts: Date.now() }));
+      if (this.ws?.readyState !== WebSocket.OPEN) return;
+      // A silent socket is the failure mode a readyState check cannot see: the
+      // connection stays OPEN while the network drops every frame, so the room
+      // would read "Connected" forever and the speaker's audio would go nowhere.
+      // Three missed ping cycles with no inbound traffic at all means it is gone.
+      if (Date.now() - this.lastServerContact > MeetingSocket.LIVENESS_TIMEOUT_MS) {
+        this.ws.close();
+        return;
       }
+      this.ws.send(JSON.stringify({ version: 1, type: "ping", ts: Date.now() }));
     }, 20_000);
   }
 
@@ -253,6 +332,14 @@ export class MeetingSocket {
 
   sendChat(text: string) {
     this.sendJson({ type: "chat.send", text });
+  }
+
+  /** Inject a canned transcript (dev/test only — server guards with
+   *  is_dev_mode + 403 when STT is real and configured). Used to verify the
+   *  translation + TTS fan-out end-to-end on Render where no STT model is
+   *  installed. */
+  injectTranscript(text: string, language: string) {
+    this.sendJson({ type: "transcript.inject", text, language });
   }
 
   close() {
