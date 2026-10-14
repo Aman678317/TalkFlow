@@ -60,7 +60,7 @@ export default function Dashboard() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-slate-200/80 pb-5">
         <div>
           <h1 className="text-xl font-bold tracking-tight text-slate-900">Welcome back, {userName} 👋</h1>
-          <p className="text-xs text-slate-500 mt-0.5">
+          <p className="text-xs text-slate-600 mt-0.5">
             {org?.name || "GlobalTalk"} · {planName} plan · {realtimeLangs} realtime-ready languages
           </p>
         </div>
@@ -95,8 +95,8 @@ export default function Dashboard() {
           return (
             <div key={s.label} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xs">
               <div className="flex items-center justify-between mb-2">
-                <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">{s.label}</p>
-                <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-slate-50 text-slate-500">
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">{s.label}</p>
+                <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-slate-50 text-slate-600">
                   <Icon className="h-3.5 w-3.5" />
                 </div>
               </div>
@@ -118,7 +118,7 @@ export default function Dashboard() {
             <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
               <Languages className="h-4 w-4 text-dl-blue" /> Recent translations
             </h3>
-            <Link to="/history" className="text-xs font-semibold text-dl-blue hover:underline flex items-center gap-1">
+            <Link to="/history" className="text-xs font-semibold text-[#084C92] hover:underline flex items-center gap-1">
               View all <ArrowRight className="h-3 w-3" />
             </Link>
           </div>
@@ -130,12 +130,12 @@ export default function Dashboard() {
               ))}
             </div>
           ) : historyItems.length === 0 ? (
-            <p className="py-6 text-center text-xs text-slate-400">No translations yet. Try the Translate workspace.</p>
+            <p className="py-6 text-center text-xs text-slate-600">No translations yet. Try the Translate workspace.</p>
           ) : (
             <ul className="divide-y divide-slate-100">
               {historyItems.map((h: any) => (
                 <li key={h.id} className="py-2.5 text-xs">
-                  <div className="flex items-center justify-between gap-2 text-[11px] text-slate-400 mb-1">
+                  <div className="flex items-center justify-between gap-2 text-[11px] text-slate-600 mb-1">
                     <span className="font-semibold text-slate-700 bg-slate-100 px-2 py-0.5 rounded">
                       {h.source_lang || h.source_language || "?"} → {h.target_lang || h.target_language || "?"}
                     </span>
@@ -155,7 +155,7 @@ export default function Dashboard() {
             <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
               <Video className="h-4 w-4 text-dl-blue" /> Recent meetings
             </h3>
-            <Link to="/meetings" className="text-xs font-semibold text-dl-blue hover:underline flex items-center gap-1">
+            <Link to="/meetings" className="text-xs font-semibold text-[#084C92] hover:underline flex items-center gap-1">
               View all <ArrowRight className="h-3 w-3" />
             </Link>
           </div>
@@ -167,14 +167,14 @@ export default function Dashboard() {
               ))}
             </div>
           ) : meetingItems.length === 0 ? (
-            <p className="py-6 text-center text-xs text-slate-400">No meetings yet.</p>
+            <p className="py-6 text-center text-xs text-slate-600">No meetings yet.</p>
           ) : (
             <ul className="divide-y divide-slate-100">
               {meetingItems.map((m: any) => (
                 <li key={m.id} className="flex items-center justify-between gap-2 py-2.5 text-xs">
                   <Link to={`/meeting/${m.id}`} className="min-w-0 flex-1 hover:text-dl-blue">
                     <p className="truncate font-semibold text-slate-900">{m.title}</p>
-                    <p className="text-[11px] text-slate-400 flex items-center gap-1 mt-0.5">
+                    <p className="text-[11px] text-slate-600 flex items-center gap-1 mt-0.5">
                       <Clock className="h-3 w-3" /> {m.created_at ? new Date(m.created_at).toLocaleString() : ""}
                     </p>
                   </Link>
@@ -199,7 +199,7 @@ export default function Dashboard() {
             <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
               <FileText className="h-4 w-4 text-dl-blue" /> Documents
             </h3>
-            <Link to="/documents" className="text-xs font-semibold text-dl-blue hover:underline flex items-center gap-1">
+            <Link to="/documents" className="text-xs font-semibold text-[#084C92] hover:underline flex items-center gap-1">
               View all <ArrowRight className="h-3 w-3" />
             </Link>
           </div>
@@ -211,7 +211,7 @@ export default function Dashboard() {
               ))}
             </div>
           ) : docItems.length === 0 ? (
-            <p className="py-6 text-center text-xs text-slate-400">No documents translated yet.</p>
+            <p className="py-6 text-center text-xs text-slate-600">No documents translated yet.</p>
           ) : (
             <ul className="divide-y divide-slate-100">
               {docItems.slice(0, 5).map((d: any) => (
@@ -249,7 +249,7 @@ export default function Dashboard() {
                 className={`rounded-md border px-2 py-1 text-xs font-medium ${
                   l.translation_supported
                     ? "border-blue-200 bg-blue-50/60 text-slate-800"
-                    : "border-slate-200 bg-slate-50 text-slate-400"
+                    : "border-slate-200 bg-slate-50 text-slate-600"
                 }`}
               >
                 {l.native_name || l.name}
@@ -257,7 +257,7 @@ export default function Dashboard() {
               </span>
             ))}
           </div>
-          <p className="mt-3 text-[11px] leading-relaxed text-slate-400">
+          <p className="mt-3 text-[11px] leading-relaxed text-slate-600">
             Capabilities are validated per deployment. A language is only shown as supported when models are installed and healthy. 🔊 = translated voice available.
           </p>
         </div>
