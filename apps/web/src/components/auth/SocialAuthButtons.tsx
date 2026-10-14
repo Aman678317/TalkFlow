@@ -4,6 +4,7 @@ import { useAuth } from "../../stores/auth";
 import { useToasts } from "../../stores/toasts";
 import { ApiError } from "../../lib/api";
 import { Spinner } from "../ui";
+import { appleIdToken, githubAuthorizeUrl, googleIdToken, providerConfigured, type SocialProvider } from "../../lib/socialProviders";
 
 export function GoogleIcon({ className = "h-4 w-4" }: { className?: string }) {
   return (
@@ -56,6 +57,13 @@ export interface SocialAuthButtonsProps {
   onError?: (msg: string) => void;
 }
 
+/**
+ * Each button starts the provider's REAL sign-in flow and hands the resulting
+ * credential (Google/Apple ID token, GitHub code) to the backend for server-side
+ * verification. When a provider has no configured client id on this deployment,
+ * clicking says so plainly — it never sends a fabricated identity or a doomed
+ * request. See src/lib/socialProviders.ts.
+ */
 export function SocialAuthButtons({
   prefix = "Continue with",
   layout = "stacked",
@@ -67,22 +75,36 @@ export function SocialAuthButtons({
   const pushToast = useToasts((s) => s.push);
   const nav = useNavigate();
   const loc = useLocation() as { state?: { from?: string } };
-  const [activeProvider, setActiveProvider] = React.useState<"google" | "github" | "apple" | null>(null);
-  const [customModal, setCustomModal] = React.useState<"google" | "github" | "apple" | null>(null);
-  const [customEmail, setCustomEmail] = React.useState("");
-  const [customName, setCustomName] = React.useState("");
+  const [activeProvider, setActiveProvider] = React.useState<SocialProvider | null>(null);
 
-  async function handleProviderLogin(
-    provider: "google" | "github" | "apple",
-    details?: { email?: string; name?: string }
-  ) {
+  async function handleProviderLogin(provider: SocialProvider) {
     if (disabled || activeProvider) return;
+    if (!providerConfigured(provider)) {
+      const label = provider === "google" ? "Google" : provider === "github" ? "GitHub" : "Apple";
+      const msg = `${label} sign-in is not configured on this deployment. Use email sign-in.`;
+      if (onError) onError(msg);
+      pushToast("error", "Provider not configured", msg);
+      return;
+    }
     setActiveProvider(provider);
     try {
+      const flow = (async () => {
+        if (provider === "google") {
+          const token = await googleIdToken();
+          await socialLogin("google", { token });
+        } else if (provider === "apple") {
+          const { token, nonce } = await appleIdToken();
+          await socialLogin("apple", { token, nonce });
+        } else {
+          window.location.assign(githubAuthorizeUrl());
+          // Navigation takes over; nothing further to await.
+          await new Promise(() => {});
+        }
+      })();
       const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Social sign in timed out. Please check your connection.")), 10000)
+        setTimeout(() => reject(new Error("Social sign in timed out. Please check your connection.")), 60000)
       );
-      await Promise.race([socialLogin(provider, details), timeoutPromise]);
+      await Promise.race([flow, timeoutPromise]);
       const providerLabel = provider === "google" ? "Google" : provider === "github" ? "GitHub" : "Apple";
       pushToast("success", `Signed in with ${providerLabel}`, "Welcome to GlobalTalk AI");
       if (onSuccess) {
@@ -96,7 +118,6 @@ export function SocialAuthButtons({
       pushToast("error", "Authentication error", msg);
     } finally {
       setActiveProvider(null);
-      setCustomModal(null);
     }
   }
 
@@ -170,67 +191,6 @@ export function SocialAuthButtons({
           </button>
         );
       })}
-
-      {/* Optional custom identity prompt for advanced testing */}
-      {customModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-xs">
-          <div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-xl animate-in fade-in zoom-in-95">
-            <h3 className="text-base font-semibold text-slate-900">
-              Sign in with custom {customModal.toUpperCase()}
-            </h3>
-            <p className="mt-1 text-xs text-slate-500">
-              Specify your account email to link or sign in as this social user.
-            </p>
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                handleProviderLogin(customModal, {
-                  email: customEmail || undefined,
-                  name: customName || undefined,
-                });
-              }}
-              className="mt-4 space-y-3"
-            >
-              <div>
-                <label className="text-xs font-medium text-slate-700">Email</label>
-                <input
-                  type="email"
-                  required
-                  value={customEmail}
-                  onChange={(e) => setCustomEmail(e.target.value)}
-                  placeholder={`user@${customModal === "google" ? "gmail.com" : customModal === "github" ? "github.com" : "icloud.com"}`}
-                  className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-1.5 text-sm"
-                />
-              </div>
-              <div>
-                <label className="text-xs font-medium text-slate-700">Full Name (optional)</label>
-                <input
-                  type="text"
-                  value={customName}
-                  onChange={(e) => setCustomName(e.target.value)}
-                  placeholder="e.g. Alex Morgan"
-                  className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-1.5 text-sm"
-                />
-              </div>
-              <div className="flex justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setCustomModal(null)}
-                  className="rounded-lg px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-100"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="rounded-lg bg-iris-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-iris-700"
-                >
-                  Continue
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

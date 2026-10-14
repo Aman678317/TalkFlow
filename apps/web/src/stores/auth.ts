@@ -35,7 +35,10 @@ interface AuthState {
   initialized: boolean;
   status: "loading" | "authed" | "unauthed";
   login: (email: string, password: string) => Promise<void>;
-  socialLogin: (provider: "google" | "github" | "apple", details?: { email?: string; name?: string }) => Promise<void>;
+  socialLogin: (
+    provider: "google" | "github" | "apple",
+    payload?: { token?: string; code?: string; nonce?: string; redirect_uri?: string },
+  ) => Promise<void>;
   signup: (data: { email: string; password: string; full_name: string; organization_name: string }) => Promise<void>;
   logout: () => Promise<void>;
   refreshMe: () => Promise<void>;
@@ -103,10 +106,15 @@ export const useAuth = create<AuthState>((set, get) => ({
     void get().refreshMe().catch(() => {});
   },
 
-  async socialLogin(provider, details) {
+  async socialLogin(
+    provider: "google" | "github" | "apple",
+    payload?: { token?: string; code?: string; nonce?: string; redirect_uri?: string },
+  ) {
     const r = await api("/api/v1/auth/social-login", {
       method: "POST",
-      body: { provider, ...details },
+      // Phase 2: the server only accepts provider-verified credentials. Any
+      // client-asserted email/name is neither sent nor honored.
+      body: { provider, ...(payload ?? {}) },
       timeoutMs: 10000,
     });
     setTokens(r.tokens.access_token);

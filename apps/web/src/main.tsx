@@ -29,6 +29,7 @@ import Team from "./pages/Team";
 import SettingsPage from "./pages/Settings";
 import Admin from "./pages/Admin";
 import JoinCall from "./pages/JoinCall";
+import AuthCallback from "./pages/AuthCallback";
 import AgentStudio from "./pages/AgentStudio";
 import DocsPage from "./pages/DocsPage";
 import AppShell from "./components/layout/AppShell";
@@ -80,6 +81,8 @@ export default function App() {
             <Route path="/" element={<RootGate />} />
             <Route path="/login" element={<Login />} />
             <Route path="/signup" element={<Signup />} />
+            {/* OAuth redirect landing: provider code -> server-verified session */}
+            <Route path="/auth/callback/:provider" element={<AuthCallback />} />
             {/* Public Call Join Route: Recipient joins directly from their mobile or browser without authentication */}
             <Route path="/join/:roomId" element={<JoinCall />} />
             {/* Full-screen Google Meet style meeting room (accessible to all participants via link, no auth wall) */}

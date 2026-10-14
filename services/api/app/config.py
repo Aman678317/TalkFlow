@@ -210,6 +210,16 @@ class Settings(BaseSettings):
     secure_cookies: bool = False
     csrf_enabled: bool = True
 
+    # Phase 2 (docs/PRODUCTION_ROADMAP.md): real social authentication. Verification
+    # FAILS CLOSED while a provider is unconfigured — Google/Apple ID tokens cannot
+    # be audience-validated without the client id, so they are refused, not silently
+    # accepted. Secrets are server-only; the SPA reads its own VITE_* client ids.
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    github_client_id: str = ""
+    github_client_secret: str = ""
+    apple_client_id: str = ""
+
     # Phase 1 (docs/PRODUCTION_ROADMAP.md): dev auth shortcuts must fail CLOSED in
     # every mode. These are explicit, opt-in-only escape hatches for local dev and
     # CI — NOT tied to app_env. Off by default everywhere, including development, so

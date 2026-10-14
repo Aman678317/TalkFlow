@@ -1,6 +1,6 @@
 # TalkFlow / GlobalTalk AI — Production Authentication Hardening Specification
 
-**Status**: Enforced in code — each claim below names the mechanism and the test that pins it. One area is **not** yet done: real (non-mock) social login (see §4).
+**Status**: Enforced in code — each claim below names the mechanism and the test that pins it. Real (non-mock) social login is implemented and **fails closed** when a provider is unconfigured (§4); operators must supply OAuth client IDs to enable it.
 **Standard**: OWASP ASVS v4.0, Zero-Trust Browser Security, RFC 6749 / RFC 7519
 
 > Scope note: this document covers the **deployed** backend `services/api` and the
@@ -23,7 +23,8 @@ The hardened architecture enforces:
    - `ALLOW_TEST_AUTH` (default **false**): when off, wildcard keys (`test-key-…` / `…:fx`) and mock/unsigned social tokens are rejected, in dev, test, and prod alike.
    - `ALLOW_SEED` (default **false**): when off, startup never creates the demo / platform-admin users. Registry, languages, flags and style data still seed unconditionally — only the *credential* backdoor is gated.
    *Test:* `tests/test_auth_hardened.py::test_wildcard_test_key_rejected_when_opt_in_off`, `test_mock_social_token_rejected_when_opt_in_off`, `test_demo_user_not_seeded_when_opt_in_off`.
-6. **Social identity verification**: with `ALLOW_TEST_AUTH` off (the default everywhere including production), mock tokens are refused and only provider-verified credentials are accepted — **but real provider verification is not yet wired (see §4)**.
+6. **Social identity verification (Phase 2)**: identity comes **only** from provider-verified credentials — Google/Apple ID tokens verified against provider JWKS (RS256, `aud` == the configured client ID, `iss`, `exp`), GitHub authorization codes exchanged server-side and the authenticated user's verified email fetched. Arbitrary client-supplied emails/profiles are rejected with 422. Unconfigured providers fail closed with 401 ("not configured on this server") — never a fabricated identity. Apple requires matching client/server nonces.
+   *Test:* `tests/test_social_real_verification.py` (9 tests) — deterministic mapping of a verified identity to the same user on repeat login, wrong `aud`/`iss`/expired → 401, unconfigured Google → 401, Apple nonce mismatch → 401 / match → 200, profile-only payload → 422, GitHub with no server-side client config → 401. With `ALLOW_TEST_AUTH` off (default), mock tokens are refused in every mode.
 
 
 ---
@@ -96,16 +97,18 @@ sequenceDiagram
 
 ## 4. Social Authentication Hardening
 
-**Status of this section: PARTIALLY DONE — real provider verification is Phase 2 and is NOT yet implemented.**
+**Status: Implemented (Phase 2) — cryptographic provider verification, fail-closed when unconfigured.**
 
-What is true today:
-- With `ALLOW_TEST_AUTH` off (the default in every mode), `social_auth_service._check_test_token` returns `None`, so mock/unsigned `mock-google:…` tokens are refused. `tests/test_social_auth_hardened.py` exercises the mock path only because it opts in to that flag locally; `test_social_login_rejects_forged_or_invalid_jwt` proves forged JWTs are rejected with the flag off.
-- Client-supplied body email/name cannot override a verified provider claim, and unverified provider emails cannot link to an existing password account. *Tests:* `test_social_login_provisions_new_user_and_identity`, `test_account_takeover_prevented_on_unverified_email`.
+What is enforced today:
+- **Google** (`services/api/app/services/social_auth_service.py::_verify_google`): the ID token's RS256 signature is verified against Google's JWKS, `iss` must be `accounts.google.com` (or its bare-host form), `exp` is enforced, and `aud` must equal `GOOGLE_CLIENT_ID` — **which is required**: an unconfigured provider fails closed with 401 instead of accepting an audience-unvalidated token. An authorization `code` may be exchanged server-side when client id + secret are set. *Tests:* `tests/test_social_real_verification.py` (valid token maps deterministically; wrong `aud`/`iss`/`exp` → 401; unconfigured → 401).
+- **GitHub** (`_verify_github`): the authorization `code` is exchanged server-side for an access token (requires `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET`, else fail-closed 401), then the authenticated user and their **verified** primary email are read from the GitHub API. A client-supplied email is never consulted. *Test:* `test_github_code_exchange_fails_closed_when_unconfigured`.
+- **Apple** (`_verify_apple`): identity token verified against Apple's public keys with `aud == APPLE_CLIENT_ID` (required, fail closed) and `iss == appleid.apple.com`; **nonce replay defence** — when the client supplies a nonce it must match the token's `nonce` claim, and a nonce-bound token may not be replayed without it. *Tests:* `test_apple_nonce_mismatch_rejected`, `test_apple_nonce_match_accepted`.
+- **No client-asserted identity**: `SocialLoginRequest` carries only `token` / `code` / `redirect_uri` / `nonce` — email, name, avatar, and provider_user_id fields were removed from the API contract. A profile submission without a credential is a 422. *Test:* `test_client_asserted_profile_without_credential_rejected`.
+- **Deterministic mapping & takeover protection**: the verified `(provider, provider_user_id)` maps to `UserIdentity` and its linked user; linking to an existing password account happens **only** when the provider asserts `email_verified=true`. *Tests:* `test_social_login_provisions_new_user_and_identity`, `test_account_takeover_prevented_on_unverified_email`, `test_social_login_resolves_existing_identity`.
+- **Mock tokens remain an opt-in escape hatch only** (`ALLOW_TEST_AUTH`, default off in every mode) — used by the hardened-suite tests, never by the real-verification suite.
 
-What is **not** true yet (open work, deliberately out of scope for this phase):
-- The backend does **not** validate a real Google `id_token` against Google's JWKS, nor exchange a GitHub/Apple code. `services/api/app/config.py` does not define `google_client_id` / `github_client_id` / `apple_client_id`, so a genuine (non-mock) social login currently raises rather than succeeding. Real provider verification is **Phase 2**.
+Operator requirements to switch a provider on: create the OAuth app at the provider, set the server-side `GOOGLE_CLIENT_ID`/`SECRET` (etc.) **and** the SPA's public `VITE_*` client id; GitHub's redirect lands on `/auth/callback/github`. Until then the SPA says the provider "is not configured on this deployment" instead of sending a doomed request.
 
-Do not ship public social sign-in relying on this section until Phase 2 lands.
 
 
 ---
@@ -137,6 +140,13 @@ Automated test suites verifying the hardened authentication design:
   - `test_logout_clears_cookie` / `test_logout_all_revokes_sessions` / `test_password_change_invalidates_sessions` (PASS)
   - `test_csrf_cookie_issued_on_auth` (PASS)
   - `test_wildcard_test_key_rejected_when_opt_in_off` / `test_mock_social_token_rejected_when_opt_in_off` / `test_demo_user_not_seeded_when_opt_in_off` — backdoors fail closed with the flags at their default (PASS)
+- `tests/test_social_real_verification.py` (Phase 2 — real RS256/JWKS verification):
+  - `test_verified_google_identity_maps_deterministically` — same verified identity → same user id on repeat login (PASS)
+  - `test_google_wrong_audience_rejected` / `test_google_wrong_issuer_rejected` / `test_google_expired_token_rejected` (PASS)
+  - `test_google_unconfigured_fails_closed` — no `google_client_id` → 401 "not configured" (PASS)
+  - `test_apple_nonce_mismatch_rejected` / `test_apple_nonce_match_accepted` (PASS)
+  - `test_client_profile_only_rejected` — email/name without a provider credential → 422 (PASS)
+  - `test_github_unconfigured_code_rejected` (PASS)
 - `apps/web/src/stores/auth.test.ts`:
   - Access token held in memory only; a body `refresh_token` is ignored; no `gt.access`/`gt.refresh` ever written (PASS)
   - Silent cookie bootstrap authenticates via refresh → `/me`; skipped after an explicit logout (PASS)

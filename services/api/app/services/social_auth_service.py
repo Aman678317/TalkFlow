@@ -72,9 +72,10 @@ class SocialAuthService:
         token: str | None = None,
         code: str | None = None,
         redirect_uri: str | None = None,
+        nonce: str | None = None,
     ) -> VerifiedProviderIdentity:
         """Verify social identity from provider token or authorization code.
-        
+
         Returns verified identity or raises AuthenticationError / ValidationError.
         Never trusts client-provided identity assertions.
         """
@@ -87,7 +88,7 @@ class SocialAuthService:
         elif provider == "github":
             return await self._verify_github(token=token, code=code)
         elif provider == "apple":
-            return await self._verify_apple(token=token, code=code, redirect_uri=redirect_uri)
+            return await self._verify_apple(token=token, code=code, redirect_uri=redirect_uri, nonce=nonce)
         else:
             raise ValidationError(f"Unsupported social provider: {provider}")
 
@@ -109,6 +110,11 @@ class SocialAuthService:
             if test_identity:
                 return test_identity
 
+        # Fail closed: without the configured OAuth client id we cannot verify the
+        # token's audience, so a real Google token must NOT be accepted.
+        if not settings.google_client_id:
+            raise AuthenticationError("Google sign-in is not configured on this server.")
+
         try:
             jwks_client = self._get_google_jwks_client()
             signing_key = jwks_client.get_signing_key_from_jwt(id_token)
@@ -116,9 +122,8 @@ class SocialAuthService:
                 id_token,
                 signing_key.key,
                 algorithms=["RS256"],
-                audience=settings.google_client_id if settings.google_client_id else None,
+                audience=settings.google_client_id,
                 issuer=GOOGLE_ISSUERS,
-                options={"verify_aud": bool(settings.google_client_id)},
             )
         except Exception as exc:
             log.warning("google_token_verification_failed: %s", exc)
@@ -255,6 +260,7 @@ class SocialAuthService:
         token: str | None,
         code: str | None,
         redirect_uri: str | None,
+        nonce: str | None = None,
     ) -> VerifiedProviderIdentity:
         id_token = token
         if not id_token and code:
@@ -268,6 +274,11 @@ class SocialAuthService:
             if test_identity:
                 return test_identity
 
+        # Fail closed: without the configured services id we cannot verify the
+        # token's audience, so a real Apple identity token must NOT be accepted.
+        if not settings.apple_client_id:
+            raise AuthenticationError("Apple sign-in is not configured on this server.")
+
         try:
             jwks_client = self._get_apple_jwks_client()
             signing_key = jwks_client.get_signing_key_from_jwt(id_token)
@@ -275,13 +286,21 @@ class SocialAuthService:
                 id_token,
                 signing_key.key,
                 algorithms=["RS256"],
-                audience=settings.apple_client_id if settings.apple_client_id else None,
+                audience=settings.apple_client_id,
                 issuer=APPLE_ISSUERS,
-                options={"verify_aud": bool(settings.apple_client_id)},
             )
         except Exception as exc:
             log.warning("apple_token_verification_failed: %s", exc)
             raise AuthenticationError(f"Invalid Apple identity token: {exc}")
+
+        # Replay defence (roadmap §Phase 2: validate nonce and subject). When the
+        # client supplies a nonce it must match the token's nonce claim; a nonce
+        # bound into the token by the provider must be presented back by the client.
+        token_nonce = str(claims.get("nonce") or "").strip()
+        client_nonce = str(nonce or "").strip()
+        if token_nonce or client_nonce:
+            if not token_nonce or not client_nonce or token_nonce != client_nonce:
+                raise AuthenticationError("Apple nonce mismatch — possible replay.")
 
         sub = str(claims.get("sub") or "").strip()
         email = str(claims.get("email") or "").strip().lower()
