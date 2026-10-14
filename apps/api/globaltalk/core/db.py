@@ -15,7 +15,12 @@ class Base(DeclarativeBase):
     pass
 
 
-def _make_engine():
+def database_url() -> str:
+    """The one URL resolution, shared by the engine and alembic/env.py.
+
+    They used to diverge — the engine preferred GLOBALTALK_DATABASE_URL while
+    env.py read settings.database_url — so `alembic upgrade head` could migrate a
+    different database than the process boots against."""
     url = os.environ.get("GLOBALTALK_DATABASE_URL") or settings.database_url
     if "+aiosqlite" in url:
         url = url.replace("+aiosqlite", "")
@@ -23,6 +28,11 @@ def _make_engine():
         # resolve relative SQLite paths against the repo root (CWD-independent)
         rel = url[len("sqlite:///"):]
         url = f"sqlite:///{settings.resolve(rel)}"
+    return url
+
+
+def _make_engine():
+    url = database_url()
     kwargs: dict = {"pool_pre_ping": True, "future": True}
     if url.startswith("sqlite"):
         kwargs.update({"connect_args": {"check_same_thread": False, "timeout": 30}})
@@ -69,49 +79,50 @@ def session_scope() -> Generator[Session, None, None]:
 def init_db() -> None:
     """Create tables when DB_AUTOCREATE (dev convenience). Prod uses `alembic upgrade head`."""
     import globaltalk.models  # noqa: F401  (register mappers)
+    if settings.is_production:
+        # A worker booting against an unmigrated database otherwise "fixes" the
+        # schema with create_all + raw ALTER TABLE and quietly diverges it from
+        # the migration lineage that the API owns.
+        _require_migrations_applied()
+        return
     if settings.db_autocreate:
         Base.metadata.create_all(bind=engine)
-        _ensure_columns()
 
 
-def _ensure_columns() -> None:
-    """Ensure newly added columns exist on existing SQLite databases in dev/test."""
+def _require_migrations_applied() -> None:
     from sqlalchemy import inspect, text
-    with engine.begin() as conn:
-        insp = inspect(conn)
-        tables = insp.get_table_names()
-        if "webhook_deliveries" in tables:
-            cols = {c["name"] for c in insp.get_columns("webhook_deliveries")}
-            if "endpoint_id" not in cols:
-                conn.execute(text("ALTER TABLE webhook_deliveries ADD COLUMN endpoint_id VARCHAR(36)"))
-            if "payload_json" not in cols:
-                conn.execute(text("ALTER TABLE webhook_deliveries ADD COLUMN payload_json JSON"))
-            if "last_status_code" not in cols:
-                conn.execute(text("ALTER TABLE webhook_deliveries ADD COLUMN last_status_code INTEGER"))
-            if "next_retry_at" not in cols:
-                conn.execute(text("ALTER TABLE webhook_deliveries ADD COLUMN next_retry_at TIMESTAMP"))
-        if "language_capabilities" in tables:
-            l_cols = {c["name"] for c in insp.get_columns("language_capabilities")}
-            col_defs = [
-                ("script", "VARCHAR(16) DEFAULT 'Latn'"),
-                ("rtl", "BOOLEAN DEFAULT 0"),
-                ("translation_status", "VARCHAR(16) DEFAULT 'SUPPORTED'"),
-                ("speech_input_status", "VARCHAR(16) DEFAULT 'EXPERIMENTAL'"),
-                ("speech_output_status", "VARCHAR(16) DEFAULT 'EXPERIMENTAL'"),
-                ("realtime_status", "VARCHAR(16) DEFAULT 'EXPERIMENTAL'"),
-                ("document_status", "VARCHAR(16) DEFAULT 'SUPPORTED'"),
-                ("wer_benchmark", "FLOAT"),
-                ("mt_quality_score", "FLOAT"),
-                ("speech_input_supported", "BOOLEAN DEFAULT 0"),
-                ("speech_output_supported", "BOOLEAN DEFAULT 0"),
-                ("translation_supported", "BOOLEAN DEFAULT 0"),
-                ("realtime_supported", "BOOLEAN DEFAULT 0"),
-                ("document_supported", "BOOLEAN DEFAULT 0"),
-                ("stt_status", "VARCHAR(16) DEFAULT 'EXPERIMENTAL'"),
-                ("tts_status", "VARCHAR(16) DEFAULT 'EXPERIMENTAL'"),
-                ("mt_status", "VARCHAR(16) DEFAULT 'EXPERIMENTAL'"),
-            ]
-            for col_name, col_type in col_defs:
-                if col_name not in l_cols:
-                    conn.execute(text(f"ALTER TABLE language_capabilities ADD COLUMN {col_name} {col_type}"))
 
+    insp = inspect(engine)
+    tables = set(insp.get_table_names())
+    if "alembic_version_globaltalk" not in tables or "users" not in tables:
+        raise RuntimeError(
+            "Database schema uninitialized. Run `alembic upgrade head` in apps/api "
+            "before booting production."
+        )
+    with engine.begin() as conn:
+        current = conn.execute(
+            text("SELECT version_num FROM alembic_version_globaltalk")
+        ).scalar_one_or_none()
+    expected = migration_head_revision()
+    if current != expected:
+        raise RuntimeError(
+            f"Database migration version mismatch in production: found '{current}', "
+            f"expected '{expected}'. Run `alembic upgrade head` to apply pending migrations."
+        )
+
+
+def migration_head_revision() -> str:
+    """Head of the apps/api Alembic lineage, read from disk so the boot gate
+    tracks the migrations instead of a literal that rots."""
+    from pathlib import Path
+
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    api_root = Path(__file__).resolve().parents[2]  # apps/api
+    cfg = Config(str(api_root / "alembic.ini"))
+    cfg.set_main_option("script_location", str(api_root / "alembic"))
+    head = ScriptDirectory.from_config(cfg).get_current_head()
+    if not head:
+        raise RuntimeError("Could not resolve an Alembic head revision from apps/api/alembic.")
+    return head
