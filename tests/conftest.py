@@ -96,7 +96,9 @@ def user(services_app_client) -> dict:
     return {
         "email": email,
         "token": data["tokens"]["access_token"],
-        "refresh": data["tokens"]["refresh_token"],
+        # Phase 1: the refresh secret is only ever delivered via the HttpOnly cookie,
+        # never the JSON body (body refresh_token is blanked). Pull it from the cookie.
+        "refresh": r.cookies.get("refresh_token") or data["tokens"].get("refresh_token", ""),
         "user_id": data["user"]["id"],
         "org_id": data["organization"]["id"],
         "headers": {"Authorization": f"Bearer {data['tokens']['access_token']}"},

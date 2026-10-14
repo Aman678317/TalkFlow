@@ -97,55 +97,6 @@ export default function Login() {
             <Button type="submit" className="w-full" loading={busy}>
               Sign in
             </Button>
-            <Button
-              type="button"
-              variant="secondary"
-              className="w-full justify-center text-xs"
-              disabled={busy}
-              onClick={async () => {
-                setBusy(true);
-                setError("");
-                try {
-                  await login("demo@globaltalk.local", "demo1234");
-                  nav(loc.state?.from ?? "/dashboard", { replace: true });
-                } catch (err: any) {
-                  // If live API is blocked by CORS on preview domain, grant instant demo session
-                  const fallbackUser = {
-                    id: "guest-user",
-                    email: "demo@globaltalk.local",
-                    name: "Demo Guest",
-                    full_name: "Demo Guest",
-                    is_platform_admin: false,
-                    email_verified: true,
-                    default_language: "en",
-                  };
-                  const fallbackOrg = {
-                    id: "guest-org",
-                    name: "Demo Workspace",
-                    slug: "demo-workspace",
-                    plan: "pro",
-                  };
-                  try {
-                    localStorage.setItem("gt.local_user", JSON.stringify(fallbackUser));
-                    localStorage.setItem("gt.local_org", JSON.stringify(fallbackOrg));
-                    localStorage.removeItem("gt.logged_out");
-                  } catch {}
-                  useAuth.setState({
-                    user: fallbackUser,
-                    org: fallbackOrg,
-                    organizations: [{ org: fallbackOrg, role: "owner" }],
-                    role: "owner",
-                    initialized: true,
-                    status: "authed",
-                  });
-                  nav(loc.state?.from ?? "/dashboard", { replace: true });
-                } finally {
-                  setBusy(false);
-                }
-              }}
-            >
-              Use demo account
-            </Button>
             <p className="text-center text-xs text-ink-400">
               No account? <Link to="/signup" className="font-medium text-signal-700 hover:underline">Create one</Link>
             </p>

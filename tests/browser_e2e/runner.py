@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import time
+import uuid
 from pathlib import Path
 
 # Fix Windows console UTF-8 output
@@ -156,24 +157,31 @@ def run_tests():
             record_result("TEST-1-LANDING", f"{BASE_URL}/", "Landing Page", "Load cleanly", str(e), "FAIL", errs_1, net_1)
 
         # -------------------------------------------------------------
-        # AUTHENTICATE WITH DEMO ACCOUNT FOR APP FLOWS
+        # AUTHENTICATE WITH A REAL SIGN-UP FOR APP FLOWS
+        # Phase 1: no demo account and no test-only credential path. We create a
+        # throwaway tenant through the real /signup form, which is the same journey
+        # a production user takes. Works with ALLOW_SEED=false / ALLOW_TEST_AUTH=false.
         # -------------------------------------------------------------
         logs_auth, errs_auth, net_auth = [], [], []
         attach_listeners(page, logs_auth, errs_auth, net_auth)
+        e2e_email = f"e2e_{uuid.uuid4().hex[:10]}@example.com"
+        e2e_password = "E2ePassword123"
         try:
-            page.goto(f"{BASE_URL}/login", wait_until="networkidle")
-            demo_btn = page.locator('button:has-text("Use demo account")')
-            if demo_btn.is_visible():
-                demo_btn.click()
-                page.wait_for_timeout(2000)
-            else:
-                page.fill('input[type="email"]', "demo@globaltalk.local")
-                page.fill('input[type="password"]', "demo1234")
-                page.click('button[type="submit"]')
-                page.wait_for_timeout(2000)
-            print("Auth state:", page.url)
+            page.goto(f"{BASE_URL}/signup", wait_until="networkidle")
+            page.get_by_label("Full name").fill("E2E Tester")
+            page.get_by_label("Work email").fill(e2e_email)
+            page.get_by_label("Organization").fill(f"E2E Org {uuid.uuid4().hex[:6]}")
+            page.get_by_label("Password").fill(e2e_password)
+            page.get_by_role("button", name="Create account").click()
+            # Signup redirects to /dashboard once the access token is in memory.
+            try:
+                page.wait_for_url("**/dashboard**", timeout=15000)
+            except Exception:
+                pass
+            page.wait_for_timeout(1500)
+            print("Auth state:", page.url, "user:", e2e_email)
         except Exception as e:
-            print("Login error:", e)
+            print("Signup error:", e)
 
         # -------------------------------------------------------------
         # TEST 2: Text Translate (/translate)
