@@ -163,7 +163,6 @@ async def join_meeting(meeting_id: uuid.UUID, body: JoinMeetingRequest,
     if meeting.status == "live" and meeting.started_at:
         pass  # webhook fired on transition below
     ticket = create_session_ticket(meeting.room_name, str(p.id))
-    rt_url = f"{settings.web_origin.replace('http', 'ws', 1) if settings.web_origin.startswith('http') else 'ws://localhost:8000'}"
     resp = JoinMeetingResponse(
         meeting_id=meeting.id, participant_id=p.id, session_key=session_key,
         rt_url=f"/ws/realtime?ticket={ticket}",
