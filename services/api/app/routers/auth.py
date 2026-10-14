@@ -237,6 +237,7 @@ async def social_login(body: SocialLoginRequest, request: Request, response: Res
         token=body.token,
         code=body.code,
         redirect_uri=body.redirect_uri,
+        nonce=body.nonce,
     )
 
     # 2. Check if this exact provider identity already exists in user_identities

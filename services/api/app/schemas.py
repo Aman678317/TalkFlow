@@ -59,14 +59,14 @@ class LoginRequest(BaseModel):
 
 
 class SocialLoginRequest(BaseModel):
+    """Phase 2: identity comes ONLY from provider-verified credentials. There is no
+    client-supplied email/name/avatar field — a verified token or authorization code
+    is required, and every identity attribute is read from the verified claims."""
     provider: Literal["google", "github", "apple"]
     token: str | None = None
     code: str | None = None
     redirect_uri: str | None = None
-    email: str | None = None
-    name: str | None = None
-    avatar_url: str | None = None
-    provider_user_id: str | None = None
+    nonce: str | None = None
 
 
 class UserIdentityOut(ORMModel):
