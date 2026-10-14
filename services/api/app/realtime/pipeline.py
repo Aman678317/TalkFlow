@@ -856,11 +856,13 @@ class MeetingPipeline:
                 "mt_failed", utt=str(u_id), seq=seq, speaker=speaker.participant_id,
                 source_lang=source_lang, target_lang=target_lang,
                 error_type=type(e).__name__, error=str(e)[:160]))
-            await self._translation_failed(segment_id, seq, target_lang, e)
+            await self._translation_failed(segment_id, seq, source_lang,
+                                           target_lang, e)
             return
         except Exception as e:
             log.exception("translation crashed")
-            await self._translation_failed(segment_id, seq, target_lang, e)
+            await self._translation_failed(segment_id, seq, source_lang,
+                                           target_lang, e)
             return
         trace.translation_ms = (time.perf_counter() - t0) * 1000
         translated = done.translated_text
@@ -1073,7 +1075,8 @@ class MeetingPipeline:
         await self._report_latency(trace)
 
     async def _translation_failed(self, segment_id: uuid.UUID, seq: int,
-                                  target_lang: str, e: Exception) -> None:
+                                  source_lang: str, target_lang: str,
+                                  e: Exception) -> None:
         message = ("Translation is taking longer than expected. "
                    "The original audio is still active.")
         code = e.__class__.__name__
@@ -1082,10 +1085,11 @@ class MeetingPipeline:
             code = getattr(e, "code", code)
         await manager.broadcast(
             self.session, ServerEventType.TRANSLATION_FAILED,
-            {"segment_id": str(segment_id), "seq": seq, "target_lang": target_lang,
+            {"segment_id": str(segment_id), "seq": seq,
+             "source_lang": source_lang, "target_lang": target_lang,
              "code": code, "message": message, "detail": detail[:200],
              "recoverable": True})
-        met.TRANSLATION_FAILURES.labels(src="?", tgt=target_lang,
+        met.TRANSLATION_FAILURES.labels(src=source_lang or "?", tgt=target_lang,
                                         provider="router", reason=code).inc()
 
     async def _report_latency(self, trace: LatencyTrace) -> None:
