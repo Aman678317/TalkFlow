@@ -111,6 +111,42 @@ golden legs have still never completed on GitHub**, so the level-2 evidence the
 merge gate asks for does not exist yet. The numbers above are local evidence, and
 CI is currently red on this branch.
 
+### 1.3 CI read-back — runs two and three, after those fixes
+
+`38497615128` (commit `1310025`) and `38502027159` (commit `738e867`) returned the
+same picture, four of five jobs green:
+
+| Job | Run 2 | Run 3 |
+| --- | --- | --- |
+| `frontend` | ✓ 58 s | ✓ 57 s |
+| `backend` | ✓ 4 m 57 s | ✓ |
+| `browser-e2e` | ✓ 1 m 42 s | ✓ |
+| `docker` | ✓ 3 m 31 s | ✓ |
+| `realtime-golden` | ✗ | ✗ `1 failed, 4 passed in 298.90 s` |
+
+So two of the three first-run causes were confirmed fixed by the jobs that were
+red for them. The `4409` supersede is gone: the Tree A golden call now gets all
+three seats into the room, and fails **later and elsewhere** — the same assertion
+in both runs, at `tests/realtime/test_deployed_tree_golden_call.py:201`:
+
+```
+AssertionError: [Beth] no event matching the canonical Hindi transcript within
+240s; saw: ['session.created', 'session.resumed', 'participant.joined',
+'speech.started', 'diagnostic', 'speech.ended', 'diagnostic', 'reconnect.required']
+```
+
+`reconnect.required` is the server's own heartbeat drop: `ws.py:42` sets
+`RECEIVE_TIMEOUT_S = 90` and `ws.py:264-270` closes any socket from which nothing
+has arrived in that window. The browser client never trips it because it pings
+(`apps/web/src/lib/ws.ts:233`); the golden test's client sends no frames after
+joining, so an idle listener is cut off at 90 s and the transcript it is waiting
+for is never seen. **This is a defect in the test's client, not in the room** —
+the equivalent meeting shape completes against the same server locally (§4), and
+the CI run reached the 240 s wait without any earlier stage failing.
+Fixing it means giving the test client a keepalive and making it print the
+`diagnostic` payloads it did receive; that is a separate change from the release
+gate and is not in this branch.
+
 ---
 
 ## 2. Evidence level 1 — unit
