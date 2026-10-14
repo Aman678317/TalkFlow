@@ -82,7 +82,9 @@ ready│review│failed. See DOCUMENTS.md.
 
 ## Meetings & realtime
 
-- `POST /meetings` → `{id, room_name, join_token, transport}`.
+- `POST /meetings` → `{id, room_name, transport}`; `POST /meetings/{id}/join` → seat
+  `{participant_id, session_key, rt_url}`; `POST /meetings/{id}/join-ticket` →
+  `{ticket, ws_url, participant_id, expires_in}` (single-use, 120 s).
 - `GET /meetings`, `GET /meetings/{id}`, `POST /meetings/{id}/end`.
 - `GET /meetings/{id}/participants`; `PUT …/participants/{pid}/preferences`
   ("I speak / I want to hear / audio mode").

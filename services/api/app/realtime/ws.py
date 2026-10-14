@@ -49,9 +49,10 @@ async def realtime_ws(
     meeting_id: str = "",
     ticket: str = Query(default=""),
     token: str = Query(default=""),
-    join_token: str = Query(default=""),
 ):
-    # ---- authenticate via ticket, JWT access token, or join_token ------- #
+    # ---- authenticate via signed ticket or member JWT ---------------------- #
+    # (Phase 4: the static guest join_token is gone — guests mint single-use
+    # tickets from their server-issued session_key via POST /join-ticket.)
     user_id: uuid.UUID | None = None
     participant_id: uuid.UUID | None = None
     target_meeting_id: uuid.UUID | None = None
@@ -82,11 +83,8 @@ async def realtime_ws(
         except Exception as e:
             await ws.close(code=4401, reason=f"Invalid token: {e}")
             return
-    elif join_token:
-        # Proceed to validate existing participant with matching guest_key
-        pass
     else:
-        await ws.close(code=4401, reason="Authentication required (valid ticket, token, or join_token required)")
+        await ws.close(code=4401, reason="Authentication required (valid ticket or token required)")
         return
 
     async with db_session() as db:
@@ -123,17 +121,6 @@ async def realtime_ws(
                     db, meeting, user_id=user_id, display_name=dname,
                     speak_lang="auto", hear_lang="en", audio_mode="translated"
                 )
-        elif join_token and target_meeting_id is not None:
-            res = await db.execute(
-                select(M.Participant).where(
-                    M.Participant.meeting_id == target_meeting_id,
-                    M.Participant.guest_key == join_token,
-                )
-            )
-            participant = res.scalars().first()
-            if participant is None:
-                await ws.close(code=4401, reason="Invalid guest join token. Please join meeting via REST join endpoint first.")
-                return
 
         if participant is None:
             await ws.close(code=4404, reason="participant not found")

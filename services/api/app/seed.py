@@ -214,7 +214,11 @@ async def run_seed() -> None:
         flags = await seed_flags(db)
         styles = await seed_styles(db)
         models = await seed_model_registry(db)
-        await seed_demo_org(db)
+        # Demo/platform-admin USERS are an opt-in escape hatch only (Phase 1). The
+        # languages/flags/styles/model-registry above are legitimate startup data and
+        # always seed. Demo creds are never created unless ALLOW_SEED=true.
+        if settings.allow_seed:
+            await seed_demo_org(db)
         await db.commit()
         log.info("seed complete: languages=%d flags=%d styles=%d models=%d",
                  langs, flags, styles, models)

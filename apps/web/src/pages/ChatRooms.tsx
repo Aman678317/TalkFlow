@@ -59,7 +59,6 @@ export default function ChatRooms() {
     if (!activeId || !activeMeeting || roomEnded) return;
     const socket = new MeetingSocket({
       meetingId: activeId,
-      joinToken: activeMeeting.join_token,
       displayName: user?.full_name || "Guest",
       preferences: {
         speaking_language: "AUTO", listening_language: listenLang,

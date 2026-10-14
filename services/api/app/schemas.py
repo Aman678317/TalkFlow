@@ -59,14 +59,14 @@ class LoginRequest(BaseModel):
 
 
 class SocialLoginRequest(BaseModel):
+    """Phase 2: identity comes ONLY from provider-verified credentials. There is no
+    client-supplied email/name/avatar field — a verified token or authorization code
+    is required, and every identity attribute is read from the verified claims."""
     provider: Literal["google", "github", "apple"]
     token: str | None = None
     code: str | None = None
     redirect_uri: str | None = None
-    email: str | None = None
-    name: str | None = None
-    avatar_url: str | None = None
-    provider_user_id: str | None = None
+    nonce: str | None = None
 
 
 class UserIdentityOut(ORMModel):
@@ -479,7 +479,22 @@ class JoinMeetingRequest(BaseModel):
     speak_lang: str = "auto"
     hear_lang: str = "en"
     audio_mode: Literal["original", "translated", "mixed", "captions_only"] = "translated"
-    guest_key: str = ""
+    # Seat continuation is the server-issued session_key from a previous /join
+    # ("" = open a new seat). Client-chosen seat keys are never accepted: they
+    # were a static, never-expiring WS credential (roadmap Phase 4 task 1).
+    session_key: str = ""
+    as_guest: bool = False
+
+
+class JoinTicketRequest(BaseModel):
+    session_key: str = ""
+
+
+class JoinTicketResponse(BaseModel):
+    ticket: str
+    ws_url: str
+    participant_id: uuid.UUID
+    expires_in: int
 
 
 class JoinMeetingResponse(BaseModel):

@@ -34,8 +34,8 @@ Below is the exhaustive, prioritized subsystem classification and issue matrix.
 | **2. Social Authentication** | **FAIL** | Client-supplied identity blindly trusted in `/auth/social-login`; zero provider signature/nonce/issuer verification. Account takeover risk. |
 | **3. Authorization & Tenant Isolation** | **PARTIAL** | Multi-tenancy exists in models (`org_id`), but several routes allow client-provided `org_id` overrides; error responses leak tenant resource existence (403 vs 404 divergence). |
 | **4. Realtime / WebRTC / LiveKit** | **PARTIAL** | WebSocket authentication accepts join tokens without single-use revocation or cryptographic signature; LiveKit tokens lack granular room-scoped TTL limits. |
-| **5. Canonical Translation Pipeline** | **PASS / PARTIAL** | Canonical source invariant is architecturally enforced (immutable segments, fan-out dedup), but fallback chains lack granular retry backoff under queue pressure. |
-| **6. Audio / Video Quality & WebRTC** | **PARTIAL** | Device disconnects and network transitions rely on optimistic recovery; frontend lacks explicit visible degradation badges for degraded network / translation delay. |
+| **5. Canonical Translation Pipeline** | **PARTIAL** | Canonical source invariant is architecturally enforced (immutable segments, fan-out dedup) and dev stand-ins no longer fabricate translations in production; fallback chains still lack granular retry backoff under queue pressure (Phase 8). |
+| **6. Audio / Video Quality & WebRTC** | **PARTIAL** | A silent-but-OPEN socket and a removed capture track are now detected and surfaced; remaining gap is video-quality adaptation, since P2P video has no bandwidth-based resolution control. |
 | **7. Database & Alembic Migrations** | **PARTIAL** | Dual model files (`apps/api/globaltalk/models` vs `services/api/app/db/models.py`); SQLite dev auto-create active; production requires strict Alembic-only migration gating. |
 | **8. Redis, Queues & Workers** | **PARTIAL** | In-process queue runner in dev; worker retry lacks exponential backoff and dead-letter queue (DLQ) in `services/api/app/queue.py`. |
 | **9. AI Model Router & Inference** | **PASS / PARTIAL** | Model router abstract protocol exists; fallback chains honestly report `untranslated_fallback` and `translation.failed`; health checks need honest runtime capability gating. |
@@ -232,10 +232,14 @@ The application has an exceptionally well-thought-out semantic domain model (the
 - **Resolved**: Restricted LiveKit token generation in `services/api/app/routers/meetings.py` strictly to confirmed participants.
 - **Verification**: Covered by `tests/test_realtime_security.py`.
 
-### 5. Phase 5: Realtime Translation Reliability & Canonical Invariant (VERIFIED)
+### 5. Phase 5: Realtime Translation Reliability & Canonical Invariant (COMPLETED)
 - **Audited**: Verified that human speech always generates an immutable canonical `TranscriptSegment`.
 - **Audited**: Verified translation fan-out is strictly independent per listener target language with zero chaining.
 - **Audited**: Verified graceful degradation (MT failure yields `translation.failed` without fabricating output; STT failure preserves call audio).
+- **Resolved**: The "no synthetic translation fabrication" criterion was NOT met. `AIFacade` appended `dev_echo` / `dev_text` / `dev_tone` to the failover list unconditionally, so with every real provider down a live meeting received the speaker's own text as a "translation" and a test tone as "synthesized voice". Those stand-ins are now skipped in production; explicitly configuring one still routes to it.
+- **Resolved**: A provider that declares `untranslated_fallback` is refused at the translation stage instead of forwarded to captions and TTS.
+- **Resolved**: `translation.failed` and its failure metric carry the real source language instead of `"?"`.
+- **Verification**: Covered by `tests/test_realtime_translation_invariant_hardened.py`.
 
 ### 6. Phase 10: Storage & File Security (COMPLETED)
 - **Resolved**: Validated upload mime types, blocked dangerous executable extensions, sanitized path traversal, and verified magic bytes in `services/api/app/storage.py`.

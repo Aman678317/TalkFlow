@@ -135,6 +135,13 @@ class TranslationAgent:
             error = ValueError("empty translation result")
             await self._fail(segment, target_lang, error, reason="empty_result")
             raise error
+        if "untranslated_fallback" in out.quality_flags:
+            # The provider has just said out loud that it did not translate.
+            # Shipping the source text onward would make an echo look like a
+            # translation in the target language, in the caption and in TTS.
+            error = ValueError("provider returned the source text untranslated")
+            await self._fail(segment, target_lang, error, reason="untranslated_output")
+            raise error
         produced = TranslationSegment(
             correlation_id=segment.correlation_id, meeting_id=self.meeting_id,
             speaker_id=segment.speaker_id, recipient_id=recipients[0] if recipients else "",

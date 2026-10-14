@@ -73,6 +73,17 @@ async def upload_document(
     await validate_pair(db, "en" if effective_source == "auto" else effective_source,
                         effective_target)
 
+    # Phase 3: referenced resources must belong to the caller's org (style
+    # profiles with org_id NULL are global system defaults and allowed).
+    if glossary_id:
+        g = await db.get(M.Glossary, uuid.UUID(glossary_id))
+        if g is None or g.org_id != principal.org_id:
+            raise NotFoundError("Glossary not found.")
+    if style_profile_id:
+        sp = await db.get(M.StyleProfile, uuid.UUID(style_profile_id))
+        if sp is None or (sp.org_id is not None and sp.org_id != principal.org_id):
+            raise NotFoundError("Style profile not found.")
+
     await usage_service.check_quota(db, principal.org_id, "documents", 1)
 
     key = object_key("documents", str(principal.org_id), safe_name, checksum)

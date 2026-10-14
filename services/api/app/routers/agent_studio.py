@@ -16,12 +16,17 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+
+from app.deps import require_org_user
 
 log = logging.getLogger("app.routers.agent_studio")
 
-router = APIRouter(prefix="/api/v1/agent-studio", tags=["agent-studio"])
+# Phase 3: every Agent Studio endpoint requires an authenticated org user —
+# previously all routes (including bridge.py subprocess execution) were anonymous.
+router = APIRouter(prefix="/api/v1/agent-studio", tags=["agent-studio"],
+                   dependencies=[Depends(require_org_user)])
 
 # Paths to multi-agent portfolio
 def _find_portfolio_root() -> Path:
@@ -229,7 +234,6 @@ async def get_studio_status():
     """Retrieve health and metadata of all 3 Multi-Agent Systems."""
     return {
         "status": "ready",
-        "interpreter": _PYTHON_BIN,
         "systems": [
             {
                 "id": "system-01",

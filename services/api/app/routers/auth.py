@@ -42,7 +42,7 @@ def _set_refresh_cookie(response: Response, refresh_token: str) -> None:
         key="refresh_token",
         value=refresh_token,
         httponly=True,
-        secure=settings.app_env == "production",
+        secure=settings.secure_cookies or settings.app_env == "production",
         samesite="lax",
         path="/api/v1/auth",
         max_age=settings.jwt_refresh_ttl_days * 86400,
@@ -54,7 +54,7 @@ def _clear_refresh_cookie(response: Response) -> None:
         key="refresh_token",
         path="/api/v1/auth",
         httponly=True,
-        secure=settings.app_env == "production",
+        secure=settings.secure_cookies or settings.app_env == "production",
         samesite="lax",
     )
 
@@ -66,7 +66,7 @@ def _set_csrf_cookie(response: Response, csrf_token: str | None = None) -> None:
         key="csrf_token",
         value=csrf_token,
         httponly=False,
-        secure=settings.app_env == "production",
+        secure=settings.secure_cookies or settings.app_env == "production",
         samesite="lax",
         path="/",
         max_age=settings.jwt_refresh_ttl_days * 86400,
@@ -108,6 +108,16 @@ async def _issue_tokens(db: AsyncSession, user: M.User, request: Request,
     await db.commit()
     return TokenPair(access_token=access, refresh_token=refresh,
                      expires_in=settings.jwt_access_ttl_minutes * 60)
+
+
+def _public_tokens(tokens: TokenPair) -> TokenPair:
+    """The HttpOnly cookie is the ONLY carrier for the refresh secret (Phase 1).
+
+    The full ``tokens`` pair is used internally to set the cookie; the response body
+    keeps the access token (needed in memory by the SPA) but blanks the refresh so a
+    second, JS-readable copy never leaves the server.
+    """
+    return tokens.model_copy(update={"refresh_token": ""})
 
 
 @router.post("/signup", response_model=dict, status_code=201,
@@ -163,7 +173,7 @@ async def signup(body: SignupRequest, request: Request, response: Response,
     await db.commit()
     return {"user": UserOut.model_validate(user),
             "organization": OrganizationOut.model_validate(org) if org else None,
-            "tokens": tokens,
+            "tokens": _public_tokens(tokens),
             "verification": {"pending": True,
                              "dev_link": f"/api/v1/auth/verify-email?token={verify_token}"}}
 
@@ -210,7 +220,7 @@ async def login(body: LoginRequest, request: Request, response: Response,
     await audit_service.record(db, action="auth.login", actor_id=user.id,
                                org_id=org_id, ip_hash=client_ip_hash(request))
     await db.commit()
-    return {"user": UserOut.model_validate(user), "tokens": tokens,
+    return {"user": UserOut.model_validate(user), "tokens": _public_tokens(tokens),
             "org_id": str(org_id) if org_id else None}
 
 
@@ -227,6 +237,7 @@ async def social_login(body: SocialLoginRequest, request: Request, response: Res
         token=body.token,
         code=body.code,
         redirect_uri=body.redirect_uri,
+        nonce=body.nonce,
     )
 
     # 2. Check if this exact provider identity already exists in user_identities
@@ -339,7 +350,7 @@ async def social_login(body: SocialLoginRequest, request: Request, response: Res
     await db.commit()
     return {
         "user": UserOut.model_validate(user),
-        "tokens": tokens,
+        "tokens": _public_tokens(tokens),
         "org_id": str(org_id) if org_id else None,
         "provider": provider,
     }
@@ -399,7 +410,7 @@ async def refresh(body: RefreshRequest, request: Request, response: Response,
                                              session_id=row.session_id)
                 _set_refresh_cookie(response, tokens.refresh_token)
                 await db.commit()
-                return tokens
+                return _public_tokens(tokens)
 
     if row is None or row.revoked_at is not None or row.token_hash != token_hash:
         # possible token reuse — revoke the whole session family
@@ -428,7 +439,7 @@ async def refresh(body: RefreshRequest, request: Request, response: Response,
         session.last_seen_at = utcnow()
     _set_refresh_cookie(response, tokens.refresh_token)
     await db.commit()
-    return tokens
+    return _public_tokens(tokens)
 
 
 @router.post("/logout", status_code=204)

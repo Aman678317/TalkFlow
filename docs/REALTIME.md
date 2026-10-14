@@ -5,8 +5,10 @@
 - **Production:** LiveKit rooms (WebRTC SFU). Human media + AI-published translated audio
   tracks; captions/events via data channels. `LiveKitAdapter` (services/realtime) creates
   rooms/tokens; `/api/v1/voice/session?meeting_id=...` returns `{transport:"livekit", token}`.
-- **Dev / edge / sandbox:** WebSocket at `/ws/meetings/{meeting_id}?token=<JWT>` or
-  `?join_token=<meeting-token>` (guests). Identical hub, pipeline and event protocol.
+- **Dev / edge / sandbox:** WebSocket at `/ws/meetings/{meeting_id}?token=<JWT>` (members)
+  or `?ticket=<single-use signed ticket>` (guests — minted via
+  `POST /meetings/{id}/join-ticket` from the seat's server-issued session key).
+  Identical hub, pipeline and event protocol.
   `voice/session` then returns `{transport:"websocket", ws_url}`.
 
 ## Wire format

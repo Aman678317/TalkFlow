@@ -37,7 +37,7 @@ from app.db import models as M
 from app.db.base import utcnow
 from app.db.session import get_db
 from app.deps import Principal, get_principal_optional
-from app.errors import AuthenticationError
+from app.routers.platform import _require_platform_admin
 from app.security import create_session_ticket
 from app.services import meeting_service, write_service
 from app.services.translation_service import TranslateContext, translate_text
@@ -376,23 +376,29 @@ async def v2_translate(
             detected = (src if src != "auto" else "EN").upper()
             translated = _dev_fallback_translate(item, detected, tgt.upper())
 
-        # In-memory glossary terms lookup fallback if provided via v2/v3 glossaries
+        # In-memory glossary terms lookup fallback if provided via v2/v3 glossaries.
+        # Phase 3: only the caller's own tenant records may be applied — foreign or
+        # anonymous references are silently ignored (never applied, never confirmed).
+        caller_org = str(principal.org_id) if (principal and principal.org_id) else None
         if glossary_id and str(glossary_id) in _GLOSSARIES_STORE:
             g = _GLOSSARIES_STORE[str(glossary_id)]
-            for term, repl in g.get("terms", {}).items():
-                if term.lower() in item.lower():
-                    translated = re.sub(re.escape(term), repl, translated, flags=re.IGNORECASE)
-        elif glossary_id and str(glossary_id) in _MULTILINGUAL_GLOSSARIES:
-            mg = _MULTILINGUAL_GLOSSARIES[str(glossary_id)]
-            for d in mg.get("dictionaries", []):
-                for term, repl in d.get("entries", {}).items():
+            if caller_org and g.get("org_id") == caller_org:
+                for term, repl in g.get("terms", {}).items():
                     if term.lower() in item.lower():
                         translated = re.sub(re.escape(term), repl, translated, flags=re.IGNORECASE)
+        elif glossary_id and str(glossary_id) in _MULTILINGUAL_GLOSSARIES:
+            mg = _MULTILINGUAL_GLOSSARIES[str(glossary_id)]
+            if caller_org and mg.get("org_id") == caller_org:
+                for d in mg.get("dictionaries", []):
+                    for term, repl in d.get("entries", {}).items():
+                        if term.lower() in item.lower():
+                            translated = re.sub(re.escape(term), repl, translated, flags=re.IGNORECASE)
 
         # Style rule or custom instructions simulated application if requested
         if style_rule and str(style_rule) in _STYLE_RULES_STORE:
             sr = _STYLE_RULES_STORE[str(style_rule)]
-            if sr.get("configured_rules", {}).get("style_and_tone", {}).get("formality") == "formal":
+            if (caller_org and sr.get("org_id") == caller_org
+                    and sr.get("configured_rules", {}).get("style_and_tone", {}).get("formality") == "formal"):
                 translated = translated.replace("can't", "cannot").replace("won't", "will not")
 
         res_item: dict[str, Any] = {
@@ -890,10 +896,20 @@ async def v2_glossary_language_pairs():
 # --------------------------------------------------------------------------- #
 
 
-def _caller_org(principal: Principal | None) -> str:
-    if principal and principal.org_id:
-        return str(principal.org_id)
-    return "anonymous"
+def _org_of(principal: Principal | None) -> str:
+    """Phase 3: v2/v3 resource stores are tenant-scoped. Anonymous callers are
+    rejected (401) instead of sharing an implicit 'anonymous' tenant bucket —
+    two unauthenticated callers must never see each other's data."""
+    if principal is None or not principal.org_id:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    return str(principal.org_id)
+
+
+def _scoped(store: dict[str, dict[str, Any]], key: str, org: str) -> dict[str, Any]:
+    record = store.get(key)
+    if not record or record.get("org_id") != org:
+        raise HTTPException(status_code=404, detail="Not found")
+    return record
 
 _GLOSSARIES_STORE: dict[str, dict[str, Any]] = {}
 
@@ -901,6 +917,7 @@ _GLOSSARIES_STORE: dict[str, dict[str, Any]] = {}
 @router.post("/v2/glossaries")
 async def v2_create_glossary(request: Request, principal: Principal | None = Depends(get_principal_optional)):
     """Create a new monolingual translation glossary."""
+    org = _org_of(principal)
     payload = await _extract_request_data(request)
     name = payload.get("name")
     source_lang = payload.get("source_lang")
@@ -921,7 +938,6 @@ async def v2_create_glossary(request: Request, principal: Principal | None = Dep
             terms[parts[0].strip()] = parts[1].strip()
 
     gid = str(uuid.uuid4())
-    org = _caller_org(principal)
     record = {
         "glossary_id": gid,
         "org_id": org,
@@ -950,7 +966,7 @@ async def v2_create_glossary(request: Request, principal: Principal | None = Dep
 @router.get("/v2/glossaries")
 async def v2_list_glossaries(principal: Principal | None = Depends(get_principal_optional)):
     """List all v2 stored glossaries."""
-    org = _caller_org(principal)
+    org = _org_of(principal)
     glossaries = []
     for g in _GLOSSARIES_STORE.values():
         if g.get("org_id") != org:
@@ -970,10 +986,7 @@ async def v2_list_glossaries(principal: Principal | None = Depends(get_principal
 @router.get("/v2/glossaries/{glossary_id}")
 async def v2_get_glossary(glossary_id: str, principal: Principal | None = Depends(get_principal_optional)):
     """Retrieve metadata for a specific v2 glossary."""
-    org = _caller_org(principal)
-    g = _GLOSSARIES_STORE.get(glossary_id)
-    if not g or g.get("org_id") != org:
-        raise HTTPException(status_code=404, detail="Glossary not found")
+    g = _scoped(_GLOSSARIES_STORE, glossary_id, _org_of(principal))
     return {
         "glossary_id": g["glossary_id"],
         "name": g["name"],
@@ -988,10 +1001,7 @@ async def v2_get_glossary(glossary_id: str, principal: Principal | None = Depend
 @router.get("/v2/glossaries/{glossary_id}/entries")
 async def v2_get_glossary_entries(glossary_id: str, principal: Principal | None = Depends(get_principal_optional)):
     """Retrieve glossary entries in TSV format."""
-    org = _caller_org(principal)
-    g = _GLOSSARIES_STORE.get(glossary_id)
-    if not g or g.get("org_id") != org:
-        raise HTTPException(status_code=404, detail="Glossary not found")
+    g = _scoped(_GLOSSARIES_STORE, glossary_id, _org_of(principal))
     tsv_lines = [f"{s}\t{t}" for s, t in g.get("terms", {}).items()]
     content = "\n".join(tsv_lines)
     return PlainTextResponse(content=content, media_type="text/tab-separated-values")
@@ -1000,10 +1010,7 @@ async def v2_get_glossary_entries(glossary_id: str, principal: Principal | None 
 @router.delete("/v2/glossaries/{glossary_id}", status_code=204)
 async def v2_delete_glossary(glossary_id: str, principal: Principal | None = Depends(get_principal_optional)):
     """Delete a v2 glossary."""
-    org = _caller_org(principal)
-    g = _GLOSSARIES_STORE.get(glossary_id)
-    if not g or g.get("org_id") != org:
-        raise HTTPException(status_code=404, detail="Glossary not found")
+    _scoped(_GLOSSARIES_STORE, glossary_id, _org_of(principal))
     del _GLOSSARIES_STORE[glossary_id]
     return Response(status_code=204)
 
@@ -1038,11 +1045,13 @@ def _format_multilingual_glossary_info(record: dict[str, Any]) -> dict[str, Any]
 
 
 @router.post("/v3/glossaries")
-async def v3_create_multilingual_glossary(request: Request):
+async def v3_create_multilingual_glossary(request: Request,
+                                          principal: Principal | None = Depends(get_principal_optional)):
     """Create a multilingual glossary.
 
     Accepts JSON with dictionaries or multipart/form with CSV data.
     """
+    org = _org_of(principal)
     payload = await _extract_request_data(request)
     name = payload.get("name")
     if not name:
@@ -1084,6 +1093,7 @@ async def v3_create_multilingual_glossary(request: Request):
 
     record = {
         "glossary_id": gid,
+        "org_id": org,
         "name": name,
         "creation_time": creation_time,
         "dictionaries": dictionaries,
@@ -1093,26 +1103,26 @@ async def v3_create_multilingual_glossary(request: Request):
 
 
 @router.get("/v3/glossaries")
-async def v3_list_multilingual_glossaries():
-    """List all stored multilingual glossaries."""
-    return {"glossaries": [_format_multilingual_glossary_info(g) for g in _MULTILINGUAL_GLOSSARIES.values()]}
+async def v3_list_multilingual_glossaries(principal: Principal | None = Depends(get_principal_optional)):
+    """List stored multilingual glossaries visible to the caller's organization."""
+    org = _org_of(principal)
+    return {"glossaries": [_format_multilingual_glossary_info(g) for g in _MULTILINGUAL_GLOSSARIES.values()
+                           if g.get("org_id") == org]}
 
 
 @router.get("/v3/glossaries/{glossary_id}")
-async def v3_get_multilingual_glossary(glossary_id: str):
+async def v3_get_multilingual_glossary(glossary_id: str,
+                                       principal: Principal | None = Depends(get_principal_optional)):
     """Retrieve metadata for a specific multilingual glossary."""
-    g = _MULTILINGUAL_GLOSSARIES.get(glossary_id)
-    if not g:
-        raise HTTPException(status_code=404, detail="Multilingual glossary not found")
+    g = _scoped(_MULTILINGUAL_GLOSSARIES, glossary_id, _org_of(principal))
     return _format_multilingual_glossary_info(g)
 
 
 @router.patch("/v3/glossaries/{glossary_id}")
-async def v3_update_multilingual_glossary_name(glossary_id: str, request: Request):
+async def v3_update_multilingual_glossary_name(glossary_id: str, request: Request,
+                                               principal: Principal | None = Depends(get_principal_optional)):
     """Update name of an existing multilingual glossary."""
-    g = _MULTILINGUAL_GLOSSARIES.get(glossary_id)
-    if not g:
-        raise HTTPException(status_code=404, detail="Multilingual glossary not found")
+    g = _scoped(_MULTILINGUAL_GLOSSARIES, glossary_id, _org_of(principal))
     payload = await _extract_request_data(request)
     if "name" in payload:
         g["name"] = payload["name"]
@@ -1122,13 +1132,12 @@ async def v3_update_multilingual_glossary_name(glossary_id: str, request: Reques
 @router.get("/v3/glossaries/{glossary_id}/entries")
 async def v3_get_multilingual_glossary_entries(
     glossary_id: str,
+    principal: Principal | None = Depends(get_principal_optional),
     source_lang: str | None = Query(default=None),
     target_lang: str | None = Query(default=None),
 ):
     """List entries for a specific dictionary in a multilingual glossary."""
-    g = _MULTILINGUAL_GLOSSARIES.get(glossary_id)
-    if not g:
-        raise HTTPException(status_code=404, detail="Multilingual glossary not found")
+    g = _scoped(_MULTILINGUAL_GLOSSARIES, glossary_id, _org_of(principal))
 
     src = source_lang.upper() if source_lang else None
     tgt = target_lang.upper() if target_lang else None
@@ -1149,11 +1158,10 @@ async def v3_get_multilingual_glossary_entries(
 
 
 @router.patch("/v3/glossaries/{glossary_id}/dictionaries")
-async def v3_update_multilingual_glossary_dictionary(glossary_id: str, request: Request):
+async def v3_update_multilingual_glossary_dictionary(glossary_id: str, request: Request,
+                                                     principal: Principal | None = Depends(get_principal_optional)):
     """Update or upsert entries into a multilingual glossary dictionary."""
-    g = _MULTILINGUAL_GLOSSARIES.get(glossary_id)
-    if not g:
-        raise HTTPException(status_code=404, detail="Multilingual glossary not found")
+    g = _scoped(_MULTILINGUAL_GLOSSARIES, glossary_id, _org_of(principal))
 
     payload = await _extract_request_data(request)
     src = str(payload.get("source_lang", "en")).upper()
@@ -1189,11 +1197,10 @@ async def v3_update_multilingual_glossary_dictionary(glossary_id: str, request: 
 
 
 @router.put("/v3/glossaries/{glossary_id}/dictionaries")
-async def v3_replace_multilingual_glossary_dictionary(glossary_id: str, request: Request):
+async def v3_replace_multilingual_glossary_dictionary(glossary_id: str, request: Request,
+                                                      principal: Principal | None = Depends(get_principal_optional)):
     """Completely replace entries for a language pair in a multilingual glossary."""
-    g = _MULTILINGUAL_GLOSSARIES.get(glossary_id)
-    if not g:
-        raise HTTPException(status_code=404, detail="Multilingual glossary not found")
+    g = _scoped(_MULTILINGUAL_GLOSSARIES, glossary_id, _org_of(principal))
 
     payload = await _extract_request_data(request)
     src = str(payload.get("source_lang", "en")).upper()
@@ -1233,11 +1240,10 @@ async def v3_delete_multilingual_glossary_dictionary(
     glossary_id: str,
     source_lang: str | None = Query(default=None),
     target_lang: str | None = Query(default=None),
+    principal: Principal | None = Depends(get_principal_optional),
 ):
     """Delete a specific dictionary from a multilingual glossary."""
-    g = _MULTILINGUAL_GLOSSARIES.get(glossary_id)
-    if not g:
-        raise HTTPException(status_code=404, detail="Multilingual glossary not found")
+    g = _scoped(_MULTILINGUAL_GLOSSARIES, glossary_id, _org_of(principal))
 
     src = source_lang.upper() if source_lang else None
     tgt = target_lang.upper() if target_lang else None
@@ -1250,10 +1256,10 @@ async def v3_delete_multilingual_glossary_dictionary(
 
 
 @router.delete("/v3/glossaries/{glossary_id}", status_code=204)
-async def v3_delete_multilingual_glossary(glossary_id: str):
+async def v3_delete_multilingual_glossary(glossary_id: str,
+                                          principal: Principal | None = Depends(get_principal_optional)):
     """Delete a multilingual glossary."""
-    if glossary_id not in _MULTILINGUAL_GLOSSARIES:
-        raise HTTPException(status_code=404, detail="Multilingual glossary not found")
+    _scoped(_MULTILINGUAL_GLOSSARIES, glossary_id, _org_of(principal))
     del _MULTILINGUAL_GLOSSARIES[glossary_id]
     return Response(status_code=204)
 
@@ -1280,8 +1286,10 @@ def _format_style_rule(record: dict[str, Any], detailed: bool = True) -> dict[st
 
 
 @router.post("/v3/style_rules")
-async def v3_create_style_rule(request: Request):
+async def v3_create_style_rule(request: Request,
+                               principal: Principal | None = Depends(get_principal_optional)):
     """Create a new style rule."""
+    org = _org_of(principal)
     payload = await _extract_request_data(request)
     name = payload.get("name")
     language = payload.get("language")
@@ -1292,6 +1300,7 @@ async def v3_create_style_rule(request: Request):
     now = utcnow().isoformat()
     record = {
         "style_id": style_id,
+        "org_id": org,
         "name": name,
         "language": str(language).lower(),
         "creation_time": now,
@@ -1305,32 +1314,31 @@ async def v3_create_style_rule(request: Request):
 
 @router.get("/v3/style_rules")
 async def v3_list_style_rules(
+    principal: Principal | None = Depends(get_principal_optional),
     page: int = Query(default=0, ge=0),
     page_size: int = Query(default=25, ge=1, le=100),
     detailed: bool = Query(default=False),
 ):
-    """List all stored style rules with optional detailed mode."""
-    all_rules = list(_STYLE_RULES_STORE.values())
+    """List style rules visible to the caller's organization."""
+    org = _org_of(principal)
+    all_rules = [r for r in _STYLE_RULES_STORE.values() if r.get("org_id") == org]
     start = page * page_size
     sliced = all_rules[start : start + page_size]
     return [_format_style_rule(r, detailed=detailed) for r in sliced]
 
 
 @router.get("/v3/style_rules/{style_id}")
-async def v3_get_style_rule(style_id: str):
+async def v3_get_style_rule(style_id: str, principal: Principal | None = Depends(get_principal_optional)):
     """Retrieve details of a style rule."""
-    r = _STYLE_RULES_STORE.get(style_id)
-    if not r:
-        raise HTTPException(status_code=404, detail="Style rule not found")
+    r = _scoped(_STYLE_RULES_STORE, style_id, _org_of(principal))
     return _format_style_rule(r, detailed=True)
 
 
 @router.patch("/v3/style_rules/{style_id}")
-async def v3_update_style_rule(style_id: str, request: Request):
+async def v3_update_style_rule(style_id: str, request: Request,
+                               principal: Principal | None = Depends(get_principal_optional)):
     """Update style rule name or configured rules."""
-    r = _STYLE_RULES_STORE.get(style_id)
-    if not r:
-        raise HTTPException(status_code=404, detail="Style rule not found")
+    r = _scoped(_STYLE_RULES_STORE, style_id, _org_of(principal))
 
     payload = await _extract_request_data(request)
     if "name" in payload:
@@ -1344,11 +1352,10 @@ async def v3_update_style_rule(style_id: str, request: Request):
 
 @router.put("/v3/style_rules/{style_id}/configured_rules")
 @router.patch("/v3/style_rules/{style_id}/configured_rules")
-async def v3_update_style_rule_configured_rules(style_id: str, request: Request):
+async def v3_update_style_rule_configured_rules(style_id: str, request: Request,
+                                                principal: Principal | None = Depends(get_principal_optional)):
     """Update or replace configured rules for a style rule (used by desi-php)."""
-    r = _STYLE_RULES_STORE.get(style_id)
-    if not r:
-        raise HTTPException(status_code=404, detail="Style rule not found")
+    r = _scoped(_STYLE_RULES_STORE, style_id, _org_of(principal))
 
     payload = await _extract_request_data(request)
     rules = payload.get("configured_rules", payload)
@@ -1361,21 +1368,20 @@ async def v3_update_style_rule_configured_rules(style_id: str, request: Request)
 
 
 @router.delete("/v3/style_rules/{style_id}", status_code=204)
-async def v3_delete_style_rule(style_id: str):
+async def v3_delete_style_rule(style_id: str,
+                               principal: Principal | None = Depends(get_principal_optional)):
     """Delete a style rule."""
-    if style_id not in _STYLE_RULES_STORE:
-        raise HTTPException(status_code=404, detail="Style rule not found")
+    _scoped(_STYLE_RULES_STORE, style_id, _org_of(principal))
     del _STYLE_RULES_STORE[style_id]
     return Response(status_code=204)
 
 
 # Custom Instructions within Style Rules
 @router.post("/v3/style_rules/{style_id}/custom_instructions")
-async def v3_create_custom_instruction(style_id: str, request: Request):
+async def v3_create_custom_instruction(style_id: str, request: Request,
+                                       principal: Principal | None = Depends(get_principal_optional)):
     """Create a custom instruction within a style rule."""
-    r = _STYLE_RULES_STORE.get(style_id)
-    if not r:
-        raise HTTPException(status_code=404, detail="Style rule not found")
+    r = _scoped(_STYLE_RULES_STORE, style_id, _org_of(principal))
 
     payload = await _extract_request_data(request)
     label = payload.get("label", "")
@@ -1389,11 +1395,10 @@ async def v3_create_custom_instruction(style_id: str, request: Request):
 
 
 @router.get("/v3/style_rules/{style_id}/custom_instructions/{instruction_id}")
-async def v3_get_custom_instruction(style_id: str, instruction_id: str):
+async def v3_get_custom_instruction(style_id: str, instruction_id: str,
+                                    principal: Principal | None = Depends(get_principal_optional)):
     """Get a custom instruction from a style rule."""
-    r = _STYLE_RULES_STORE.get(style_id)
-    if not r:
-        raise HTTPException(status_code=404, detail="Style rule not found")
+    r = _scoped(_STYLE_RULES_STORE, style_id, _org_of(principal))
     for instr in r.get("custom_instructions", []):
         if instr["id"] == instruction_id:
             return instr
@@ -1402,11 +1407,10 @@ async def v3_get_custom_instruction(style_id: str, instruction_id: str):
 
 @router.put("/v3/style_rules/{style_id}/custom_instructions/{instruction_id}")
 @router.patch("/v3/style_rules/{style_id}/custom_instructions/{instruction_id}")
-async def v3_update_custom_instruction(style_id: str, instruction_id: str, request: Request):
+async def v3_update_custom_instruction(style_id: str, instruction_id: str, request: Request,
+                                       principal: Principal | None = Depends(get_principal_optional)):
     """Update a custom instruction in a style rule."""
-    r = _STYLE_RULES_STORE.get(style_id)
-    if not r:
-        raise HTTPException(status_code=404, detail="Style rule not found")
+    r = _scoped(_STYLE_RULES_STORE, style_id, _org_of(principal))
     payload = await _extract_request_data(request)
     for instr in r.get("custom_instructions", []):
         if instr["id"] == instruction_id:
@@ -1420,11 +1424,10 @@ async def v3_update_custom_instruction(style_id: str, instruction_id: str, reque
 
 
 @router.delete("/v3/style_rules/{style_id}/custom_instructions/{instruction_id}", status_code=204)
-async def v3_delete_custom_instruction(style_id: str, instruction_id: str):
+async def v3_delete_custom_instruction(style_id: str, instruction_id: str,
+                                       principal: Principal | None = Depends(get_principal_optional)):
     """Delete a custom instruction from a style rule."""
-    r = _STYLE_RULES_STORE.get(style_id)
-    if not r:
-        raise HTTPException(status_code=404, detail="Style rule not found")
+    r = _scoped(_STYLE_RULES_STORE, style_id, _org_of(principal))
     r["custom_instructions"] = [i for i in r.get("custom_instructions", []) if i["id"] != instruction_id]
     r["updated_time"] = utcnow().isoformat()
     return Response(status_code=204)
@@ -1442,9 +1445,11 @@ _TM_JOBS_STORE: dict[str, dict[str, Any]] = {}
 async def v3_list_translation_memories(
     page: int = Query(default=0, ge=0),
     page_size: int = Query(default=25, ge=1, le=100),
+    principal: Principal | None = Depends(get_principal_optional),
 ):
     """List stored translation memories."""
-    tms = list(_TM_STORE.values())
+    org = _org_of(principal)
+    tms = [tm for tm in _TM_STORE.values() if tm.get("org_id") == org]
     start = page * page_size
     sliced = tms[start : start + page_size]
     return [
@@ -1462,11 +1467,10 @@ async def v3_list_translation_memories(
 
 
 @router.get("/v3/translation_memories/{tm_id}")
-async def v3_get_translation_memory(tm_id: str):
+async def v3_get_translation_memory(tm_id: str,
+                                    principal: Principal | None = Depends(get_principal_optional)):
     """Retrieve details for a specific translation memory."""
-    tm = _TM_STORE.get(tm_id)
-    if not tm:
-        raise HTTPException(status_code=404, detail="Translation memory not found")
+    tm = _scoped(_TM_STORE, tm_id, _org_of(principal))
     return {
         "translation_memory_id": tm["translation_memory_id"],
         "name": tm["name"],
@@ -1479,10 +1483,10 @@ async def v3_get_translation_memory(tm_id: str):
 
 
 @router.delete("/v3/translation_memories/{tm_id}", status_code=204)
-async def v3_delete_translation_memory(tm_id: str):
+async def v3_delete_translation_memory(tm_id: str,
+                                       principal: Principal | None = Depends(get_principal_optional)):
     """Delete a translation memory."""
-    if tm_id not in _TM_STORE:
-        raise HTTPException(status_code=404, detail="Translation memory not found")
+    _scoped(_TM_STORE, tm_id, _org_of(principal))
     del _TM_STORE[tm_id]
     return Response(status_code=204)
 
@@ -1494,11 +1498,10 @@ async def v3_list_translation_memory_segments(
     page_cursor: str | None = Query(default=None),
     filter_text: str | None = Query(default=None),
     filter_case_sensitive: bool = Query(default=False),
+    principal: Principal | None = Depends(get_principal_optional),
 ):
     """List segments of a translation memory."""
-    tm = _TM_STORE.get(tm_id)
-    if not tm:
-        raise HTTPException(status_code=404, detail="Translation memory not found")
+    tm = _scoped(_TM_STORE, tm_id, _org_of(principal))
 
     segments = tm.get("segments", [])
     if filter_text:
@@ -1526,12 +1529,14 @@ async def v3_list_translation_memory_segments(
 
 
 @router.post("/v3/translation_memories/import")
-async def v3_create_translation_memory_import(request: Request):
+async def v3_create_translation_memory_import(request: Request,
+                                              principal: Principal | None = Depends(get_principal_optional)):
     """Create an import job for a TMX translation memory file."""
     payload = await _extract_request_data(request)
     file_name = payload.get("file_name", "memory.tmx")
     display_name = payload.get("display_name") or file_name
     job_id = str(uuid.uuid4())
+    org = _org_of(principal)
 
     host = request.headers.get("host", "127.0.0.1:8088")
     scheme = request.url.scheme
@@ -1539,6 +1544,7 @@ async def v3_create_translation_memory_import(request: Request):
 
     job = {
         "job_id": job_id,
+        "org_id": org,
         "operation": "import",
         "status": "awaiting_input",
         "display_name": display_name,
@@ -1557,11 +1563,10 @@ async def v3_create_translation_memory_import(request: Request):
 
 
 @router.put("/v3/translation_memories/upload/{job_id}")
-async def v3_upload_translation_memory_file(job_id: str, request: Request):
+async def v3_upload_translation_memory_file(job_id: str, request: Request,
+                                            principal: Principal | None = Depends(get_principal_optional)):
     """Receive uploaded TMX file data for an import job and complete processing."""
-    job = _TM_JOBS_STORE.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+    job = _scoped(_TM_JOBS_STORE, job_id, _org_of(principal))
 
     content = await request.body()
     tm_id = str(uuid.uuid4())
@@ -1583,6 +1588,7 @@ async def v3_upload_translation_memory_file(job_id: str, request: Request):
 
     record = {
         "translation_memory_id": tm_id,
+        "org_id": job.get("org_id"),
         "name": job.get("display_name", "Imported TM"),
         "source_language": "en",
         "target_languages": ["de"],
@@ -1610,12 +1616,15 @@ async def v3_upload_translation_memory_file(job_id: str, request: Request):
 
 
 @router.post("/v3/translation_memories/export")
-async def v3_create_translation_memory_export(request: Request):
+async def v3_create_translation_memory_export(request: Request,
+                                              principal: Principal | None = Depends(get_principal_optional)):
     """Create an export job for a translation memory."""
     payload = await _extract_request_data(request)
+    org = _org_of(principal)
     tm_id = payload.get("translation_memory_id")
-    if not tm_id or tm_id not in _TM_STORE:
+    if not tm_id:
         raise HTTPException(status_code=404, detail="Translation memory not found")
+    _scoped(_TM_STORE, str(tm_id), org)
 
     job_id = str(uuid.uuid4())
     host = request.headers.get("host", "127.0.0.1:8088")
@@ -1624,6 +1633,7 @@ async def v3_create_translation_memory_export(request: Request):
 
     job = {
         "job_id": job_id,
+        "org_id": org,
         "operation": "export",
         "status": "completed",
         "translation_memory_id": tm_id,
@@ -1648,19 +1658,19 @@ async def v3_create_translation_memory_export(request: Request):
 
 
 @router.get("/v3/translation_memories/jobs/{job_id}")
-async def v3_get_translation_memory_job(job_id: str):
+async def v3_get_translation_memory_job(job_id: str,
+                                        principal: Principal | None = Depends(get_principal_optional)):
     """Check status of a translation memory import or export job."""
-    job = _TM_JOBS_STORE.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+    job = _scoped(_TM_JOBS_STORE, job_id, _org_of(principal))
     return job
 
 
 @router.get("/v3/translation_memories/download/{job_id}")
-async def v3_download_translation_memory_export(job_id: str):
+async def v3_download_translation_memory_export(job_id: str,
+                                                principal: Principal | None = Depends(get_principal_optional)):
     """Download exported TMX file."""
-    job = _TM_JOBS_STORE.get(job_id)
-    if not job or job.get("operation") != "export":
+    job = _scoped(_TM_JOBS_STORE, job_id, _org_of(principal))
+    if job.get("operation") != "export":
         raise HTTPException(status_code=404, detail="Export job not found")
 
     tm_id = str(job.get("translation_memory_id") or "")
@@ -1714,7 +1724,7 @@ async def v2_upload_document(
     doc_id = str(uuid.uuid4())
     doc_key = uuid.uuid4().hex + uuid.uuid4().hex
     content = await file.read()
-    org = _caller_org(principal)
+    org = _org_of(principal)
 
     _DOCUMENTS_STORE[doc_id] = {
         "document_id": doc_id,
@@ -1743,8 +1753,8 @@ async def v2_check_document_status(
     principal: Principal | None = Depends(get_principal_optional),
 ):
     """Check the status of a document translation job."""
+    org = _org_of(principal)
     doc = _DOCUMENTS_STORE.get(document_id)
-    org = _caller_org(principal)
     if not doc or doc.get("org_id") != org:
         raise HTTPException(status_code=404, detail="Document not found")
     return {
@@ -1763,8 +1773,8 @@ async def v2_download_document_result(
     principal: Principal | None = Depends(get_principal_optional),
 ):
     """Download the translated document file."""
+    org = _org_of(principal)
     doc = _DOCUMENTS_STORE.get(document_id)
-    org = _caller_org(principal)
     if not doc or doc.get("org_id") != org:
         raise HTTPException(status_code=404, detail="Document not found")
     filename = doc["filename"]
@@ -1796,21 +1806,11 @@ async def v3_voice_request_session(
     principal: Principal | None = Depends(get_principal_optional),
 ):
     """Request a real-time voice translation session and receive WebSocket streaming URL."""
-    org_id = principal.org_id if principal else None
+    # Phase 3: no implicit org assignment — an unauthenticated caller must never be
+    # attached to another org's tenant (previously: first active org in the DB).
+    _org_of(principal)  # 401 for anonymous callers
+    org_id = principal.org_id
     user_id = principal.user_id if principal else None
-
-    if not org_id:
-        res_org = await db.execute(select(M.Organization).where(M.Organization.status == "active"))
-        default_org = res_org.scalars().first()
-        if default_org:
-            org_id = default_org.id
-        elif not settings.is_production:
-            default_org = M.Organization(name="Default Org", slug="default-org", status="active")
-            db.add(default_org)
-            await db.flush()
-            org_id = default_org.id
-        else:
-            raise AuthenticationError("Authentication required to start a voice session.")
 
     room_name = f"voice-{uuid.uuid4().hex[:10]}"
     meeting = M.Meeting(
@@ -1865,15 +1865,35 @@ async def v3_voice_reconnect_session(
     principal: Principal | None = Depends(get_principal_optional),
 ):
     """Reconnect to an interrupted voice translation session."""
-    meeting_uuid = uuid.UUID(session_id)
+    org_id = _org_of(principal)
+
+    try:
+        meeting_uuid = uuid.UUID(session_id)
+    except (ValueError, TypeError, AttributeError):
+        return {"error": "session_not_found"}
+
     meeting = await db.get(M.Meeting, meeting_uuid)
     if not meeting:
         return {"error": "session_not_found"}
 
+    # Phase 3: only the owning org (or a participant of this session) may reconnect.
+    if str(meeting.org_id) != org_id:
+        is_participant = False
+        if principal and principal.user_id:
+            is_participant = bool((await db.execute(
+                select(M.Participant.id).where(
+                    M.Participant.meeting_id == meeting.id,
+                    M.Participant.user_id == principal.user_id,
+                )
+            )).first())
+        if not is_participant:
+            return {"error": "session_not_found"}
+
     participants = (await db.execute(
         select(M.Participant).where(M.Participant.meeting_id == meeting.id)
     )).scalars().all()
-    p_id = str(participants[0].id) if participants else str(uuid.uuid4())
+    own = next((p for p in participants if principal and p.user_id == principal.user_id), None)
+    p_id = str(own.id) if own else (str(participants[0].id) if participants else str(uuid.uuid4()))
 
     ticket = create_session_ticket(meeting.room_name, p_id)
     host = request.headers.get("host", "127.0.0.1:8088")
@@ -1892,18 +1912,22 @@ _SPOKEN_TERMS_STORE: dict[str, Any] = {}
 
 
 @router.get("/v3/spoken-terms")
-async def list_spoken_terms():
+async def list_spoken_terms(principal: Principal | None = Depends(get_principal_optional)):
     """Retrieve all Spoken Terms collections."""
-    return list(_SPOKEN_TERMS_STORE.values())
+    org = _org_of(principal)
+    return [c for c in _SPOKEN_TERMS_STORE.values() if c.get("org_id") == org]
 
 
 @router.post("/v3/spoken-terms")
-async def create_spoken_terms(request: Request):
+async def create_spoken_terms(request: Request,
+                              principal: Principal | None = Depends(get_principal_optional)):
     """Create a new Spoken Terms collection."""
+    org = _org_of(principal)
     body = await _extract_request_data(request)
     coll_id = str(uuid.uuid4())
     record = {
         "spoken_terms_id": coll_id,
+        "org_id": org,
         "name": body.get("name", "Default Vocabulary"),
         "created_at": utcnow().isoformat(),
         "term_lists": body.get("term_lists", []),
@@ -1922,6 +1946,7 @@ async def v2_get_custom_tag_analytics(
     end_date: str = Query(default="2026-12-31T23:59:59Z"),
     aggregate_by: str = Query(default="period"),
     page: int = Query(default=1),
+    principal: Principal = Depends(_require_platform_admin),
 ):
     """Retrieve usage analytics broken down by custom tags."""
     return {
@@ -1957,7 +1982,7 @@ async def v2_get_custom_tag_analytics(
 
 
 @router.get("/v2/admin/analytics/usage")
-async def v2_get_admin_usage_analytics():
+async def v2_get_admin_usage_analytics(principal: Principal = Depends(_require_platform_admin)):
     """Retrieve global usage analytics."""
     return {
         "usage_report": {

@@ -25,20 +25,20 @@ export class ApiError extends Error {
 }
 
 let accessToken: string | null = null;
-let refreshToken: string | null = null;
 let onUnauthorized: () => void = () => { };
 let refreshInFlight: Promise<boolean> | null = null;
 let lastRefreshSuccess = 0;
 const REFRESH_DEDUPE_MS = 3000;
 
-// Eagerly restore tokens from localStorage at module load time
-if (typeof localStorage !== "undefined") {
-  try {
-    accessToken = localStorage.getItem("gt.access");
-    refreshToken = localStorage.getItem("gt.refresh");
-  } catch {
-    /* ignore */
-  }
+// Phase 1: the access token lives only in this module's memory (never persisted),
+// and the refresh token lives only in an HttpOnly cookie the browser sends. No
+// credential ever touches localStorage.
+
+// Read the JS-readable double-submit CSRF cookie set by the backend on login.
+function getCsrfToken(): string | null {
+  if (typeof document === "undefined") return null;
+  const match = document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/);
+  return match ? decodeURIComponent(match[1]) : null;
 }
 
 export const authChannel = typeof window !== "undefined" && typeof BroadcastChannel !== "undefined"
@@ -49,7 +49,6 @@ if (authChannel) {
   authChannel.onmessage = (event) => {
     if (event.data?.type === "LOGOUT") {
       accessToken = null;
-      refreshToken = null;
       onUnauthorized();
     } else if (event.data?.type === "TOKEN_REFRESHED" && event.data?.accessToken) {
       accessToken = event.data.accessToken;
@@ -62,9 +61,8 @@ if (authChannel) {
   };
 }
 
-export function setTokens(access: string | null, refresh: string | null) {
+export function setTokens(access: string | null) {
   accessToken = access;
-  refreshToken = refresh;
   if (access && authChannel) {
     authChannel.postMessage({ type: "TOKEN_REFRESHED", accessToken: access, timestamp: Date.now() });
   }
@@ -72,7 +70,6 @@ export function setTokens(access: string | null, refresh: string | null) {
 
 export function broadcastLogout() {
   accessToken = null;
-  refreshToken = null;
   if (authChannel) {
     authChannel.postMessage({ type: "LOGOUT" });
   }
@@ -110,12 +107,13 @@ async function doRefreshRequest(): Promise<boolean> {
   }
 
   try {
-    const bodyPayload = refreshToken ? { refresh_token: refreshToken } : {};
+    // Cookie-only: the HttpOnly refresh cookie authenticates this call; we never
+    // hold or send a refresh token from JS. /auth/refresh is CSRF-exempt server-side.
     const r = await fetch(`${BASE}/api/v1/auth/refresh`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      credentials: "include", // transport HttpOnly SameSite cookie
-      body: JSON.stringify(bodyPayload),
+      credentials: "include", // transport HttpOnly SameSite refresh cookie
+      body: "{}",
     });
     if (!r.ok) {
       if (r.status === 401) {
@@ -124,10 +122,9 @@ async function doRefreshRequest(): Promise<boolean> {
       return false;
     }
     const data = await r.json();
+    // The server rotates the cookie (Set-Cookie) and blanks refresh in the body;
+    // only the access token is read back, into memory.
     accessToken = data.access_token || null;
-    if (data.refresh_token) {
-      refreshToken = data.refresh_token;
-    }
     lastRefreshSuccess = Date.now();
     if (accessToken && authChannel) {
       authChannel.postMessage({
@@ -164,26 +161,6 @@ export async function tryRefresh(): Promise<boolean> {
   return refreshInFlight;
 }
 
-export function persistTokens() {
-  try {
-    if (accessToken) localStorage.setItem("gt.access", accessToken);
-    else localStorage.removeItem("gt.access");
-    if (refreshToken) localStorage.setItem("gt.refresh", refreshToken);
-    else localStorage.removeItem("gt.refresh");
-  } catch {
-    /* private mode / localStorage disabled */
-  }
-}
-
-export function loadPersistedTokens() {
-  try {
-    accessToken = localStorage.getItem("gt.access");
-    refreshToken = localStorage.getItem("gt.refresh");
-  } catch {
-    /* ignore */
-  }
-}
-
 export interface RequestOptions extends Omit<RequestInit, "body"> {
   body?: unknown;
   form?: FormData;
@@ -192,9 +169,6 @@ export interface RequestOptions extends Omit<RequestInit, "body"> {
 }
 
 export async function api<T = any>(path: string, opts: RequestOptions = {}): Promise<T> {
-  if (!accessToken && typeof localStorage !== "undefined") {
-    loadPersistedTokens();
-  }
   const headers = new Headers(opts.headers);
   if (accessToken && !headers.has("Authorization"))
     headers.set("Authorization", `Bearer ${accessToken}`);
@@ -203,6 +177,14 @@ export async function api<T = any>(path: string, opts: RequestOptions = {}): Pro
 
   const timeoutMs = opts.timeoutMs ?? (opts.form ? 60000 : 15000);
   const method = opts.method ?? (opts.body !== undefined || opts.form ? "POST" : "GET");
+  // Double-submit CSRF: state-changing requests carry the header matching the
+  // csrf_token cookie. Harmless when an Authorization header is present (the server
+  // exempts bearer-authed calls), required for any cookie-only mutation.
+  const safeMethod = method === "GET" || method === "HEAD" || method === "OPTIONS";
+  if (!safeMethod && !headers.has("X-TalkFlow-CSRF")) {
+    const csrf = getCsrfToken();
+    if (csrf) headers.set("X-TalkFlow-CSRF", csrf);
+  }
   const doFetch = () => {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);

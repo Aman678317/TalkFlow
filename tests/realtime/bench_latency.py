@@ -102,7 +102,7 @@ async def main() -> int:
             "audio_mode": "captions_only"})).json()
         jb = (await c.post(f"/api/v1/meetings/{m['id']}/join", headers=h, json={
             "display_name": "Listener", "speak_lang": "en", "hear_lang": args.hear,
-            "audio_mode": "translated", "guest_key": "listener"})).json()
+            "audio_mode": "translated", "as_guest": True})).json()
 
     traces: list[dict] = []
     ws_url = args.base.replace("http", "ws") + jb["rt_url"]

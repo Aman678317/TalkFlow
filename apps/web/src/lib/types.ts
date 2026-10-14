@@ -45,7 +45,6 @@ export interface Meeting {
   title: string;
   status: string;
   room_name: string;
-  join_token: string;
   created_at: string;
   started_at?: string | null;
   ended_at?: string | null;
@@ -61,7 +60,10 @@ export interface JoinMeetingRequest {
   speak_lang: string;
   hear_lang: string;
   audio_mode?: AudioMode;
-  guest_key?: string;
+  /** server-issued seat continuation key ("" = new seat) */
+  session_key?: string;
+  /** open an additional unbound guest seat (logged-in user, second person) */
+  as_guest?: boolean;
 }
 
 export interface JoinMeetingResponse {
