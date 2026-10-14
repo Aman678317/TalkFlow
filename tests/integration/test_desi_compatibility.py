@@ -6,6 +6,18 @@ expected by the official Desi Python SDK (desi-python v1.32.0).
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _opt_in_wildcard_test_key():
+    """The wildcard `test-key-…:fx` escape hatch is OFF by default in every mode.
+    This Desi-conformance suite deliberately exercises it, so it opts in explicitly —
+    mutating the exact settings object deps.py reads at request time — then restores."""
+    import app.deps as _deps
+    prev = _deps.settings.allow_test_auth
+    _deps.settings.allow_test_auth = True
+    yield
+    _deps.settings.allow_test_auth = prev
+
+
 @pytest.fixture(scope="module")
 def client():
     from app.config import get_settings

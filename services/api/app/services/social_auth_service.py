@@ -302,7 +302,10 @@ class SocialAuthService:
         )
 
     def _check_test_token(self, provider: str, token_str: str) -> VerifiedProviderIdentity | None:
-        if settings.is_production:
+        # Mock/unsigned social tokens are an opt-in escape hatch only (Phase 1).
+        # Off in every mode unless ALLOW_TEST_AUTH=true, so a forged social token can
+        # never reach the auto-provisioning path in a real deployment.
+        if not settings.allow_test_auth:
             return None
 
         if "." in token_str and len(token_str.split(".")) == 3:

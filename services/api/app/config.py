@@ -210,6 +210,14 @@ class Settings(BaseSettings):
     secure_cookies: bool = False
     csrf_enabled: bool = True
 
+    # Phase 1 (docs/PRODUCTION_ROADMAP.md): dev auth shortcuts must fail CLOSED in
+    # every mode. These are explicit, opt-in-only escape hatches for local dev and
+    # CI — NOT tied to app_env. Off by default everywhere, including development, so
+    # no ambient backdoor exists and the production image can never reach them by
+    # accident. Enable deliberately: ALLOW_SEED=true, ALLOW_TEST_AUTH=true.
+    allow_seed: bool = False        # seed demo/admin users at startup
+    allow_test_auth: bool = False   # accept wildcard test keys / mock social tokens
+
     # --- retention (days; 0 = forever) ---
     retention_audio_days: int = 7
     retention_transcript_days: int = 365

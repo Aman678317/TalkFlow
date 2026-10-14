@@ -190,7 +190,7 @@ describe('UI components', () => {
     expect(screen.getByRole('button', { name: 'Do it' })).toBeTruthy();
   });
 
-  it('lets a user sign in with the demo account in one click', async () => {
+  it('signs in with real credentials and offers no demo/fake-session shortcut', async () => {
     mockLogin.mockResolvedValue(undefined);
     render(
       <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
@@ -198,8 +198,16 @@ describe('UI components', () => {
       </MemoryRouter>
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /use demo account/i }));
+    // Phase 1: the "Use demo account" backdoor is gone.
+    expect(screen.queryByRole('button', { name: /use demo account/i })).toBeNull();
 
-    expect(mockLogin).toHaveBeenCalledWith('demo@globaltalk.local', 'demo1234');
+    // Only a real email/password login path remains.
+    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'alice@example.com' } });
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'validpass123' } });
+    fireEvent.click(screen.getByRole('button', { name: /sign in/i }));
+
+    await vi.waitFor(() => {
+      expect(mockLogin).toHaveBeenCalledWith('alice@example.com', 'validpass123');
+    });
   });
 });

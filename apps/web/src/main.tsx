@@ -40,61 +40,15 @@ const queryClient = new QueryClient({
 });
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
-  const { user, initialized, login } = useAuth();
-  const [autoLoggingIn, setAutoLoggingIn] = React.useState(false);
+  const { user, initialized } = useAuth();
   const loc = useLocation();
 
-  React.useEffect(() => {
-    // If not authenticated and not explicitly logged out, seamlessly authenticate as demo user
-    // so visitors can use the tools (Translate, Write, Voice, Dashboard, etc.) without bouncing to /login
-    if (initialized && !user && typeof window !== "undefined") {
-      const explicitlyLoggedOut = localStorage.getItem("gt.logged_out") === "true";
-      if (!explicitlyLoggedOut && !autoLoggingIn) {
-        setAutoLoggingIn(true);
-        login("demo@globaltalk.local", "demo1234")
-          .catch((err) => {
-            console.warn("Auto demo login error, using guest workspace session:", err);
-            const fallbackUser = {
-              id: "guest-user",
-              email: "demo@globaltalk.local",
-              name: "Demo Guest",
-              full_name: "Demo Guest",
-              is_platform_admin: false,
-              email_verified: true,
-              default_language: "en",
-            };
-            const fallbackOrg = {
-              id: "guest-org",
-              name: "Demo Workspace",
-              slug: "demo-workspace",
-              plan: "pro",
-            };
-            try {
-              localStorage.setItem("gt.local_user", JSON.stringify(fallbackUser));
-              localStorage.setItem("gt.local_org", JSON.stringify(fallbackOrg));
-            } catch {}
-            useAuth.setState({
-              user: fallbackUser,
-              org: fallbackOrg,
-              organizations: [{ org: fallbackOrg, role: "owner" }],
-              role: "owner",
-              initialized: true,
-              status: "authed",
-            });
-          })
-          .finally(() => {
-            setAutoLoggingIn(false);
-          });
-      }
-    }
-  }, [initialized, user, autoLoggingIn, login]);
-
-  if (!initialized || autoLoggingIn) {
+  if (!initialized) {
     return (
       <div className="flex h-screen items-center justify-center bg-slate-50 text-slate-600">
         <div className="flex flex-col items-center gap-3">
           <div className="h-8 w-8 animate-spin rounded-full border-2 border-dl-blue border-t-transparent" />
-          <div className="text-sm font-medium">Entering GlobalTalk Workspace…</div>
+          <div className="text-sm font-medium">Loading your workspace…</div>
         </div>
       </div>
     );
@@ -104,17 +58,12 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
 }
 
 function RootGate() {
-  // Visitors flow straight into the workspace (RequireAuth demo auto-login →
-  // /dashboard). The landing page is only shown after an explicit sign-out,
-  // so "stay logged in" never bounces a returning user to a marketing page.
-  let loggedOut = false;
-  try {
-    loggedOut = localStorage.getItem("gt.logged_out") === "true";
-  } catch {
-    /* storage unavailable */
-  }
-  if (loggedOut) return <Landing />;
-  return <Navigate to="/dashboard" replace />;
+  // Real sessions only: an authenticated visitor (cookie bootstrap resolves to
+  // authed) goes straight to the workspace; everyone else sees the landing page.
+  // No demo auto-login and no client-side fake session.
+  const { user, initialized } = useAuth();
+  if (initialized && user) return <Navigate to="/dashboard" replace />;
+  return <Landing />;
 }
 
 export default function App() {
