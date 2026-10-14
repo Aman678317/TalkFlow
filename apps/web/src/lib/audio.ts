@@ -77,6 +77,13 @@ export interface MicCaptureOptions {
   echoCancellation?: boolean;
   noiseSuppression?: boolean;
   autoGainControl?: boolean;
+  /**
+   * The live input stopped producing a track — unplugged, taken by another
+   * app, or revoked. Nothing else notices: the worklet simply never fires
+   * again, so without this the user keeps talking into a dead microphone
+   * while the room still says "Connected".
+   */
+  onLost?: (reason: "ended" | "mute") => void;
 }
 
 export class MicCapture {
@@ -84,6 +91,7 @@ export class MicCapture {
   private stream: MediaStream | null = null;
   private node: AudioWorkletNode | null = null;
   private isClonedTrack = false;
+  private stopped = false;
 
   get mediaStream(): MediaStream | null {
     return this.stream;
@@ -111,7 +119,7 @@ export class MicCapture {
       audio: audioConstraints,
     });
     this.isClonedTrack = false;
-    await this.initPipeline(micStream, targetSampleRate, onFrame);
+    await this.initPipeline(micStream, targetSampleRate, onFrame, options?.onLost);
   }
 
   /**
@@ -120,18 +128,20 @@ export class MicCapture {
   async startFromTrack(
     track: MediaStreamTrack,
     targetSampleRate: number,
-    onFrame: (pcm16: ArrayBuffer) => void
+    onFrame: (pcm16: ArrayBuffer) => void,
+    onLost?: MicCaptureOptions["onLost"]
   ): Promise<void> {
     const cloned = track.clone();
     this.isClonedTrack = true;
     const stream = new MediaStream([cloned]);
-    await this.initPipeline(stream, targetSampleRate, onFrame);
+    await this.initPipeline(stream, targetSampleRate, onFrame, onLost);
   }
 
   private async initPipeline(
     stream: MediaStream,
     targetSampleRate: number,
-    onFrame: (pcm16: ArrayBuffer) => void
+    onFrame: (pcm16: ArrayBuffer) => void,
+    onLost?: MicCaptureOptions["onLost"]
   ): Promise<void> {
     this.stream = stream;
     this.ctx = new AudioContext();
@@ -164,9 +174,22 @@ export class MicCapture {
 
     const source = this.ctx.createMediaStreamSource(this.stream);
     source.connect(this.node);
+
+    const track = this.stream.getAudioTracks()[0];
+    if (track && onLost) {
+      // stop() also fires `ended`, so the guard keeps our own teardown — a
+      // device switch or a mute — from reporting a loss that we caused.
+      track.addEventListener("ended", () => {
+        if (!this.stopped) onLost("ended");
+      });
+      track.addEventListener("mute", () => {
+        if (!this.stopped) onLost("mute");
+      });
+    }
   }
 
   stop() {
+    this.stopped = true;
     this.node?.disconnect();
     if (this.stream) {
       this.stream.getTracks().forEach((t) => {

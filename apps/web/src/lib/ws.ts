@@ -30,6 +30,8 @@ export interface MeetingSocketOptions {
   onEvent: Listener;
   onBinary: BinListener;
   onStateChange: (state: SocketState) => void;
+  /** Round trip time from the last ping/pong exchange, in ms. */
+  onQuality?: (rttMs: number) => void;
 }
 
 export type SocketState = "connecting" | "joined" | "reconnecting" | "closed" | "error";
@@ -68,6 +70,8 @@ export function decodeBinaryFrame(buf: ArrayBuffer): BinaryFrame {
 }
 
 export class MeetingSocket {
+  /** No inbound frame for this long, on an OPEN socket, means the link died. */
+  static readonly LIVENESS_TIMEOUT_MS = 65_000;
   private ws: WebSocket | null = null;
   private opts: MeetingSocketOptions;
   private lastSequence = 0;
@@ -79,6 +83,8 @@ export class MeetingSocket {
   private connectStartedAt = 0;
   private closedByUser = false;
   private pingTimer: number | undefined;
+  /** When the last inbound frame arrived — the only proof the socket is alive. */
+  private lastServerContact = 0;
   /** utterance short-id → speaker participant id (from speech.started events) */
   readonly utteranceSpeakers = new Map<string, string>();
 
@@ -128,6 +134,7 @@ export class MeetingSocket {
     this.connectStartedAt = Date.now();
 
     ws.onopen = () => {
+      this.lastServerContact = Date.now();
       const p = this.opts.preferences;
       ws.send(
         JSON.stringify({
@@ -147,12 +154,23 @@ export class MeetingSocket {
     };
 
     ws.onmessage = (msg) => {
+      this.lastServerContact = Date.now();
       if (typeof msg.data !== "string") {
         const frame = decodeBinaryFrame(msg.data as ArrayBuffer);
         this.opts.onBinary(frame);
         return;
       }
       const evt = JSON.parse(msg.data) as RealtimeEvent;
+      if (evt.type === "pong") {
+        // The server echoes our own timestamp, so the round trip is measured
+        // against a single clock and needs no clock sync with the backend.
+        // This frame is hand-built in the ws router, so its payload is nested
+        // under `data` rather than merged into the envelope.
+        const sent = Number((evt.data as Record<string, unknown> | undefined)?.client_ts ?? evt.client_ts ?? 0);
+        if (Number.isFinite(sent) && sent > 0) {
+          this.opts.onQuality?.(Math.max(0, Date.now() - sent));
+        }
+      }
       if (typeof evt.sequence === "number" && evt.sequence > this.lastSequence) {
         this.lastSequence = evt.sequence;
       }
@@ -247,9 +265,16 @@ export class MeetingSocket {
   private startHeartbeat() {
     this.stopHeartbeat();
     this.pingTimer = window.setInterval(() => {
-      if (this.ws?.readyState === WebSocket.OPEN) {
-        this.ws.send(JSON.stringify({ version: 1, type: "ping", ts: Date.now() }));
+      if (this.ws?.readyState !== WebSocket.OPEN) return;
+      // A silent socket is the failure mode a readyState check cannot see: the
+      // connection stays OPEN while the network drops every frame, so the room
+      // would read "Connected" forever and the speaker's audio would go nowhere.
+      // Three missed ping cycles with no inbound traffic at all means it is gone.
+      if (Date.now() - this.lastServerContact > MeetingSocket.LIVENESS_TIMEOUT_MS) {
+        this.ws.close();
+        return;
       }
+      this.ws.send(JSON.stringify({ version: 1, type: "ping", ts: Date.now() }));
     }, 20_000);
   }
 
