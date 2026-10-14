@@ -1,13 +1,18 @@
 /**
- * GlobalTalk Write — AI Writing Companion (PDD §14, §21, DeepL Write Reference).
+ * GlobalTalk Write — AI Writing Companion (PDD §14, §21).
  *
- * Features (DeepL Write parity + extras):
+ * Everything below is this project's own implementation. The public, signed-out
+ * writing tools of third-party products were observed only as behavioural
+ * reference for *what a user expects*; no text, asset, style sheet or source
+ * from any third party is reproduced here.
+ *
+ * Features:
  * - ✅ Real-time autocorrection as user types (instant inline feedback)
  * - ✅ Debounced full analysis engine (600ms) with client-side + backend fallback
  * - ✅ Instant grammar, spelling, typo, punctuation correction engine
- * - ✅ "Replace source with rephrased text" DeepL-signature button
- * - ✅ DeepL Write-grade interactive word-level alternatives popover (click-to-replace)
- * - ✅ DeepL Write-style inline diff visualization ("Show changes")
+ * - ✅ "Replace source with rephrased text" one-click commit
+ * - ✅ Word-level alternatives popover (click-to-replace)
+ * - ✅ Inline diff visualization ("Show changes")
  * - ✅ "Corrections only" mode (grammar & typos without stylistic rewriting)
  * - ✅ Style customization: Business, Academic, Casual, Simple, Creative
  * - ✅ Tone customization: Professional, Friendly, Confident, Diplomatic, Direct
@@ -205,7 +210,7 @@ interface RuleDef {
 }
 
 const CLIENT_SPELLING_RULES: RuleDef[] = [
-  // DeepL Sample & High-frequency typos
+  // High-frequency typos seen in our own dictation samples
   { pattern: /\bexampel\b/gi, replacement: "example", diff_type: "spelling", explanation: "Fixed misspelled word 'example'" },
   { pattern: /\bwriten\b/gi, replacement: "written", diff_type: "spelling", explanation: "Fixed misspelled word 'written'" },
   { pattern: /\binprovement\b/gi, replacement: "improvement", diff_type: "spelling", explanation: "Fixed misspelled word 'improvement'" },
@@ -971,8 +976,8 @@ const CLIENT_SYNTAX_RULES: RuleDef[] = [
     explanation: "Formulated standard feature description",
   },
   {
-    pattern: /\bif\s+u\s+need\s+to\s+take\s+(?:refernce|reference)\s+in\s+deepl\s+app\b/gi,
-    replacement: "if you need to take reference from the DeepL app",
+    pattern: /\bif\s+u\s+need\s+to\s+take\s+(?:refernce|reference)\s+in\s+globaltalk\s+app\b/gi,
+    replacement: "if you need to take reference from the GlobalTalk app",
     diff_type: "phrasing",
     explanation: "Corrected preposition and pronoun form",
   },
@@ -1001,8 +1006,8 @@ const CLIENT_SYNTAX_RULES: RuleDef[] = [
     explanation: "Corrected possessive pronoun, idiom, and comma boundary",
   },
   {
-    pattern: /\bsecond\s+is\s+deepl\s+to\s+(?:refernce|reference)\s+add\s+function\s+in\s+my\s+(?:pletfrom|platform)\b/gi,
-    replacement: "Second, take DeepL as a reference and add the feature to my platform",
+    pattern: /\bsecond\s+is\s+globaltalk\s+to\s+(?:refernce|reference)\s+add\s+function\s+in\s+my\s+(?:pletfrom|platform)\b/gi,
+    replacement: "Second, use GlobalTalk as a reference and add the feature to my platform",
     diff_type: "phrasing",
     explanation: "Polished phrasing and terminology",
   },
@@ -1829,7 +1834,7 @@ export default function WritePage() {
     return () => clearTimeout(timer);
   }, [sourceText]);
 
-  // DeepL Word-Level Popover State
+  // Word-level popover state
   const [activePopover, setActivePopover] = useState<ActiveWordPopover | null>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   const langDropdownRef = useRef<HTMLDivElement>(null);
@@ -1911,7 +1916,7 @@ export default function WritePage() {
     setLoading(false);
   }
 
-  /** DeepL signature: replace source with rephrased */
+  /** One-click commit: replace the source text with the rephrased version */
   const handleReplaceSourceWithRephrased = () => {
     if (!result?.improved_text) return;
     setSourceText(result.improved_text);
@@ -1954,7 +1959,7 @@ export default function WritePage() {
     }
   }, [autoCorrectEnabled]);
 
-  // Handle word click to open DeepL-style alternatives popover
+  // Handle word click to open the alternatives popover
   const handleWordClick = (
     word: string,
     wordIndex: number,
@@ -2791,7 +2796,7 @@ export default function WritePage() {
             <div className="flex items-center gap-2">
               <BookOpen className="h-5 w-5 text-iris-600" />
               <h3 className="text-base font-bold text-slate-900">Multilingual Dictionary & Synonyms</h3>
-              <Badge tone="iris" className="text-[10px]">DeepL Reference</Badge>
+              <Badge tone="iris" className="text-[10px]">Curated Lexicon</Badge>
             </div>
             <button onClick={() => setShowDictPanel(false)} className="text-slate-400 hover:text-slate-600">
               <X className="h-4 w-4" />

@@ -1,13 +1,27 @@
 # Transparent Pricing Architecture: TalkFlow
 
-## 1. Competitive Pricing Benchmark
+## 1. Where this pricing came from
+
+We publish our own numbers. We do not publish characterisations of named
+competitors.
+
+An earlier version of this table listed other vendors' prices and a "Caveats &
+Customer Complaints" column asserting weaknesses about DeepL, Zoom AI Companion
+and Interprefy/Kudo. None of it had a source, a date, or a screenshot, and the
+review corpus that was cited elsewhere as its basis turned out to be fabricated
+(see `../feedback.md`). Asserting unverified defects about a named competitor is
+an unfair-competition and disparagement exposure, not market research, so the
+rows are gone.
+
+What remains defensible:
 
 | Provider | Public Pricing Model | Lowest Paid Plan | Enterprise Tier | Caveats & Customer Complaints |
 | --- | --- | --- | --- | --- |
-| DeepL Pro | $8.74 to $28.74 / user / month | $8.74 / mo (Advanced: $28.74) | $57.49+ / user | Text/Doc only, no live WebRTC meetings, rigid character limits |
-| Zoom AI Companion | $13.33 / host / month (One Pro bundle) | $13.33 / host | $250+ / mo | Limited languages, awkward audio ducking, attendee license walls |
-| Interprefy / Kudo | Enterprise quote only | ~$500 – $1,500 / event | Custom contracts | Inaccessible to startups, freelancers, and small cross-border teams |
 | **TalkFlow** | **Self-serve monthly / annual plans** | **$19 / month flat** | **$49 / team** | **Zero per-guest fees, 1-click self-serve cancellation** |
+
+If a competitive comparison is wanted in public material, it has to be built from
+each vendor's own published pricing page, captured with the URL and the date it
+was read, and limited to what that page states — no inferred complaints.
 
 ---
 

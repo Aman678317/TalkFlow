@@ -117,8 +117,10 @@ MT is the **least** of the deployment worries. The first provider in the chain
 is `neural_online`, which proxies MyMemory/Google Web and works without any
 API key. It should "just work" on Render's free plan.
 
-If you want DeepL quality, set `DEEPL_API_KEY` in the Render env and the
-router auto-promotes `deepl` ahead of `neural_online`.
+Setting `DEEPL_API_KEY` adds the DeepL text-translation API as a managed
+provider: the router auto-promotes `deepl` ahead of `neural_online` for the
+pairs DeepL supports. `DEEPL_API_KEY` is your own authorized key; nothing is
+sent anywhere without it, and no DeepL content is redistributed with this repo.
 
 CPU memory pressure matters for Argos (`argos-translate`) — only enable if
 you have ≥2 GiB. Otherwise `GT_ENABLE_ARGOS=false` keeps the chain short.

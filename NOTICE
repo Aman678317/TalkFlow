@@ -1,0 +1,74 @@
+NOTICE
+GlobalTalk AI / TalkFlow
+Copyright 2026 GlobalTalk AI Authors and Contributors
+
+This product includes code and model assets from third parties. Their licenses
+require attribution and, for Apache-2.0, that this notice identify what is
+licensed under it. The machine-readable record of every external component —
+version, install method, license, review status and whether it is active in a
+given deployment — is `third_party_components.yaml` at the root of this
+repository; `docs/THIRD_PARTY_COMPONENTS.md` is the human-readable review.
+That manifest is authoritative; this file names the obligations, not new claims.
+
+Third-party components, as recorded in the manifest
+--------------------------------------------------
+Apache-2.0 (attribution required; no trademark use implied)
+  - livekit-server  https://github.com/livekit/livekit
+  - livekit-agents  https://github.com/livekit/agents
+  - kokoro-tts      https://github.com/hexgrad/kokoro
+  - vllm            https://github.com/vllm-project/vllm
+
+MIT
+  - faster-whisper      https://github.com/SYSTRAN/faster-whisper
+  - argos-translate     https://github.com/argosopentech/argos-translate
+  - piper               https://github.com/rhasspy/piper
+  - docling             https://github.com/docling-project/docling
+
+PostgreSQL License
+  - pgvector  https://github.com/pgvector/pgvector
+
+BSD-family
+  - langdetect, webrtcvad and similar small dependencies: see the per-package
+    LICENSE installed with each, recorded in the manifest.
+
+Weights and voices are separate works
+-------------------------------------
+Code licenses above do not cover model weights or voice models. They are
+downloaded at bootstrap into MODEL_CACHE_PATH and are never committed to this
+repository. Each carries its own terms, and the manifest records them per
+component — including the entries that are explicitly not cleared for
+commercial use:
+
+  - Seamless Communication: CC-BY-NC 4.0, recorded BLOCKED_FOR_COMMERCIAL. It is
+    not enabled by any default configuration here.
+  - Silero VAD weights: CC-BY-NC, recorded PENDING; the default VAD is the
+    energy-based one, so nothing ships that depends on that clearance.
+  - Argos translation packages: per-package terms (some derived from data with
+    non-commercial licences), recorded PER_PACKAGE_REVIEW_REQUIRED. Review the
+    specific package you install before using it commercially.
+  - AI4Bharat Indic models (indic-conformer-asr, indic-parler-tts): recorded
+    PENDING, per model release.
+  - Piper voices: per-voice licence; the manifest records which voices were
+    checked.
+
+Trademarks
+----------
+"DeepL", "DeepL Write", "DeepL Pro" and the DeepL logo are trademarks of DeepL
+SE. "Zoom", "Teams", "LiveKit", and other product names mentioned anywhere in
+this repository are trademarks of their respective owners. They are used only to
+identify the products or services whose published interfaces this software can
+optionally talk to, or to name an open-source dependency. This project is not
+affiliated with, sponsored by, or endorsed by any of those owners, and no
+third-party marketing text, screenshots, brand assets or source code are
+reproduced here.
+
+Authorized API use
+------------------
+When an optional provider is configured — for example DEEPL_API_KEY for the
+DeepL text-translation API, or Twilio/SUPABASE credentials — requests are made
+with the operator's own key, under that provider's terms, from
+`ai/gt_ai/translation/neural_online.py` and the corresponding service modules.
+No provider's translation output, dictionary data or example sentences are
+redistributed with this repository. Dictionary and synonym content shown in the
+writing tool comes from this project's own curated lexicon
+(`services/api/app/services/write_service.py`).
