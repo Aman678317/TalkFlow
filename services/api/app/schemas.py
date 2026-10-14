@@ -476,7 +476,22 @@ class JoinMeetingRequest(BaseModel):
     speak_lang: str = "auto"
     hear_lang: str = "en"
     audio_mode: Literal["original", "translated", "mixed", "captions_only"] = "translated"
-    guest_key: str = ""
+    # Seat continuation is the server-issued session_key from a previous /join
+    # ("" = open a new seat). Client-chosen seat keys are never accepted: they
+    # were a static, never-expiring WS credential (roadmap Phase 4 task 1).
+    session_key: str = ""
+    as_guest: bool = False
+
+
+class JoinTicketRequest(BaseModel):
+    session_key: str = ""
+
+
+class JoinTicketResponse(BaseModel):
+    ticket: str
+    ws_url: str
+    participant_id: uuid.UUID
+    expires_in: int
 
 
 class JoinMeetingResponse(BaseModel):

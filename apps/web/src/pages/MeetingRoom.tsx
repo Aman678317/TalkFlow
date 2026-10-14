@@ -151,25 +151,27 @@ export default function MeetingRoom() {
   const [guestSeat, setGuestSeat] = React.useState(!user);
   const [p2pStreams, setP2pStreams] = React.useState<Record<string, MediaStream>>({});
   const [remoteMedia, setRemoteMedia] = React.useState<Record<string, { mic: boolean; camera: boolean }>>({});
-  /** guest_key of this tab's seat while in the room; null = member seat (JWT) */
-  const seatGuestKeyRef = React.useRef<string | null>(null);
+  /** server-issued session_key of this tab's seat; null = member seat (JWT) */
+  const seatSessionKeyRef = React.useRef<string | null>(null);
   const rtcRef = React.useRef<WebRTCManager | null>(null);
   const myParticipantIdRef = React.useRef<string | undefined>(undefined);
   myParticipantIdRef.current = myParticipantId;
 
-  function ensureGuestKey() {
-    const storageKey = `gt_guest_${id}`;
-    let key: string | null = null;
+  function storedSeatKey(): string {
     try {
-      key = sessionStorage.getItem(storageKey);
-      if (!key) {
-        key = `guest-${Math.random().toString(36).substring(2, 10)}${Date.now().toString(36)}`;
-        sessionStorage.setItem(storageKey, key);
-      }
+      return sessionStorage.getItem(`gt_seat_${id}`) || "";
     } catch {
-      key = `guest-${Math.random().toString(36).substring(2, 10)}${Date.now().toString(36)}`;
+      return "";
     }
-    return key;
+  }
+
+  function rememberSeatKey(key: string) {
+    try {
+      sessionStorage.setItem(`gt_seat_${id}`, key);
+    } catch {
+      // ignore storage errors
+    }
+    seatSessionKeyRef.current = key || null;
   }
 
   const handleExportTranscript = React.useCallback(
@@ -333,7 +335,7 @@ export default function MeetingRoom() {
     });
     const socket = new MeetingSocket({
       meetingId: id,
-      joinToken: seatGuestKeyRef.current ?? undefined,
+      sessionKey: seatSessionKeyRef.current ?? undefined,
       displayName,
       preferences: { ...prefsRef.current },
       participantId: myParticipantIdRef.current,
@@ -1062,7 +1064,6 @@ export default function MeetingRoom() {
     setPhase("joining");
     setJoinError(null);
     const asGuestSeat = !user || guestSeat;
-    const guestKey = asGuestSeat ? ensureGuestKey() : "";
     try {
       const resp = await api<JoinMeetingResponse>(`/api/v1/meetings/${id}/join`, {
         method: "POST",
@@ -1071,10 +1072,14 @@ export default function MeetingRoom() {
           speak_lang: prefs.speaking_language,
           hear_lang: prefs.listening_language,
           audio_mode: prefs.audio_mode,
-          ...(asGuestSeat ? { guest_key: guestKey } : {}),
+          session_key: storedSeatKey(),
+          as_guest: asGuestSeat,
         },
       });
-      seatGuestKeyRef.current = asGuestSeat ? guestKey : null;
+      // The server-issued session key is the seat's only reconnect credential;
+      // it is exchanged (over HTTPS) for single-use WS tickets, never sent in
+      // a WebSocket URL.
+      rememberSeatKey(resp.session_key);
       setMyParticipantId(resp.participant_id);
       void meetingQ.refetch();
       qc.invalidateQueries({ queryKey: ["meetings"] });
@@ -1091,7 +1096,7 @@ export default function MeetingRoom() {
     socketRef.current = null;
     rtcRef.current?.dispose();
     rtcRef.current = null;
-    seatGuestKeyRef.current = null;
+    seatSessionKeyRef.current = null;
     setP2pStreams({});
     setRemoteMedia({});
     setMicOn(false);

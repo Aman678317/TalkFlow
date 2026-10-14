@@ -54,7 +54,7 @@ language_pair_validations (each pair direction/task independently evaluated),
 model_registry (task, provider, model_id, pinned revision, license + review status,
 production_status, hardware, latency/quality).
 
-**Meetings & realtime** — meetings (room_name + join_token), participants,
+**Meetings & realtime** — meetings (room_name), participants (server-issued seat identity),
 participant_preferences ("I speak / I hear / audio_mode / caption_mode / latency_mode" —
 the routing truth), audio_sessions (transport, dropouts, reconnects), transcript_segments
 (**canonical source**; immutable finals; sequence per meeting; audio_key under retention),

@@ -16,14 +16,14 @@ from app.db import models as M
 from app.db.base import utcnow
 from app.db.session import get_db
 from app.deps import Principal, get_principal_optional, require_org_user, require_scope
-from app.errors import NotFoundError, ValidationError
+from app.errors import AuthenticationError, NotFoundError, ValidationError
 from app.realtime import livekit_bridge
 from app.realtime.protocol import ServerEventType
 from app.schemas import (
-    JoinMeetingRequest, JoinMeetingResponse, MeetingCreate, MeetingDetailOut,
-    MeetingOut, ParticipantFullOut, ParticipantOut, PreferenceOut,
-    PreferenceUpdate, PreferenceUpdate as _PrefUpd, TranscriptSegmentOut,
-    VoiceSessionCreate,
+    JoinMeetingRequest, JoinMeetingResponse, JoinTicketRequest, JoinTicketResponse,
+    MeetingCreate, MeetingDetailOut, MeetingOut, ParticipantFullOut, ParticipantOut,
+    PreferenceOut, PreferenceUpdate, PreferenceUpdate as _PrefUpd,
+    TranscriptSegmentOut, VoiceSessionCreate,
 )
 from app.security import create_session_ticket
 from app.services import audit_service, meeting_service, webhook_service
@@ -156,7 +156,8 @@ async def join_meeting(meeting_id: uuid.UUID, body: JoinMeetingRequest,
     p, pref, session_key = await meeting_service.join_meeting(
         db, meeting, user_id=user_id, display_name=display,
         speak_lang=body.speak_lang, hear_lang=body.hear_lang,
-        audio_mode=body.audio_mode, guest_key=body.guest_key or "")
+        audio_mode=body.audio_mode, session_key=body.session_key,
+        as_guest=body.as_guest)
 
     if meeting.status == "live" and meeting.started_at:
         pass  # webhook fired on transition below
@@ -179,6 +180,52 @@ async def join_meeting(meeting_id: uuid.UUID, body: JoinMeetingRequest,
     except Exception:
         log.debug("webhook dispatch skipped")
     return resp
+
+
+TICKET_TTL_S = 120
+
+
+@router.post("/meetings/{meeting_id}/join-ticket", response_model=JoinTicketResponse)
+async def meeting_join_ticket(meeting_id: uuid.UUID,
+                              body: JoinTicketRequest,
+                              principal: Principal | None = Depends(get_principal_optional),
+                              db: AsyncSession = Depends(get_db)):
+    """Mint a signed, single-use, 120s realtime ticket (roadmap Phase 4 task 1).
+
+    Guests present the server-issued `session_key` from their /join response —
+    the only guest credential, and it never travels in a WS URL. Authenticated
+    callers re-mint for the seat they joined. The WebSocket layer accepts
+    tickets (and member JWTs) only; static join tokens are gone.
+    """
+    meeting = await db.get(M.Meeting, meeting_id)
+    if meeting is None:
+        raise NotFoundError("Meeting not found.")
+    if meeting.status not in ("scheduled", "live"):
+        raise ValidationError("Meeting is not joinable.",
+                              details={"status": meeting.status})
+    participant: M.Participant | None = None
+    if body.session_key:
+        res = await db.execute(
+            select(M.Participant)
+            .join(M.AudioSession, M.AudioSession.participant_id == M.Participant.id)
+            .where(M.AudioSession.session_key == body.session_key,
+                   M.Participant.meeting_id == meeting.id))
+        participant = res.scalars().first()
+        if participant is None:
+            raise AuthenticationError("Invalid or expired session key.")
+    else:
+        if principal is None or not principal.user_id:
+            raise AuthenticationError("Authentication or session key required.")
+        participants = await meeting_service.list_participants(db, meeting.id)
+        participant = next((p for p, _ in participants
+                            if p.user_id == principal.user_id), None)
+        if participant is None:
+            raise NotFoundError("Join the meeting first.")
+    ticket = create_session_ticket(meeting.room_name, str(participant.id),
+                                   ttl_s=TICKET_TTL_S)
+    return JoinTicketResponse(
+        ticket=ticket, ws_url=f"/ws/realtime?ticket={ticket}",
+        participant_id=participant.id, expires_in=TICKET_TTL_S)
 
 
 @router.post("/meetings/{meeting_id}/leave", status_code=204)

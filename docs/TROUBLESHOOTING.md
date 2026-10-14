@@ -29,8 +29,10 @@ Japanese TTS needs `pyopenjtalk` (source build); Marathi has no open voice yet �
 shows "captions" next to those languages and emits `quality.degraded` (recoverable).
 
 **WebSocket closes immediately (4401/4404/4408)**
-4401: bad/expired JWT or join_token. 4404: meeting id wrong. 4408: client didn't send
-`session.join` within 15 s. Guest links use `?join=<token>` from Meetings → Copy invite.
+4401: bad/expired JWT or ticket — the client re-mints a ticket from its seat session
+key and retries. 4404: meeting id wrong. 4408: client didn't send `session.join` within
+15 s. Invite links carry no token; the seat is created on join and its session key
+stays in the joining tab only.
 
 **Reconnect duplicates messages?**
 It shouldn't: events carry monotonic `sequence`; resume replays only `> last_sequence`.
