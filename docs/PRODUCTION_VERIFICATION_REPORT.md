@@ -44,6 +44,10 @@ media-contract and browser-checklist-runner check — only ever ran on whoever's
 machine happened to be set up for them. `.github/workflows/ci.yml` now runs them as
 a step in the `backend` job.
 
+**Lane 2 and lane 7 are local numbers that the first CI run did not reproduce** —
+lane 2 failed there on an undeclared `playwright` import and lane 7's job never got
+a server to talk to. See §1.2 for the run-back and the fixes.
+
 **Warnings in lane 2** (not failures, but named rather than hidden):
 `jwt.InsecureKeyLengthWarning: The HMAC key is 31 bytes long` — five tests in
 `tests/test_meeting_media_contract.py` mint LiveKit tickets with a 31-byte test
@@ -69,12 +73,43 @@ runner's downloaded models, followed by `python scripts/verify_ai_stack.py`. Tha
 job is the **only** place the real STT / MT / TTS legs execute unattended. On this
 machine they do not, so the offline golden path is unproven locally.
 
-**CI status of this branch: not observed.** Lanes 2 and 7 are new steps/jobs added
-in `b4a2e19` on a branch that has not been pushed, so GitHub Actions has never run
-them; and `gh run list` timed out from this machine, so I cannot report the remote
-history either. The numbers above are **local evidence for commands that CI is now
-configured to repeat**, not proof that CI is green. The first push of this branch
-must be read back before anyone calls the regression gate passed.
+### 1.2 CI read-back — the first run on this branch was red
+
+Run `38494934668` on PR #37 (commit `e9a4447`) finished `frontend` pass, `docker`
+skipped, `Vercel – globaltalk-ai` pass, and **three jobs failed**:
+
+| Job | Result | Evidence |
+| --- | --- | --- |
+| `backend` | 1 failed, 120 passed | `ModuleNotFoundError: No module named 'playwright'` at `tests/browser_e2e/runner.py:20`, collected by the hardening step added in `b4a2e19` |
+| `browser-e2e` | setup failed | the "Start backend and the Vite dev server" step exited 7 (curl "failed to connect") after the full 60×2 s readiness loop; the `if: failure()` log step *also* failed (`tail: option used in invalid context -- 8`), so **no server log was captured and the root cause is still unknown** |
+| `realtime-golden` | 1 failed, 4 passed | Tree B's `test_golden_call.py` passed; the Tree A call died at `await a.speak(hi_speech)` with `ConnectionClosedError: received 4409 duplicate_connection_superseded`, emitted from `services/api/app/realtime/ws.py:229` |
+
+Each cause was then established, not guessed:
+
+- **`backend`** — the Python `playwright` package is imported at module scope by
+  the runner but is declared in **no** requirements file, so no CI job had it. It
+  passed locally only because this machine has it installed. Fixed by installing
+  the package (no browser download) in that lane.
+- **`realtime-golden`** — the test signed all three participants up with **one**
+  access token. `meeting_service.join_meeting` is idempotent by
+  `(meeting_id, user_id)` (`services/api/app/services/meeting_service.py:87`), so
+  all three joins returned the same `participant_id`, and each WebSocket connect
+  superseded the previous one. Reproduced against a live Tree A server with dev
+  providers: *without* `guest_key` → 1 distinct participant, 1 of 3 sockets open;
+  *with* a `guest_key` per seat → 3 distinct participants, 3 of 3 open. Fixed by
+  giving every seat its own `guest_key` (the same escape `bench_latency.py:105`
+  already uses) and asserting the three ids differ.
+- **`browser-e2e`** — the likely trap is the one already hit on this machine: Vite
+  binds whatever `localhost` resolves to (`::1`), while the readiness probe asked
+  `127.0.0.1`. **Not confirmed** — nothing was logged. The step now starts Vite
+  with `--host 127.0.0.1`, points `WEB_URL` at the same literal address, reports
+  which of the two servers never answered, and dumps both logs with valid
+  `tail -n 80` usage. The next run either passes or tells us why.
+
+The consequence for the gate is unchanged by these fixes: **the real-provider
+golden legs have still never completed on GitHub**, so the level-2 evidence the
+merge gate asks for does not exist yet. The numbers above are local evidence, and
+CI is currently red on this branch.
 
 ---
 
@@ -137,6 +172,11 @@ dev server (`:5173`) proxying to a live Tree A backend (`:8088`), with
 3. **Translate journey.** Signup → login → debounced `en→hi` translation → history
    → sign-out → re-login.
 
+- **These three passed locally, not on GitHub.** The `browser-e2e` job that now runs
+  them never reached the specs: its servers did not answer the readiness probe and
+  the failure log step was itself broken (§1.2). So level 3 is currently
+  single-machine evidence.
+
 **Honest limits of level 3, stated in full:**
 - **Speech is injected, not captured.** The test uses the dev `transcript.inject`
   channel and `--use-fake-device-for-media-stream`. No real microphone capture, no
@@ -194,8 +234,9 @@ without the provider set, direction, sample count and environment that produced 
 - ❌ Human listening / audio quality / barge-in felt from a seat (§5).
 - ❌ **LiveKit mode**. `LIVEKIT_ENABLED=false` in the browser-e2e job; the media
   contract tests use fakes.
-- ❌ Anything about **this branch deployed**. Nothing here was pushed, opened,
-  merged, or deployed to staging or production as part of this work.
+- ❌ Anything about **this branch deployed**. PR #37 is open and unmerged; nothing
+  was deployed to staging or production as part of this work.
+- ❌ **CI green.** Three of five jobs failed on the first run of this branch (§1.2).
 - ❌ Multi-replica behaviour. The per-meeting stage health endpoint answers from
   the worker that holds the room's WebSocket; another replica returns
   `{"live": false, "stages": {}, "healthy": true, "reason": "no session in this
@@ -250,7 +291,7 @@ drop core translated audio, and that ordering is unchanged by this report.
 
 | PDF requirement | State |
 |---|---|
-| Regression tests pass | ◐ Lanes 1–7 green locally on this tree; the two lanes that newly entered CI (§1, lane 2 and Playwright) have **not yet run on GitHub**. No skip is counted as a pass. |
+| Regression tests pass | ✗ The first CI run on this branch (§1.2) was **red**: `backend`, `browser-e2e` and `realtime-golden` all failed; only `frontend` passed. Causes are diagnosed and fixes committed, but green CI has not been observed. Locally lanes 1–7 pass; no skip is counted as a pass. |
 | Genuine two-browser, real-provider call proves both directions | ✗ Not done (§5). Browser two-session coverage exists but on dev providers with injected speech (§4). |
 | Deploy to staging first | ✗ Not done. A Render staging service is a paid resource and needs an explicit owner decision. |
 | Verify production configuration | ◐ Method written (runbook §3.2/§3.3); not executed against any live service from this session. |

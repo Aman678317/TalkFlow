@@ -65,6 +65,12 @@ jobs:
       # tests/deployment, so 120 regression tests — every cross-tenant, migration,
       # observability and render.yaml/vercel.json alignment check — only ever ran on
       # whoever's machine was set up for them.
+      # tests/browser_e2e/runner.py imports `playwright` at module level, so
+      # collecting that folder needs the Python package present. Only the package:
+      # these are unit tests of the runner's own helpers, they never launch a
+      # browser, and the real browser job is `browser-e2e` below.
+      - name: Install the playwright Python package (runner-support imports)
+        run: pip install playwright
       - name: Hardening + deployment regression (SQLite)
         env:
           APP_ENV: test
@@ -165,22 +171,33 @@ jobs:
         run: |
           (cd services/api && python -m uvicorn app.main:app --host 127.0.0.1 --port 8088) \
             > /tmp/backend.log 2>&1 &
-          (cd apps/web && npx vite --port 5173 --strictPort) > /tmp/vite.log 2>&1 &
+          # --host 127.0.0.1, not the default: Vite binds whatever `localhost`
+          # resolves to, which on a GitHub runner is ::1, and then the IPv4 probe
+          # below reports "failed to connect" against a server that is up.
+          (cd apps/web && npx vite --host 127.0.0.1 --port 5173 --strictPort) > /tmp/vite.log 2>&1 &
+          backend_up=no; vite_up=no
           for i in $(seq 1 60); do
-            curl -fs http://127.0.0.1:8088/health > /dev/null \
-              && curl -fs http://127.0.0.1:5173/ > /dev/null && break
+            curl -fs http://127.0.0.1:8088/health > /dev/null && backend_up=yes
+            curl -fs http://127.0.0.1:5173/ > /dev/null && vite_up=yes
+            [ "$backend_up" = yes ] && [ "$vite_up" = yes ] && break
             sleep 2
           done
-          curl -fs http://127.0.0.1:8088/health > /dev/null
-          curl -fs http://127.0.0.1:5173/ > /dev/null
+          if [ "$backend_up" != yes ] || [ "$vite_up" != yes ]; then
+            echo "backend ready: $backend_up   vite ready: $vite_up"
+            echo "--- /tmp/backend.log ---"; tail -n 80 /tmp/backend.log
+            echo "--- /tmp/vite.log ---";   tail -n 80 /tmp/vite.log
+            exit 1
+          fi
       - name: Golden demo, translate journey, document pipeline
         working-directory: tests/e2e
         env:
-          WEB_URL: http://localhost:5173
+          WEB_URL: http://127.0.0.1:5173
         run: npx playwright test --reporter=line
-      - name: Backend log on failure
+      - name: Server logs on failure
         if: failure()
-        run: tail -80 /tmp/backend.log /tmp/vite.log
+        run: |
+          echo "--- /tmp/backend.log ---"; tail -n 80 /tmp/backend.log
+          echo "--- /tmp/vite.log ---";   tail -n 80 /tmp/vite.log
 
   docker:
     runs-on: ubuntu-latest

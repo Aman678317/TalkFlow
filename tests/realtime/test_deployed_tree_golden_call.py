@@ -157,6 +157,7 @@ class Client:
         self.ws = None
         self.events: list[dict] = []
         self.audio_frames: list[bytes] = []
+        self.participant_id: str | None = None
         self._queue: asyncio.Queue = asyncio.Queue()
         self._reader_task = None
 
@@ -168,6 +169,7 @@ class Client:
         self._reader_task = asyncio.create_task(self._reader())
         created = await self.expect(lambda e: e["type"] == "session.created",
                                     timeout=30)
+        self.participant_id = _d(created, "participant_id")
         return created["data"]
 
     async def _reader(self):
@@ -262,10 +264,16 @@ async def _call(server_proc):
     assert status == 201, meeting
     mid = meeting["id"]
 
+    # A `guest_key` per seat, not three joins on one identity. Join is idempotent
+    # by (meeting, user_id), so without a key all three calls return the SAME
+    # participant row and every WebSocket after the first is closed with
+    # 4409 duplicate_connection_superseded — which is what the deployed-tree run
+    # did on its first CI attempt.
     async def join(name: str, speak: str, hear: str, audio_mode="translated"):
         status, j = _api("POST", f"/api/v1/meetings/{mid}/join", jwt,
                          {"display_name": name, "speak_lang": speak,
-                          "hear_lang": hear, "audio_mode": audio_mode})
+                          "hear_lang": hear, "audio_mode": audio_mode,
+                          "guest_key": name.lower()})
         assert status == 200, j
         c = Client(name)
         created = await c.connect(mid, j["rt_url"].split("ticket=")[1])
@@ -275,6 +283,9 @@ async def _call(server_proc):
     a = await join("Aarav", "hi", "en")
     b = await join("Beth", "en", "hi")
     c = await join("Chen", "ja", "mr", audio_mode="mixed")
+    assert len({str(x) for x in (a.participant_id, b.participant_id,
+                                 c.participant_id)}) == 3, \
+        "three seats collapsed onto one participant"
 
     # ---------------------------------------------------- real speech, both ways
     loop = asyncio.get_event_loop()
