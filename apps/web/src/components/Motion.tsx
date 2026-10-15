@@ -1,8 +1,9 @@
 /**
- * Shared motion primitives. All honor prefers-reduced-motion through
- * <MotionConfig reducedMotion="user"> at the app root.
+ * Shared motion primitives. The app root opts into Motion's user policy and
+ * the primitives also short-circuit spatial movement when reduced motion is
+ * requested, so they are safe to reuse from another entry point.
  */
-import { motion, useInView, type HTMLMotionProps } from "motion/react";
+import { motion, useInView, useReducedMotion, type HTMLMotionProps } from "motion/react";
 import { useRef, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import {
@@ -16,12 +17,13 @@ import {
 
 /** Wraps a routed page for enter/exit transitions inside AnimatePresence. */
 export function PageTransition({ className, children, ...rest }: HTMLMotionProps<"div">) {
+  const reducedMotion = useReducedMotion();
   return (
     <motion.div
       variants={pageVariants}
-      initial="initial"
-      animate="enter"
-      exit="exit"
+      initial={reducedMotion ? false : "initial"}
+      animate={reducedMotion ? { opacity: 1 } : "enter"}
+      exit={reducedMotion ? { opacity: 1 } : "exit"}
       className={className}
       {...rest}
     >
@@ -44,14 +46,15 @@ export function Reveal({
 }) {
   const ref = useRef<HTMLElement>(null);
   const inView = useInView(ref, { once: true, margin: "-40px 0px" });
+  const reducedMotion = useReducedMotion();
   const Comp = motion[as] as typeof motion.div;
   return (
     <Comp
       ref={ref as never}
       variants={revealVariants}
-      initial="hidden"
-      animate={inView ? "visible" : "hidden"}
-      transition={delay ? { delay } : undefined}
+      initial={reducedMotion ? false : "hidden"}
+      animate={reducedMotion ? { opacity: 1 } : inView ? "visible" : "hidden"}
+      transition={reducedMotion || !delay ? undefined : { delay }}
       className={className}
     >
       {children}
@@ -71,12 +74,13 @@ export function Stagger({
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const inView = useInView(ref, { once, margin: "-32px 0px" });
+  const reducedMotion = useReducedMotion();
   return (
     <motion.div
       ref={ref}
       variants={staggerContainerVariants}
-      initial="hidden"
-      animate={inView ? "visible" : "hidden"}
+      initial={reducedMotion ? false : "hidden"}
+      animate={reducedMotion ? { opacity: 1 } : inView ? "visible" : "hidden"}
       className={className}
     >
       {children}
@@ -85,8 +89,12 @@ export function Stagger({
 }
 
 export function StaggerItem({ children, className }: { children: ReactNode; className?: string }) {
+  const reducedMotion = useReducedMotion();
   return (
-    <motion.div variants={staggerItemVariants} className={className}>
+    <motion.div
+      variants={reducedMotion ? { hidden: { opacity: 1 }, visible: { opacity: 1 } } : staggerItemVariants}
+      className={className}
+    >
       {children}
     </motion.div>
   );
@@ -99,10 +107,11 @@ export function Pressable({
   scale = PRESS_SCALE,
   ...rest
 }: HTMLMotionProps<"div"> & { scale?: number }) {
+  const reducedMotion = useReducedMotion();
   return (
     <motion.div
-      whileTap={{ scale }}
-      transition={TAP_TRANSITION}
+      whileTap={reducedMotion ? undefined : { scale }}
+      transition={reducedMotion ? undefined : TAP_TRANSITION}
       className={cn("select-none", className)}
       {...rest}
     >
