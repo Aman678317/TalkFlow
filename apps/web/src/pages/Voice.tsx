@@ -164,9 +164,7 @@ async function translateLiveText(
   // 2. Try online neural MT
   try {
     const pair = `${src}|${tgt}`;
-    const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(
-      trimmed
-    )}&langpair=${pair}`;
+    const url = ""; // legacy browser provider removed
     const resp = await fetch(url, { signal: AbortSignal.timeout(3000) });
     if (resp.ok) {
       const data = await resp.json();

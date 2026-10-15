@@ -11,7 +11,6 @@ import {
   Download,
   FileText,
   Mic,
-  MicOff,
   Sparkles,
   Trash2,
   Volume2,
@@ -315,7 +314,7 @@ async function fetchNeuralTranslation(
   // 1. Try MyMemory API
   if (!primary) {
     try {
-      const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${src}|${tgt}`;
+      const url = ""; // legacy browser provider removed
       const res = await fetch(url);
       if (res.ok) {
         const data = await res.json();
@@ -344,7 +343,7 @@ async function fetchNeuralTranslation(
   // 2. Try Google Web MT if MyMemory is rate-limited or failed
   if (!primary) {
     try {
-      const gUrl = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${src}&tl=${tgt}&dt=t&q=${encodeURIComponent(text)}`;
+      const gUrl = ""; // legacy browser provider removed
       const gRes = await fetch(gUrl);
       if (gRes.ok) {
         const gData = await gRes.json();
@@ -448,8 +447,8 @@ export default function TranslatePage() {
   const [result, setResult] = React.useState<TranslateResponse | null>(null);
   const [debounced, setDebounced] = React.useState("");
   const [copied, setCopied] = React.useState(false);
-  const [isListening, setIsListening] = React.useState(false);
-  const [recognitionObj, setRecognitionObj] = React.useState<any>(null);
+  const [isSpeaking, setIsSpeaking] = React.useState(false);
+  const audioRef = React.useRef<HTMLAudioElement | null>(null);
 
   // Recent translations (persisted client-side)
   const [recents, setRecents] = React.useState<RecentTranslation[]>(() => loadRecents());
@@ -513,64 +512,43 @@ export default function TranslatePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [debounced, srcLang, tgtLang, glossaryId, styleId, domain, intent, formality]);
 
-  // Speech recognition
-  const toggleSpeechRecognition = () => {
-    const SpeechRecognition =
-      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-
-    if (!SpeechRecognition) {
-      toast.warning("Speech recognition not supported. Use Chrome/Edge/Safari.");
-      return;
-    }
-
-    if (isListening && recognitionObj) {
-      recognitionObj.stop();
-      setIsListening(false);
+  // Audio output is always provider-backed. The browser never synthesizes or
+  // substitutes speech when the server-side TTS provider is unavailable.
+  const speakText = async (text: string, langCode: string) => {
+    if (!text.trim()) return;
+    if (isSpeaking && audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+      audioRef.current = null;
+      setIsSpeaking(false);
       return;
     }
 
     try {
-      const recognition = new SpeechRecognition();
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      recognition.lang = srcLang === "AUTO" ? "en-US" : srcLang;
+      const response = await api<{ audio_base64?: string; format?: string }>("/api/v1/voice/tts", {
+        method: "POST",
+        body: { text: text.trim(), language: langCode === "AUTO" ? "en" : langCode },
+        timeoutMs: 9000,
+      });
+      if (!response.audio_base64) throw new Error("Translated audio is unavailable.");
 
-      recognition.onstart = () => setIsListening(true);
-      recognition.onresult = (event: any) => {
-        let finalChunk = "";
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          if (event.results[i].isFinal) {
-            finalChunk += event.results[i][0].transcript;
-          }
-        }
-        if (finalChunk.trim()) {
-          setSource((prev) => (prev ? prev.trim() + " " + finalChunk.trim() : finalChunk.trim()));
-        }
+      const mime = response.format === "wav" ? "audio/wav" : "audio/mpeg";
+      const audio = new Audio(`data:${mime};base64,${response.audio_base64}`);
+      audioRef.current = audio;
+      audio.onended = () => {
+        audioRef.current = null;
+        setIsSpeaking(false);
       };
-      recognition.onerror = (e: any) => {
-        console.error("Speech recognition error:", e);
-        setIsListening(false);
+      audio.onerror = () => {
+        audioRef.current = null;
+        setIsSpeaking(false);
       };
-      recognition.onend = () => setIsListening(false);
-
-      recognition.start();
-      setRecognitionObj(recognition);
-    } catch (err: any) {
-      toast.error("Could not access microphone", err?.message ?? String(err));
-      setIsListening(false);
+      setIsSpeaking(true);
+      await audio.play();
+    } catch (err) {
+      setIsSpeaking(false);
+      toast.error("Audio unavailable", friendlyMessage(err));
     }
-  };
-
-  const speakText = (text: string, langCode: string) => {
-    if (!("speechSynthesis" in window)) {
-      toast.warning("Audio synthesis not supported.");
-      return;
-    }
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    if (langCode && langCode !== "AUTO") utterance.lang = langCode;
-    utterance.rate = 0.95;
-    window.speechSynthesis.speak(utterance);
   };
 
   const lookupDictionary = async (query: string) => {
@@ -830,29 +808,21 @@ export default function TranslatePage() {
             <div className="flex items-center gap-1">
               <button
                 type="button"
-                onClick={() => speakText(source, srcLang === "AUTO" ? (result?.source_language || "en") : srcLang)}
+                onClick={() => void speakText(source, srcLang === "AUTO" ? (result?.source_language || "en") : srcLang)}
                 disabled={!source.trim()}
-                title="Listen"
-                className="icon-btn"
+                title={isSpeaking ? "Stop audio" : "Listen with server audio"}
+                className={`icon-btn ${isSpeaking ? "text-dl-blue" : ""}`}
               >
                 <Volume2 className="h-4 w-4" />
               </button>
 
               <button
                 type="button"
-                onClick={toggleSpeechRecognition}
-                title={isListening ? "Stop listening" : "Dictate"}
-                className={`tool-btn ${
-                  isListening
-                    ? "bg-rose-50 text-rose-600 hover:bg-rose-100 animate-pulse"
-                    : ""
-                }`}
+                onClick={() => navigate("/voice?tab=live")}
+                title="Open server-backed voice mode"
+                className="tool-btn"
               >
-                {isListening ? (
-                  <><MicOff className="h-4 w-4" /><span>Listening…</span></>
-                ) : (
-                  <><Mic className="h-4 w-4" /><span>Dictate</span></>
-                )}
+                <Mic className="h-4 w-4" /><span>Voice mode</span>
               </button>
 
               <button
@@ -979,10 +949,10 @@ export default function TranslatePage() {
             <div className="flex items-center gap-1">
               <button
                 type="button"
-                onClick={() => result && speakText(result.translated_text, tgtLang)}
+                onClick={() => result && void speakText(result.translated_text, tgtLang)}
                 disabled={!result}
-                title="Listen to translation"
-                className="icon-btn"
+                title={isSpeaking ? "Stop audio" : "Listen with server audio"}
+                className={`icon-btn ${isSpeaking ? "text-dl-blue" : ""}`}
               >
                 <Volume2 className="h-4 w-4" />
               </button>
