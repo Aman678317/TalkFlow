@@ -1717,35 +1717,37 @@ export default function WritePage() {
     : 'text-slate-400';
 
   return (
-    <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+    <div className="write-page mx-auto min-h-full max-w-[1480px] px-4 py-6 font-sans sm:px-6 lg:px-10 lg:py-8">
       {/* ── Top Header ── */}
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 pb-5">
+      <div className="mb-8 flex flex-wrap items-start justify-between gap-5">
         <div>
           <div className="flex items-center gap-2">
-            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-iris-600/10 text-iris-600">
-              <Sparkles className="h-5 w-5" />
+            <span className="flex h-10 w-10 items-center justify-center rounded-[14px] bg-ink-950 text-white shadow-[0_8px_20px_rgba(11,23,40,.16)]">
+              <Sparkles className="h-[18px] w-[18px]" />
             </span>
-            <h1 className="text-2xl font-bold tracking-tight text-slate-900">GlobalTalk Write</h1>
-            <Badge tone="iris" className="ml-1 text-[11px] font-semibold">Smart Writing Edition</Badge>
+            <div>
+              <h1 className="text-[28px] font-semibold leading-none tracking-[-0.04em] text-ink-950">GlobalTalk Write</h1>
+              <p className="mt-1 text-[11px] font-medium uppercase tracking-[0.14em] text-ink-400">Writing studio</p>
+            </div>
           </div>
-          <p className="mt-1 text-sm text-slate-500">
-            Perfect your writing with instant autocorrection, grammar fix, vocabulary upgrades, and tone tuning.
+          <p className="mt-4 max-w-xl text-[13px] leading-relaxed text-ink-500">
+            Make every sentence clearer, more natural, and ready to send. Your draft stays yours while verified improvements come from the backend.
           </p>
         </div>
 
         {/* Controls row */}
-        <div className="flex flex-wrap items-center gap-2.5">
+        <div className="flex flex-wrap items-center gap-2 rounded-[20px] border border-black/[.06] bg-white/80 p-1.5 shadow-[0_8px_28px_rgba(11,23,40,.06)] backdrop-blur-xl">
           {/* Language selector */}
           <div className="relative" ref={langDropdownRef}>
             <button
               onClick={() => setShowLangDropdown(!showLangDropdown)}
-              className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 shadow-xs"
+              className="flex h-9 items-center gap-1.5 rounded-[13px] border border-transparent bg-ink-50/80 px-3 text-xs font-medium text-ink-700 transition-colors hover:border-ink-200 hover:bg-white"
             >
               {currentLangLabel}
               <ChevronDown className="h-3.5 w-3.5 text-slate-400" />
             </button>
             {showLangDropdown && (
-              <div className="absolute top-full left-0 z-50 mt-1 w-56 rounded-xl border border-slate-200 bg-white shadow-xl py-1">
+              <div className="absolute left-0 top-full z-50 mt-2 w-56 rounded-2xl border border-black/[.06] bg-white py-1 shadow-[0_18px_50px_rgba(11,23,40,.16)]">
                 {LANGUAGES.map((l) => {
                   const label = l.code === 'auto'
                     ? `🌐 Auto-detect${detectedLang ? ` (${LANG_DISPLAY_NAMES[detectedLang] || detectedLang.toUpperCase()})` : ''}`
@@ -1755,8 +1757,8 @@ export default function WritePage() {
                       key={l.code}
                       onClick={() => { setLanguage(l.code); setShowLangDropdown(false); }}
                       className={cn(
-                        'w-full text-left px-3 py-2 text-xs hover:bg-slate-50 transition-colors flex items-center justify-between',
-                        language === l.code ? 'font-semibold text-iris-700 bg-iris-50' : 'text-slate-700'
+                        'flex w-full items-center justify-between px-3 py-2 text-left text-xs transition-colors hover:bg-ink-50',
+                        language === l.code ? 'bg-ink-50 font-semibold text-ink-950' : 'text-ink-700'
                       )}
                     >
                       <span>{label}</span>
@@ -1774,8 +1776,8 @@ export default function WritePage() {
             className={cn(
               'flex items-center gap-2 rounded-xl border px-3 py-1.5 text-xs font-semibold transition-all shadow-xs',
               correctionsOnly
-                ? 'border-emerald-500 bg-emerald-50 text-emerald-800'
-                : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                ? 'border-emerald-300 bg-emerald-50 text-emerald-800'
+                : 'border-transparent bg-ink-50/80 text-ink-600 hover:border-ink-200 hover:bg-white'
             )}
             title="Only fix grammar and spelling mistakes without changing vocabulary or style"
           >
@@ -1784,8 +1786,8 @@ export default function WritePage() {
           </button>
 
           {/* Style selector */}
-          <div className={cn('flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white p-1 shadow-xs transition-opacity', correctionsOnly && 'opacity-40 pointer-events-none')}>
-            <span className="pl-2 text-xs font-semibold text-slate-400">Style:</span>
+          <div className={cn('flex items-center gap-1.5 rounded-[13px] border border-transparent bg-ink-50/80 p-1 transition-opacity', correctionsOnly && 'pointer-events-none opacity-40')}>
+            <span className="pl-2 text-xs font-semibold text-ink-400">Style:</span>
             <div className="flex gap-1">
               {STYLES.map((s) => (
                 <button
@@ -1793,7 +1795,7 @@ export default function WritePage() {
                   onClick={() => setStyle(s.value)}
                   className={cn(
                     'rounded-lg px-2.5 py-1 text-xs font-medium transition-all',
-                    style === s.value ? 'bg-iris-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
+                    style === s.value ? 'bg-white text-ink-950 shadow-xs' : 'text-ink-600 hover:bg-white/70'
                   )}
                   title={s.desc}
                 >
@@ -1804,8 +1806,8 @@ export default function WritePage() {
           </div>
 
           {/* Tone selector */}
-          <div className={cn('flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white p-1 shadow-xs transition-opacity', correctionsOnly && 'opacity-40 pointer-events-none')}>
-            <span className="pl-2 text-xs font-semibold text-slate-400">Tone:</span>
+          <div className={cn('flex items-center gap-1.5 rounded-[13px] border border-transparent bg-ink-50/80 p-1 transition-opacity', correctionsOnly && 'pointer-events-none opacity-40')}>
+            <span className="pl-2 text-xs font-semibold text-ink-400">Tone:</span>
             <div className="flex gap-1">
               {TONES.map((t) => (
                 <button
@@ -1813,7 +1815,7 @@ export default function WritePage() {
                   onClick={() => setTone(t.value)}
                   className={cn(
                     'rounded-lg px-2.5 py-1 text-xs font-medium transition-all',
-                    tone === t.value ? 'bg-slate-900 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
+                    tone === t.value ? 'bg-ink-950 text-white shadow-xs' : 'text-ink-600 hover:bg-white/70'
                   )}
                 >
                   {t.label}
@@ -1827,7 +1829,7 @@ export default function WritePage() {
             size="sm"
             variant={showDictPanel ? 'primary' : 'secondary'}
             onClick={() => setShowDictPanel(!showDictPanel)}
-            className="gap-1.5"
+             className="h-9 gap-1.5 rounded-[13px]"
             title="Dictionary and synonyms lookup"
           >
             <BookOpen className="h-3.5 w-3.5" />
@@ -1837,13 +1839,13 @@ export default function WritePage() {
       </div>
 
       {/* ── Main Dual-Pane Editor ── */}
-      <div className="grid gap-6 lg:grid-cols-2">
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,.95fr)]">
         {/* LEFT PANE: Source Draft */}
-        <Card className="flex flex-col border-slate-200 bg-white shadow-sm">
-          <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+        <Card className="flex flex-col rounded-[26px] border-black/[.06] bg-white/90 shadow-[0_18px_50px_rgba(11,23,40,.08)] backdrop-blur-xl">
+          <div className="flex items-center justify-between border-b border-black/[.06] bg-white/70 px-5 py-4">
             <div className="flex items-center gap-2">
-              <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">Your draft</span>
-              <span className="text-xs text-slate-400">({origWords} words · {charUsed}/{MAX_CHARS})</span>
+              <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-ink-500">Your draft</span>
+              <span className="text-xs text-ink-400">{origWords} words · {charUsed}/{MAX_CHARS}</span>
             </div>
             <div className="flex items-center gap-2">
               {/* Local hint toggle (never replaces the user's source text) */}
@@ -1855,10 +1857,10 @@ export default function WritePage() {
                    toast.success(next ? '✨ Local typo hints enabled' : 'Local typo hints paused');
                 }}
                 className={cn(
-                  "flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-semibold transition-all border",
+                   "flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-all",
                   autoCorrectEnabled
-                    ? "bg-emerald-50 text-emerald-700 border-emerald-300 hover:bg-emerald-100 shadow-xs"
-                    : "bg-slate-100 text-slate-500 border-slate-300 hover:bg-slate-200"
+                     ? "border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 shadow-xs"
+                     : "border-ink-200 bg-ink-50 text-ink-500 hover:bg-ink-100"
                 )}
                  title="Toggle non-destructive local typo hints"
               >
@@ -1869,7 +1871,7 @@ export default function WritePage() {
               {sourceText.trim() && (
                 <button
                   onClick={handleFixDraftNow}
-                  className="flex items-center gap-1 rounded-md bg-iris-50 px-2 py-0.5 text-xs font-semibold text-iris-700 hover:bg-iris-100 transition-colors border border-iris-200"
+                   className="flex items-center gap-1 rounded-lg border border-iris-200 bg-iris-50 px-2 py-1 text-xs font-semibold text-iris-700 transition-colors hover:bg-iris-100"
                    title="Ask the backend to review spelling, grammar, and style without changing the source"
                 >
                   <Sparkles className="h-3 w-3" />
@@ -1878,14 +1880,14 @@ export default function WritePage() {
               )}
               <button
                 onClick={() => setSourceText(SAMPLE_TEXT)}
-                className="text-xs font-medium text-iris-600 hover:text-iris-700 hover:underline"
+                 className="text-xs font-medium text-iris-600 transition-colors hover:text-iris-700 hover:underline"
               >
                 Try sample text
               </button>
               {sourceText && (
                 <button
-                  onClick={() => { setSourceText(''); setResult(null); setReadability(null); }}
-                  className="text-xs text-slate-400 hover:text-rose-600 transition-colors"
+                   onClick={() => { setSourceText(''); setResult(null); setReadability(null); }}
+                   className="text-xs text-ink-400 transition-colors hover:text-rose-600"
                 >
                   Clear
                 </button>
@@ -1894,14 +1896,14 @@ export default function WritePage() {
           </div>
 
           <div className="relative flex-1 p-4">
-            <textarea
+             <textarea
               ref={textareaRef}
               id="source-draft-input"
               name="sourceDraft"
               value={sourceText}
                onChange={(e) => handleSourceChange(e.target.value)}
                placeholder="Paste or type your draft here… verified corrections come from the backend."
-              className="h-80 w-full resize-none border-0 bg-transparent text-[15px] leading-relaxed text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-0"
+               className="h-80 w-full resize-none border-0 bg-transparent text-[16px] leading-[1.75] text-ink-900 placeholder:text-ink-400 focus:outline-none focus:ring-0"
               aria-label="Input draft text"
             />
             {/* Character limit bar */}
@@ -1924,7 +1926,7 @@ export default function WritePage() {
           </div>
 
           {/* Bottom Left Toolbar */}
-          <div className="flex items-center justify-between border-t border-slate-100 bg-slate-50/70 px-4 py-3 rounded-b-xl">
+           <div className="flex items-center justify-between rounded-b-[26px] border-t border-black/[.06] bg-ink-50/70 px-5 py-4">
             <div className="flex items-center gap-2">
               <Button
                 size="sm"
@@ -1963,10 +1965,10 @@ export default function WritePage() {
         </Card>
 
         {/* RIGHT PANE: Improved Result */}
-        <Card className="flex flex-col border-slate-200 bg-white shadow-sm relative">
-          <div className="flex flex-wrap items-center justify-between border-b border-slate-100 px-4 py-3 gap-2">
+        <Card className="relative flex flex-col rounded-[26px] border-black/[.06] bg-white/90 shadow-[0_18px_50px_rgba(11,23,40,.08)] backdrop-blur-xl">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-black/[.06] bg-white/70 px-5 py-4">
             <div className="flex items-center gap-2">
-              <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">Improved version</span>
+              <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-ink-500">Improved version</span>
               {result && (
                 <Badge tone="green" className="gap-1 font-semibold text-[11px]">
                   <Check className="h-3 w-3" />
@@ -2021,7 +2023,7 @@ export default function WritePage() {
             </div>
           </div>
 
-          <div className="relative flex-1 p-4 overflow-y-auto max-h-[380px]">
+          <div className="relative max-h-[420px] flex-1 overflow-y-auto px-5 py-6">
             {loading ? (
               <div className="flex h-64 flex-col items-center justify-center gap-3 text-slate-400">
                 <Spinner className="h-6 w-6 text-iris-600" />
@@ -2051,7 +2053,7 @@ export default function WritePage() {
                     setEditableImprovedText(e.target.value);
                     setResult((prev) => (prev ? { ...prev, improved_text: e.target.value } : prev));
                   }}
-                  className="h-64 w-full resize-none border-0 bg-transparent text-[15px] leading-relaxed text-slate-900 focus:outline-none focus:ring-0"
+                  className="h-64 w-full resize-none border-0 bg-transparent text-[16px] leading-[1.75] text-ink-900 focus:outline-none focus:ring-0"
                   aria-label="Direct edit of improved text"
                 />
                 <div className="mt-2 text-right">
@@ -2060,17 +2062,17 @@ export default function WritePage() {
               </div>
             ) : viewMode === 'clean' ? (
               <div className="h-full">
-                <p className="text-[15px] leading-relaxed text-slate-900 select-text">
+                <p className="select-text text-[16px] leading-[1.75] text-ink-900">
                   {renderInteractiveTokens(result.improved_text)}
                 </p>
-                <p className="mt-4 text-[11px] text-slate-400 italic">
+                <p className="mt-5 text-[11px] italic text-ink-400">
                   💡 Click any <span className="text-emerald-600 font-semibold">highlighted</span> word to see alternatives, revert, or look up in dictionary.
                 </p>
               </div>
             ) : viewMode === 'diffs' ? (
               <div className="space-y-4">
-                <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
-                  <h4 className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  <div className="rounded-2xl border border-black/[.06] bg-ink-50/70 p-4">
+                    <h4 className="mb-3 text-xs font-semibold uppercase tracking-[0.12em] text-ink-500">
                     Inline Change Markup
                   </h4>
                   {result.diffs.length === 0 ? (
@@ -2078,7 +2080,7 @@ export default function WritePage() {
                   ) : (
                     <div className="flex flex-wrap gap-1.5 text-[15px] leading-relaxed">
                       {result.diffs.map((d, i) => (
-                        <span key={i} className="inline-flex items-center gap-1 rounded bg-emerald-50 border border-emerald-200 px-2 py-0.5 text-xs font-semibold text-emerald-800 shadow-xs">
+                        <span key={i} className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-semibold text-emerald-800 shadow-xs">
                           <span className="line-through text-rose-500 font-normal">{d.original}</span>
                           <ArrowRight className="h-3 w-3 text-slate-400" />
                           <span className="text-emerald-700">{d.replacement}</span>
@@ -2087,8 +2089,8 @@ export default function WritePage() {
                     </div>
                   )}
                 </div>
-                <div className="rounded-xl bg-slate-50/50 p-4 border border-slate-100">
-                  <p className="text-sm leading-relaxed text-slate-800">{result.improved_text}</p>
+                <div className="rounded-2xl border border-black/[.04] bg-ink-50/50 p-4">
+                  <p className="text-[15px] leading-relaxed text-ink-800">{result.improved_text}</p>
                 </div>
               </div>
             ) : viewMode === 'suggestions' ? (
@@ -2097,7 +2099,7 @@ export default function WritePage() {
                   <p className="text-sm text-slate-500 italic">No grammatical or phrasing issues detected.</p>
                 ) : (
                   result.diffs.map((d, i) => (
-                    <div key={i} className="rounded-xl border border-slate-200 bg-slate-50/60 p-3.5">
+                    <div key={i} className="rounded-2xl border border-black/[.06] bg-ink-50/60 p-3.5">
                       <div className="flex items-center justify-between gap-2">
                         <Badge
                           tone={d.diff_type === 'grammar' ? 'red' : d.diff_type === 'spelling' ? 'amber' : 'lagoon'}
@@ -2121,9 +2123,9 @@ export default function WritePage() {
               readability ? (
                 <div className="space-y-4">
                   {/* Flesch Score */}
-                  <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4">
+                  <div className="rounded-2xl border border-black/[.06] bg-ink-50/60 p-4">
                     <div className="flex items-center justify-between mb-3">
-                      <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Readability Score</h4>
+                      <h4 className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-500">Readability Score</h4>
                       <span className={cn('text-lg font-bold', fleschColor)}>{readability.fleschScore}/100</span>
                     </div>
                     <div className="h-2 rounded-full bg-slate-200 overflow-hidden mb-2">
@@ -2135,11 +2137,11 @@ export default function WritePage() {
                     </div>
                     <p className={cn('text-sm font-semibold', fleschColor)}>{readability.fleschLabel}</p>
                     <div className="mt-3 grid grid-cols-2 gap-3 text-xs text-slate-600">
-                      <div className="rounded-lg bg-white p-2 border border-slate-100">
+                        <div className="rounded-xl border border-black/[.04] bg-white p-2">
                         <span className="block text-[10px] font-semibold uppercase text-slate-400">Avg sentence</span>
                         <span className="text-sm font-bold text-slate-800">{readability.avgSentenceLength} words</span>
                       </div>
-                      <div className="rounded-lg bg-white p-2 border border-slate-100">
+                        <div className="rounded-xl border border-black/[.04] bg-white p-2">
                         <span className="block text-[10px] font-semibold uppercase text-slate-400">Avg syllables</span>
                         <span className="text-sm font-bold text-slate-800">{readability.avgSyllablesPerWord}/word</span>
                       </div>
@@ -2211,7 +2213,7 @@ export default function WritePage() {
               <div
                 ref={popoverRef}
                 style={{ top: activePopover.rect?.top, left: activePopover.rect?.left }}
-                className="absolute z-50 w-72 rounded-xl border border-slate-200 bg-white p-3 shadow-xl text-xs"
+                className="absolute z-50 w-72 rounded-2xl border border-black/[.06] bg-white p-3 text-xs shadow-[0_18px_50px_rgba(11,23,40,.16)]"
               >
                 <div className="flex items-center justify-between border-b border-slate-100 pb-2 mb-2">
                   <div className="flex items-center gap-1.5">
@@ -2271,8 +2273,8 @@ export default function WritePage() {
           </div>
 
           {/* Alternatives Bar */}
-          {result?.alternatives && result.alternatives.length > 0 && (
-            <div className="border-t border-slate-100 bg-slate-50/40 p-4">
+           {result?.alternatives && result.alternatives.length > 0 && (
+            <div className="border-t border-black/[.06] bg-ink-50/40 p-5">
               <span className="mb-2 block text-xs font-semibold uppercase tracking-wider text-slate-500">
                 Alternative Phrasings (100% Content Preserved)
               </span>
@@ -2280,7 +2282,7 @@ export default function WritePage() {
                 {result.alternatives.map((alt, i) => (
                   <div
                     key={i}
-                    className="group flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white p-2.5 text-xs text-slate-700 shadow-xs hover:border-iris-400 transition-all"
+                    className="group flex items-center justify-between gap-3 rounded-xl border border-black/[.06] bg-white p-3 text-xs text-ink-700 shadow-xs transition-all hover:border-iris-400"
                   >
                     <p className="flex-1 text-slate-800 font-medium leading-relaxed">{alt}</p>
                     <div className="flex items-center gap-2 shrink-0">
@@ -2310,7 +2312,7 @@ export default function WritePage() {
           )}
 
           {/* Bottom Right Toolbar */}
-          <div className="flex items-center justify-between border-t border-slate-100 bg-slate-50/70 px-4 py-3 rounded-b-xl">
+          <div className="flex items-center justify-between rounded-b-[26px] border-t border-black/[.06] bg-ink-50/70 px-5 py-4">
             <div className="flex items-center gap-2">
               {result && (
                 <Button size="sm" variant="ghost" onClick={() => speakText(result.improved_text)} title="Listen to improved version">
@@ -2351,9 +2353,9 @@ export default function WritePage() {
       </div>
 
       {/* ── Dictionary & Synonyms Panel ── */}
-      {showDictPanel && (
-        <Card className="mt-6 border-slate-200 bg-white p-5 shadow-sm">
-          <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+       {showDictPanel && (
+        <Card className="mt-5 rounded-[26px] border-black/[.06] bg-white/90 p-5 shadow-[0_18px_50px_rgba(11,23,40,.08)] backdrop-blur-xl">
+          <div className="flex items-center justify-between border-b border-black/[.06] pb-3">
             <div className="flex items-center gap-2">
               <BookOpen className="h-5 w-5 text-iris-600" />
               <h3 className="text-base font-bold text-slate-900">Multilingual Dictionary & Synonyms</h3>
@@ -2390,7 +2392,7 @@ export default function WritePage() {
               <Spinner className="h-5 w-5 text-iris-600" />
             </div>
           ) : dictResult ? (
-            <div className="mt-4 rounded-xl border border-slate-100 bg-slate-50/60 p-4 space-y-3">
+            <div className="mt-4 space-y-3 rounded-2xl border border-black/[.04] bg-ink-50/60 p-4">
               <div className="flex items-center gap-2">
                 <span className="text-lg font-bold text-slate-900 capitalize">{dictResult.word}</span>
                 <Badge tone="neutral" className="text-[11px] capitalize">{dictResult.part_of_speech}</Badge>
