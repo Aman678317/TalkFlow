@@ -357,6 +357,9 @@ async def _handle_event(ws: WebSocket, session, rp: RtParticipant, event) -> Non
             "sequence": 0}))
 
     elif event.type == ClientEventType.SESSION_JOIN:
+        capabilities = data.get("capabilities") or {}
+        if isinstance(capabilities, dict):
+            rp.supports_tts_chunk_index = bool(capabilities.get("tts_chunk_index"))
         if "speaking_language" in data:
             rp.speak_lang = data["speaking_language"]
         elif "speak_lang" in data:

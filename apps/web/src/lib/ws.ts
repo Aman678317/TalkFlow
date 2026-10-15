@@ -13,6 +13,8 @@ export interface BinaryFrame {
   kind: BinaryFrameKind;
   shortId: string;
   language: string;
+  /** TTS chunk index when the server sent the versioned header extension. */
+  chunkIndex?: number;
   pcm: ArrayBuffer;
 }
 
@@ -64,7 +66,21 @@ export function decodeBinaryFrame(buf: ArrayBuffer): BinaryFrame {
   if (kind === "tts") {
     const n = view[17];
     const language = TEXT_DECODER.decode(view.slice(18, 18 + n));
-    return { kind, shortId, language, pcm: buf.slice(18 + n) };
+    const legacyPayloadStart = 18 + n;
+    // New TTS frames carry a marker plus a uint32 chunk index after the
+    // language. Old frames are still accepted so a rolling deploy does not
+    // turn the first four WAV bytes into an index.
+    if (view[legacyPayloadStart] === 0x01 && view.length >= legacyPayloadStart + 5) {
+      const chunkIndex = new DataView(buf, legacyPayloadStart + 1, 4).getUint32(0);
+      return {
+        kind,
+        shortId,
+        language,
+        chunkIndex,
+        pcm: buf.slice(legacyPayloadStart + 5),
+      };
+    }
+    return { kind, shortId, language, pcm: buf.slice(legacyPayloadStart) };
   }
   return { kind, shortId, language: "", pcm: buf.slice(17) };
 }
@@ -147,6 +163,7 @@ export class MeetingSocket {
           audio_mode: p.audio_mode,
           caption_mode: p.caption_mode,
           latency_mode: p.latency_mode,
+          capabilities: { tts_chunk_index: true },
           last_sequence: this.everJoined ? this.lastSequence : 0,
           resume: this.everJoined,
         }),
