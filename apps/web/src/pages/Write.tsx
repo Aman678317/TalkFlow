@@ -2,9 +2,9 @@
  * GlobalTalk Write — AI Writing Companion (PDD §14, §21, DeepL Write Reference).
  *
  * Features (DeepL Write parity + extras):
- * - ✅ Real-time autocorrection as user types (instant inline feedback)
- * - ✅ Debounced full analysis engine (600ms) with client-side + backend fallback
- * - ✅ Instant grammar, spelling, typo, punctuation correction engine
+ * - ✅ Local, non-destructive typo hints while typing
+ * - ✅ Debounced backend correction/rephrase requests
+ * - ✅ Provider-backed grammar, spelling, typo, and punctuation corrections
  * - ✅ "Replace source with rephrased text" DeepL-signature button
  * - ✅ DeepL Write-grade interactive word-level alternatives popover (click-to-replace)
  * - ✅ DeepL Write-style inline diff visualization ("Show changes")
@@ -29,7 +29,7 @@ import {
   Lock, Mic, MicOff, PenTool, RefreshCw, RotateCcw,
   Search, Sparkles, TrendingDown, Unlock, Volume2, Wand2, X, Zap,
 } from 'lucide-react';
-import { api } from '@/lib/api';
+import { api, friendlyMessage } from '@/lib/api';
 import { Badge, Button, Card, Spinner } from '@/components/ui';
 import { toast } from '@/stores/toasts';
 import { cn } from '@/lib/utils';
@@ -235,7 +235,6 @@ const CLIENT_SPELLING_RULES: RuleDef[] = [
   { pattern: /\b(?:fridy|fryday)\b/gi, replacement: "Friday", diff_type: "spelling", explanation: "Corrected spelling of 'Friday'" },
   { pattern: /\b(?:satday|saterday)\b/gi, replacement: "Saturday", diff_type: "spelling", explanation: "Corrected spelling of 'Saturday'" },
   { pattern: /\b(?:sundy|sunnday)\b/gi, replacement: "Sunday", diff_type: "spelling", explanation: "Corrected spelling of 'Sunday'" },
-  { pattern: /\baman\b/g, replacement: "Aman", diff_type: "spelling", explanation: "Capitalized personal name 'Aman'" },
   { pattern: /\b(?:transaltion|transaltions|traslation|traslations|translaton|translatons)\b/gi, replacement: "translation", diff_type: "spelling", explanation: "Fixed misspelled word 'translation'" },
   { pattern: /\b(?:translater|translaters|traslater)\b/gi, replacement: "translator", diff_type: "spelling", explanation: "Fixed misspelled word 'translator'" },
   { pattern: /\b(?:speling|speeling|spellinge|spelin)\b/gi, replacement: "spelling", diff_type: "spelling", explanation: "Fixed misspelled word 'spelling'" },
@@ -335,8 +334,6 @@ const CLIENT_SPELLING_RULES: RuleDef[] = [
   { pattern: /\bbtw\b/gi, replacement: "by the way", diff_type: "spelling", explanation: "Expanded 'btw' to 'by the way'" },
   { pattern: /\bfyi\b/gi, replacement: "for your information", diff_type: "spelling", explanation: "Expanded 'fyi' to 'for your information'" },
   { pattern: /\basap\b/gi, replacement: "as soon as possible", diff_type: "spelling", explanation: "Expanded 'asap' to 'as soon as possible'" },
-  { pattern: /\blol\b/gi, replacement: "funny", diff_type: "spelling", explanation: "Replaced informal 'lol' with 'funny'" },
-  { pattern: /\bbro\b/gi, replacement: "colleague", diff_type: "spelling", explanation: "Replaced casual 'bro' with 'colleague'" },
   { pattern: /\binna\b/gi, replacement: "in a", diff_type: "spelling", explanation: "Expanded 'inna' to 'in a'" },
   { pattern: /\bllife\b/gi, replacement: "life", diff_type: "spelling", explanation: "Fixed misspelled word 'life'" },
   { pattern: /\benjoey\b/gi, replacement: "enjoy", diff_type: "spelling", explanation: "Fixed misspelled word 'enjoy'" },
@@ -1155,7 +1152,6 @@ const WORD_ALTERNATIVES_MAP: Record<string, string[]> = {
   translation: ["interpretation", "rendering", "transcription", "version"],
   monday: ["workday", "start of the week", "weekday"],
   name: ["identity", "designation", "full name"],
-  aman: ["Aman", "author", "speaker"],
   mad: ["upset", "angry", "distressed", "frustrated", "bothered"],
   your: ["one's", "personal", "individual"],
   day: ["workday", "time", "schedule", "afternoon"],
@@ -1315,421 +1311,6 @@ function computeReadability(text: string): ReadabilityMetrics {
   };
 }
 
-/* ─────────────────── Client Text Improvement Engine ─────────────────── */
-
-function segmentRunOnsClient(text: string): { text: string; diffs: WriteDiff[] } {
-  let segmented = text;
-  const diffs: WriteDiff[] = [];
-
-  const greetingRegex = /([a-zA-Z0-9])\s+(hello|hi|hey|greetings)\b/gi;
-  segmented = segmented.replace(greetingRegex, (_, char, greet) => {
-    const repl = `${char}. ${greet.charAt(0).toUpperCase() + greet.slice(1).toLowerCase()},`;
-    diffs.push({
-      original: `${char} ${greet}`,
-      replacement: repl,
-      diff_type: "punctuation",
-      explanation: "Inserted sentence boundary before greeting and added comma",
-    });
-    return repl;
-  });
-
-  const predicateWords = "(?:available|unavailable|free|busy|done|finished|ready|completed|scheduled|cancelled|submitted)";
-  const newSubjectOpeners = "(?:my\\s+\\w+|our\\s+\\w+|the\\s+\\w+|your\\s+\\w+|I\\s+\\w+|we\\s+\\w+|he\\s+\\w+|she\\s+\\w+|they\\s+\\w+|it\\s+\\w+|this\\s+\\w+|that\\s+\\w+|please\\b|kindly\\b|also\\b|furthermore\\b)";
-  const boundaryRegex = new RegExp(`\\b(${predicateWords})\\s+(${newSubjectOpeners})`, "gi");
-  segmented = segmented.replace(boundaryRegex, (_, pred, clause) => {
-    const clauseCap = clause.charAt(0).toUpperCase() + clause.slice(1);
-    const repl = `${pred}. ${clauseCap}`;
-    diffs.push({
-      original: `${pred} ${clause}`,
-      replacement: repl,
-      diff_type: "punctuation",
-      explanation: "Separated run-on clause with a period and capitalized new sentence",
-    });
-    return repl;
-  });
-
-  const startGreetRegex = /^(Hello|Hi|Hey|Greetings)\s+([A-Za-z])/;
-  if (startGreetRegex.test(segmented)) {
-    segmented = segmented.replace(startGreetRegex, (_, greet, nextChar) => {
-      const repl = `${greet}, ${nextChar.toUpperCase()}`;
-      diffs.push({
-        original: `${greet} ${nextChar}`,
-        replacement: repl,
-        diff_type: "punctuation",
-        explanation: "Added comma following greeting",
-      });
-      return repl;
-    });
-  }
-
-  return { text: segmented, diffs };
-}
-
-function formatSentenceTerminalsClient(text: string): string {
-  const cleaned = text.replace(/([.!?]){2,}/g, "$1");
-  const sentences = cleaned.split(/(?<=[.!?])\s+/).filter(Boolean);
-  if (!sentences.length) return text;
-  const questionStarters = [
-    "are you", "is it", "is there", "are there", "how are", "how is", "how do", "how did",
-    "what is", "what are", "what do", "what did", "can you", "could you", "would you",
-    "do you", "did you", "have you", "has it", "why do", "why is", "why are", "where is",
-    "where are", "who is", "who are"
-  ];
-  const formatted = sentences.map((s) => {
-    const trimmed = s.replace(/([.!?]){2,}/g, "$1").trim();
-    const lower = trimmed.toLowerCase();
-    const isQuestion = questionStarters.some((q) => lower.startsWith(q)) || lower.endsWith("?");
-    if (isQuestion) {
-      return trimmed.replace(/[.!?]+$/, "") + "?";
-    }
-    return trimmed.replace(/[.!?]+$/, "") + ".";
-  }).join(" ");
-  return formatted.replace(/([.!?]){2,}/g, "$1");
-}
-
-function generateAlternativesClient(improved: string, _style: string, _tone: string): string[] {
-  const alts: string[] = [];
-  const text = improved.trim();
-  const lower = text.toLowerCase();
-
-  // Pattern A: Greeting + Name + Question
-  const isNameIntro = lower.includes("my name is") || lower.includes("i'm ") || lower.includes("i am ");
-  const isGreet = ["hello", "hi", "hey", "greetings"].some(g => lower.startsWith(g));
-  if (isGreet && isNameIntro) {
-    const nameMatch = text.match(/\b(?:name\s+is|i'm|i\s+am)\s+([A-Z][a-zA-Z]+)/);
-    const name = nameMatch ? nameMatch[1] : "Aman";
-    if (lower.includes("mad")) {
-      const cands = [
-        `Hello, I'm ${name}. Is it all right if I ask whether you are well?`,
-        `Hello, I'm ${name}, and I'm wondering if you are upset about something?`,
-        `Hello. My name is ${name}. Is everything all right with you?`,
-        `Hi, my name is ${name}. Are you doing okay today?`,
-      ];
-      for (const c of cands) {
-        if (c.toLowerCase() !== text.toLowerCase() && !alts.includes(c)) alts.push(c);
-      }
-    } else {
-      const cands = [
-        `Hello, I'm ${name}. I hope you are having a wonderful day.`,
-        `Hi, my name is ${name}. How are you doing today?`,
-        `Greetings, I am ${name}. I hope everything is going smoothly for you.`,
-      ];
-      for (const c of cands) {
-        if (c.toLowerCase() !== text.toLowerCase() && !alts.includes(c)) alts.push(c);
-      }
-    }
-  }
-
-  // Pattern B: Example of badly written text / grammar mistakes
-  const isGrammarSample = (lower.includes("badly written text") || lower.includes("poorly written") || lower.includes("example of")) && (lower.includes("grammatical errors") || lower.includes("improvement"));
-  if (isGrammarSample) {
-    let dayInq1 = "";
-    let dayInq2 = "";
-    let dayInq3 = "";
-    if (lower.includes("monday")) {
-      dayInq1 = "I hope you are having a productive Monday.";
-      dayInq2 = "Are you having a great Monday?";
-      dayInq3 = "How is your Monday going?";
-    } else if (lower.includes("day")) {
-      dayInq1 = "I hope your day is going well.";
-      dayInq2 = "Are you having a pleasant day?";
-      dayInq3 = "How is your day going?";
-    }
-
-    const c1 = `This draft illustrates poorly written text containing several grammatical errors that requires refinement.${dayInq1 ? " " + dayInq1 : ""}`;
-    const c2 = `Here is a sample of unpolished writing containing numerous grammar mistakes and needing correction.${dayInq2 ? " " + dayInq2 : ""}`;
-    const c3 = `This text demonstrates badly written prose with several grammatical flaws that need fixing.${dayInq3 ? " " + dayInq3 : ""}`;
-
-    for (const c of [c1, c2, c3]) {
-      if (c.toLowerCase() !== text.toLowerCase() && !alts.includes(c)) alts.push(c);
-    }
-  }
-
-  // Pattern C: Meeting Unavailability
-  const isMeeting = lower.includes("meeting") && (lower.includes("available") || lower.includes("attend"));
-  if (isMeeting) {
-    const c1 = "Hello! I have a meeting today, so I won't be available.";
-    const c2 = "Hi, I have a meeting today and won't be able to make it.";
-    const c3 = "Due to a prior scheduled commitment, I will not be available today.";
-    for (const c of [c1, c2, c3]) {
-      if (c.toLowerCase() !== text.toLowerCase() && !alts.includes(c)) alts.push(c);
-    }
-  }
-
-  // General Sentence Variations
-  if (alts.length < 3) {
-    const sentences = text.split(/(?<=[.!?])\s+/).filter(Boolean);
-    const transformFormal = (s: string) =>
-      s.replace(/\bThis is an example\b/gi, "This serves as an example")
-       .replace(/\bbadly written text\b/gi, "poorly structured writing")
-       .replace(/\bhas many grammatical errors\b/gi, "contains multiple syntax errors")
-       .replace(/\bneeds improvement\b/gi, "requires refinement")
-       .replace(/\bAre you having a good\b/gi, "I trust you are having a productive")
-       .replace(/\bwent to the store\b/gi, "visited the store")
-       .replace(/\bbought some apples\b/gi, "purchased some apples")
-       .replace(/\bvery expensive\b/gi, "prohibitively expensive")
-       .replace(/\bso I didn't buy them\b/gi, "consequently, I decided against purchasing them")
-       .replace(/\bso I didn't buy it\b/gi, "consequently, I refrained from purchasing it")
-       .replace(/\bdidn't buy\b/gi, "did not purchase")
-       .replace(/\bhas three cars\b/gi, "possesses three vehicles")
-       .replace(/\bhe said that\b/gi, "he stated that")
-       .replace(/\bwants to learn\b/gi, "aims to acquire proficiency in")
-       .replace(/\bbecause it helps him\b/gi, "as it will facilitate his progress")
-       .replace(/\bdoes not work by itself\b/gi, "fails to function autonomously")
-       .replace(/\badd a system to handle all these corrections\b/gi, "integrate an automated system to handle all these corrections")
-       .replace(/\bIch habe gestern ein Buch gelesen, und es war sehr interessant\b/gi, "Gestern habe ich ein Buch gelesen, welches sich als überaus lesenswert erwies")
-       .replace(/\bsehr interessant\b/gi, "außerordentlich aufschlussreich")
-       .replace(/\bYo tengo un gato que es muy bonito y ayer nosotros comimos pizza\b/gi, "Tengo un gato muy hermoso y ayer degustamos pizza")
-       .replace(/\bmuy bonito\b/gi, "sumamente hermoso");
-
-    const transformDirect = (s: string) =>
-      s.replace(/\bThis is an example\b/gi, "Here is an example")
-       .replace(/\bbadly written text\b/gi, "rough text")
-       .replace(/\bhas many grammatical errors\b/gi, "with grammar mistakes")
-       .replace(/\bneeds improvement\b/gi, "needing fixes")
-       .replace(/\bHello,\s*/gi, "Hello. ")
-       .replace(/\bwent to the store and bought some apples\b/gi, "went to the shop for apples")
-       .replace(/\bvery expensive, so I didn't buy them\b/gi, "too pricey, so I didn't buy any")
-       .replace(/\bvery expensive, so I didn't buy it\b/gi, "too pricey, so I didn't buy it")
-       .replace(/\bhas three cars and he said that he wants to learn\b/gi, "owns three cars and wants to learn")
-       .replace(/\bbecause it helps him\b/gi, "because it helps")
-       .replace(/\bdoes not work by itself to correct sentences\b/gi, "doesn't autocorrect sentences")
-       .replace(/\badd a system to handle all these corrections\b/gi, "add a system to handle corrections")
-       .replace(/\bIch habe gestern ein Buch gelesen, und es war sehr interessant\b/gi, "Gestern las ich ein Buch. Es war sehr interessant")
-       .replace(/\bsehr interessant\b/gi, "spannend")
-       .replace(/\bYo tengo un gato que es muy bonito y ayer nosotros comimos pizza\b/gi, "Tengo un gato lindo y ayer cenamos pizza")
-       .replace(/\bmuy bonito\b/gi, "lindo");
-
-    const transformFriendly = (s: string) =>
-      s.replace(/\bHello,\s*/gi, "Hello! ")
-       .replace(/\bThis is an example\b/gi, "This is a sample")
-       .replace(/\bbadly written text\b/gi, "unpolished text")
-       .replace(/\bneeds improvement\b/gi, "that needs polishing")
-       .replace(/\bAre you having a good\b/gi, "Hope you're having a great")
-       .replace(/\bYesterday I went to the store and bought some apples\b/gi, "I popped by the store yesterday to get some apples")
-       .replace(/\bwent to the store and bought some apples\b/gi, "stopped by the store to grab some apples")
-       .replace(/\bthey were very expensive, so I didn't buy them\b/gi, "they were way too pricey, so I didn't end up buying any")
-       .replace(/\bit was very expensive, so I didn't buy it\b/gi, "it was super expensive, so I passed on it")
-       .replace(/\bhas three cars and he said that he wants to learn\b/gi, "has three cars and mentioned he'd love to learn")
-       .replace(/\bbecause it helps him\b/gi, "since it really helps him out")
-       .replace(/\bdoes not work by itself to correct sentences\b/gi, "doesn't seem to correct sentences by itself")
-       .replace(/\badd a system to handle all these corrections\b/gi, "set up a system to handle all of these corrections")
-       .replace(/\bIch habe gestern ein Buch gelesen, und es war sehr interessant\b/gi, "Ich habe gestern ein tolles Buch gelesen – es war wirklich super interessant!")
-       .replace(/\bsehr interessant\b/gi, "total faszinierend")
-       .replace(/\bYo tengo un gato que es muy bonito y ayer nosotros comimos pizza\b/gi, "¡Tengo un gatito precioso y ayer comimos pizza juntos!")
-       .replace(/\bmuy bonito\b/gi, "precioso");
-
-    const var1 = sentences.map(transformFormal).join(" ");
-    const var2 = sentences.map(transformDirect).join(" ");
-    const var3 = sentences.map(transformFriendly).join(" ");
-
-    for (const v of [var1, var2, var3]) {
-      if (v && v.toLowerCase() !== text.toLowerCase() && !alts.includes(v)) {
-        alts.push(v);
-      }
-    }
-  }
-
-  return alts
-    .filter((a, i, arr) => a.toLowerCase() !== text.toLowerCase() && arr.indexOf(a) === i)
-    .slice(0, 3);
-}
-
-/* ──────────────────── LanguageTool Universal AI Client ─────────────────── */
-
-interface LanguageToolMatch {
-  message: string;
-  shortMessage?: string;
-  offset: number;
-  length: number;
-  replacements: { value: string }[];
-  rule?: {
-    id: string;
-    issueType?: string;
-    category?: { id: string; name: string };
-  };
-}
-
-async function queryLanguageTool(
-  text: string,
-  lang = 'en'
-): Promise<{ matches: LanguageToolMatch[]; detectedLang?: string } | null> {
-  if (!text || text.trim().length < 3) return null;
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3500);
-    const ltLang = lang === 'auto' ? 'auto' : (lang === 'en' ? 'en-US' : lang);
-    const params = new URLSearchParams({
-      text,
-      language: ltLang,
-    });
-    const resp = await fetch('https://api.languagetool.org/v2/check', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Accept': 'application/json',
-      },
-      body: params.toString(),
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-    if (!resp.ok) return null;
-    const data = await resp.json();
-    return {
-      matches: data.matches || [],
-      detectedLang: data.language?.detectedLanguage?.code?.slice(0, 2),
-    };
-  } catch (err) {
-    console.warn("LanguageTool fetch skipped or timed out:", err);
-    return null;
-  }
-}
-
-function improveTextClient(
-  text: string,
-  style: string,
-  tone: string,
-  correctionsOnly = false,
-  lang = "en",
-  ltResult?: { matches: LanguageToolMatch[]; detectedLang?: string } | null
-): WriteResponse {
-  // Pre-normalization: separate attached punctuation (e.g. "improvement.betten" -> "improvement. betten")
-  let improved = text.replace(/([.!?,;:])([a-zA-Z])/g, "$1 $2").trim();
-  const diffs: WriteDiff[] = [];
-
-  // 0. LanguageTool Online AI layer (if matches returned)
-  if (ltResult && ltResult.matches.length > 0) {
-    const sortedMatches = [...ltResult.matches].sort((a, b) => b.offset - a.offset);
-    for (const match of sortedMatches) {
-      if (!match.replacements || match.replacements.length === 0) continue;
-      const offset = match.offset;
-      const length = match.length;
-      if (offset + length > improved.length) continue;
-      const original = improved.slice(offset, offset + length);
-      const replacement = match.replacements[0].value;
-      if (!original || replacement === original) continue;
-
-      const diffType = match.rule?.issueType === 'misspelling' ? 'spelling'
-        : match.rule?.category?.id === 'PUNCTUATION' ? 'punctuation'
-        : 'grammar';
-
-      diffs.unshift({
-        original,
-        replacement,
-        diff_type: diffType,
-        explanation: match.message || match.shortMessage || `Corrected "${original}" to "${replacement}"`,
-      });
-
-      // Populate word alternatives for interactive popover
-      const cleanRepl = replacement.toLowerCase().trim();
-      const altWords = match.replacements.slice(0, 6).map((r) => r.value).filter((v) => v.toLowerCase() !== cleanRepl);
-      if (altWords.length > 0) {
-        WORD_ALTERNATIVES_MAP[cleanRepl] = altWords;
-      }
-
-      improved = improved.slice(0, offset) + replacement + improved.slice(offset + length);
-    }
-  }
-
-  // 1. Spelling corrections
-  for (const rule of CLIENT_SPELLING_RULES) {
-    const rx = new RegExp(rule.pattern.source, rule.pattern.flags);
-    const matches = Array.from(improved.matchAll(rx));
-    for (let i = matches.length - 1; i >= 0; i--) {
-      const m = matches[i];
-      if (m.index === undefined) continue;
-      const orig = m[0];
-      let repl = orig.replace(rx, rule.replacement);
-      if (orig === orig.toUpperCase()) {
-        repl = repl.toUpperCase();
-      } else if (orig[0] === orig[0].toUpperCase()) {
-        repl = repl.charAt(0).toUpperCase() + repl.slice(1);
-      }
-      diffs.push({ original: orig, replacement: repl, diff_type: rule.diff_type, explanation: rule.explanation });
-      improved = improved.slice(0, m.index) + repl + improved.slice(m.index + orig.length);
-    }
-  }
-
-  // 2. Syntax & grammar restructuring
-  for (const rule of CLIENT_SYNTAX_RULES) {
-    const rx = new RegExp(rule.pattern.source, rule.pattern.flags);
-    const matches = Array.from(improved.matchAll(rx));
-    for (let i = matches.length - 1; i >= 0; i--) {
-      const m = matches[i];
-      if (m.index === undefined) continue;
-      const orig = m[0];
-      let repl = orig.replace(rx, rule.replacement);
-      if (orig[0] === orig[0].toUpperCase()) {
-        repl = repl.charAt(0).toUpperCase() + repl.slice(1);
-      }
-      diffs.push({ original: orig, replacement: repl, diff_type: rule.diff_type, explanation: rule.explanation });
-      improved = improved.slice(0, m.index) + repl + improved.slice(m.index + orig.length);
-    }
-  }
-
-  // 3. Clause boundary & run-on segmentation
-  const segRes = segmentRunOnsClient(improved);
-  improved = segRes.text;
-  diffs.push(...segRes.diffs);
-
-  // 4. Punctuation & capitalization
-  improved = improved.replace(/(^|[.!?]\s+)([a-z])/g, (_, p1, p2) => p1 + p2.toUpperCase());
-  improved = improved.replace(/(^|\s)i(\s|[.,!?;]|$)/g, "$1I$2");
-  improved = improved.replace(/\s+([,.:;!?])/g, "$1");
-  improved = improved.replace(/([,.:;!?])(?=[a-zA-Z0-9])/g, "$1 ");
-  improved = improved.replace(/^(Hello|Hi|Greetings)\s+([A-Z])/g, "$1, $2");
-  improved = improved.trim();
-
-  // 5. Style adjustment (skipped if corrections only)
-  if (!correctionsOnly) {
-    if (style === "simple") {
-      improved = improved
-        .replace(/\bin order to\b/gi, "to")
-        .replace(/\bdue to the fact that\b/gi, "because")
-        .replace(/\bat this point in time\b/gi, "now")
-        .replace(/\bin the event that\b/gi, "if")
-        .replace(/\butilize\b/gi, "use")
-        .replace(/\bfacilitate\b/gi, "help");
-    } else if (style === "casual" || tone === "friendly") {
-      improved = improved.replace(/\bHello,\s*/i, "Hello! ");
-      improved = improved.replace(/\bwill not be available\b/i, "won't be available");
-    } else if (style === "academic") {
-      improved = improved.replace(/\bHello,\s*/i, "Greetings, ");
-      improved = improved.replace(/\bwill not be available\b/i, "consequently will be unavailable");
-      improved = improved.replace(/\buse\b/gi, "utilize");
-      improved = improved.replace(/\bshow\b/gi, "demonstrate");
-      improved = improved.replace(/\bgood\b/gi, "effective");
-      improved = improved.replace(/\bI want to\b/gi, "I intend to");
-      improved = improved.replace(/\bwant to\b/gi, "intend to");
-    } else if (tone === "direct") {
-      improved = improved.replace(/\bHello,\s*/i, "Hello. ");
-      improved = improved.replace(/\bwill not be available\b/i, "am unavailable");
-      improved = improved.replace(/\bI want to\b/gi, "I will");
-    } else if (style === "business" || tone === "professional") {
-      improved = improved.replace(/\bmake sure\b/gi, "ensure");
-      improved = improved.replace(/\bhelp\b/gi, "assist");
-      improved = improved.replace(/\bstart\b/gi, "commence");
-      improved = improved.replace(/\bI want to\b/gi, "I would like to");
-      improved = improved.replace(/\bwant to\b/gi, "would like to");
-    }
-  }
-
-  improved = formatSentenceTerminalsClient(improved);
-
-  const cleanAlts = generateAlternativesClient(improved, style, tone);
-
-  return {
-    original_text: text,
-    improved_text: improved,
-    language: lang,
-    style,
-    tone,
-    changes_count: diffs.length,
-    diffs,
-    alternatives: cleanAlts,
-  };
-}
-
 /* ────────────────────── Inline autocorrect (instant) ──────────────── */
 function applyInstantCorrections(text: string): string {
   if (!text) return text;
@@ -1766,7 +1347,6 @@ function applyInstantCorrections(text: string): string {
   corrected = corrected.replace(/\b(?:nme|nae)\b/gi, "name");
   corrected = corrected.replace(/\b(?:rea|aer)\b/gi, "are");
   corrected = corrected.replace(/\b(?:beteen|betten)\b/gi, "between");
-  corrected = corrected.replace(/\baman\b/g, "Aman");
   corrected = corrected.replace(/\b(?:mening|menign)\b/gi, "meaning");
   corrected = corrected.replace(/\b(?:imoprove|impove)\b/gi, "improve");
   corrected = corrected.replace(/\b(?:evething|evrything|everthing)\b/gi, "everything");
@@ -1792,6 +1372,7 @@ export default function WritePage() {
   const [tone, setTone] = useState('professional');
   const [correctionsOnly, setCorrectionsOnly] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [writeError, setWriteError] = useState<string | null>(null);
   const [result, setResult] = useState<WriteResponse | null>(null);
   const [viewMode, setViewMode] = useState<'clean' | 'diffs' | 'suggestions' | 'readability'>('clean');
   const [isEditingImproved, setIsEditingImproved] = useState(false);
@@ -1880,6 +1461,7 @@ export default function WritePage() {
     setLoading(true);
     setActivePopover(null);
     setIsEditingImproved(false);
+    setWriteError(null);
     const effectiveLang = language === 'auto' ? (detectedLang || 'en') : language;
     try {
       const res = await api<WriteResponse>('/api/v1/write', {
@@ -1897,18 +1479,12 @@ export default function WritePage() {
         setLoading(false);
         return;
       }
+      throw new Error('Writing provider returned no correction. Please retry.');
     } catch (err) {
-      console.warn("Backend /write API unavailable, running client writing engine", err);
+      setResult(null);
+      setWriteError(friendlyMessage(err));
+      setLoading(false);
     }
-
-    // Universal AI Language Engine (LanguageTool API fallback)
-    const ltRes = await queryLanguageTool(text, effectiveLang);
-    if (ltRes?.detectedLang && language === 'auto') {
-      setDetectedLang(ltRes.detectedLang);
-    }
-    const clientRes = improveTextClient(text, style, tone, correctionsOnly, effectiveLang, ltRes);
-    setResult(clientRes);
-    setLoading(false);
   }
 
   /** DeepL signature: replace source with rephrased */
@@ -1922,37 +1498,20 @@ export default function WritePage() {
   /** Instant auto-fix button handler */
   const handleFixDraftNow = () => {
     if (!sourceText.trim()) return;
-    const fixed = applyInstantCorrections(sourceText);
-    setSourceText(fixed);
-    void runRewrite(fixed);
-    toast.success('Draft auto-corrected!');
+    const localHint = applyInstantCorrections(sourceText);
+    if (localHint !== sourceText) {
+      toast.info('Possible typos found', 'The original text was kept; the backend will decide which corrections are safe.');
+    }
+    void runRewrite(sourceText);
   };
 
   /** Instant autocorrect handler */
-  const handleSourceChange = useCallback((val: string, cursorOffset = 0) => {
+  const handleSourceChange = useCallback((val: string) => {
     if (val.length > MAX_CHARS) return;
-    if (!autoCorrectEnabled) {
-      setSourceText(val);
-      return;
-    }
-    // Check if word boundary (space, punctuation, or newline) was entered
-    const hasBoundary = /[\s.,!?;:]$/.test(val);
-    if (hasBoundary) {
-      const corrected = applyInstantCorrections(val);
-      const lengthDiff = corrected.length - val.length;
-      setSourceText(corrected);
-      if (textareaRef.current && cursorOffset > 0) {
-        const newPos = Math.max(0, cursorOffset + lengthDiff);
-        requestAnimationFrame(() => {
-          if (textareaRef.current) {
-            textareaRef.current.setSelectionRange(newPos, newPos);
-          }
-        });
-      }
-    } else {
-      setSourceText(val);
-    }
-  }, [autoCorrectEnabled]);
+    // Keep the user's exact text. Local heuristics are hints only; the
+    // authenticated backend remains the source of truth for corrections.
+    setSourceText(val);
+  }, []);
 
   // Handle word click to open DeepL-style alternatives popover
   const handleWordClick = (
@@ -2287,13 +1846,13 @@ export default function WritePage() {
               <span className="text-xs text-slate-400">({origWords} words · {charUsed}/{MAX_CHARS})</span>
             </div>
             <div className="flex items-center gap-2">
-              {/* Live Autocorrect Toggle */}
+              {/* Local hint toggle (never replaces the user's source text) */}
               <button
                 type="button"
                 onClick={() => {
                   const next = !autoCorrectEnabled;
                   setAutoCorrectEnabled(next);
-                  toast.success(next ? '✨ Autocorrect enabled (live as you type)' : 'Autocorrect paused');
+                   toast.success(next ? '✨ Local typo hints enabled' : 'Local typo hints paused');
                 }}
                 className={cn(
                   "flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-semibold transition-all border",
@@ -2301,17 +1860,17 @@ export default function WritePage() {
                     ? "bg-emerald-50 text-emerald-700 border-emerald-300 hover:bg-emerald-100 shadow-xs"
                     : "bg-slate-100 text-slate-500 border-slate-300 hover:bg-slate-200"
                 )}
-                title="Toggle instant autocorrection as you type (spelling, grammar, phrasing)"
+                 title="Toggle non-destructive local typo hints"
               >
                 <span className={cn("h-1.5 w-1.5 rounded-full", autoCorrectEnabled ? "bg-emerald-500 animate-pulse" : "bg-slate-400")} />
-                <span>Autocorrect: {autoCorrectEnabled ? "ON" : "OFF"}</span>
+                 <span>Typo hints: {autoCorrectEnabled ? "ON" : "OFF"}</span>
               </button>
 
               {sourceText.trim() && (
                 <button
                   onClick={handleFixDraftNow}
                   className="flex items-center gap-1 rounded-md bg-iris-50 px-2 py-0.5 text-xs font-semibold text-iris-700 hover:bg-iris-100 transition-colors border border-iris-200"
-                  title="Instantly fix spelling, typos, and shorthand directly in your draft"
+                   title="Ask the backend to review spelling, grammar, and style without changing the source"
                 >
                   <Sparkles className="h-3 w-3" />
                   <span>Auto-fix draft</span>
@@ -2340,9 +1899,8 @@ export default function WritePage() {
               id="source-draft-input"
               name="sourceDraft"
               value={sourceText}
-              onChange={(e) => handleSourceChange(e.target.value, e.target.selectionStart)}
-              onInput={(e) => handleSourceChange((e.target as HTMLTextAreaElement).value, (e.target as HTMLTextAreaElement).selectionStart)}
-              placeholder="Paste or type your draft here… spelling, grammar, and meaning are auto-corrected live as you type."
+               onChange={(e) => handleSourceChange(e.target.value)}
+               placeholder="Paste or type your draft here… verified corrections come from the backend."
               className="h-80 w-full resize-none border-0 bg-transparent text-[15px] leading-relaxed text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-0"
               aria-label="Input draft text"
             />
@@ -2469,12 +2027,20 @@ export default function WritePage() {
                 <Spinner className="h-6 w-6 text-iris-600" />
                 <p className="text-sm font-medium">Polishing and adjusting tone…</p>
               </div>
+            ) : writeError ? (
+              <div className="flex h-64 flex-col items-center justify-center gap-3 rounded-xl border border-rose-200 bg-rose-50 p-6 text-center" role="alert">
+                <p className="text-sm font-semibold text-rose-800">Writing provider unavailable</p>
+                <p className="max-w-sm text-xs leading-relaxed text-rose-700">{writeError}</p>
+                <Button size="sm" variant="secondary" onClick={() => void runRewrite(sourceText)}>
+                  Retry correction
+                </Button>
+              </div>
             ) : !result ? (
               <div className="flex h-64 flex-col items-center justify-center text-center text-slate-400">
                 <PenTool className="mb-2 h-8 w-8 text-slate-300" />
                 <p className="text-sm font-medium text-slate-600">No improvements yet</p>
                 <p className="mt-1 max-w-xs text-xs text-slate-400">
-                  Type or paste text on the left. Spelling is autocorrected instantly as you type; full improvement runs after a short pause.
+                   Type or paste text on the left. Potential typo hints stay local, while verified corrections run through the backend after a short pause.
                 </p>
               </div>
             ) : isEditingImproved ? (

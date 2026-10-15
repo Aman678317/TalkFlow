@@ -140,7 +140,6 @@ SPELLING_RULES: list[tuple[re.Pattern, str, str, str]] = [
     (re.compile(r"\b(?:fridy|fryday)\b", re.I), "Friday", "spelling", "Corrected spelling of 'Friday'"),
     (re.compile(r"\b(?:satday|saterday)\b", re.I), "Saturday", "spelling", "Corrected spelling of 'Saturday'"),
     (re.compile(r"\b(?:sundy|sunnday)\b", re.I), "Sunday", "spelling", "Corrected spelling of 'Sunday'"),
-    (re.compile(r"\baman\b"), "Aman", "spelling", "Capitalized personal name 'Aman'"),
     (re.compile(r"\b(?:transaltion|transaltions|traslation|traslations|translaton|translatons)\b", re.I), "translation", "spelling", "Fixed misspelled word 'translation'"),
     (re.compile(r"\b(?:translater|translaters|traslater)\b", re.I), "translator", "spelling", "Fixed misspelled word 'translator'"),
     (re.compile(r"\b(?:speling|speeling|spellinge|spelin)\b", re.I), "spelling", "spelling", "Fixed misspelled word 'spelling'"),
@@ -1240,6 +1239,36 @@ def _format_sentence_terminals(text: str) -> str:
     return re.sub(r"([.!?]){2,}", r"\1", res)
 
 
+_IMMUTABLE_SPAN_RX = re.compile(
+    r"`[^`\n]+`|https?://[^\s<>\"']+|www\.[^\s<>\"']+|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}",
+)
+
+
+def _protect_immutable_spans(text: str) -> tuple[str, dict[str, str]]:
+    """Mask URLs, email addresses, and inline code before text heuristics run."""
+    protected: dict[str, str] = {}
+
+    def replace(match: re.Match[str]) -> str:
+        value = match.group(0)
+        # Keep sentence punctuation outside the protected token so terminal
+        # formatting cannot duplicate a full stop that belongs to the sentence.
+        suffix = ""
+        while value and value[-1] in ".,!?;:":
+            suffix = value[-1] + suffix
+            value = value[:-1]
+        token = f"__TF_IMMUTABLE_{len(protected)}__"
+        protected[token] = value
+        return token + suffix
+
+    return _IMMUTABLE_SPAN_RX.sub(replace, text), protected
+
+
+def _restore_immutable_spans(text: str, protected: dict[str, str]) -> str:
+    for token, value in protected.items():
+        text = text.replace(token, value)
+    return text
+
+
 def _generate_alternatives(
     improved: str,
     original: str,
@@ -1256,10 +1285,15 @@ def _generate_alternatives(
     is_greet = any(lower_text.startswith(g) for g in ["hello", "hi", "hey", "greetings"])
     has_question = "?" in text
 
+    # Do not invent a name when an introduction is incomplete. Earlier this
+    # helper used a hard-coded demo name, which changed user meaning.
+    if is_greet and is_name_intro and not re.search(r"\b(?:name\s+is|i'm|i\s+am)\s+([A-Z][a-zA-Z]+)", text):
+        is_name_intro = False
+
     if is_greet and is_name_intro:
         # Extract name if present
         name_match = re.search(r"\b(?:name\s+is|i'm|i\s+am)\s+([A-Z][a-zA-Z]+)", text)
-        name = name_match.group(1) if name_match else "Aman"
+        name = name_match.group(1)
         if "mad" in lower_text:
             cand1 = f"Hello, I'm {name}. Is it all right if I ask whether you are well?"
             cand2 = f"Hello, I'm {name}, and I'm wondering if you are upset about something?"
@@ -1454,8 +1488,11 @@ def improve_text(
             style=style, tone=tone, changes_count=0, diffs=[], alternatives=[]
         )
 
-    # Pre-normalization: separate attached punctuation (e.g. "improvement.betten" -> "improvement. betten")
-    raw_normalized = re.sub(r"([.!?,;:])([a-zA-Z])", r"\1 \2", raw)
+    # Protect URLs, email addresses, and inline code before punctuation
+    # normalization; otherwise the dot in `example.com` looks like a sentence
+    # boundary to the heuristic rules.
+    protected_text, protected_spans = _protect_immutable_spans(raw)
+    raw_normalized = re.sub(r"([.!?,;:])([a-zA-Z])", r"\1 \2", protected_text)
     raw_normalized = re.sub(r"\s+", " ", raw_normalized).strip()
     improved = raw_normalized
     diffs: list[WriteDiff] = []
@@ -1542,6 +1579,7 @@ def improve_text(
     improved = _capitalize_sentences(improved)
     improved = _fix_punctuation(improved)
     improved = _format_sentence_terminals(improved)
+    improved = _restore_immutable_spans(improved, protected_spans)
 
     # 7. Generate DeepL Write-grade alternative rewrites
     alternatives = _generate_alternatives(improved, raw, style, tone)
