@@ -37,6 +37,7 @@ from app.db import models as M
 from app.db.base import utcnow
 from app.db.session import get_db
 from app.deps import Principal, get_principal_optional
+from app.errors import AuthenticationError
 from app.routers.platform import _require_platform_admin
 from app.security import create_session_ticket
 from app.services import meeting_service, write_service
@@ -434,6 +435,9 @@ async def v2_write_rephrase(
     principal: Principal | None = Depends(get_principal_optional),
 ):
     """Desi Write: Improve text with style and tone adaptation."""
+    if principal is None:
+        raise AuthenticationError("Authentication required.")
+    principal.require("use_write")
     payload = await _extract_request_data(request)
     raw_text = payload.get("text")
     if raw_text is None:
@@ -465,6 +469,9 @@ async def v2_write_correct(
     principal: Principal | None = Depends(get_principal_optional),
 ):
     """Desi Write: Corrections-only text improvement (spelling and grammar)."""
+    if principal is None:
+        raise AuthenticationError("Authentication required.")
+    principal.require("use_write")
     payload = await _extract_request_data(request)
     raw_text = payload.get("text")
     if raw_text is None:
@@ -476,7 +483,9 @@ async def v2_write_correct(
 
     improvements = []
     for item in raw_texts:
-        resp = write_service.improve_text(str(item), language=tgt, style="simple", tone="professional")
+        resp = write_service.improve_text(
+            str(item), language=tgt, style="simple", tone="professional", corrections_only=True
+        )
         improvements.append({
             "text": resp.improved_text,
             "detected_source_language": "EN",

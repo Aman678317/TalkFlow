@@ -8,7 +8,7 @@ interface ApiKey {
   id: string; name: string; prefix: string; scopes: string[];
   created_at: string; last_used_at?: string | null; revoked: boolean;
 }
-const ALL_SCOPES = ["translate", "detect", "documents", "glossaries", "meetings", "usage", "admin"];
+const ALL_SCOPES = ["translate", "detect", "write", "documents", "glossaries", "meetings", "usage", "admin"];
 
 export default function ApiKeys() {
   const qc = useQueryClient();
@@ -76,6 +76,31 @@ export default function ApiKeys() {
         </div>
       )}
 
+      <Card title="Joining a meeting vs calling the developer API">
+        <div className="grid gap-4 text-sm text-ink-600 md:grid-cols-2">
+          <div>
+            <h2 className="font-semibold text-ink-900">Join from another device</h2>
+            <p className="mt-1 text-xs leading-relaxed">
+              Use the real TalkFlow invite link from the Meetings page. Guests do not need a developer key;
+              the server issues a short-lived room-scoped realtime credential after they join.
+            </p>
+            <code className="mt-2 block break-all rounded-lg bg-ink-950 p-2 font-mono text-[11px] text-signal-300">
+              https://talkflow.example.com/meeting/&lt;room-id&gt;
+            </code>
+          </div>
+          <div>
+            <h2 className="font-semibold text-ink-900">Call the API from another app</h2>
+            <p className="mt-1 text-xs leading-relaxed">
+              Create a least-privilege key here, then send it over HTTPS in an Authorization Bearer header
+              (or X-API-Key). The secret is shown once and is never placed in a URL or frontend bundle.
+            </p>
+            <code className="mt-2 block whitespace-pre-wrap rounded-lg bg-ink-950 p-2 font-mono text-[11px] text-signal-300">
+              {`Authorization: Bearer <your-new-key>`}
+            </code>
+          </div>
+        </div>
+      </Card>
+
       <QuickStartCard />
 
       <Modal open={open} onClose={() => setOpen(false)} title="New API key">
@@ -119,32 +144,33 @@ function QuickStartCard() {
   const [tab, setTab] = React.useState<'cli' | 'typescript' | 'python' | 'curl'>('cli');
 
   const snippets = {
-    cli: `# 1. Install CLI
-npm install -g @globaltalk-ai/desi-cli
+    cli: `# Use a redacted placeholder; never commit a real key
+export TALKFLOW_API_KEY="<your-new-key>"
 
-# 2. Run translation
-export DESI_API_KEY="gtk_your_key"
-desi translate "Hello friend" --to hi --honorific formal`,
-    typescript: `// 1. npm install @globaltalk/sdk
+curl -X POST "https://talkflow.example.com/api/v1/translate" \\
+  -H "Authorization: Bearer $TALKFLOW_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"text":"Hello friend","source_language":"en","target_language":"hi"}'`,
+    typescript: `// npm install @globaltalk/sdk
 import { DesiClient } from '@globaltalk/sdk';
 
-const client = new DesiClient({ apiKey: 'gtk_your_key' });
+const client = new DesiClient({ apiKey: '<your-new-key>' });
 const res = await client.translateDesi({
   text: 'Hello friend',
   targetLang: 'hi',
   respectfulSuffix: true
 });
 console.log(res.translations[0].text);`,
-    python: `# 1. pip install -e sdk/python/desi-python
+    python: `# pip install -e sdk/python/desi-python
 from desi import DesiClient, IndicHonorific
 
-client = DesiClient(auth_key="gtk_your_key")
+client = DesiClient(auth_key="<your-new-key>")
 res = client.translate_desi("Hello friend", target_lang="hi", honorific=IndicHonorific.FORMAL)
 print(res.text)`,
-    curl: `curl -X POST "http://127.0.0.1:8088/v2/desi/translate" \\
-  -H "X-API-Key: gtk_your_key" \\
+    curl: `curl -X POST "https://talkflow.example.com/api/v1/write" \\
+  -H "Authorization: Bearer <your-new-key>" \\
   -H "Content-Type: application/json" \\
-  -d '{"text":"Hello friend","target_lang":"hi","honorific":"formal"}'`,
+  -d '{"text":"Their are two issues.","language":"en","corrections_only":true}'`,
   };
 
   return (

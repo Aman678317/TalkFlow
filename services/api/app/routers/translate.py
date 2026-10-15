@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import models as M
 from app.db.session import get_db
 from app.deps import Principal, require_scope, rl_translate
-from app.errors import AuthenticationError, AuthorizationError, NotFoundError, ValidationError
+from app.errors import AuthenticationError, AuthorizationError, NotFoundError, ProviderError, ValidationError
 from app.schemas import (
     DetectRequest, DetectResponse, LanguageOut, TranslateRequest,
     TranslateResponse, TranslationOut,
@@ -321,7 +321,15 @@ async def voice_tts(body: VoiceTtsRequest):
     # Tier 2: AIFacade / local engine (Kokoro / Piper / tts_http)
     try:
         from app.ai import ai
-        chunk, _decision = await ai.synthesize(clean_text, lang, voice=body.voice)
+        chunk, decision = await ai.synthesize(clean_text, lang, voice=body.voice)
+        if settings.is_production and (
+            getattr(chunk, "is_dev", False) or decision.provider.startswith("dev_")
+        ):
+            raise ProviderError(
+                "Speech output is unavailable. Captions remain available.",
+                details={"capability": "tts", "language": lang},
+                recoverable=True,
+            )
         audio_bytes = chunk.data
         fmt = chunk.format or "wav"
         if not audio_bytes.startswith(b"RIFF") and fmt == "wav":
@@ -332,14 +340,21 @@ async def voice_tts(body: VoiceTtsRequest):
     except Exception as ai_err:
         log.warning("AIFacade synthesis failed (%s), trying dev_tone", ai_err)
 
-    # Tier 3: DevTone fallback
-    try:
-        from gt_ai.tts.dev_tone import DevToneProvider
-        provider = DevToneProvider()
-        chunk = await provider.synthesize(clean_text, lang, voice=body.voice)
-        b64 = base64.b64encode(chunk.data).decode("ascii")
-        return VoiceTtsResponse(audio_base64=b64, format="wav", sample_rate=chunk.sample_rate)
-    except Exception as dev_err:
-        log.error("All TTS options failed: %s", dev_err)
-        return VoiceTtsResponse(audio_base64="", format="mp3", sample_rate=24000)
+    # A generated development tone is useful for local pipeline tests, but it is
+    # not translated speech and must never be presented as production audio.
+    if not settings.is_production:
+        try:
+            from gt_ai.tts.dev_tone import DevToneProvider
+            provider = DevToneProvider()
+            chunk = await provider.synthesize(clean_text, lang, voice=body.voice)
+            b64 = base64.b64encode(chunk.data).decode("ascii")
+            return VoiceTtsResponse(audio_base64=b64, format="wav", sample_rate=chunk.sample_rate)
+        except Exception as dev_err:
+            log.warning("Development TTS tone unavailable: %s", dev_err)
+
+    raise ProviderError(
+        "Speech output is unavailable. Captions remain available.",
+        details={"capability": "tts", "language": lang},
+        recoverable=True,
+    )
 

@@ -19,8 +19,9 @@ import {
   Upload,
   ChevronDown,
 } from "lucide-react";
-import { api, ApiError } from "../lib/api";
+import { api, friendlyMessage } from "../lib/api";
 import type { TranslateResponse } from "../lib/types";
+import { translateCanonical } from "../lib/translation";
 import { useLanguages } from "../hooks/useLanguages";
 import { Badge, ErrorState } from "../components/ui";
 import { toast } from "../stores/toasts";
@@ -130,6 +131,7 @@ function LangBar({
   showAuto?: boolean;
   langs: { code: string; name: string; native_name?: string }[];
   detected?: string;
+  detectedConfidence?: number | null;
   right?: React.ReactNode;
 }) {
   return (
@@ -171,9 +173,16 @@ function LangBar({
           <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-dl-faint" />
         </div>
         {detected && (
-          <Badge tone="info" title="Auto-detected language">
-            Detected: {detected.toUpperCase()}
-          </Badge>
+          <>
+            <Badge tone="info" title="Auto-detected language">
+              Detected: {detected.toUpperCase()}
+            </Badge>
+            {detectedConfidence !== null && detectedConfidence !== undefined && detectedConfidence < 0.75 && (
+              <Badge tone="warn" title="The backend detected this language with low confidence">
+                Low confidence ({Math.round(detectedConfidence * 100)}%)
+              </Badge>
+            )}
+          </>
         )}
       </div>
       {right}
@@ -181,6 +190,7 @@ function LangBar({
   );
 }
 
+/*
 const SCRIPT_RANGES: [RegExp, string][] = [
   [/[\u0900-\u097F]/, "hi"],
   [/[\u0980-\u09FF]/, "bn"],
@@ -240,32 +250,8 @@ const FUNCTION_WORDS: Record<string, string[]> = {
   ]
 };
 
-function detectLanguageClient(text: string): string {
-  const trimmed = text.trim();
-  if (!trimmed) return "en";
-
-  for (const [rx, lang] of SCRIPT_RANGES) {
-    if (rx.test(trimmed)) return lang;
-  }
-
-  const tokens = trimmed.toLowerCase().match(/\b[a-zà-ÿ']+\b/g) || [];
-  if (tokens.length === 0) return "en";
-
-  let bestLang = "en";
-  let maxHits = 0;
-
-  for (const [lang, words] of Object.entries(FUNCTION_WORDS)) {
-    const wordSet = new Set(words);
-    const hits = tokens.filter((t) => wordSet.has(t)).length;
-    if (hits > maxHits) {
-      maxHits = hits;
-      bestLang = lang;
-    }
-  }
-
-  return bestLang;
-}
-
+*/
+/*
 async function fetchNeuralTranslation(
   text: string,
   srcLang: string,
@@ -435,40 +421,7 @@ async function fetchNeuralTranslation(
   };
 }
 
-function normalizeTranslation(res: any): TranslateResponse {
-  if (res?.translations && Array.isArray(res.translations) && res.translations.length > 0) {
-    const item = res.translations[0];
-    return {
-      translation_id: item.translation_id || res.request_id || "",
-      source_language: item.source_language || "",
-      target_language: item.target_language || "",
-      source_text: item.source_text || "",
-      translated_text: item.translated_text || "",
-      model: item.model || "",
-      provider: item.provider || "",
-      latency_ms: Number(item.latency_ms ?? 0),
-      quality_flags: Array.isArray(item.quality_flags) ? item.quality_flags : [],
-      from_translation_memory: Boolean(item.from_translation_memory || item.tm_match),
-      detected_confidence: Number(item.detected_confidence ?? 1.0),
-      alternatives: Array.isArray(item.alternatives) ? item.alternatives : [],
-    };
-  }
-  return {
-    translation_id: res?.translation_id || res?.request_id || "",
-    source_language: res?.source_language || "",
-    target_language: res?.target_language || "",
-    source_text: res?.source_text || "",
-    translated_text: res?.translated_text || "",
-    model: res?.model || "",
-    provider: res?.provider || "",
-    latency_ms: Number(res?.latency_ms ?? 0),
-    quality_flags: Array.isArray(res?.quality_flags) ? res?.quality_flags : [],
-    from_translation_memory: Boolean(res?.from_translation_memory || res?.tm_match),
-    detected_confidence: Number(res?.detected_confidence ?? 1.0),
-    alternatives: Array.isArray(res?.alternatives) ? res.alternatives : [],
-  };
-}
-
+*/
 export default function TranslatePage() {
   const navigate = useNavigate();
   const { data: langs } = useLanguages();
@@ -485,6 +438,7 @@ export default function TranslatePage() {
   const [srcLang, setSrcLang] = React.useState("AUTO");
   const [tgtLang, setTgtLang] = React.useState("de");
   const [detectedLanguage, setDetectedLanguage] = React.useState("");
+  const [detectedConfidence, setDetectedConfidence] = React.useState<number | null>(null);
   const [formality, setFormality] = React.useState<"default" | "formal" | "informal">("default");
   const [glossaryId, setGlossaryId] = React.useState("");
   const [styleId, setStyleId] = React.useState("");
@@ -510,59 +464,34 @@ export default function TranslatePage() {
     return () => window.clearTimeout(t);
   }, [source]);
 
-  // Real-time language detection on input
   React.useEffect(() => {
-    if (srcLang === "AUTO" && source.trim().length >= 2) {
-      const detected = detectLanguageClient(source);
-      setDetectedLanguage(detected);
-    } else {
+    if (srcLang !== "AUTO") {
       setDetectedLanguage("");
+      setDetectedConfidence(null);
     }
-  }, [source, srcLang]);
+  }, [srcLang]);
 
   const translate = useMutation({
     mutationFn: async (text: string) => {
-      let resolvedSrc = srcLang;
-      if (resolvedSrc === "AUTO") {
-        resolvedSrc = detectLanguageClient(text);
-        setDetectedLanguage(resolvedSrc);
+      const { response, sourceLanguage, detectedConfidence: confidence } = await translateCanonical(
+        text,
+        srcLang,
+        tgtLang,
+        {
+          glossary_id: glossaryId || null,
+          style_profile_id: styleId || null,
+          domain,
+          intent,
+          formality,
+        },
+      );
+      if (srcLang.toLowerCase() === "auto") {
+        setDetectedLanguage(sourceLanguage);
+        setDetectedConfidence(confidence);
       }
-
-      let r: any = null;
-      try {
-        r = await api<TranslateResponse>("/api/v1/translate", {
-          method: "POST",
-          body: {
-            text,
-            source_language: resolvedSrc,
-            target_language: tgtLang,
-            glossary_id: glossaryId || null,
-            style_profile_id: styleId || null,
-            domain,
-            intent,
-            formality,
-          },
-        });
-      } catch (err: any) {
-        if (err instanceof ApiError && (err.status === 401 || err.status === 402 || err.status === 429)) {
-          throw err;
-        }
-        console.warn("Backend /translate error, trying neural MT:", err);
-      }
-
-      const normalized = normalizeTranslation(r);
-      const isMockEcho =
-        !normalized.translated_text ||
-        normalized.provider === "dev_echo" ||
-        normalized.quality_flags.includes("dev_provider") ||
-        normalized.translated_text.startsWith(`[${tgtLang}]`) ||
-        (normalized.translated_text.trim() === text.trim() && resolvedSrc !== tgtLang);
-
-      if (isMockEcho) {
-        return await fetchNeuralTranslation(text, resolvedSrc, tgtLang, formality);
-      }
-      return normalized;
+      return response;
     },
+    onMutate: () => setResult(null),
     onSuccess: (normalized: TranslateResponse) => {
       setResult(normalized);
       const trimmed = source.trim();
@@ -570,8 +499,8 @@ export default function TranslatePage() {
         lookupDictionary(trimmed);
       }
     },
-    onError: (e: any) =>
-      toast.error("Translation failed", e?.message ?? String(e)),
+    onError: (e: unknown) =>
+      toast.error("Translation unavailable", friendlyMessage(e)),
   });
 
   React.useEffect(() => {
@@ -652,20 +581,13 @@ export default function TranslatePage() {
         method: "POST",
         body: {
           word: query.trim(),
-          source_language: srcLang === "AUTO" ? "en" : srcLang,
+          source_language: srcLang === "AUTO" ? (detectedLanguage || result?.source_language || "") : srcLang,
           target_language: tgtLang,
         },
       });
       setDictData(data);
     } catch {
-      setDictData({
-        word: query,
-        part_of_speech: "noun / term",
-        meanings: [`Expression in ${srcLang.toUpperCase()} corresponding to '${query}'`],
-        synonyms: ["equivalent", "alternate phrase", "contextual term"],
-        translations: [result?.translated_text || query],
-        examples: [`"${query}" is used frequently in ${domain} dialogue.`],
-      });
+      setDictData(null);
     } finally {
       setDictLoading(false);
     }
@@ -871,6 +793,7 @@ export default function TranslatePage() {
             detected={
               srcLang === "AUTO" ? (detectedLanguage || (result ? result.source_language : undefined)) : undefined
             }
+            detectedConfidence={srcLang === "AUTO" ? detectedConfidence : null}
           />
 
           {/* Textarea */}
@@ -1011,13 +934,16 @@ export default function TranslatePage() {
                 code={(translate.error as any)?.code}
                 onRetry={() => source && translate.mutate(source)}
               />
+            ) : result && result.quality_flags?.some((flag) =>
+              /(?:untranslated|dev_provider|dev_echo|source_fallback|empty_translation)/i.test(flag),
+            ) ? (
+              <ErrorState
+                title="Translation unavailable"
+                detail="The provider did not return a verified translation. Your original text is still available on the left."
+                onRetry={() => source && translate.mutate(source)}
+              />
             ) : result ? (
               <div className="space-y-4">
-                {result.quality_flags?.includes("untranslated_fallback") && (
-                  <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
-                    Translation service temporarily offline. Original text displayed without modification.
-                  </div>
-                )}
                 <p className="whitespace-pre-wrap select-text text-base leading-relaxed text-dl-navy">{result.translated_text}</p>
                 {result.from_translation_memory && (
                   <Badge tone="good">Matched in translation memory (100%)</Badge>

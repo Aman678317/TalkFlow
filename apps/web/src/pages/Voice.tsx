@@ -21,6 +21,7 @@ import {
   Phone,
 } from "lucide-react";
 import { api, friendlyMessage } from "@/lib/api";
+import { translateCanonical } from "@/lib/translation";
 import { Button, Card, Select } from "@/components/ui";
 import { toast } from "@/stores/toasts";
 import { useAuth } from "@/stores/auth";
@@ -77,7 +78,8 @@ function toBCP47(code: string): string {
   return map[code.toLowerCase()] || code;
 }
 
-// High-accuracy live translation helper with multi-tier fallback
+/*
+// Legacy client-side translation fallback implementation intentionally disabled.
 async function translateLiveText(
   text: string,
   sourceLang: string,
@@ -213,6 +215,7 @@ async function translateLiveText(
 
   return trimmed;
 }
+*/
 
 export default function Voice() {
   const navigate = useNavigate();
@@ -234,6 +237,9 @@ export default function Voice() {
   // === LIVE TRANSLATION STATE ===
   const [liveSourceLang, setLiveSourceLang] = useState("en");
   const [liveTargetLang, setLiveTargetLang] = useState("de"); // Default English -> German as in user screenshot
+  const [liveDetectedLanguage, setLiveDetectedLanguage] = useState("");
+  const [liveDetectedConfidence, setLiveDetectedConfidence] = useState<number | null>(null);
+  const [liveTranslationError, setLiveTranslationError] = useState<string | null>(null);
   const [isLiveListening, setIsLiveListening] = useState(false);
   const [liveOriginalText, setLiveOriginalText] = useState("");
   const [liveTranslatedText, setLiveTranslatedText] = useState("");
@@ -241,6 +247,9 @@ export default function Voice() {
   const [liveInterimTranslated, setLiveInterimTranslated] = useState("");
   const [isLiveTranslating, setIsLiveTranslating] = useState(false);
   const [autoPlayLiveAudio, setAutoPlayLiveAudio] = useState(true);
+  const [audioEnabled, setAudioEnabled] = useState(false);
+  const [liveTtsStatus, setLiveTtsStatus] = useState<"idle" | "ready" | "blocked" | "unavailable">("idle");
+  const [liveTtsError, setLiveTtsError] = useState<string | null>(null);
   const [copiedOriginal, setCopiedOriginal] = useState(false);
   const [copiedTranslated, setCopiedTranslated] = useState(false);
 
@@ -294,6 +303,28 @@ export default function Voice() {
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
   const webSpeechFailedRef = useRef<boolean>(false);
 
+  const requestLiveTranslation = async (text: string, sourceLang: string, targetLang: string) => {
+    try {
+      const { response, sourceLanguage, detectedConfidence } = await translateCanonical(
+        text,
+        sourceLang,
+        targetLang,
+        { intent: "latency_optimized" },
+      );
+      if (sourceLang.toLowerCase() === "auto") {
+        setLiveDetectedLanguage(sourceLanguage);
+        setLiveDetectedConfidence(detectedConfidence);
+      }
+      setLiveTranslationError(null);
+      return response.translated_text;
+    } catch (err) {
+      const message = friendlyMessage(err);
+      setLiveTranslationError(message);
+      toast.error("Translation unavailable", message);
+      return null;
+    }
+  };
+
   // Spacebar toggle listener for Live Voice
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -319,12 +350,37 @@ export default function Voice() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [activeTab]);
 
-  // High-Fidelity Text-To-Speech Playback (Neural Audio with WebSpeech Fallback)
+  const enableAudio = async () => {
+    try {
+      const AudioContextCtor = window.AudioContext || (window as typeof window & {
+        webkitAudioContext?: typeof AudioContext;
+      }).webkitAudioContext;
+      if (AudioContextCtor) {
+        const context = audioContextRef.current || new AudioContextCtor();
+        audioContextRef.current = context;
+        await context.resume();
+      }
+      setAudioEnabled(true);
+      setLiveTtsError(null);
+      setLiveTtsStatus("idle");
+    } catch {
+      setAudioEnabled(false);
+      setLiveTtsStatus("blocked");
+      setLiveTtsError("Browser audio is blocked. Allow audio for TalkFlow and try again.");
+    }
+  };
+
+  // Server-side TTS only. Browser speech synthesis is deliberately not used as a
+  // translation fallback because it can make an unavailable provider look ready.
   const speakUtterance = async (text: string, langCode: string) => {
     const clean = text?.trim();
     if (!clean) return;
+    if (!audioEnabled) {
+      setLiveTtsStatus("blocked");
+      setLiveTtsError("Enable audio before playing translated speech.");
+      return;
+    }
 
-    // 1. Try backend high-fidelity TTS (synthesizes natural speech for all languages including Hindi/German/Spanish)
     try {
       const res = await api<{ audio_base64?: string; format?: string }>("/api/v1/voice/tts", {
         method: "POST",
@@ -358,38 +414,17 @@ export default function Voice() {
         };
 
         await audio.play();
+        setLiveTtsStatus("ready");
+        setLiveTtsError(null);
         return;
       }
+      setLiveTtsStatus("unavailable");
+      setLiveTtsError("Translated audio is unavailable. Captions remain available.");
     } catch (err) {
-      console.warn("Backend neural TTS notice, trying browser synthesis fallback:", err);
-    }
-
-    // 2. Safe Fallback: Browser Web SpeechSynthesis
-    if (typeof window !== "undefined" && "speechSynthesis" in window) {
-      try {
-        window.speechSynthesis.resume();
-        const utterance = new SpeechSynthesisUtterance(clean);
-        utterance.lang = toBCP47(langCode);
-        utterance.rate = 1.0;
-        utterance.pitch = 1.0;
-
-        const voices = window.speechSynthesis.getVoices();
-        const bcp47 = toBCP47(langCode).toLowerCase();
-        const shortLang = langCode.toLowerCase().split("-")[0];
-        const match = voices.find(
-          (v) => v.lang.toLowerCase() === bcp47 || v.lang.toLowerCase().startsWith(shortLang)
-        );
-        if (match) utterance.voice = match;
-
-        utterance.onstart = () => setIsSpeakingTts(true);
-        utterance.onend = () => setIsSpeakingTts(false);
-        utterance.onerror = () => setIsSpeakingTts(false);
-
-        window.speechSynthesis.speak(utterance);
-      } catch (e) {
-        console.warn("Browser SpeechSynthesis playback error:", e);
-        setIsSpeakingTts(false);
-      }
+      const message = friendlyMessage(err);
+      setLiveTtsStatus("unavailable");
+      setLiveTtsError(message || "Translated audio is unavailable. Captions remain available.");
+      setIsSpeakingTts(false);
     }
   };
 
@@ -457,7 +492,11 @@ export default function Voice() {
         setLiveInterimOriginal("");
 
         setIsLiveTranslating(true);
-        const translatedChunk = await translateLiveText(chunk, liveSourceLang, liveTargetLang);
+        const translatedChunk = await requestLiveTranslation(chunk, liveSourceLang, liveTargetLang);
+        if (!translatedChunk) {
+          setIsLiveTranslating(false);
+          return;
+        }
         const updatedTranslated = liveFinalTranslatedRef.current
           ? `${liveFinalTranslatedRef.current} ${translatedChunk}`
           : translatedChunk;
@@ -633,8 +672,12 @@ export default function Voice() {
           setLiveOriginalText(updatedOriginal);
           setLiveInterimOriginal("");
 
-          setIsLiveTranslating(true);
-          const translatedChunk = await translateLiveText(chunk, liveSourceLang, liveTargetLang);
+           setIsLiveTranslating(true);
+           const translatedChunk = await requestLiveTranslation(chunk, liveSourceLang, liveTargetLang);
+           if (!translatedChunk) {
+             setIsLiveTranslating(false);
+             return;
+           }
           const updatedTranslated = liveFinalTranslatedRef.current
             ? `${liveFinalTranslatedRef.current} ${translatedChunk}`
             : translatedChunk;
@@ -660,8 +703,8 @@ export default function Voice() {
 
           interimDebounceRef.current = setTimeout(async () => {
             setIsLiveTranslating(true);
-            const liveTrans = await translateLiveText(interim, liveSourceLang, liveTargetLang);
-            setLiveInterimTranslated(liveTrans);
+            const liveTrans = await requestLiveTranslation(interim, liveSourceLang, liveTargetLang);
+            if (liveTrans) setLiveInterimTranslated(liveTrans);
             setIsLiveTranslating(false);
           }, 250);
         } else {
@@ -759,7 +802,11 @@ export default function Voice() {
     setLiveInterimOriginal("");
 
     setIsLiveTranslating(true);
-    const translatedChunk = await translateLiveText(trimmed, liveSourceLang, liveTargetLang);
+    const translatedChunk = await requestLiveTranslation(trimmed, liveSourceLang, liveTargetLang);
+    if (!translatedChunk) {
+      setIsLiveTranslating(false);
+      return;
+    }
     const updatedTranslated = liveFinalTranslatedRef.current
       ? `${liveFinalTranslatedRef.current} ${translatedChunk}`
       : translatedChunk;
@@ -791,18 +838,9 @@ export default function Voice() {
 
     const userName = user?.name || "Shandilya";
     const sentences = [
-      {
-        en: `Hello, my name is ${userName}.`,
-        de: `Hallo, mein Name ist ${userName}.`,
-      },
-      {
-        en: "What are you doing?",
-        de: "Was machst du gerade?",
-      },
-      {
-        en: "Today is my great day.",
-        de: "Heute ist mein großer Tag.",
-      },
+      `Hello, my name is ${userName}.`,
+      "What are you doing?",
+      "Today is my great day.",
     ];
 
     let fullOrig = "";
@@ -812,7 +850,7 @@ export default function Voice() {
       if (!isSimulatingRef.current) break;
 
       // Word by word interim stream
-      const words = item.en.split(" ");
+      const words = item.split(" ");
       let partial = "";
       for (const w of words) {
         if (!isSimulatingRef.current) break;
@@ -822,8 +860,13 @@ export default function Voice() {
       }
 
       if (!isSimulatingRef.current) break;
-      fullOrig = fullOrig ? `${fullOrig} ${item.en}` : item.en;
-      fullTrans = fullTrans ? `${fullTrans} ${item.de}` : item.de;
+      fullOrig = fullOrig ? `${fullOrig} ${item}` : item;
+      const translated = await requestLiveTranslation(item, "en", "de");
+      if (!translated) {
+        setIsLiveTranslating(false);
+        break;
+      }
+      fullTrans = fullTrans ? `${fullTrans} ${translated}` : translated;
 
       liveFinalOriginalRef.current = fullOrig;
       liveFinalTranslatedRef.current = fullTrans;
@@ -833,7 +876,7 @@ export default function Voice() {
       setLiveInterimTranslated("");
 
       if (autoPlayLiveAudio) {
-        void speakUtterance(item.de, "de");
+        void speakUtterance(translated, "de");
       }
 
       await new Promise((r) => setTimeout(r, 600));
@@ -880,7 +923,11 @@ export default function Voice() {
     const existing = liveFinalOriginalRef.current || liveOriginalText;
     if (existing.trim()) {
       setIsLiveTranslating(true);
-      const retranslated = await translateLiveText(existing.trim(), liveSourceLang, newTarget);
+      const retranslated = await requestLiveTranslation(existing.trim(), liveSourceLang, newTarget);
+      if (!retranslated) {
+        setIsLiveTranslating(false);
+        return;
+      }
       liveFinalTranslatedRef.current = retranslated;
       setLiveTranslatedText(retranslated);
       setIsLiveTranslating(false);
@@ -895,6 +942,11 @@ export default function Voice() {
 
   const handleSourceLangChange = (newSource: string) => {
     setLiveSourceLang(newSource);
+    setLiveTranslationError(null);
+    if (newSource !== "auto") {
+      setLiveDetectedLanguage("");
+      setLiveDetectedConfidence(null);
+    }
     if (recognitionRef.current) {
       try {
         recognitionRef.current.lang = toBCP47(newSource === "auto" ? "en" : newSource);
@@ -985,7 +1037,8 @@ export default function Voice() {
     const sName = speaker === "speaker1" ? speaker1Name : speaker2Name;
 
     try {
-      const translated = await translateLiveText(text, sourceLang, targetLang);
+      const translated = await requestLiveTranslation(text, sourceLang, targetLang);
+      if (!translated) return;
       const newItem: TranscriptItem = {
         id: "tx_" + Date.now(),
         speaker,
@@ -1192,6 +1245,16 @@ export default function Voice() {
 
               {/* Status and auto-play audio toggle */}
               <div className="flex items-center gap-2">
+                {!audioEnabled && (
+                  <button
+                    type="button"
+                    onClick={() => void enableAudio()}
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-800 shadow-2xs transition-all hover:bg-amber-100 active:scale-95"
+                  >
+                    <Volume2 className="h-3.5 w-3.5" />
+                    <span>Enable audio</span>
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => setAutoPlayLiveAudio(!autoPlayLiveAudio)}
@@ -1243,7 +1306,19 @@ export default function Voice() {
                           Listening to voice…
                         </span>
                       ) : (
-                        <span>Spoken speech ({currentSourceLangObj.name})</span>
+                        <span>
+                          Spoken speech ({currentSourceLangObj.name})
+                          {liveSourceLang === "auto" && liveDetectedLanguage && (
+                            <span className="ml-2 normal-case font-medium text-dl-blue">
+                              Detected {liveDetectedLanguage.toUpperCase()}
+                            </span>
+                          )}
+                          {liveSourceLang === "auto" && liveDetectedConfidence !== null && liveDetectedConfidence < 0.75 && (
+                            <span className="ml-2 normal-case font-semibold text-amber-600">
+                              Low confidence ({Math.round(liveDetectedConfidence * 100)}%)
+                            </span>
+                          )}
+                        </span>
                       )}
                     </span>
                     {liveOriginalText && (
@@ -1393,7 +1468,28 @@ export default function Voice() {
                   </div>
 
                   <div className="min-h-[200px] text-base lg:text-lg text-slate-900 font-normal leading-relaxed">
-                    {liveTranslatedText || liveInterimTranslated ? (
+                    {liveTtsError && !liveTranslationError && (
+                      <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                        <p className="font-semibold">Captions only</p>
+                        <p className="mt-1">{liveTtsError}</p>
+                      </div>
+                    )}
+                    {liveTranslationError ? (
+                      <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                        <p className="font-semibold">Translation unavailable</p>
+                        <p className="mt-1 text-xs">{liveTranslationError}</p>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const retryText = liveFinalOriginalRef.current || liveOriginalText;
+                            if (retryText.trim()) void handleTargetLangChange(liveTargetLang);
+                          }}
+                          className="mt-3 rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold text-amber-900 hover:bg-amber-100"
+                        >
+                          Retry translation
+                        </button>
+                      </div>
+                    ) : liveTranslatedText || liveInterimTranslated ? (
                       <p>
                         <span>{liveTranslatedText}</span>
                         {liveInterimTranslated && (
@@ -1415,12 +1511,26 @@ export default function Voice() {
                 <div className="pt-4 flex items-center justify-between text-xs text-slate-400 border-t border-slate-100">
                   <span>Target: {currentTargetLangObj.name}</span>
                   <div className="flex items-center gap-2">
-                    {isLiveListening ? (
+                    {liveTranslationError ? (
+                      <span className="flex items-center gap-1 text-rose-600 font-medium">
+                        <span className="h-2 w-2 rounded-full bg-rose-500" /> Translation unavailable
+                      </span>
+                    ) : isLiveTranslating ? (
+                      <span className="flex items-center gap-1 text-dl-blue font-medium">
+                        <span className="h-2 w-2 rounded-full bg-dl-blue animate-pulse" /> Translating
+                      </span>
+                    ) : liveTtsStatus === "ready" ? (
                       <span className="flex items-center gap-1 text-emerald-600 font-medium">
-                        <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" /> Synthesis ready
+                        <span className="h-2 w-2 rounded-full bg-emerald-500" /> Translated audio active
+                      </span>
+                    ) : liveTtsStatus === "blocked" || liveTtsStatus === "unavailable" || !audioEnabled ? (
+                      <span className="flex items-center gap-1 text-amber-700 font-medium" title={liveTtsError || undefined}>
+                        <span className="h-2 w-2 rounded-full bg-amber-500" /> Captions only
                       </span>
                     ) : (
-                      <span className="h-2 w-2 rounded-full bg-slate-300" />
+                      <span className="flex items-center gap-1 text-slate-500 font-medium">
+                        <span className="h-2 w-2 rounded-full bg-slate-300" /> Translation delayed
+                      </span>
                     )}
                   </div>
                 </div>
