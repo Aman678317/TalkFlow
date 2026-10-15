@@ -134,4 +134,6 @@ export interface Preferences {
   audio_mode: AudioMode;
   caption_mode: CaptionMode;
   latency_mode: LatencyMode;
+  /** Server-side caption fan-out. Omitted by older callers = enabled. */
+  captions_enabled?: boolean;
 }

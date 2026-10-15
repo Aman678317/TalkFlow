@@ -163,6 +163,7 @@ export class MeetingSocket {
           audio_mode: p.audio_mode,
           caption_mode: p.caption_mode,
           latency_mode: p.latency_mode,
+          captions_enabled: p.captions_enabled !== false,
           capabilities: { tts_chunk_index: true },
           last_sequence: this.everJoined ? this.lastSequence : 0,
           resume: this.everJoined,
