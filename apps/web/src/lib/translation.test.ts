@@ -66,19 +66,25 @@ describe("canonical translation client", () => {
     ["dev echo", { translated_text: "[de] Hello", provider: "dev_echo" }],
     ["untranslated fallback", { translated_text: "Hello", quality_flags: ["untranslated_fallback"] }],
   ])("rejects %s rather than presenting it as a translation", (_label, response) => {
+    const candidate = response as {
+      translated_text?: string;
+      model?: string;
+      provider?: string;
+      quality_flags?: string[];
+    };
     expect(isUsableTranslation({
+      ...response,
       translation_id: "x",
       source_language: "en",
       target_language: "de",
       source_text: "Hello",
-      translated_text: "",
-      model: "",
-      provider: "",
+      translated_text: candidate.translated_text ?? "",
+      model: candidate.model ?? "",
+      provider: candidate.provider ?? "",
       latency_ms: 0,
-      quality_flags: [],
+      quality_flags: candidate.quality_flags ?? [],
       from_translation_memory: false,
       detected_confidence: 1,
-      ...response,
     }, "Hello", "en", "de")).toBe(false);
   });
 

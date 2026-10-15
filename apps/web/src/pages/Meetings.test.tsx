@@ -74,7 +74,7 @@ describe("Meetings new meeting menu", () => {
     expect(screen.getByRole("menuitem", { name: "Schedule in Google Calendar" })).toBeEnabled();
 
     fireEvent.click(screen.getByRole("menuitem", { name: "Start an instant meeting" }));
-    expect(postCalls()).toHaveLength(1);
+    await waitFor(() => expect(postCalls()).toHaveLength(1));
     expect(screen.getByRole("button", { name: /Creating/ })).toBeDisabled();
     resolvePost(meeting);
 

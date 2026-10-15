@@ -124,6 +124,7 @@ function LangBar({
   showAuto = false,
   langs,
   detected,
+  detectedConfidence,
   right,
 }: {
   selected: string;
