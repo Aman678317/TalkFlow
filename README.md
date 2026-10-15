@@ -122,6 +122,10 @@ cp .env.example .env          # edit API keys as needed
 python run_api.py              # starts on http://127.0.0.1:8088
 ```
 
+`services/api` is the canonical deployed backend. `apps/api` is a legacy
+compatibility implementation with a separate migration/model lineage; local
+and production commands in this repository must not start both services.
+
 > **API Docs:** http://127.0.0.1:8088/api/docs (Swagger UI)
 
 ### 3. Frontend (Node.js)
@@ -139,6 +143,22 @@ npm run dev                    # starts on http://localhost:5173
 ```
 
 Launches both backend and frontend in separate terminal windows.
+
+### Checks and deployment
+
+The reproducible local checks are:
+
+```bash
+make test       # offline Python unit/integration/realtime checks
+make lint       # frontend TypeScript build check
+make build      # frontend production bundle
+```
+
+For the container topology, use `docker compose up --build` (or
+`make docker-up`). Production must provide PostgreSQL, Redis, HTTPS/WSS,
+room-scoped realtime credentials, and configured STT, translation, and TTS
+providers. Missing providers are reported as unavailable/captions-only; the
+app does not fabricate translated text or audio.
 
 ---
 
