@@ -56,28 +56,6 @@ const VOICE_LANGUAGES = [
   { code: "ko", name: "Korean (한국어)", locale: "ko-KR" },
 ];
 
-function toBCP47(code: string): string {
-  const match = VOICE_LANGUAGES.find((l) => l.code === code.toLowerCase());
-  if (match) return match.locale;
-  const map: Record<string, string> = {
-    en: "en-US",
-    de: "de-DE",
-    es: "es-ES",
-    fr: "fr-FR",
-    hi: "hi-IN",
-    ja: "ja-JP",
-    zh: "zh-CN",
-    it: "it-IT",
-    pt: "pt-BR",
-    ru: "ru-RU",
-    nl: "nl-NL",
-    pl: "pl-PL",
-    ko: "ko-KR",
-    ar: "ar-SA",
-  };
-  return map[code.toLowerCase()] || code;
-}
-
 /*
 // Legacy client-side translation fallback implementation intentionally disabled.
 async function translateLiveText(
@@ -286,11 +264,9 @@ export default function Voice() {
   }, [activeTab, liveOriginalText, liveTranslatedText, liveSourceLang, liveTargetLang, user?.name, transcripts]);
 
   // Refs
-  const recognitionRef = useRef<any>(null);
   const micStreamRef = useRef<MediaStream | null>(null);
   const liveFinalOriginalRef = useRef("");
   const liveFinalTranslatedRef = useRef("");
-  const interimDebounceRef = useRef<any>(null);
   const isSimulatingRef = useRef(false);
   const isLiveListeningRef = useRef(false);
   const transcriptBottomRef = useRef<HTMLDivElement>(null);
@@ -301,7 +277,11 @@ export default function Voice() {
   const backendPcmBufferRef = useRef<Float32Array[]>([]);
   const isBackendTranscribingRef = useRef<boolean>(false);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
-  const webSpeechFailedRef = useRef<boolean>(false);
+  const faceMicStreamRef = useRef<MediaStream | null>(null);
+  const faceAudioContextRef = useRef<AudioContext | null>(null);
+  const faceAudioProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const faceAudioChunksRef = useRef<Float32Array[]>([]);
+  const faceCaptureSpeakerRef = useRef<"speaker1" | "speaker2" | null>(null);
 
   const requestLiveTranslation = async (text: string, sourceLang: string, targetLang: string) => {
     try {
@@ -594,167 +574,34 @@ export default function Voice() {
     }
   };
 
-  // START LIVE STREAMING SPEECH RECOGNITION (Live Voice Mode)
+  // Start microphone capture and send PCM frames to the canonical backend STT
+  // endpoint. Browser speech recognition is intentionally not used here.
   const startLiveListening = async () => {
-    webSpeechFailedRef.current = false;
-    const SpeechRecognition =
-      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.abort();
-      } catch { }
-      recognitionRef.current = null;
-    }
-
-    // Acquire microphone stream cleanly
     let micStream = micStreamRef.current;
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-      try {
-        micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        micStreamRef.current = micStream;
-      } catch (err) {
-        console.warn("Direct microphone stream note:", err);
-      }
-    }
-
-    isLiveListeningRef.current = true;
-    setIsLiveListening(true);
-
-    // Start background PCM capture from microphone as guaranteed STT fallback
-    if (micStream) {
-      startBackendPcmCapture(micStream);
-    }
-
-    if (!SpeechRecognition) {
-      // Browser does not have WebSpeech, backend PCM capture is already active
+    if (!navigator.mediaDevices?.getUserMedia) {
+      toast.error("Microphone unavailable", "This browser cannot provide microphone audio to TalkFlow.");
       return;
     }
 
     try {
-      const recognition = new SpeechRecognition();
-      recognition.continuous = false;
-      recognition.interimResults = true;
-      recognition.maxAlternatives = 1;
-      recognition.lang = toBCP47(liveSourceLang === "auto" ? "en" : liveSourceLang);
-
-      recognition.onstart = () => {
-        isLiveListeningRef.current = true;
-        setIsLiveListening(true);
-      };
-
-      recognition.onresult = async (event: any) => {
-        let interimText = "";
-        let newFinalText = "";
-
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          const transcriptChunk = event.results[i][0].transcript;
-          if (event.results[i].isFinal) {
-            newFinalText += transcriptChunk + " ";
-          } else {
-            interimText += transcriptChunk;
-          }
-        }
-
-        // Handle finalized chunk
-        if (newFinalText.trim()) {
-          // Prevent acoustic feedback loop while text-to-speech is playing through speakers
-          if (isSpeakingTts) {
-            return;
-          }
-          // Clear backend PCM buffer to prevent duplicate transcription
-          backendPcmBufferRef.current = [];
-          const chunk = newFinalText.trim();
-          const updatedOriginal = liveFinalOriginalRef.current
-            ? `${liveFinalOriginalRef.current} ${chunk}`
-            : chunk;
-          liveFinalOriginalRef.current = updatedOriginal;
-          setLiveOriginalText(updatedOriginal);
-          setLiveInterimOriginal("");
-
-           setIsLiveTranslating(true);
-           const translatedChunk = await requestLiveTranslation(chunk, liveSourceLang, liveTargetLang);
-           if (!translatedChunk) {
-             setIsLiveTranslating(false);
-             return;
-           }
-          const updatedTranslated = liveFinalTranslatedRef.current
-            ? `${liveFinalTranslatedRef.current} ${translatedChunk}`
-            : translatedChunk;
-          liveFinalTranslatedRef.current = updatedTranslated;
-          setLiveTranslatedText(updatedTranslated);
-          setLiveInterimTranslated("");
-          setIsLiveTranslating(false);
-
-          if (autoPlayLiveAudio && translatedChunk) {
-            void speakUtterance(translatedChunk, liveTargetLang);
-          }
-        }
-
-        // Handle interim live speech chunk (debounced live translation)
-        if (interimText.trim()) {
-          if (isSpeakingTts) return;
-          const interim = interimText.trim();
-          setLiveInterimOriginal(interim);
-
-          if (interimDebounceRef.current) {
-            clearTimeout(interimDebounceRef.current);
-          }
-
-          interimDebounceRef.current = setTimeout(async () => {
-            setIsLiveTranslating(true);
-            const liveTrans = await requestLiveTranslation(interim, liveSourceLang, liveTargetLang);
-            if (liveTrans) setLiveInterimTranslated(liveTrans);
-            setIsLiveTranslating(false);
-          }, 250);
-        } else {
-          setLiveInterimOriginal("");
-          setLiveInterimTranslated("");
-        }
-      };
-
-      recognition.onerror = (event: any) => {
-        if (event.error === "not-allowed") {
-          toast.error("Microphone access denied", "Please allow microphone permissions in your browser URL bar.");
-          setIsLiveListening(false);
-          isLiveListeningRef.current = false;
-        } else if (event.error === "no-speech") {
-          // Expected silence between utterances, maintain active listening
-        } else if (event.error === "network") {
-          console.info("Speech recognition network blip, keeping session active.");
-        }
-      };
-
-      recognition.onend = () => {
-        if (isLiveListeningRef.current) {
-          setTimeout(() => {
-            if (isLiveListeningRef.current && recognitionRef.current) {
-              try {
-                recognition.start();
-              } catch { }
-            }
-          }, 150);
-        }
-      };
-
-      recognition.start();
-      recognitionRef.current = recognition;
-    } catch (err: any) {
-      console.warn("Speech recognition notice:", err);
-      // Backend audio capture is already running
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      micStreamRef.current = micStream;
+    } catch (err) {
+      toast.error("Microphone access denied", "Allow microphone access and try again.");
+      console.warn("Direct microphone stream note:", err);
+      return;
     }
+
+    isLiveListeningRef.current = true;
+    setIsLiveListening(true);
+    if (!micStream) return;
+    startBackendPcmCapture(micStream);
   };
 
   const stopLiveListening = () => {
     isLiveListeningRef.current = false;
     if (isSimulatingRef.current) {
       isSimulatingRef.current = false;
-    }
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.stop();
-      } catch { }
-      recognitionRef.current = null;
     }
     if (audioProcessorRef.current) {
       try {
@@ -947,87 +794,129 @@ export default function Voice() {
       setLiveDetectedLanguage("");
       setLiveDetectedConfidence(null);
     }
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.lang = toBCP47(newSource === "auto" ? "en" : newSource);
-      } catch { }
+  };
+
+  // === FACE-TO-FACE SERVER STT (Two-Speaker Mode) ===
+  const transcribeFaceAudio = async (
+    speaker: "speaker1" | "speaker2",
+    chunks: Float32Array[],
+  ) => {
+    if (chunks.length === 0) return;
+
+    let totalLength = 0;
+    for (const chunk of chunks) totalLength += chunk.length;
+    const pcm = new Int16Array(totalLength);
+    let offset = 0;
+    for (const chunk of chunks) {
+      for (let i = 0; i < chunk.length; i++) {
+        const sample = Math.max(-1, Math.min(1, chunk[i]));
+        pcm[offset + i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+      }
+      offset += chunk.length;
+    }
+
+    const bytes = new Uint8Array(pcm.buffer);
+    let binary = "";
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+
+    setIsTranslating(true);
+    try {
+      const result = await api<{ text?: string }>('/api/v1/voice/transcribe', {
+        method: 'POST',
+        body: {
+          audio_base64: btoa(binary),
+          sample_rate: 16000,
+          language: speaker === "speaker1" ? speaker1Lang : speaker2Lang,
+        },
+      });
+      const text = result?.text?.trim();
+      if (!text) {
+        toast.info("No speech detected", "Try speaking closer to the microphone.");
+        return;
+      }
+      setCurrentSpokenText(text);
+      await processVoiceUtterance(speaker, text);
+    } catch (err) {
+      toast.error("Speech recognition unavailable", friendlyMessage(err));
+    } finally {
+      setIsTranslating(false);
+      setCurrentSpokenText("");
     }
   };
 
-  // === FACE-TO-FACE SPEECH RECOGNITION (Two-Speaker Mode) ===
-  const startListening = (speaker: "speaker1" | "speaker2") => {
-    const SpeechRecognition =
-      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-
-    if (!SpeechRecognition) {
-      toast.warning("Speech recognition is not supported in this browser. Please use Chrome or Edge.");
+  const startListening = async (speaker: "speaker1" | "speaker2") => {
+    if (activeMic === speaker) {
+      await stopListening();
       return;
     }
+    if (activeMic) await stopListening();
 
-    if (activeMic === speaker && recognitionRef.current) {
-      stopListening();
+    if (!navigator.mediaDevices?.getUserMedia) {
+      toast.error("Microphone unavailable", "This browser cannot provide microphone audio to TalkFlow.");
       return;
-    }
-
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.abort();
-      } catch { }
     }
 
     try {
-      const recognition = new SpeechRecognition();
-      recognition.continuous = false;
-      recognition.interimResults = true;
-      recognition.maxAlternatives = 1;
-      recognition.lang = toBCP47(speaker === "speaker1" ? speaker1Lang : speaker2Lang);
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const AudioCtx = window.AudioContext || (window as typeof window & {
+        webkitAudioContext?: typeof AudioContext;
+      }).webkitAudioContext;
+      if (!AudioCtx) throw new Error("Web Audio is not supported in this browser.");
 
-      recognition.onstart = () => {
-        setActiveMic(speaker);
-        setCurrentSpokenText("");
+      const context = new AudioCtx({ sampleRate: 16000 });
+      const source = context.createMediaStreamSource(stream);
+      const processor = context.createScriptProcessor(4096, 1, 1);
+      const muteGain = context.createGain();
+      muteGain.gain.setValueAtTime(0, context.currentTime);
+
+      faceMicStreamRef.current = stream;
+      faceAudioContextRef.current = context;
+      faceAudioProcessorRef.current = processor;
+      faceAudioChunksRef.current = [];
+      faceCaptureSpeakerRef.current = speaker;
+
+      processor.onaudioprocess = (event) => {
+        if (faceCaptureSpeakerRef.current !== speaker) return;
+        const input = event.inputBuffer.getChannelData(0);
+        const copy = new Float32Array(input.length);
+        copy.set(input);
+        faceAudioChunksRef.current.push(copy);
       };
+      source.connect(processor);
+      processor.connect(muteGain);
+      muteGain.connect(context.destination);
+      if (context.state === "suspended") await context.resume();
 
-      recognition.onresult = (event: any) => {
-        let interim = "";
-        for (let i = 0; i < event.results.length; i++) {
-          interim += event.results[i][0].transcript + " ";
-        }
-        const text = interim.trim();
-        if (text) {
-          setCurrentSpokenText(text);
-        }
-      };
-
-      recognition.onerror = (event: any) => {
-        console.warn("Speech recognition notice:", event.error);
-        setActiveMic(null);
-      };
-
-      recognition.onend = async () => {
-        setActiveMic(null);
-        const captured = currentSpokenText.trim();
-        setCurrentSpokenText("");
-        if (captured.length > 0) {
-          await processVoiceUtterance(speaker, captured);
-        }
-      };
-
-      recognition.start();
-      recognitionRef.current = recognition;
-    } catch (err: any) {
-      toast.error("Microphone access failed", err?.message ?? String(err));
+      setCurrentSpokenText("Capturing audio for server transcription…");
+      setActiveMic(speaker);
+    } catch (err) {
+      toast.error("Microphone access failed", friendlyMessage(err));
+      faceMicStreamRef.current?.getTracks().forEach((track) => track.stop());
+      faceMicStreamRef.current = null;
       setActiveMic(null);
     }
   };
 
-  const stopListening = () => {
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.stop();
-      } catch { }
-      recognitionRef.current = null;
-    }
+  const stopListening = async () => {
+    const speaker = faceCaptureSpeakerRef.current;
+    const chunks = faceAudioChunksRef.current;
+    faceCaptureSpeakerRef.current = null;
+    faceAudioChunksRef.current = [];
+
+    try {
+      faceAudioProcessorRef.current?.disconnect();
+    } catch { }
+    faceAudioProcessorRef.current = null;
+    try {
+      await faceAudioContextRef.current?.close();
+    } catch { }
+    faceAudioContextRef.current = null;
+    faceMicStreamRef.current?.getTracks().forEach((track) => track.stop());
+    faceMicStreamRef.current = null;
     setActiveMic(null);
+    setCurrentSpokenText("");
+
+    if (speaker) await transcribeFaceAudio(speaker, chunks);
   };
 
   const processVoiceUtterance = async (speaker: "speaker1" | "speaker2", text: string) => {
