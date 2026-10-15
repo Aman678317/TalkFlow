@@ -118,6 +118,18 @@ class Settings(BaseSettings):
     deepl_api_url: str = "https://api-free.deepl.com/v2/translate"
     mt_http_url: str = ""
     mt_http_style: str = "opennmt"
+    # Azure is optional and server-side only. Translator credentials may be
+    # separate; adapters fall back to the Speech key/region for multi-service
+    # Azure resources.
+    azure_speech_key: str = ""
+    azure_speech_region: str = ""
+    azure_speech_language: str = "en-US"
+    azure_speech_auto_detect_languages: str = ""
+    azure_speech_voice_map: str = ""
+    azure_translator_key: str = ""
+    azure_translator_region: str = ""
+    azure_translator_endpoint: str = "https://api.cognitive.microsofttranslator.com"
+    azure_translator_api_version: str = "3.0"
     stt_provider: str = "auto"
     stt_model: str = "small"
     stt_device: str = "auto"

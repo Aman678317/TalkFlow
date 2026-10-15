@@ -26,7 +26,7 @@ from gt_ai.base import BaseProvider
 from gt_ai.model_router.router import ModelRouter, ProviderSpec
 from gt_ai.registry import create
 from gt_ai.types import (
-    AudioChunk, DetectionResult, Intent, ProviderHealth, ProviderUnavailable,
+    AudioChunk, DetectionResult, ProviderUnavailable,
     RouteDecision, Task, TranslationRequest, TranslationResult, TranscriptChunk,
 )
 
@@ -58,6 +58,22 @@ class AIFacade:
         name = env_map.get(task, "auto") or "auto"
         if name != "auto":
             return name
+        # Prefer the managed Azure path when its server-side credentials are
+        # present. Without credentials, retain the existing local order.
+        azure_ready = {
+            Task.STT: bool(settings.azure_speech_key and settings.azure_speech_region),
+            Task.TTS: bool(settings.azure_speech_key and settings.azure_speech_region),
+            Task.MT: bool(
+                (settings.azure_translator_key or settings.azure_speech_key)
+                and (settings.azure_translator_region or settings.azure_speech_region)
+            ),
+        }
+        if azure_ready.get(task):
+            return {
+                Task.STT: "azure_speech",
+                Task.MT: "azure_translator",
+                Task.TTS: "azure_speech_tts",
+            }[task]
         # auto: prefer real providers that can healthcheck; dev fallback last
         order = {
             Task.MT: ["neural_online", "deepl", "airllm", "madlad400", "nllb_ct2", "argos", "mt_http", "dev_echo"],
@@ -93,11 +109,25 @@ class AIFacade:
             }
         elif task == Task.MT and name == "mt_http":
             kwargs = {"url": settings.mt_http_url, "style": settings.mt_http_style}
+        elif task == Task.MT and name in ("azure_translator", "azure_mt", "azure"):
+            kwargs = {
+                "key": settings.azure_translator_key or settings.azure_speech_key,
+                "region": settings.azure_translator_region or settings.azure_speech_region,
+                "endpoint": settings.azure_translator_endpoint,
+                "api_version": settings.azure_translator_api_version,
+            }
         elif task == Task.STT and name == "faster_whisper":
             kwargs = {"model_size": settings.stt_model, "device": settings.stt_device,
                       "compute_type": settings.stt_compute_type, "cache_dir": cache}
         elif task == Task.STT and name == "stt_http":
             kwargs = {"url": settings.stt_http_url}
+        elif task == Task.STT and name in ("azure_speech", "azure_stt", "azure_speech_stt"):
+            kwargs = {
+                "key": settings.azure_speech_key,
+                "region": settings.azure_speech_region,
+                "default_language": settings.azure_speech_language,
+                "auto_detect_languages": settings.azure_speech_auto_detect_languages,
+            }
         elif task == Task.TTS and name == "kokoro":
             kwargs = {"model_path": f"{cache}/kokoro-v1.0.onnx",
                       "voices_path": f"{cache}/kokoro-voices.json"}
@@ -105,6 +135,12 @@ class AIFacade:
             kwargs = {"model_dir": f"{cache}/piper"}
         elif task == Task.TTS and name == "tts_http":
             kwargs = {"url": settings.tts_http_url}
+        elif task == Task.TTS and name in ("azure_speech_tts", "azure_tts", "azure_speech"):
+            kwargs = {
+                "key": settings.azure_speech_key,
+                "region": settings.azure_speech_region,
+                "voice_map": settings.azure_speech_voice_map,
+            }
         elif task == Task.LANG_DETECT and name == "fasttext":
             kwargs = {"model_path": settings.fasttext_lid_model or f"{cache}/lid.176.ftz"}
         elif task == Task.SUMMARIZE and name == "llm_http":
