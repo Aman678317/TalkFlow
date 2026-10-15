@@ -393,3 +393,45 @@ class TestNeuralOnlineFallback:
         assert res.text.strip()
         # Should not be the input echoed back
         assert res.text.strip().lower() != "hello world."
+
+    @pytest.mark.asyncio
+    async def test_echoed_fallback_is_rejected_before_next_provider(self, monkeypatch) -> None:
+        import gt_ai.translation.neural_online as module
+        from gt_ai.translation.neural_online import NeuralOnlineTranslationProvider
+        from gt_ai.types import Intent, TranslationRequest
+
+        async def echoed_mymemory(*_args, **_kwargs):
+            return "Hello world.", []
+
+        async def real_google(*_args, **_kwargs):
+            return "नमस्ते दुनिया।", []
+
+        monkeypatch.setattr(module, "query_mymemory", echoed_mymemory)
+        monkeypatch.setattr(module, "query_google_web", real_google)
+        provider = NeuralOnlineTranslationProvider(api_key="", api_url="")
+        result = await provider.translate(TranslationRequest(
+            text="Hello world.", source_lang="en", target_lang="hi",
+            intent=Intent.LATENCY_OPTIMIZED,
+        ))
+
+        assert result.text == "नमस्ते दुनिया।"
+        assert result.provider == "google_web"
+
+    @pytest.mark.asyncio
+    async def test_all_echoed_fallbacks_fail_closed(self, monkeypatch) -> None:
+        import gt_ai.translation.neural_online as module
+        from gt_ai.translation.neural_online import NeuralOnlineTranslationProvider
+        from gt_ai.types import Intent, ProviderUnavailable, TranslationRequest
+
+        async def echoed(*_args, **_kwargs):
+            return "This sentence has no offline template.", []
+
+        monkeypatch.setattr(module, "query_mymemory", echoed)
+        monkeypatch.setattr(module, "query_google_web", echoed)
+        provider = NeuralOnlineTranslationProvider(api_key="", api_url="")
+
+        with pytest.raises(ProviderUnavailable):
+            await provider.translate(TranslationRequest(
+                text="This sentence has no offline template.", source_lang="en", target_lang="hi",
+                intent=Intent.LATENCY_OPTIMIZED,
+            ))
