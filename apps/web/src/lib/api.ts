@@ -106,6 +106,11 @@ async function doRefreshRequest(): Promise<boolean> {
     return true;
   }
 
+  // A page can start its silent cookie refresh at the same time that the user
+  // submits login or signup. If that request finishes with the old unauthenticated
+  // result after the explicit auth call succeeds, it must not clear the new session.
+  const tokenAtStart = accessToken;
+
   try {
     // Cookie-only: the HttpOnly refresh cookie authenticates this call; we never
     // hold or send a refresh token from JS. /auth/refresh is CSRF-exempt server-side.
@@ -116,10 +121,16 @@ async function doRefreshRequest(): Promise<boolean> {
       body: "{}",
     });
     if (!r.ok) {
-      if (r.status === 401) {
+      if (r.status === 401 && accessToken === tokenAtStart) {
         broadcastLogout();
       }
       return false;
+    }
+    // An explicit login/signup or another tab may have established a newer token
+    // while this request was in flight. Preserve that token rather than replacing
+    // it with a stale cookie-refresh response.
+    if (accessToken !== tokenAtStart) {
+      return true;
     }
     const data = await r.json();
     // The server rotates the cookie (Set-Cookie) and blanks refresh in the body;
