@@ -15,6 +15,7 @@ log = logging.getLogger("app.db")
 
 _engine: AsyncEngine | None = None
 _sessionmaker: async_sessionmaker[AsyncSession] | None = None
+_db_users = 0
 
 
 def _normalize_db_url(url: str) -> str:
@@ -76,7 +77,15 @@ def _make_engine(url: str) -> AsyncEngine:
 
 async def init_db() -> None:
     """Create engine; fall back to SQLite in non-production if PG is down."""
-    global _engine, _sessionmaker
+    global _engine, _sessionmaker, _db_users
+    # Multiple FastAPI app instances can share this process (for example, a
+    # test suite may have more than one TestClient alive at once).  The engine
+    # and session factory are process-wide, so each app must acquire a
+    # reference rather than replacing the shared state.
+    if _engine is not None and _sessionmaker is not None:
+        _db_users += 1
+        return
+
     url = settings.database_url
     try:
         engine = _make_engine(url)
@@ -91,6 +100,7 @@ async def init_db() -> None:
         engine = _make_engine(url)
     _engine = engine
     _sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    _db_users = 1
     log.info("database ready: %s", url.split("@")[-1])
 
 
@@ -120,11 +130,20 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
 
 
 async def close_db() -> None:
-    global _engine, _sessionmaker
-    if _engine is not None:
-        await _engine.dispose()
+    global _engine, _sessionmaker, _db_users
+    if _engine is None:
+        _sessionmaker = None
+        _db_users = 0
+        return
+
+    if _db_users > 1:
+        _db_users -= 1
+        return
+
+    await _engine.dispose()
     _engine = None
     _sessionmaker = None
+    _db_users = 0
 
 
 async def healthcheck() -> bool:
