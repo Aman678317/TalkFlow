@@ -354,6 +354,37 @@ async def test_audio_backpressure_drops_chunks_and_signals_degraded(sample_rt_se
 
 
 @pytest.mark.asyncio
+async def test_stop_speaker_flushes_valid_short_utterance(sample_rt_session):
+    """Stopping capture must not drop a 50-ms-or-longer final buffer."""
+    session = sample_rt_session
+    pipe = pl.get_pipeline(session)
+    speaker = RtParticipant(
+        participant_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        display_name="Speaker",
+        speak_lang="en",
+        hear_lang="en",
+        connected=True,
+    )
+    manager.add_participant(session, speaker)
+    pipe.start_speaker(speaker)
+    utterance = pipe.utterances[speaker.participant_id]
+    utterance.in_speech = True
+    utterance.buffer = bytearray(b"\x01\x02" * (pl.MIN_AUDIO_BYTES // 2))
+    utterance.started_at_ms = 123
+    utterance.capture_started = 456.0
+
+    with patch.object(pipe, "_finalize_utterance", new_callable=AsyncMock) as finalize:
+        flush_task = pipe.stop_speaker(speaker.participant_id)
+        assert flush_task is not None
+        await flush_task
+
+    finalize.assert_awaited_once()
+    assert finalize.await_args.kwargs["forced"] is True
+    assert len(finalize.await_args.kwargs["audio_bytes"]) == pl.MIN_AUDIO_BYTES
+
+
+@pytest.mark.asyncio
 async def test_stale_audio_rejection_prevents_overlap(sample_rt_session):
     """When a speaker finishes a newer segment, older in-flight segments are
     classified as stale and dropped to prevent late audio overlap.

@@ -417,7 +417,9 @@ async def _handle_event(ws: WebSocket, session, rp: RtParticipant, event) -> Non
             await pipe.feed_audio(rp.participant_id, pcm)
 
     elif event.type == ClientEventType.AUDIO_STOP:
-        pipe.stop_speaker(rp.participant_id)
+        flush_task = pipe.stop_speaker(rp.participant_id)
+        if flush_task is not None:
+            await flush_task
         await manager.broadcast(session, ServerEventType.AUDIO_STOPPED,
                                 {"participant_id": str(rp.participant_id)})
 

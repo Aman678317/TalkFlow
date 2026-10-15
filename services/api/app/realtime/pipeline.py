@@ -195,13 +195,47 @@ class MeetingPipeline:
                                    name=f"pipeline-{p.participant_id}")
         self.speaker_tasks[p.participant_id] = task
 
-    def stop_speaker(self, participant_id: uuid.UUID) -> None:
+    def stop_speaker(self, participant_id: uuid.UUID) -> asyncio.Task | None:
+        """Stop capture without discarding a valid in-flight final utterance.
+
+        The browser can send ``audio.stop`` while the VAD still considers the
+        speaker to be talking. Preserve the same 50-ms minimum used by normal
+        finalization, then let the WebSocket handler await the flush before it
+        announces ``audio.stopped``.
+        """
         task = self.speaker_tasks.pop(participant_id, None)
         self.audio_queues.pop(participant_id, None)
         self.vads.pop(participant_id, None)
+        utterance = self.utterances.get(participant_id)
+        participant = self.session.participants.get(str(participant_id))
+        flush_task: asyncio.Task | None = None
+        if (
+            not self._closed
+            and participant is not None
+            and utterance is not None
+            and utterance.in_speech
+            and len(utterance.buffer) >= MIN_AUDIO_BYTES
+        ):
+            audio = bytes(utterance.buffer)
+            utterance.buffer = bytearray()
+            utterance.in_speech = False
+            flush_task = asyncio.create_task(
+                self._finalize_utterance(
+                    participant,
+                    utterance,
+                    forced=True,
+                    audio_bytes=audio,
+                    start_ms=utterance.started_at_ms,
+                    capture_started=utterance.capture_started,
+                    utterance_id=utterance.utterance_id,
+                    seq=utterance.seq,
+                ),
+                name=f"stop-finalize-{participant_id}",
+            )
         self.utterances.pop(participant_id, None)
         if task:
             task.cancel()
+        return flush_task
 
     async def shutdown(self) -> None:
         self._closed = True
