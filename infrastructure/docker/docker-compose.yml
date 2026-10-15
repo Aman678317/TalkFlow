@@ -107,10 +107,16 @@ services:
 
   # GPU inference workers (profile "gpu"): dedicated, autoscaled in k8s
   inference-worker:
-    build: { context: ../.., dockerfile: infrastructure/docker/Dockerfile.api }
+    build: { context: ../.., dockerfile: infrastructure/docker/Dockerfile.api.gpu }
     profiles: [gpu]
     environment:
       <<: *api-env
+      GPU_AVAILABLE: "true"
+      TRANSLATION_PROVIDER: ${TRANSLATION_PROVIDER:-airllm}
+      AIRLLM_MODEL_ID: ${AIRLLM_MODEL_ID:-meta-llama/Llama-3.1-70B-Instruct}
+      AIRLLM_HF_TOKEN: ${AIRLLM_HF_TOKEN:-}
+      AIRLLM_LAYER_SHARDS_PATH: /models/airllm
+      HF_HOME: /models/huggingface
       STT_DEVICE: cuda
       STT_COMPUTE_TYPE: float16
     volumes: [model-cache:/models]

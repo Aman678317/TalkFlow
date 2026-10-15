@@ -1,0 +1,15 @@
+# Optional GPU worker dependencies. Do not add this file to the normal API image.
+# AirLLM streams one layer at a time, so Llama 3.x 70B can use a small GPU
+# working set, but the Hugging Face checkpoint and split shards still need large
+# persistent disk and may require a gated-model token.
+-r requirements.txt
+--extra-index-url https://download.pytorch.org/whl/cu124
+airllm==4.0.0
+torch==2.9.0
+transformers==4.49.0
+accelerate==1.2.1
+safetensors==0.8.0
+huggingface-hub==0.27.1
+scipy==1.15.1
+sentencepiece==0.2.0
+tqdm==4.67.1

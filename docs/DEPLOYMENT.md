@@ -13,6 +13,26 @@ docker compose -f infrastructure/docker/docker-compose.yml down
 The api container runs `alembic upgrade head` before serving (migration job inline;
 on k8s it's a separate Job).
 
+## Optional AirLLM GPU worker
+
+AirLLM is intentionally not part of the normal API image. Build the optional
+profile only on a host with the NVIDIA Container Toolkit and enough persistent
+disk for the selected Hugging Face checkpoint plus AirLLM's layer shards:
+
+```bash
+export AIRLLM_MODEL_ID=meta-llama/Llama-3.1-70B-Instruct
+export AIRLLM_HF_TOKEN=<server-side-token-if-the-model-is-gated>
+docker compose -f infrastructure/docker/docker-compose.yml \
+  --profile gpu up --build inference-worker
+```
+
+The profile uses `services/api/requirements-gpu.txt`, pins AirLLM and the CUDA
+PyTorch wheel, sets `TRANSLATION_PROVIDER=airllm`, and keeps the regular API,
+Vercel, and Render images CPU-safe. AirLLM's roughly 4 GB GPU working-set claim
+does not describe the total checkpoint or shard storage; do not put weights or
+`AIRLLM_HF_TOKEN` in Git. Set `AIRLLM_MODEL_ID` to another supported model if
+you have a non-gated checkpoint.
+
 ## Kubernetes
 
 `infrastructure/kubernetes/globaltalk.yaml`: namespace, Secret/ConfigMap (replace with

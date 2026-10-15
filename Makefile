@@ -1,6 +1,6 @@
 # GlobalTalk AI — developer workflow
 .PHONY: bootstrap dev api web test test-unit test-integration test-realtime verify-ai-stack \
-        models migrate lint build docker-up docker-down clean
+        models migrate lint build docker-up docker-gpu-up docker-down clean
 
 PY := python3
 PIP := pip
@@ -53,6 +53,8 @@ verify-ai-stack:
 ## docker full topology
 docker-up:
 	docker compose -f infrastructure/docker/docker-compose.yml up --build
+docker-gpu-up:
+	docker compose -f infrastructure/docker/docker-compose.yml --profile gpu up --build inference-worker
 docker-down:
 	docker compose -f infrastructure/docker/docker-compose.yml down
 
