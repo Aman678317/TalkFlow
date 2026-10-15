@@ -222,3 +222,23 @@ async def test_azure_stt_auto_detects_from_candidate_languages(monkeypatch):
     recognizer_kwargs = holder["kwargs"]
     assert "auto_detect_source_language_config" in recognizer_kwargs
     assert recognizer_kwargs["auto_detect_source_language_config"].kwargs["languages"]
+
+
+def test_ai_facade_prefers_azure_only_when_server_credentials_are_present(monkeypatch):
+    from app.ai import AIFacade
+    from app.config import settings
+    from gt_ai.types import Task
+
+    monkeypatch.setattr(settings, "stt_provider", "auto")
+    monkeypatch.setattr(settings, "translation_provider", "auto")
+    monkeypatch.setattr(settings, "tts_provider", "auto")
+    monkeypatch.setattr(settings, "azure_speech_key", "server-key")
+    monkeypatch.setattr(settings, "azure_speech_region", "eastus")
+    monkeypatch.setattr(settings, "azure_translator_key", "")
+    monkeypatch.setattr(settings, "azure_translator_region", "")
+
+    facade = AIFacade()
+
+    assert facade._configured_name(Task.STT) == "azure_speech"
+    assert facade._configured_name(Task.MT) == "azure_translator"
+    assert facade._configured_name(Task.TTS) == "azure_speech_tts"
