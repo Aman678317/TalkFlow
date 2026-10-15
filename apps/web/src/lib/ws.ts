@@ -229,9 +229,9 @@ export class MeetingSocket {
       if (jwt) params.set("token", jwt);
     }
     const q = params.toString();
-    // Resolve the API host exactly like REST traffic does (api.ts). A Vercel
-    // preview build has no baked VITE_API_BASE_URL, so without this the REST
-    // calls would hit same-origin while the WS fell back to Render and failed.
+    // Resolve the API host exactly like REST traffic does (api.ts). Production
+    // Vercel builds use the durable backend origin so WebSocket sessions and
+    // their database-backed seat credentials survive serverless invocations.
     const rawBase = getApiBaseUrl();
     let host = location.host;
     let customProto = proto;

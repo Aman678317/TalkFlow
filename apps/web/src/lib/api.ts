@@ -84,19 +84,29 @@ export function getAccessToken() {
   return accessToken;
 }
 
-export const getApiBaseUrl = (): string => {
-  if (typeof window !== "undefined" && window.location.hostname.endsWith(".vercel.app")) {
-    return "";
-  }
-  const envUrl = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim();
-  if (envUrl) {
-    return envUrl.replace(/\/+$/, "");
-  }
-  if (import.meta.env.PROD) {
-    return "https://talkflow-csbw.onrender.com";
-  }
-  return "";
-};
+export const DEFAULT_PRODUCTION_API_BASE_URL = "https://talkflow-csbw.onrender.com";
+
+/**
+ * Resolve the API origin used by both REST and WebSocket traffic.
+ *
+ * Vercel serves the SPA, but it is not a durable database or WebSocket host.
+ * The previous `.vercel.app` special case forced preview builds back to same-
+ * origin `/api` and `/ws` routes, which made login state disappear between
+ * serverless invocations and caused meeting seats to be rejected. A deployment
+ * may still override this with VITE_API_BASE_URL, but production defaults to
+ * the durable API service when no override is supplied.
+ */
+export function resolveApiBaseUrl(envUrl: string | undefined, isProduction: boolean): string {
+  const configured = envUrl?.trim().replace(/\/+$/, "");
+  if (configured) return configured;
+  return isProduction ? DEFAULT_PRODUCTION_API_BASE_URL : "";
+}
+
+export const getApiBaseUrl = (): string =>
+  resolveApiBaseUrl(
+    import.meta.env.VITE_API_BASE_URL as string | undefined,
+    import.meta.env.PROD,
+  );
 
 const BASE = getApiBaseUrl();
 
