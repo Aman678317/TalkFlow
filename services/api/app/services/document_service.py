@@ -431,7 +431,7 @@ async def _run_pipeline(db: AsyncSession, doc: M.Document) -> None:
         doc.char_count = sum(len(b.text) for b in translatable)
         await db.commit()
 
-    # --- translating with bounded concurrency and per-segment durability ----- #
+    # --- translating with context + bounded batch checkpoints ---------------- #
     await _set_status(db, doc, "translating", 25, "translating")
     detected = doc.source_lang
     if detected in ("auto", ""):
@@ -440,38 +440,16 @@ async def _run_pipeline(db: AsyncSession, doc: M.Document) -> None:
         doc.detected_lang = detected
         await db.commit()
 
-    # A single AsyncSession must not be used by concurrent coroutines. Run the
-    # provider calls in bounded batches but keep each DB write in this coroutine.
-    # This avoids the old one-network-roundtrip-per-block bottleneck without
-    # corrupting SQLAlchemy session state or losing completed translations.
-    batch_size = max(1, min(5, int(getattr(settings, "document_translation_concurrency", 4))))
     total = len(translatable)
+    batch_size = max(1, min(5, int(getattr(settings, "document_translation_concurrency", 4))))
     recent: list[str] = []
     completed = 0
 
-    async def translate_one(block: DocBlock, source_context: list[str]) -> tuple[DocBlock, str]:
-        context = "\n".join(source_context[-MAX_BATCH_CONTEXT:])[-1000:] or None
-        out = await translate_text(
-            db, block.text, detected, doc.target_lang,
-            TranslateContext(
-                org_id=doc.org_id, user_id=doc.created_by, product="document",
-                domain=doc.domain, glossary_id=doc.glossary_id,
-                style_profile_id=doc.style_profile_id,
-                context=context,
-                persist=False, meter=False,  # metered per-document below
-            ))
-        return block, out.result.text
-
-    # Translate in batches: provider concurrency is bounded; DB access is
-    # deliberately sequential because translate_text uses this AsyncSession.
-    # For safe parallel provider inference, the translation service needs a
-    # session-per-task API; a gather() over this session would be unsafe.
-    # Batch here captures context and commits/checkpoints in small increments.
+    # This session is shared with translate_text; don't concurrently call it.
+    # Checkpoint each small batch so completed segment translations survive a
+    # retry, while remaining within a predictable provider request cadence.
     for batch_start in range(0, total, batch_size):
         batch = translatable[batch_start:batch_start + batch_size]
-        # Process in order while passing the recent source text as context.
-        # The bounded chunk boundary enables progress/checkpointing and keeps
-        # context windows stable, even when provider latency varies.
         for b in batch:
             out = await translate_text(
                 db, b.text, detected, doc.target_lang,
@@ -483,6 +461,8 @@ async def _run_pipeline(db: AsyncSession, doc: M.Document) -> None:
                     persist=False, meter=False,
                 ))
             b.translated = out.result.text
+            # Context must be source text, not the prior translation, so
+            # downstream segments never use generated translations as source.
             recent.append(b.text)
             recent = recent[-MAX_BATCH_CONTEXT:]
             completed += 1
