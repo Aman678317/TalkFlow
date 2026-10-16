@@ -495,9 +495,36 @@ async def _run_pipeline(db: AsyncSession, doc: M.Document) -> None:
     # --- quality check ------------------------------------------------------ #
     await _set_status(db, doc, "quality_check", 95, "quality_check")
     empty = sum(1 for b in translatable if not (b.translated or "").strip())
-    if empty > len(translatable) * 0.2:
+    failed = [b.index for b in translatable if not (b.translated or "").strip()]
+    source_chars = sum(len(b.text) for b in translatable)
+    translated_chars = sum(len((b.translated or "").strip()) for b in translatable)
+    translated_blocks = sum(1 for b in translatable if (b.translated or "").strip())
+    expected_pages = len({b.page for b in blocks})
+    translated_pages = len({b.page for b in translatable if (b.translated or "").strip()})
+    doc_coverage = {
+        "source_blocks": len(translatable),
+        "translated_blocks": translated_blocks,
+        "failed_block_indices": failed[:100],
+        "source_characters": source_chars,
+        "translated_characters": translated_chars,
+        "source_pages_with_text": expected_pages,
+        "translated_pages_with_text": translated_pages,
+        "ocr_used": any(bool(b.ctx.get("ocr")) for b in blocks),
+    }
+    log.info("document coverage document_id=%s coverage=%s", doc.id, doc_coverage)
+    # Empty source blocks are excluded by the parser. Every eligible source
+    # block must now have a translation; a permissive percentage threshold
+    # previously allowed a document with missing paragraphs to be marked ready.
+    if empty:
         raise DocumentProcessingError(
-            f"Quality gate failed: {empty}/{len(translatable)} empty segments.")
+            f"Quality gate failed: {empty}/{len(translatable)} translatable blocks are empty. "
+            f"Failed indices: {failed[:20]}")
+    if translated_blocks != len(translatable):
+        raise DocumentProcessingError(
+            f"Quality gate failed: translated {translated_blocks}/{len(translatable)} blocks.")
+    if expected_pages and translated_pages != expected_pages:
+        raise DocumentProcessingError(
+            f"Quality gate failed: translated text coverage on {translated_pages}/{expected_pages} pages.")
 
     # --- meter document exactly once upon successful completion (idempotent) --- #
     doc_already_metered = False
