@@ -4,10 +4,8 @@ from app.services.document_service import DocBlock, _is_translatable, parse_txt,
 def test_parse_txt_preserves_non_translatable_segments_and_block_order():
     blocks = parse_txt(b"Hello world.\n\n42\n\nVisit https://example.com")
     assert [b.index for b in blocks] == list(range(len(blocks)))
-    assert [b.text for b in blocks] == ["Hello world.", "42", "Visit https://example.com"] or [
-        b.text for b in blocks
-    ] == ["Hello world.", "42", "Visit https://example.com"]
-    assert all(b.kind != "non_translatable" for b in blocks if b.text.strip())
+    assert [b.text for b in blocks] == ["Hello world.", "42", "Visit https://example.com"]
+    assert [b.kind for b in blocks] == ["text", "non_translatable", "text"]
 
 
 def test_reconstruct_txt_replaces_repeated_blocks_one_at_a_time():
