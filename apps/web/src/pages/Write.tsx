@@ -34,7 +34,7 @@ import {
   Lock, Mic, MicOff, PenTool, RefreshCw, RotateCcw,
   Search, Sparkles, TrendingDown, Unlock, Volume2, Wand2, X, Zap,
 } from 'lucide-react';
-import { api } from '@/lib/api';
+import { api, friendlyMessage } from '@/lib/api';
 import { Badge, Button, Card, Spinner } from '@/components/ui';
 import { toast } from '@/stores/toasts';
 import { cn } from '@/lib/utils';
@@ -240,7 +240,6 @@ const CLIENT_SPELLING_RULES: RuleDef[] = [
   { pattern: /\b(?:fridy|fryday)\b/gi, replacement: "Friday", diff_type: "spelling", explanation: "Corrected spelling of 'Friday'" },
   { pattern: /\b(?:satday|saterday)\b/gi, replacement: "Saturday", diff_type: "spelling", explanation: "Corrected spelling of 'Saturday'" },
   { pattern: /\b(?:sundy|sunnday)\b/gi, replacement: "Sunday", diff_type: "spelling", explanation: "Corrected spelling of 'Sunday'" },
-  { pattern: /\baman\b/g, replacement: "Aman", diff_type: "spelling", explanation: "Capitalized personal name 'Aman'" },
   { pattern: /\b(?:transaltion|transaltions|traslation|traslations|translaton|translatons)\b/gi, replacement: "translation", diff_type: "spelling", explanation: "Fixed misspelled word 'translation'" },
   { pattern: /\b(?:translater|translaters|traslater)\b/gi, replacement: "translator", diff_type: "spelling", explanation: "Fixed misspelled word 'translator'" },
   { pattern: /\b(?:speling|speeling|spellinge|spelin)\b/gi, replacement: "spelling", diff_type: "spelling", explanation: "Fixed misspelled word 'spelling'" },
@@ -340,8 +339,6 @@ const CLIENT_SPELLING_RULES: RuleDef[] = [
   { pattern: /\bbtw\b/gi, replacement: "by the way", diff_type: "spelling", explanation: "Expanded 'btw' to 'by the way'" },
   { pattern: /\bfyi\b/gi, replacement: "for your information", diff_type: "spelling", explanation: "Expanded 'fyi' to 'for your information'" },
   { pattern: /\basap\b/gi, replacement: "as soon as possible", diff_type: "spelling", explanation: "Expanded 'asap' to 'as soon as possible'" },
-  { pattern: /\blol\b/gi, replacement: "funny", diff_type: "spelling", explanation: "Replaced informal 'lol' with 'funny'" },
-  { pattern: /\bbro\b/gi, replacement: "colleague", diff_type: "spelling", explanation: "Replaced casual 'bro' with 'colleague'" },
   { pattern: /\binna\b/gi, replacement: "in a", diff_type: "spelling", explanation: "Expanded 'inna' to 'in a'" },
   { pattern: /\bllife\b/gi, replacement: "life", diff_type: "spelling", explanation: "Fixed misspelled word 'life'" },
   { pattern: /\benjoey\b/gi, replacement: "enjoy", diff_type: "spelling", explanation: "Fixed misspelled word 'enjoy'" },
@@ -1160,7 +1157,6 @@ const WORD_ALTERNATIVES_MAP: Record<string, string[]> = {
   translation: ["interpretation", "rendering", "transcription", "version"],
   monday: ["workday", "start of the week", "weekday"],
   name: ["identity", "designation", "full name"],
-  aman: ["Aman", "author", "speaker"],
   mad: ["upset", "angry", "distressed", "frustrated", "bothered"],
   your: ["one's", "personal", "individual"],
   day: ["workday", "time", "schedule", "afternoon"],
@@ -1320,421 +1316,6 @@ function computeReadability(text: string): ReadabilityMetrics {
   };
 }
 
-/* ─────────────────── Client Text Improvement Engine ─────────────────── */
-
-function segmentRunOnsClient(text: string): { text: string; diffs: WriteDiff[] } {
-  let segmented = text;
-  const diffs: WriteDiff[] = [];
-
-  const greetingRegex = /([a-zA-Z0-9])\s+(hello|hi|hey|greetings)\b/gi;
-  segmented = segmented.replace(greetingRegex, (_, char, greet) => {
-    const repl = `${char}. ${greet.charAt(0).toUpperCase() + greet.slice(1).toLowerCase()},`;
-    diffs.push({
-      original: `${char} ${greet}`,
-      replacement: repl,
-      diff_type: "punctuation",
-      explanation: "Inserted sentence boundary before greeting and added comma",
-    });
-    return repl;
-  });
-
-  const predicateWords = "(?:available|unavailable|free|busy|done|finished|ready|completed|scheduled|cancelled|submitted)";
-  const newSubjectOpeners = "(?:my\\s+\\w+|our\\s+\\w+|the\\s+\\w+|your\\s+\\w+|I\\s+\\w+|we\\s+\\w+|he\\s+\\w+|she\\s+\\w+|they\\s+\\w+|it\\s+\\w+|this\\s+\\w+|that\\s+\\w+|please\\b|kindly\\b|also\\b|furthermore\\b)";
-  const boundaryRegex = new RegExp(`\\b(${predicateWords})\\s+(${newSubjectOpeners})`, "gi");
-  segmented = segmented.replace(boundaryRegex, (_, pred, clause) => {
-    const clauseCap = clause.charAt(0).toUpperCase() + clause.slice(1);
-    const repl = `${pred}. ${clauseCap}`;
-    diffs.push({
-      original: `${pred} ${clause}`,
-      replacement: repl,
-      diff_type: "punctuation",
-      explanation: "Separated run-on clause with a period and capitalized new sentence",
-    });
-    return repl;
-  });
-
-  const startGreetRegex = /^(Hello|Hi|Hey|Greetings)\s+([A-Za-z])/;
-  if (startGreetRegex.test(segmented)) {
-    segmented = segmented.replace(startGreetRegex, (_, greet, nextChar) => {
-      const repl = `${greet}, ${nextChar.toUpperCase()}`;
-      diffs.push({
-        original: `${greet} ${nextChar}`,
-        replacement: repl,
-        diff_type: "punctuation",
-        explanation: "Added comma following greeting",
-      });
-      return repl;
-    });
-  }
-
-  return { text: segmented, diffs };
-}
-
-function formatSentenceTerminalsClient(text: string): string {
-  const cleaned = text.replace(/([.!?]){2,}/g, "$1");
-  const sentences = cleaned.split(/(?<=[.!?])\s+/).filter(Boolean);
-  if (!sentences.length) return text;
-  const questionStarters = [
-    "are you", "is it", "is there", "are there", "how are", "how is", "how do", "how did",
-    "what is", "what are", "what do", "what did", "can you", "could you", "would you",
-    "do you", "did you", "have you", "has it", "why do", "why is", "why are", "where is",
-    "where are", "who is", "who are"
-  ];
-  const formatted = sentences.map((s) => {
-    const trimmed = s.replace(/([.!?]){2,}/g, "$1").trim();
-    const lower = trimmed.toLowerCase();
-    const isQuestion = questionStarters.some((q) => lower.startsWith(q)) || lower.endsWith("?");
-    if (isQuestion) {
-      return trimmed.replace(/[.!?]+$/, "") + "?";
-    }
-    return trimmed.replace(/[.!?]+$/, "") + ".";
-  }).join(" ");
-  return formatted.replace(/([.!?]){2,}/g, "$1");
-}
-
-function generateAlternativesClient(improved: string, _style: string, _tone: string): string[] {
-  const alts: string[] = [];
-  const text = improved.trim();
-  const lower = text.toLowerCase();
-
-  // Pattern A: Greeting + Name + Question
-  const isNameIntro = lower.includes("my name is") || lower.includes("i'm ") || lower.includes("i am ");
-  const isGreet = ["hello", "hi", "hey", "greetings"].some(g => lower.startsWith(g));
-  if (isGreet && isNameIntro) {
-    const nameMatch = text.match(/\b(?:name\s+is|i'm|i\s+am)\s+([A-Z][a-zA-Z]+)/);
-    const name = nameMatch ? nameMatch[1] : "Aman";
-    if (lower.includes("mad")) {
-      const cands = [
-        `Hello, I'm ${name}. Is it all right if I ask whether you are well?`,
-        `Hello, I'm ${name}, and I'm wondering if you are upset about something?`,
-        `Hello. My name is ${name}. Is everything all right with you?`,
-        `Hi, my name is ${name}. Are you doing okay today?`,
-      ];
-      for (const c of cands) {
-        if (c.toLowerCase() !== text.toLowerCase() && !alts.includes(c)) alts.push(c);
-      }
-    } else {
-      const cands = [
-        `Hello, I'm ${name}. I hope you are having a wonderful day.`,
-        `Hi, my name is ${name}. How are you doing today?`,
-        `Greetings, I am ${name}. I hope everything is going smoothly for you.`,
-      ];
-      for (const c of cands) {
-        if (c.toLowerCase() !== text.toLowerCase() && !alts.includes(c)) alts.push(c);
-      }
-    }
-  }
-
-  // Pattern B: Example of badly written text / grammar mistakes
-  const isGrammarSample = (lower.includes("badly written text") || lower.includes("poorly written") || lower.includes("example of")) && (lower.includes("grammatical errors") || lower.includes("improvement"));
-  if (isGrammarSample) {
-    let dayInq1 = "";
-    let dayInq2 = "";
-    let dayInq3 = "";
-    if (lower.includes("monday")) {
-      dayInq1 = "I hope you are having a productive Monday.";
-      dayInq2 = "Are you having a great Monday?";
-      dayInq3 = "How is your Monday going?";
-    } else if (lower.includes("day")) {
-      dayInq1 = "I hope your day is going well.";
-      dayInq2 = "Are you having a pleasant day?";
-      dayInq3 = "How is your day going?";
-    }
-
-    const c1 = `This draft illustrates poorly written text containing several grammatical errors that requires refinement.${dayInq1 ? " " + dayInq1 : ""}`;
-    const c2 = `Here is a sample of unpolished writing containing numerous grammar mistakes and needing correction.${dayInq2 ? " " + dayInq2 : ""}`;
-    const c3 = `This text demonstrates badly written prose with several grammatical flaws that need fixing.${dayInq3 ? " " + dayInq3 : ""}`;
-
-    for (const c of [c1, c2, c3]) {
-      if (c.toLowerCase() !== text.toLowerCase() && !alts.includes(c)) alts.push(c);
-    }
-  }
-
-  // Pattern C: Meeting Unavailability
-  const isMeeting = lower.includes("meeting") && (lower.includes("available") || lower.includes("attend"));
-  if (isMeeting) {
-    const c1 = "Hello! I have a meeting today, so I won't be available.";
-    const c2 = "Hi, I have a meeting today and won't be able to make it.";
-    const c3 = "Due to a prior scheduled commitment, I will not be available today.";
-    for (const c of [c1, c2, c3]) {
-      if (c.toLowerCase() !== text.toLowerCase() && !alts.includes(c)) alts.push(c);
-    }
-  }
-
-  // General Sentence Variations
-  if (alts.length < 3) {
-    const sentences = text.split(/(?<=[.!?])\s+/).filter(Boolean);
-    const transformFormal = (s: string) =>
-      s.replace(/\bThis is an example\b/gi, "This serves as an example")
-       .replace(/\bbadly written text\b/gi, "poorly structured writing")
-       .replace(/\bhas many grammatical errors\b/gi, "contains multiple syntax errors")
-       .replace(/\bneeds improvement\b/gi, "requires refinement")
-       .replace(/\bAre you having a good\b/gi, "I trust you are having a productive")
-       .replace(/\bwent to the store\b/gi, "visited the store")
-       .replace(/\bbought some apples\b/gi, "purchased some apples")
-       .replace(/\bvery expensive\b/gi, "prohibitively expensive")
-       .replace(/\bso I didn't buy them\b/gi, "consequently, I decided against purchasing them")
-       .replace(/\bso I didn't buy it\b/gi, "consequently, I refrained from purchasing it")
-       .replace(/\bdidn't buy\b/gi, "did not purchase")
-       .replace(/\bhas three cars\b/gi, "possesses three vehicles")
-       .replace(/\bhe said that\b/gi, "he stated that")
-       .replace(/\bwants to learn\b/gi, "aims to acquire proficiency in")
-       .replace(/\bbecause it helps him\b/gi, "as it will facilitate his progress")
-       .replace(/\bdoes not work by itself\b/gi, "fails to function autonomously")
-       .replace(/\badd a system to handle all these corrections\b/gi, "integrate an automated system to handle all these corrections")
-       .replace(/\bIch habe gestern ein Buch gelesen, und es war sehr interessant\b/gi, "Gestern habe ich ein Buch gelesen, welches sich als überaus lesenswert erwies")
-       .replace(/\bsehr interessant\b/gi, "außerordentlich aufschlussreich")
-       .replace(/\bYo tengo un gato que es muy bonito y ayer nosotros comimos pizza\b/gi, "Tengo un gato muy hermoso y ayer degustamos pizza")
-       .replace(/\bmuy bonito\b/gi, "sumamente hermoso");
-
-    const transformDirect = (s: string) =>
-      s.replace(/\bThis is an example\b/gi, "Here is an example")
-       .replace(/\bbadly written text\b/gi, "rough text")
-       .replace(/\bhas many grammatical errors\b/gi, "with grammar mistakes")
-       .replace(/\bneeds improvement\b/gi, "needing fixes")
-       .replace(/\bHello,\s*/gi, "Hello. ")
-       .replace(/\bwent to the store and bought some apples\b/gi, "went to the shop for apples")
-       .replace(/\bvery expensive, so I didn't buy them\b/gi, "too pricey, so I didn't buy any")
-       .replace(/\bvery expensive, so I didn't buy it\b/gi, "too pricey, so I didn't buy it")
-       .replace(/\bhas three cars and he said that he wants to learn\b/gi, "owns three cars and wants to learn")
-       .replace(/\bbecause it helps him\b/gi, "because it helps")
-       .replace(/\bdoes not work by itself to correct sentences\b/gi, "doesn't autocorrect sentences")
-       .replace(/\badd a system to handle all these corrections\b/gi, "add a system to handle corrections")
-       .replace(/\bIch habe gestern ein Buch gelesen, und es war sehr interessant\b/gi, "Gestern las ich ein Buch. Es war sehr interessant")
-       .replace(/\bsehr interessant\b/gi, "spannend")
-       .replace(/\bYo tengo un gato que es muy bonito y ayer nosotros comimos pizza\b/gi, "Tengo un gato lindo y ayer cenamos pizza")
-       .replace(/\bmuy bonito\b/gi, "lindo");
-
-    const transformFriendly = (s: string) =>
-      s.replace(/\bHello,\s*/gi, "Hello! ")
-       .replace(/\bThis is an example\b/gi, "This is a sample")
-       .replace(/\bbadly written text\b/gi, "unpolished text")
-       .replace(/\bneeds improvement\b/gi, "that needs polishing")
-       .replace(/\bAre you having a good\b/gi, "Hope you're having a great")
-       .replace(/\bYesterday I went to the store and bought some apples\b/gi, "I popped by the store yesterday to get some apples")
-       .replace(/\bwent to the store and bought some apples\b/gi, "stopped by the store to grab some apples")
-       .replace(/\bthey were very expensive, so I didn't buy them\b/gi, "they were way too pricey, so I didn't end up buying any")
-       .replace(/\bit was very expensive, so I didn't buy it\b/gi, "it was super expensive, so I passed on it")
-       .replace(/\bhas three cars and he said that he wants to learn\b/gi, "has three cars and mentioned he'd love to learn")
-       .replace(/\bbecause it helps him\b/gi, "since it really helps him out")
-       .replace(/\bdoes not work by itself to correct sentences\b/gi, "doesn't seem to correct sentences by itself")
-       .replace(/\badd a system to handle all these corrections\b/gi, "set up a system to handle all of these corrections")
-       .replace(/\bIch habe gestern ein Buch gelesen, und es war sehr interessant\b/gi, "Ich habe gestern ein tolles Buch gelesen – es war wirklich super interessant!")
-       .replace(/\bsehr interessant\b/gi, "total faszinierend")
-       .replace(/\bYo tengo un gato que es muy bonito y ayer nosotros comimos pizza\b/gi, "¡Tengo un gatito precioso y ayer comimos pizza juntos!")
-       .replace(/\bmuy bonito\b/gi, "precioso");
-
-    const var1 = sentences.map(transformFormal).join(" ");
-    const var2 = sentences.map(transformDirect).join(" ");
-    const var3 = sentences.map(transformFriendly).join(" ");
-
-    for (const v of [var1, var2, var3]) {
-      if (v && v.toLowerCase() !== text.toLowerCase() && !alts.includes(v)) {
-        alts.push(v);
-      }
-    }
-  }
-
-  return alts
-    .filter((a, i, arr) => a.toLowerCase() !== text.toLowerCase() && arr.indexOf(a) === i)
-    .slice(0, 3);
-}
-
-/* ──────────────────── LanguageTool Universal AI Client ─────────────────── */
-
-interface LanguageToolMatch {
-  message: string;
-  shortMessage?: string;
-  offset: number;
-  length: number;
-  replacements: { value: string }[];
-  rule?: {
-    id: string;
-    issueType?: string;
-    category?: { id: string; name: string };
-  };
-}
-
-async function queryLanguageTool(
-  text: string,
-  lang = 'en'
-): Promise<{ matches: LanguageToolMatch[]; detectedLang?: string } | null> {
-  if (!text || text.trim().length < 3) return null;
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3500);
-    const ltLang = lang === 'auto' ? 'auto' : (lang === 'en' ? 'en-US' : lang);
-    const params = new URLSearchParams({
-      text,
-      language: ltLang,
-    });
-    const resp = await fetch('https://api.languagetool.org/v2/check', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Accept': 'application/json',
-      },
-      body: params.toString(),
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-    if (!resp.ok) return null;
-    const data = await resp.json();
-    return {
-      matches: data.matches || [],
-      detectedLang: data.language?.detectedLanguage?.code?.slice(0, 2),
-    };
-  } catch (err) {
-    console.warn("LanguageTool fetch skipped or timed out:", err);
-    return null;
-  }
-}
-
-function improveTextClient(
-  text: string,
-  style: string,
-  tone: string,
-  correctionsOnly = false,
-  lang = "en",
-  ltResult?: { matches: LanguageToolMatch[]; detectedLang?: string } | null
-): WriteResponse {
-  // Pre-normalization: separate attached punctuation (e.g. "improvement.betten" -> "improvement. betten")
-  let improved = text.replace(/([.!?,;:])([a-zA-Z])/g, "$1 $2").trim();
-  const diffs: WriteDiff[] = [];
-
-  // 0. LanguageTool Online AI layer (if matches returned)
-  if (ltResult && ltResult.matches.length > 0) {
-    const sortedMatches = [...ltResult.matches].sort((a, b) => b.offset - a.offset);
-    for (const match of sortedMatches) {
-      if (!match.replacements || match.replacements.length === 0) continue;
-      const offset = match.offset;
-      const length = match.length;
-      if (offset + length > improved.length) continue;
-      const original = improved.slice(offset, offset + length);
-      const replacement = match.replacements[0].value;
-      if (!original || replacement === original) continue;
-
-      const diffType = match.rule?.issueType === 'misspelling' ? 'spelling'
-        : match.rule?.category?.id === 'PUNCTUATION' ? 'punctuation'
-        : 'grammar';
-
-      diffs.unshift({
-        original,
-        replacement,
-        diff_type: diffType,
-        explanation: match.message || match.shortMessage || `Corrected "${original}" to "${replacement}"`,
-      });
-
-      // Populate word alternatives for interactive popover
-      const cleanRepl = replacement.toLowerCase().trim();
-      const altWords = match.replacements.slice(0, 6).map((r) => r.value).filter((v) => v.toLowerCase() !== cleanRepl);
-      if (altWords.length > 0) {
-        WORD_ALTERNATIVES_MAP[cleanRepl] = altWords;
-      }
-
-      improved = improved.slice(0, offset) + replacement + improved.slice(offset + length);
-    }
-  }
-
-  // 1. Spelling corrections
-  for (const rule of CLIENT_SPELLING_RULES) {
-    const rx = new RegExp(rule.pattern.source, rule.pattern.flags);
-    const matches = Array.from(improved.matchAll(rx));
-    for (let i = matches.length - 1; i >= 0; i--) {
-      const m = matches[i];
-      if (m.index === undefined) continue;
-      const orig = m[0];
-      let repl = orig.replace(rx, rule.replacement);
-      if (orig === orig.toUpperCase()) {
-        repl = repl.toUpperCase();
-      } else if (orig[0] === orig[0].toUpperCase()) {
-        repl = repl.charAt(0).toUpperCase() + repl.slice(1);
-      }
-      diffs.push({ original: orig, replacement: repl, diff_type: rule.diff_type, explanation: rule.explanation });
-      improved = improved.slice(0, m.index) + repl + improved.slice(m.index + orig.length);
-    }
-  }
-
-  // 2. Syntax & grammar restructuring
-  for (const rule of CLIENT_SYNTAX_RULES) {
-    const rx = new RegExp(rule.pattern.source, rule.pattern.flags);
-    const matches = Array.from(improved.matchAll(rx));
-    for (let i = matches.length - 1; i >= 0; i--) {
-      const m = matches[i];
-      if (m.index === undefined) continue;
-      const orig = m[0];
-      let repl = orig.replace(rx, rule.replacement);
-      if (orig[0] === orig[0].toUpperCase()) {
-        repl = repl.charAt(0).toUpperCase() + repl.slice(1);
-      }
-      diffs.push({ original: orig, replacement: repl, diff_type: rule.diff_type, explanation: rule.explanation });
-      improved = improved.slice(0, m.index) + repl + improved.slice(m.index + orig.length);
-    }
-  }
-
-  // 3. Clause boundary & run-on segmentation
-  const segRes = segmentRunOnsClient(improved);
-  improved = segRes.text;
-  diffs.push(...segRes.diffs);
-
-  // 4. Punctuation & capitalization
-  improved = improved.replace(/(^|[.!?]\s+)([a-z])/g, (_, p1, p2) => p1 + p2.toUpperCase());
-  improved = improved.replace(/(^|\s)i(\s|[.,!?;]|$)/g, "$1I$2");
-  improved = improved.replace(/\s+([,.:;!?])/g, "$1");
-  improved = improved.replace(/([,.:;!?])(?=[a-zA-Z0-9])/g, "$1 ");
-  improved = improved.replace(/^(Hello|Hi|Greetings)\s+([A-Z])/g, "$1, $2");
-  improved = improved.trim();
-
-  // 5. Style adjustment (skipped if corrections only)
-  if (!correctionsOnly) {
-    if (style === "simple") {
-      improved = improved
-        .replace(/\bin order to\b/gi, "to")
-        .replace(/\bdue to the fact that\b/gi, "because")
-        .replace(/\bat this point in time\b/gi, "now")
-        .replace(/\bin the event that\b/gi, "if")
-        .replace(/\butilize\b/gi, "use")
-        .replace(/\bfacilitate\b/gi, "help");
-    } else if (style === "casual" || tone === "friendly") {
-      improved = improved.replace(/\bHello,\s*/i, "Hello! ");
-      improved = improved.replace(/\bwill not be available\b/i, "won't be available");
-    } else if (style === "academic") {
-      improved = improved.replace(/\bHello,\s*/i, "Greetings, ");
-      improved = improved.replace(/\bwill not be available\b/i, "consequently will be unavailable");
-      improved = improved.replace(/\buse\b/gi, "utilize");
-      improved = improved.replace(/\bshow\b/gi, "demonstrate");
-      improved = improved.replace(/\bgood\b/gi, "effective");
-      improved = improved.replace(/\bI want to\b/gi, "I intend to");
-      improved = improved.replace(/\bwant to\b/gi, "intend to");
-    } else if (tone === "direct") {
-      improved = improved.replace(/\bHello,\s*/i, "Hello. ");
-      improved = improved.replace(/\bwill not be available\b/i, "am unavailable");
-      improved = improved.replace(/\bI want to\b/gi, "I will");
-    } else if (style === "business" || tone === "professional") {
-      improved = improved.replace(/\bmake sure\b/gi, "ensure");
-      improved = improved.replace(/\bhelp\b/gi, "assist");
-      improved = improved.replace(/\bstart\b/gi, "commence");
-      improved = improved.replace(/\bI want to\b/gi, "I would like to");
-      improved = improved.replace(/\bwant to\b/gi, "would like to");
-    }
-  }
-
-  improved = formatSentenceTerminalsClient(improved);
-
-  const cleanAlts = generateAlternativesClient(improved, style, tone);
-
-  return {
-    original_text: text,
-    improved_text: improved,
-    language: lang,
-    style,
-    tone,
-    changes_count: diffs.length,
-    diffs,
-    alternatives: cleanAlts,
-  };
-}
-
 /* ────────────────────── Inline autocorrect (instant) ──────────────── */
 function applyInstantCorrections(text: string): string {
   if (!text) return text;
@@ -1771,7 +1352,6 @@ function applyInstantCorrections(text: string): string {
   corrected = corrected.replace(/\b(?:nme|nae)\b/gi, "name");
   corrected = corrected.replace(/\b(?:rea|aer)\b/gi, "are");
   corrected = corrected.replace(/\b(?:beteen|betten)\b/gi, "between");
-  corrected = corrected.replace(/\baman\b/g, "Aman");
   corrected = corrected.replace(/\b(?:mening|menign)\b/gi, "meaning");
   corrected = corrected.replace(/\b(?:imoprove|impove)\b/gi, "improve");
   corrected = corrected.replace(/\b(?:evething|evrything|everthing)\b/gi, "everything");
@@ -1797,6 +1377,7 @@ export default function WritePage() {
   const [tone, setTone] = useState('professional');
   const [correctionsOnly, setCorrectionsOnly] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [writeError, setWriteError] = useState<string | null>(null);
   const [result, setResult] = useState<WriteResponse | null>(null);
   const [viewMode, setViewMode] = useState<'clean' | 'diffs' | 'suggestions' | 'readability'>('clean');
   const [isEditingImproved, setIsEditingImproved] = useState(false);
@@ -1885,6 +1466,7 @@ export default function WritePage() {
     setLoading(true);
     setActivePopover(null);
     setIsEditingImproved(false);
+    setWriteError(null);
     const effectiveLang = language === 'auto' ? (detectedLang || 'en') : language;
     try {
       const res = await api<WriteResponse>('/api/v1/write', {
@@ -1902,18 +1484,12 @@ export default function WritePage() {
         setLoading(false);
         return;
       }
+      throw new Error('Writing provider returned no correction. Please retry.');
     } catch (err) {
-      console.warn("Backend /write API unavailable, running client writing engine", err);
+      setResult(null);
+      setWriteError(friendlyMessage(err));
+      setLoading(false);
     }
-
-    // Universal AI Language Engine (LanguageTool API fallback)
-    const ltRes = await queryLanguageTool(text, effectiveLang);
-    if (ltRes?.detectedLang && language === 'auto') {
-      setDetectedLang(ltRes.detectedLang);
-    }
-    const clientRes = improveTextClient(text, style, tone, correctionsOnly, effectiveLang, ltRes);
-    setResult(clientRes);
-    setLoading(false);
   }
 
   /** One-click commit: replace the source text with the rephrased version */
@@ -1927,37 +1503,20 @@ export default function WritePage() {
   /** Instant auto-fix button handler */
   const handleFixDraftNow = () => {
     if (!sourceText.trim()) return;
-    const fixed = applyInstantCorrections(sourceText);
-    setSourceText(fixed);
-    void runRewrite(fixed);
-    toast.success('Draft auto-corrected!');
+    const localHint = applyInstantCorrections(sourceText);
+    if (localHint !== sourceText) {
+      toast.info('Possible typos found', 'The original text was kept; the backend will decide which corrections are safe.');
+    }
+    void runRewrite(sourceText);
   };
 
   /** Instant autocorrect handler */
-  const handleSourceChange = useCallback((val: string, cursorOffset = 0) => {
+  const handleSourceChange = useCallback((val: string) => {
     if (val.length > MAX_CHARS) return;
-    if (!autoCorrectEnabled) {
-      setSourceText(val);
-      return;
-    }
-    // Check if word boundary (space, punctuation, or newline) was entered
-    const hasBoundary = /[\s.,!?;:]$/.test(val);
-    if (hasBoundary) {
-      const corrected = applyInstantCorrections(val);
-      const lengthDiff = corrected.length - val.length;
-      setSourceText(corrected);
-      if (textareaRef.current && cursorOffset > 0) {
-        const newPos = Math.max(0, cursorOffset + lengthDiff);
-        requestAnimationFrame(() => {
-          if (textareaRef.current) {
-            textareaRef.current.setSelectionRange(newPos, newPos);
-          }
-        });
-      }
-    } else {
-      setSourceText(val);
-    }
-  }, [autoCorrectEnabled]);
+    // Keep the user's exact text. Local heuristics are hints only; the
+    // authenticated backend remains the source of truth for corrections.
+    setSourceText(val);
+  }, []);
 
   // Handle word click to open the alternatives popover
   const handleWordClick = (
@@ -2163,35 +1722,37 @@ export default function WritePage() {
     : 'text-slate-400';
 
   return (
-    <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+    <div className="write-page mx-auto min-h-full max-w-[1480px] px-4 py-6 font-sans sm:px-6 lg:px-10 lg:py-8">
       {/* ── Top Header ── */}
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 pb-5">
+      <div className="mb-8 flex flex-wrap items-start justify-between gap-5">
         <div>
           <div className="flex items-center gap-2">
-            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-iris-600/10 text-iris-600">
-              <Sparkles className="h-5 w-5" />
+            <span className="flex h-10 w-10 items-center justify-center rounded-[14px] bg-ink-950 text-white shadow-[0_8px_20px_rgba(11,23,40,.16)]">
+              <Sparkles className="h-[18px] w-[18px]" />
             </span>
-            <h1 className="text-2xl font-bold tracking-tight text-slate-900">GlobalTalk Write</h1>
-            <Badge tone="iris" className="ml-1 text-[11px] font-semibold">Smart Writing Edition</Badge>
+            <div>
+              <h1 className="text-[28px] font-semibold leading-none tracking-[-0.04em] text-ink-950">GlobalTalk Write</h1>
+              <p className="mt-1 text-[11px] font-medium uppercase tracking-[0.14em] text-ink-400">Writing studio</p>
+            </div>
           </div>
-          <p className="mt-1 text-sm text-slate-500">
-            Perfect your writing with instant autocorrection, grammar fix, vocabulary upgrades, and tone tuning.
+          <p className="mt-4 max-w-xl text-[13px] leading-relaxed text-ink-500">
+            Make every sentence clearer, more natural, and ready to send. Your draft stays yours while verified improvements come from the backend.
           </p>
         </div>
 
         {/* Controls row */}
-        <div className="flex flex-wrap items-center gap-2.5">
+        <div className="flex flex-wrap items-center gap-2 rounded-[20px] border border-black/[.06] bg-white/80 p-1.5 shadow-[0_8px_28px_rgba(11,23,40,.06)] backdrop-blur-xl">
           {/* Language selector */}
           <div className="relative" ref={langDropdownRef}>
             <button
               onClick={() => setShowLangDropdown(!showLangDropdown)}
-              className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 shadow-xs"
+              className="flex h-9 items-center gap-1.5 rounded-[13px] border border-transparent bg-ink-50/80 px-3 text-xs font-medium text-ink-700 transition-colors hover:border-ink-200 hover:bg-white"
             >
               {currentLangLabel}
               <ChevronDown className="h-3.5 w-3.5 text-slate-400" />
             </button>
             {showLangDropdown && (
-              <div className="absolute top-full left-0 z-50 mt-1 w-56 rounded-xl border border-slate-200 bg-white shadow-xl py-1">
+              <div className="absolute left-0 top-full z-50 mt-2 w-56 rounded-2xl border border-black/[.06] bg-white py-1 shadow-[0_18px_50px_rgba(11,23,40,.16)]">
                 {LANGUAGES.map((l) => {
                   const label = l.code === 'auto'
                     ? `🌐 Auto-detect${detectedLang ? ` (${LANG_DISPLAY_NAMES[detectedLang] || detectedLang.toUpperCase()})` : ''}`
@@ -2201,8 +1762,8 @@ export default function WritePage() {
                       key={l.code}
                       onClick={() => { setLanguage(l.code); setShowLangDropdown(false); }}
                       className={cn(
-                        'w-full text-left px-3 py-2 text-xs hover:bg-slate-50 transition-colors flex items-center justify-between',
-                        language === l.code ? 'font-semibold text-iris-700 bg-iris-50' : 'text-slate-700'
+                        'flex w-full items-center justify-between px-3 py-2 text-left text-xs transition-colors hover:bg-ink-50',
+                        language === l.code ? 'bg-ink-50 font-semibold text-ink-950' : 'text-ink-700'
                       )}
                     >
                       <span>{label}</span>
@@ -2220,8 +1781,8 @@ export default function WritePage() {
             className={cn(
               'flex items-center gap-2 rounded-xl border px-3 py-1.5 text-xs font-semibold transition-all shadow-xs',
               correctionsOnly
-                ? 'border-emerald-500 bg-emerald-50 text-emerald-800'
-                : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                ? 'border-emerald-300 bg-emerald-50 text-emerald-800'
+                : 'border-transparent bg-ink-50/80 text-ink-600 hover:border-ink-200 hover:bg-white'
             )}
             title="Only fix grammar and spelling mistakes without changing vocabulary or style"
           >
@@ -2230,8 +1791,8 @@ export default function WritePage() {
           </button>
 
           {/* Style selector */}
-          <div className={cn('flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white p-1 shadow-xs transition-opacity', correctionsOnly && 'opacity-40 pointer-events-none')}>
-            <span className="pl-2 text-xs font-semibold text-slate-400">Style:</span>
+          <div className={cn('flex items-center gap-1.5 rounded-[13px] border border-transparent bg-ink-50/80 p-1 transition-opacity', correctionsOnly && 'pointer-events-none opacity-40')}>
+            <span className="pl-2 text-xs font-semibold text-ink-400">Style:</span>
             <div className="flex gap-1">
               {STYLES.map((s) => (
                 <button
@@ -2239,7 +1800,7 @@ export default function WritePage() {
                   onClick={() => setStyle(s.value)}
                   className={cn(
                     'rounded-lg px-2.5 py-1 text-xs font-medium transition-all',
-                    style === s.value ? 'bg-iris-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
+                    style === s.value ? 'bg-white text-ink-950 shadow-xs' : 'text-ink-600 hover:bg-white/70'
                   )}
                   title={s.desc}
                 >
@@ -2250,8 +1811,8 @@ export default function WritePage() {
           </div>
 
           {/* Tone selector */}
-          <div className={cn('flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white p-1 shadow-xs transition-opacity', correctionsOnly && 'opacity-40 pointer-events-none')}>
-            <span className="pl-2 text-xs font-semibold text-slate-400">Tone:</span>
+          <div className={cn('flex items-center gap-1.5 rounded-[13px] border border-transparent bg-ink-50/80 p-1 transition-opacity', correctionsOnly && 'pointer-events-none opacity-40')}>
+            <span className="pl-2 text-xs font-semibold text-ink-400">Tone:</span>
             <div className="flex gap-1">
               {TONES.map((t) => (
                 <button
@@ -2259,7 +1820,7 @@ export default function WritePage() {
                   onClick={() => setTone(t.value)}
                   className={cn(
                     'rounded-lg px-2.5 py-1 text-xs font-medium transition-all',
-                    tone === t.value ? 'bg-slate-900 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
+                    tone === t.value ? 'bg-ink-950 text-white shadow-xs' : 'text-ink-600 hover:bg-white/70'
                   )}
                 >
                   {t.label}
@@ -2273,7 +1834,7 @@ export default function WritePage() {
             size="sm"
             variant={showDictPanel ? 'primary' : 'secondary'}
             onClick={() => setShowDictPanel(!showDictPanel)}
-            className="gap-1.5"
+             className="h-9 gap-1.5 rounded-[13px]"
             title="Dictionary and synonyms lookup"
           >
             <BookOpen className="h-3.5 w-3.5" />
@@ -2283,40 +1844,40 @@ export default function WritePage() {
       </div>
 
       {/* ── Main Dual-Pane Editor ── */}
-      <div className="grid gap-6 lg:grid-cols-2">
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,.95fr)]">
         {/* LEFT PANE: Source Draft */}
-        <Card className="flex flex-col border-slate-200 bg-white shadow-sm">
-          <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+        <Card className="flex flex-col rounded-[26px] border-black/[.06] bg-white/90 shadow-[0_18px_50px_rgba(11,23,40,.08)] backdrop-blur-xl">
+          <div className="flex items-center justify-between border-b border-black/[.06] bg-white/70 px-5 py-4">
             <div className="flex items-center gap-2">
-              <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">Your draft</span>
-              <span className="text-xs text-slate-400">({origWords} words · {charUsed}/{MAX_CHARS})</span>
+              <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-ink-500">Your draft</span>
+              <span className="text-xs text-ink-400">{origWords} words · {charUsed}/{MAX_CHARS}</span>
             </div>
             <div className="flex items-center gap-2">
-              {/* Live Autocorrect Toggle */}
+              {/* Local hint toggle (never replaces the user's source text) */}
               <button
                 type="button"
                 onClick={() => {
                   const next = !autoCorrectEnabled;
                   setAutoCorrectEnabled(next);
-                  toast.success(next ? '✨ Autocorrect enabled (live as you type)' : 'Autocorrect paused');
+                   toast.success(next ? '✨ Local typo hints enabled' : 'Local typo hints paused');
                 }}
                 className={cn(
-                  "flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-semibold transition-all border",
+                   "flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-all",
                   autoCorrectEnabled
-                    ? "bg-emerald-50 text-emerald-700 border-emerald-300 hover:bg-emerald-100 shadow-xs"
-                    : "bg-slate-100 text-slate-500 border-slate-300 hover:bg-slate-200"
+                     ? "border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 shadow-xs"
+                     : "border-ink-200 bg-ink-50 text-ink-500 hover:bg-ink-100"
                 )}
-                title="Toggle instant autocorrection as you type (spelling, grammar, phrasing)"
+                 title="Toggle non-destructive local typo hints"
               >
                 <span className={cn("h-1.5 w-1.5 rounded-full", autoCorrectEnabled ? "bg-emerald-500 animate-pulse" : "bg-slate-400")} />
-                <span>Autocorrect: {autoCorrectEnabled ? "ON" : "OFF"}</span>
+                 <span>Typo hints: {autoCorrectEnabled ? "ON" : "OFF"}</span>
               </button>
 
               {sourceText.trim() && (
                 <button
                   onClick={handleFixDraftNow}
-                  className="flex items-center gap-1 rounded-md bg-iris-50 px-2 py-0.5 text-xs font-semibold text-iris-700 hover:bg-iris-100 transition-colors border border-iris-200"
-                  title="Instantly fix spelling, typos, and shorthand directly in your draft"
+                   className="flex items-center gap-1 rounded-lg border border-iris-200 bg-iris-50 px-2 py-1 text-xs font-semibold text-iris-700 transition-colors hover:bg-iris-100"
+                   title="Ask the backend to review spelling, grammar, and style without changing the source"
                 >
                   <Sparkles className="h-3 w-3" />
                   <span>Auto-fix draft</span>
@@ -2324,14 +1885,14 @@ export default function WritePage() {
               )}
               <button
                 onClick={() => setSourceText(SAMPLE_TEXT)}
-                className="text-xs font-medium text-iris-600 hover:text-iris-700 hover:underline"
+                 className="text-xs font-medium text-iris-600 transition-colors hover:text-iris-700 hover:underline"
               >
                 Try sample text
               </button>
               {sourceText && (
                 <button
-                  onClick={() => { setSourceText(''); setResult(null); setReadability(null); }}
-                  className="text-xs text-slate-400 hover:text-rose-600 transition-colors"
+                   onClick={() => { setSourceText(''); setResult(null); setReadability(null); }}
+                   className="text-xs text-ink-400 transition-colors hover:text-rose-600"
                 >
                   Clear
                 </button>
@@ -2340,15 +1901,14 @@ export default function WritePage() {
           </div>
 
           <div className="relative flex-1 p-4">
-            <textarea
+             <textarea
               ref={textareaRef}
               id="source-draft-input"
               name="sourceDraft"
               value={sourceText}
-              onChange={(e) => handleSourceChange(e.target.value, e.target.selectionStart)}
-              onInput={(e) => handleSourceChange((e.target as HTMLTextAreaElement).value, (e.target as HTMLTextAreaElement).selectionStart)}
-              placeholder="Paste or type your draft here… spelling, grammar, and meaning are auto-corrected live as you type."
-              className="h-80 w-full resize-none border-0 bg-transparent text-[15px] leading-relaxed text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-0"
+               onChange={(e) => handleSourceChange(e.target.value)}
+               placeholder="Paste or type your draft here… verified corrections come from the backend."
+               className="h-80 w-full resize-none border-0 bg-transparent text-[16px] leading-[1.75] text-ink-900 placeholder:text-ink-400 focus:outline-none focus:ring-0"
               aria-label="Input draft text"
             />
             {/* Character limit bar */}
@@ -2371,7 +1931,7 @@ export default function WritePage() {
           </div>
 
           {/* Bottom Left Toolbar */}
-          <div className="flex items-center justify-between border-t border-slate-100 bg-slate-50/70 px-4 py-3 rounded-b-xl">
+           <div className="flex items-center justify-between rounded-b-[26px] border-t border-black/[.06] bg-ink-50/70 px-5 py-4">
             <div className="flex items-center gap-2">
               <Button
                 size="sm"
@@ -2410,10 +1970,10 @@ export default function WritePage() {
         </Card>
 
         {/* RIGHT PANE: Improved Result */}
-        <Card className="flex flex-col border-slate-200 bg-white shadow-sm relative">
-          <div className="flex flex-wrap items-center justify-between border-b border-slate-100 px-4 py-3 gap-2">
+        <Card className="relative flex flex-col rounded-[26px] border-black/[.06] bg-white/90 shadow-[0_18px_50px_rgba(11,23,40,.08)] backdrop-blur-xl">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-black/[.06] bg-white/70 px-5 py-4">
             <div className="flex items-center gap-2">
-              <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">Improved version</span>
+              <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-ink-500">Improved version</span>
               {result && (
                 <Badge tone="green" className="gap-1 font-semibold text-[11px]">
                   <Check className="h-3 w-3" />
@@ -2468,18 +2028,26 @@ export default function WritePage() {
             </div>
           </div>
 
-          <div className="relative flex-1 p-4 overflow-y-auto max-h-[380px]">
+          <div className="relative max-h-[420px] flex-1 overflow-y-auto px-5 py-6">
             {loading ? (
               <div className="flex h-64 flex-col items-center justify-center gap-3 text-slate-400">
                 <Spinner className="h-6 w-6 text-iris-600" />
                 <p className="text-sm font-medium">Polishing and adjusting tone…</p>
+              </div>
+            ) : writeError ? (
+              <div className="flex h-64 flex-col items-center justify-center gap-3 rounded-xl border border-rose-200 bg-rose-50 p-6 text-center" role="alert">
+                <p className="text-sm font-semibold text-rose-800">Writing provider unavailable</p>
+                <p className="max-w-sm text-xs leading-relaxed text-rose-700">{writeError}</p>
+                <Button size="sm" variant="secondary" onClick={() => void runRewrite(sourceText)}>
+                  Retry correction
+                </Button>
               </div>
             ) : !result ? (
               <div className="flex h-64 flex-col items-center justify-center text-center text-slate-400">
                 <PenTool className="mb-2 h-8 w-8 text-slate-300" />
                 <p className="text-sm font-medium text-slate-600">No improvements yet</p>
                 <p className="mt-1 max-w-xs text-xs text-slate-400">
-                  Type or paste text on the left. Spelling is autocorrected instantly as you type; full improvement runs after a short pause.
+                   Type or paste text on the left. Potential typo hints stay local, while verified corrections run through the backend after a short pause.
                 </p>
               </div>
             ) : isEditingImproved ? (
@@ -2490,7 +2058,7 @@ export default function WritePage() {
                     setEditableImprovedText(e.target.value);
                     setResult((prev) => (prev ? { ...prev, improved_text: e.target.value } : prev));
                   }}
-                  className="h-64 w-full resize-none border-0 bg-transparent text-[15px] leading-relaxed text-slate-900 focus:outline-none focus:ring-0"
+                  className="h-64 w-full resize-none border-0 bg-transparent text-[16px] leading-[1.75] text-ink-900 focus:outline-none focus:ring-0"
                   aria-label="Direct edit of improved text"
                 />
                 <div className="mt-2 text-right">
@@ -2499,17 +2067,17 @@ export default function WritePage() {
               </div>
             ) : viewMode === 'clean' ? (
               <div className="h-full">
-                <p className="text-[15px] leading-relaxed text-slate-900 select-text">
+                <p className="select-text text-[16px] leading-[1.75] text-ink-900">
                   {renderInteractiveTokens(result.improved_text)}
                 </p>
-                <p className="mt-4 text-[11px] text-slate-400 italic">
+                <p className="mt-5 text-[11px] italic text-ink-400">
                   💡 Click any <span className="text-emerald-600 font-semibold">highlighted</span> word to see alternatives, revert, or look up in dictionary.
                 </p>
               </div>
             ) : viewMode === 'diffs' ? (
               <div className="space-y-4">
-                <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
-                  <h4 className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  <div className="rounded-2xl border border-black/[.06] bg-ink-50/70 p-4">
+                    <h4 className="mb-3 text-xs font-semibold uppercase tracking-[0.12em] text-ink-500">
                     Inline Change Markup
                   </h4>
                   {result.diffs.length === 0 ? (
@@ -2517,7 +2085,7 @@ export default function WritePage() {
                   ) : (
                     <div className="flex flex-wrap gap-1.5 text-[15px] leading-relaxed">
                       {result.diffs.map((d, i) => (
-                        <span key={i} className="inline-flex items-center gap-1 rounded bg-emerald-50 border border-emerald-200 px-2 py-0.5 text-xs font-semibold text-emerald-800 shadow-xs">
+                        <span key={i} className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-semibold text-emerald-800 shadow-xs">
                           <span className="line-through text-rose-500 font-normal">{d.original}</span>
                           <ArrowRight className="h-3 w-3 text-slate-400" />
                           <span className="text-emerald-700">{d.replacement}</span>
@@ -2526,8 +2094,8 @@ export default function WritePage() {
                     </div>
                   )}
                 </div>
-                <div className="rounded-xl bg-slate-50/50 p-4 border border-slate-100">
-                  <p className="text-sm leading-relaxed text-slate-800">{result.improved_text}</p>
+                <div className="rounded-2xl border border-black/[.04] bg-ink-50/50 p-4">
+                  <p className="text-[15px] leading-relaxed text-ink-800">{result.improved_text}</p>
                 </div>
               </div>
             ) : viewMode === 'suggestions' ? (
@@ -2536,7 +2104,7 @@ export default function WritePage() {
                   <p className="text-sm text-slate-500 italic">No grammatical or phrasing issues detected.</p>
                 ) : (
                   result.diffs.map((d, i) => (
-                    <div key={i} className="rounded-xl border border-slate-200 bg-slate-50/60 p-3.5">
+                    <div key={i} className="rounded-2xl border border-black/[.06] bg-ink-50/60 p-3.5">
                       <div className="flex items-center justify-between gap-2">
                         <Badge
                           tone={d.diff_type === 'grammar' ? 'red' : d.diff_type === 'spelling' ? 'amber' : 'lagoon'}
@@ -2560,9 +2128,9 @@ export default function WritePage() {
               readability ? (
                 <div className="space-y-4">
                   {/* Flesch Score */}
-                  <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4">
+                  <div className="rounded-2xl border border-black/[.06] bg-ink-50/60 p-4">
                     <div className="flex items-center justify-between mb-3">
-                      <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Readability Score</h4>
+                      <h4 className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-500">Readability Score</h4>
                       <span className={cn('text-lg font-bold', fleschColor)}>{readability.fleschScore}/100</span>
                     </div>
                     <div className="h-2 rounded-full bg-slate-200 overflow-hidden mb-2">
@@ -2574,11 +2142,11 @@ export default function WritePage() {
                     </div>
                     <p className={cn('text-sm font-semibold', fleschColor)}>{readability.fleschLabel}</p>
                     <div className="mt-3 grid grid-cols-2 gap-3 text-xs text-slate-600">
-                      <div className="rounded-lg bg-white p-2 border border-slate-100">
+                        <div className="rounded-xl border border-black/[.04] bg-white p-2">
                         <span className="block text-[10px] font-semibold uppercase text-slate-400">Avg sentence</span>
                         <span className="text-sm font-bold text-slate-800">{readability.avgSentenceLength} words</span>
                       </div>
-                      <div className="rounded-lg bg-white p-2 border border-slate-100">
+                        <div className="rounded-xl border border-black/[.04] bg-white p-2">
                         <span className="block text-[10px] font-semibold uppercase text-slate-400">Avg syllables</span>
                         <span className="text-sm font-bold text-slate-800">{readability.avgSyllablesPerWord}/word</span>
                       </div>
@@ -2650,7 +2218,7 @@ export default function WritePage() {
               <div
                 ref={popoverRef}
                 style={{ top: activePopover.rect?.top, left: activePopover.rect?.left }}
-                className="absolute z-50 w-72 rounded-xl border border-slate-200 bg-white p-3 shadow-xl text-xs"
+                className="absolute z-50 w-72 rounded-2xl border border-black/[.06] bg-white p-3 text-xs shadow-[0_18px_50px_rgba(11,23,40,.16)]"
               >
                 <div className="flex items-center justify-between border-b border-slate-100 pb-2 mb-2">
                   <div className="flex items-center gap-1.5">
@@ -2710,8 +2278,8 @@ export default function WritePage() {
           </div>
 
           {/* Alternatives Bar */}
-          {result?.alternatives && result.alternatives.length > 0 && (
-            <div className="border-t border-slate-100 bg-slate-50/40 p-4">
+           {result?.alternatives && result.alternatives.length > 0 && (
+            <div className="border-t border-black/[.06] bg-ink-50/40 p-5">
               <span className="mb-2 block text-xs font-semibold uppercase tracking-wider text-slate-500">
                 Alternative Phrasings (100% Content Preserved)
               </span>
@@ -2719,7 +2287,7 @@ export default function WritePage() {
                 {result.alternatives.map((alt, i) => (
                   <div
                     key={i}
-                    className="group flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white p-2.5 text-xs text-slate-700 shadow-xs hover:border-iris-400 transition-all"
+                    className="group flex items-center justify-between gap-3 rounded-xl border border-black/[.06] bg-white p-3 text-xs text-ink-700 shadow-xs transition-all hover:border-iris-400"
                   >
                     <p className="flex-1 text-slate-800 font-medium leading-relaxed">{alt}</p>
                     <div className="flex items-center gap-2 shrink-0">
@@ -2749,7 +2317,7 @@ export default function WritePage() {
           )}
 
           {/* Bottom Right Toolbar */}
-          <div className="flex items-center justify-between border-t border-slate-100 bg-slate-50/70 px-4 py-3 rounded-b-xl">
+          <div className="flex items-center justify-between rounded-b-[26px] border-t border-black/[.06] bg-ink-50/70 px-5 py-4">
             <div className="flex items-center gap-2">
               {result && (
                 <Button size="sm" variant="ghost" onClick={() => speakText(result.improved_text)} title="Listen to improved version">
@@ -2790,9 +2358,9 @@ export default function WritePage() {
       </div>
 
       {/* ── Dictionary & Synonyms Panel ── */}
-      {showDictPanel && (
-        <Card className="mt-6 border-slate-200 bg-white p-5 shadow-sm">
-          <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+       {showDictPanel && (
+        <Card className="mt-5 rounded-[26px] border-black/[.06] bg-white/90 p-5 shadow-[0_18px_50px_rgba(11,23,40,.08)] backdrop-blur-xl">
+          <div className="flex items-center justify-between border-b border-black/[.06] pb-3">
             <div className="flex items-center gap-2">
               <BookOpen className="h-5 w-5 text-iris-600" />
               <h3 className="text-base font-bold text-slate-900">Multilingual Dictionary & Synonyms</h3>
@@ -2829,7 +2397,7 @@ export default function WritePage() {
               <Spinner className="h-5 w-5 text-iris-600" />
             </div>
           ) : dictResult ? (
-            <div className="mt-4 rounded-xl border border-slate-100 bg-slate-50/60 p-4 space-y-3">
+            <div className="mt-4 space-y-3 rounded-2xl border border-black/[.04] bg-ink-50/60 p-4">
               <div className="flex items-center gap-2">
                 <span className="text-lg font-bold text-slate-900 capitalize">{dictResult.word}</span>
                 <Badge tone="neutral" className="text-[11px] capitalize">{dictResult.part_of_speech}</Badge>

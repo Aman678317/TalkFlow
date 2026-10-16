@@ -1,4 +1,4 @@
-"""Alembic environment — reads DATABASE_URL from GlobalTalk settings."""
+"""Alembic environment — resolves the URL through globaltalk.core.db.database_url()."""
 import sys
 from pathlib import Path
 
@@ -6,22 +6,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from alembic import context
-from globaltalk.core.config import settings
-from globaltalk.core.db import Base
+from globaltalk.core.db import Base, database_url
 import globaltalk.models  # noqa: F401 — register all mappers
 
 config = context.config
-_url = settings.database_url
-if _url.startswith("sqlite:///") and not _url.startswith("sqlite:////"):
-    _url = f"sqlite:///{settings.resolve(_url[len('sqlite:///'):])}"
-config.set_main_option("sqlalchemy.url", _url.replace("%", "%%"))
+config.set_main_option("sqlalchemy.url", database_url().replace("%", "%%"))
 target_metadata = Base.metadata
+
+# apps/api and services/api can be pointed at one database by deployment. This
+# lineage keeps its own version row so applying it can never overwrite (or be
+# overwritten by) the API's `alembic_version`, which the prod boot gate reads.
+VERSION_TABLE = "alembic_version_globaltalk"
 
 
 def run_migrations_offline() -> None:
     context.configure(url=config.get_main_option("sqlalchemy.url"),
                       target_metadata=target_metadata, literal_binds=True,
-                      dialect_opts={"paramstyle": "named"}, render_as_batch=True)
+                      dialect_opts={"paramstyle": "named"}, render_as_batch=True,
+                      version_table=VERSION_TABLE)
     with context.begin_transaction():
         context.run_migrations()
 
@@ -33,7 +35,7 @@ def run_migrations_online() -> None:
     with connectable.connect() as connection:
         is_sqlite = connection.dialect.name == "sqlite"
         context.configure(connection=connection, target_metadata=target_metadata,
-                          render_as_batch=is_sqlite)
+                          render_as_batch=is_sqlite, version_table=VERSION_TABLE)
         with context.begin_transaction():
             context.run_migrations()
 

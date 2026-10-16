@@ -49,6 +49,35 @@ jobs:
           RATE_LIMIT_AUTH: 100000/minute
           RATE_LIMIT_TRANSLATE: 100000/minute
         run: python -m pytest tests/unit tests/integration -q
+      - name: Hardened suites (flat tests/)
+        # These files are where the roadmap's phase-level proof lives, but the
+        # lanes above only ever collected tests/unit, tests/integration and
+        # tests/realtime, so a hardened test could regress without failing CI.
+        # tests/test_realtime_security_hardened.py is deliberately absent: it
+        # errors with SQLite "database is locked" on contention (including in
+        # isolation) and would make this lane red for reasons unrelated to the
+        # change under review. It needs an isolated database per test.
+        env:
+          APP_ENV: test
+          CACHE_BACKEND: memory
+          REDIS_URL: ""
+          JWT_SECRET: ci-jwt-secret-0123456789abcdef0123456789
+          RATE_LIMIT_AUTH: 100000/minute
+          RATE_LIMIT_TRANSLATE: 100000/minute
+        run: |
+          python -m pytest \
+            tests/test_auth_hardened.py \
+            tests/test_developer_platform_hardened.py \
+            tests/test_full_qa_and_e2e_hardened.py \
+            tests/test_observability_and_metrics_hardened.py \
+            tests/test_performance_and_load_hardened.py \
+            tests/test_production_readiness_hardened.py \
+            tests/test_production_security_hardened.py \
+            tests/test_queue_and_workers_hardened.py \
+            tests/test_realtime_pipeline_hardened.py \
+            tests/test_realtime_translation_invariant_hardened.py \
+            tests/test_social_auth_hardened.py \
+            tests/test_telemetry_tracing_hardened.py -q
       - name: Integration tests (PostgreSQL + Redis + pgvector)
         env:
           APP_ENV: test
@@ -83,6 +112,65 @@ jobs:
           python -m pytest tests -q -rs \
             --ignore=tests/unit --ignore=tests/integration \
             --ignore=tests/realtime
+
+  migrations:
+    # Roadmap Phase 7 acceptance criteria: `alembic upgrade head` must build a
+    # complete, valid schema on fresh PostgreSQL, and production must fail closed
+    # when the recorded version is not the migration head. The backend lanes never
+    # run Alembic — they boot with APP_ENV=test, where create_all supplies the schema.
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: gt
+          POSTGRES_PASSWORD: gt
+          POSTGRES_DB: gt_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U gt -d gt_test" --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11", cache: pip }
+      - name: Install dependencies
+        run: |
+          pip install -r apps/api/requirements.txt
+          pip install -r services/api/requirements.txt
+          pip install greenlet prometheus-client psycopg[binary] asyncpg pgvector
+      - name: Create empty scratch databases
+        run: |
+          PGPASSWORD=gt psql -h localhost -U gt -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE gt_api_migrations"
+          PGPASSWORD=gt psql -h localhost -U gt -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE gt_legacy_migrations"
+      - name: services/api — upgrade head, drift check, full rollback cycle
+        working-directory: services/api
+        env:
+          DATABASE_URL: postgresql+psycopg://gt:gt@localhost:5432/gt_api_migrations
+          APP_ENV: test
+        run: |
+          python -m alembic upgrade head
+          python -m alembic check
+          python -m alembic downgrade base
+          python -m alembic upgrade head
+      - name: apps/api — upgrade head and drift check on the same engine
+        working-directory: apps/api
+        env:
+          DATABASE_URL: postgresql+psycopg://gt:gt@localhost:5432/gt_legacy_migrations
+          APP_ENV: test
+        run: |
+          python -m alembic upgrade head
+          python -m alembic check
+          python -m alembic downgrade base
+      - name: Migration hardening suite against PostgreSQL
+        env:
+          APP_ENV: test
+          CACHE_BACKEND: memory
+          REDIS_URL: ""
+          JWT_SECRET: ci-jwt-secret-0123456789abcdef0123456789
+          ALEMBIC_TEST_DATABASE_URL: postgresql+psycopg://gt:gt@localhost:5432/gt_api_migrations
+          LEGACY_TEST_DATABASE_URL: postgresql+psycopg://gt:gt@localhost:5432/gt_legacy_migrations
+        run: python -m pytest tests/test_database_migrations_hardened.py -q
 
   realtime-golden:
     runs-on: ubuntu-latest

@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
-from app.deps import Principal, get_principal_optional
+from app.deps import Principal, get_principal, get_principal_optional
 from app.schemas import DictionaryRequest, DictionaryResponse, WriteRequest, WriteResponse
 from app.services import write_service
 
@@ -18,10 +18,11 @@ router = APIRouter(prefix="/api/v1", tags=["write"])
 @router.post("/write", response_model=WriteResponse)
 async def improve_text(
     body: WriteRequest,
-    principal: Principal | None = Depends(get_principal_optional),
+    principal: Principal = Depends(get_principal),
     db: AsyncSession = Depends(get_db),
 ):
     """Desi Write equivalent: rewrites text, fixes grammar/punctuation, adjusts tone and generates diffs."""
+    principal.require("use_write")
     return write_service.improve_text(
         text=body.text,
         language=body.language,

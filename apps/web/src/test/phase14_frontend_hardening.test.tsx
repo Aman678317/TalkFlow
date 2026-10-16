@@ -97,6 +97,34 @@ describe("Phase 14: Frontend Production Hardening", () => {
       expect(apiModule.getAccessToken()).toBe("new-access-token-999");
     });
 
+    it("does not log out a session created while silent refresh is pending", async () => {
+      apiModule.setTokens(null);
+      let resolveRefresh!: (response: any) => void;
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(() => new Promise((resolve) => {
+          resolveRefresh = resolve;
+        })),
+      );
+
+      const refresh = apiModule.tryRefresh();
+      await Promise.resolve();
+
+      // Model a signup/login completing before the initial cookie bootstrap fails.
+      apiModule.setTokens("signup-access-token");
+      useAuth.setState({
+        user: { id: "usr_new", email: "new@example.com", is_platform_admin: false, email_verified: true },
+        initialized: true,
+        status: "authed",
+      });
+      resolveRefresh({ ok: false, status: 401 });
+
+      expect(await refresh).toBe(false);
+      expect(apiModule.getAccessToken()).toBe("signup-access-token");
+      expect(useAuth.getState().status).toBe("authed");
+      expect(useAuth.getState().user?.id).toBe("usr_new");
+    });
+
     it("resets auth state when receiving cross-tab LOGOUT broadcast", () => {
       useAuth.setState({
         user: { id: "usr_tab", email: "tab@example.com", is_platform_admin: false, email_verified: true },

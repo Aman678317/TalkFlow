@@ -61,6 +61,8 @@ verify-ai-stack:
 ## docker full topology
 docker-up:
 	docker compose -f infrastructure/docker/docker-compose.yml up --build
+docker-gpu-up:
+	docker compose -f infrastructure/docker/docker-compose.yml --profile gpu up --build inference-worker
 docker-down:
 	docker compose -f infrastructure/docker/docker-compose.yml down
 

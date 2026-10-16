@@ -1,4 +1,4 @@
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap");
 
 @tailwind base;
 @tailwind components;
@@ -6,60 +6,95 @@
 
 /* ─── Design tokens ────────────────────────────────────────────── */
 :root {
-  --dl-blue:        #0A66C2;
-  --dl-blue-hover:  #0958A8;
-  --dl-navy:        #0F2B46;
-  --dl-border:      #E4E7EB;
-  --dl-bg-alt:      #F8F9FA;
-  --dl-focus:       #0A66C2;
-  --dl-radius:      10px;
-  --sidebar-w:      230px;
+  color-scheme: light;
 
-  /* Apple-inspired material + elevation */
-  --material-bg:      rgba(255, 255, 255, 0.72);
-  --material-border:  rgba(15, 43, 70, 0.08);
-  --material-blur:    20px;
+  --color-ink-950: #0B1728;
+  --color-ink-900: #14263A;
+  --color-ink-800: #233548;
+  --color-ink-700: #39495B;
+  --color-ink-600: #526172;
+  --color-ink-500: #6F7D8D;
+  --color-ink-400: #91A0AF;
+  --color-ink-300: #B8C3CF;
+  --color-ink-200: #D5DDE6;
+  --color-ink-100: #E9EDF2;
+  --color-ink-50: #F5F7F9;
 
-  /* House motion curves (used by CSS transitions; JS springs live in lib/motion.ts) */
-  --ease-emphasized:  cubic-bezier(0.2, 0, 0, 1);
-  --ease-standard:    cubic-bezier(0.16, 1, 0.3, 1);
-  --dur-fast:         150ms;
-  --dur-medium:       250ms;
+  --color-canvas: #F4F6F8;
+  --color-panel: #FFFFFF;
+  --color-subtle: #E9EDF2;
+  --color-border: #D5DDE6;
+  --color-border-strong: #B8C3CF;
+  --color-accent-900: #52251A;
+  --color-accent-700: #963B1D;
+  --color-accent-600: #B64A23;
+  --color-accent-500: #C45A2C;
+  --color-accent-300: #FFB765;
+  --color-accent-200: #FFD19A;
+  --color-accent-soft: #FFF6EA;
+  --color-focus: #F0A35B;
+
+  --dl-blue: var(--color-accent-600);
+  --dl-blue-hover: var(--color-accent-700);
+  --dl-navy: var(--color-ink-950);
+  --dl-border: var(--color-border);
+  --dl-bg-alt: var(--color-canvas);
+  --dl-focus: var(--color-focus);
+  --dl-radius: 12px;
+  --sidebar-w: 264px;
+
+  --material-bg: rgba(244, 246, 248, 0.86);
+  --material-border: rgba(20, 38, 58, 0.1);
+  --material-blur: 20px;
+
+  /* House motion curves: quick, legible, and easy to turn off. */
+  --ease-emphasized: cubic-bezier(0.2, 0, 0, 1);
+  --ease-standard: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast: 160ms;
+  --dur-medium: 260ms;
 }
 
 /* ─── Base ─────────────────────────────────────────────────────── */
 html, body, #root { height: 100%; }
+html { background: var(--color-canvas); }
 
 body {
-  @apply bg-white text-dl-navy antialiased;
+  @apply bg-surface-canvas text-ink-900 antialiased;
   font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
-  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11", "ss01";
   font-size: 14px;
-  line-height: 1.5;
+  line-height: 1.55;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
 
-/* Apple-style optical tracking: tighten as type grows (WWDC "Details of UI Typography") */
-h1 { letter-spacing: -0.022em; }
-h2 { letter-spacing: -0.017em; }
-h3 { letter-spacing: -0.012em; }
-h1, h2, h3, h4 { text-wrap: balance; }
+button, input, select, textarea { font: inherit; }
+button, a { -webkit-tap-highlight-color: transparent; }
+
+/* Display faces are reserved for hierarchy; body copy stays quiet and readable. */
+h1, h2, h3 {
+  font-family: "Space Grotesk", "Inter", "Segoe UI", system-ui, sans-serif;
+  text-wrap: balance;
+}
+h1 { letter-spacing: -0.035em; }
+h2 { letter-spacing: -0.025em; }
+h3 { letter-spacing: -0.018em; }
 
 *:focus-visible {
-  outline: 2px solid var(--dl-focus);
-  outline-offset: 2px;
-  border-radius: 6px;
+  outline: 2px solid var(--color-focus);
+  outline-offset: 3px;
+  box-shadow: 0 0 0 4px rgba(240, 163, 91, 0.2);
 }
 
 ::selection {
-  background: rgba(10, 102, 194, 0.16);
+  background: var(--color-accent-200);
+  color: var(--color-ink-950);
 }
 
 /* ─── Scrollbar ─────────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-thumb {
-  background: #CBD2DA;
+  background: var(--color-ink-300);
   border-radius: 99px;
   border: 2px solid transparent;
   background-clip: content-box;
@@ -71,14 +106,14 @@ h1, h2, h3, h4 { text-wrap: balance; }
 
   /* Cards */
   .dl-card {
-    @apply bg-white rounded-2xl border border-dl-border shadow-card overflow-hidden;
+    @apply overflow-hidden rounded-2xl border border-border bg-surface-panel shadow-card;
   }
   .dl-panel {
-    @apply bg-white rounded-2xl border border-dl-border overflow-hidden;
-    box-shadow: 0 1px 3px rgba(15,43,70,.05), 0 0 0 1px #E4E7EB;
+    @apply overflow-hidden rounded-2xl border border-border bg-surface-panel;
+    box-shadow: 0 1px 3px rgba(11, 23, 40, .05), 0 0 0 1px rgba(11, 23, 40, .02);
   }
 
-  /* Frosted translucent material (Apple HIG: content scrolls under chrome) */
+  /* Frosted chrome keeps the scroll context visible without becoming noisy. */
   .material-bar {
     background: var(--material-bg);
     backdrop-filter: blur(var(--material-blur)) saturate(180%);
@@ -87,7 +122,7 @@ h1, h2, h3, h4 { text-wrap: balance; }
   }
   @media (prefers-reduced-transparency: reduce) {
     .material-bar {
-      background: #fff;
+      background: var(--color-panel);
       backdrop-filter: none;
       -webkit-backdrop-filter: none;
     }
@@ -95,50 +130,48 @@ h1, h2, h3, h4 { text-wrap: balance; }
 
   /* Labels */
   .dl-label {
-    @apply block text-xs font-semibold uppercase tracking-wider text-dl-muted mb-1.5;
+    @apply mb-1.5 block text-xs font-semibold uppercase tracking-[0.12em] text-ink-500;
   }
 
   /* Input */
   .dl-input {
-    @apply w-full rounded-xl border border-dl-border bg-white px-3 py-2 text-sm text-dl-navy
-           placeholder:text-dl-faint
-           focus:border-dl-blue focus:ring-4 focus:ring-dl-blue/10
-           disabled:opacity-50 disabled:cursor-not-allowed;
-    transition: border-color var(--dur-fast) var(--ease-standard),
-                box-shadow var(--dur-fast) var(--ease-standard);
+    @apply w-full rounded-xl border border-border bg-surface-panel px-3 py-2 text-sm text-ink-900
+           placeholder:text-ink-400 focus:border-accent-600 focus:ring-4 focus:ring-accent-600/10
+           disabled:cursor-not-allowed disabled:opacity-50;
+    transition: border-color var(--dur-fast) var(--ease-standard), box-shadow var(--dur-fast) var(--ease-standard),
+                background-color var(--dur-fast) var(--ease-standard);
   }
 
   /* Language pill button (inactive) */
   .lang-pill {
-    @apply rounded-lg px-3 py-1.5 text-xs font-medium text-dl-muted
-           hover:bg-dl-pill hover:text-dl-navy transition-all duration-150;
+    @apply rounded-lg px-3 py-1.5 text-xs font-medium text-ink-500 transition-all duration-150
+           hover:bg-dl-pill hover:text-ink-900;
   }
   .lang-pill-active {
-    @apply rounded-lg px-3 py-1.5 text-xs font-semibold bg-dl-pill-active text-white transition-all;
+    @apply rounded-lg bg-dl-pill-active px-3 py-1.5 text-xs font-semibold text-white transition-all;
   }
 
   /* Toolbar button */
   .tool-btn {
-    @apply inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium
-           text-dl-muted hover:bg-dl-bg-alt hover:text-dl-navy
-           transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed;
+    @apply inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium text-ink-500
+           transition-[background-color,color,transform] duration-150 hover:bg-surface-subtle hover:text-ink-900
+           disabled:cursor-not-allowed disabled:opacity-40;
   }
 
   /* Icon button */
   .icon-btn {
-    @apply inline-flex items-center justify-center h-8 w-8 rounded-lg
-           text-dl-muted hover:bg-dl-bg-alt hover:text-dl-navy
-           transition-all duration-150 disabled:opacity-30;
+    @apply inline-flex h-8 w-8 items-center justify-center rounded-lg text-ink-500
+           transition-[background-color,color,transform] duration-150 hover:bg-surface-subtle hover:text-ink-900
+           disabled:opacity-30;
   }
 
   /* Sidebar nav item */
   .nav-item {
-    @apply flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium
-           text-slate-400 hover:bg-white/5 hover:text-white
-           transition-colors duration-150;
+    @apply flex items-center gap-2.5 rounded-xl px-3 py-2 text-[13px] font-medium text-white/60
+           transition-[background-color,color,transform] duration-150 hover:bg-white/[.08] hover:text-white;
   }
   .nav-item-active {
-    @apply bg-white/10 text-white font-semibold;
+    @apply bg-accent-600 text-white font-semibold shadow-accent;
   }
 
   /* Chip / badge */
@@ -146,38 +179,37 @@ h1, h2, h3, h4 { text-wrap: balance; }
     @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-medium;
   }
 
-  /* gt-* vocabulary (used by auth pages and ui/index primitives) — previously undefined */
+  /* gt-* vocabulary is used by auth pages and legacy page primitives. */
   .gt-card {
-    @apply rounded-2xl border border-dl-border bg-white shadow-card;
+    @apply rounded-2xl border border-border bg-surface-panel shadow-card;
   }
   .gt-label {
-    @apply mb-1.5 block text-sm font-medium text-slate-700;
+    @apply mb-1.5 block text-sm font-medium text-ink-700;
   }
   .gt-input {
-    @apply w-full rounded-xl border border-dl-border bg-white px-3 py-2 text-sm text-dl-navy
-           placeholder:text-dl-faint
-           focus:border-dl-blue focus:ring-4 focus:ring-dl-blue/10
-           disabled:opacity-50 disabled:cursor-not-allowed;
-    transition: border-color var(--dur-fast) var(--ease-standard),
-                box-shadow var(--dur-fast) var(--ease-standard);
+    @apply w-full rounded-xl border border-border bg-surface-panel px-3 py-2 text-sm text-ink-900
+           placeholder:text-ink-400 focus:border-accent-600 focus:ring-4 focus:ring-accent-600/10
+           disabled:cursor-not-allowed disabled:opacity-50;
+    transition: border-color var(--dur-fast) var(--ease-standard), box-shadow var(--dur-fast) var(--ease-standard),
+                background-color var(--dur-fast) var(--ease-standard);
   }
   .gt-chip {
-    @apply inline-flex items-center gap-1 rounded-full border border-dl-border bg-dl-bg-alt
-           px-2.5 py-0.5 text-[11px] font-medium text-dl-muted;
+    @apply inline-flex items-center gap-1 rounded-full border border-border bg-surface-canvas
+           px-2.5 py-0.5 text-[11px] font-medium text-ink-600;
   }
 }
 
 /* ─── Animations ─────────────────────────────────────────────────── */
 @keyframes fade-in {
-  from { opacity: 0; transform: translateY(4px); }
+  from { opacity: 0; transform: translateY(5px); }
   to   { opacity: 1; transform: translateY(0); }
 }
 @keyframes slide-down {
-  from { opacity: 0; transform: translateY(-6px); }
+  from { opacity: 0; transform: translateY(-7px); }
   to   { opacity: 1; transform: translateY(0); }
 }
-.animate-fadeIn  { animation: fade-in  0.18s ease-out both; }
-.animate-slideDown { animation: slide-down 0.18s ease-out both; }
+.animate-fadeIn { animation: fade-in .2s var(--ease-standard) both; }
+.animate-slideDown { animation: slide-down .2s var(--ease-standard) both; }
 
 /* pulse-ring for voice indicator */
 @keyframes pulse-ring {
@@ -192,7 +224,7 @@ h1, h2, h3, h4 { text-wrap: balance; }
   100% { background-position: 400px 0; }
 }
 .skeleton {
-  background: linear-gradient(90deg, #F0F4F8 25%, #E4E7EB 50%, #F0F4F8 75%);
+  background: linear-gradient(90deg, var(--color-ink-50) 25%, var(--color-ink-100) 50%, var(--color-ink-50) 75%);
   background-size: 800px 100%;
   animation: shimmer 1.4s infinite;
   border-radius: 8px;
@@ -211,10 +243,11 @@ button.bg-iris-600:active,
 }
 
 .btn-tactile {
-  transition: transform 120ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 120ms ease, background-color 150ms ease;
+  transition: transform 180ms var(--ease-standard), box-shadow 180ms var(--ease-standard),
+              background-color 160ms var(--ease-standard), color 160ms var(--ease-standard);
 }
 .btn-tactile:hover {
-  transform: translateY(-1px);
+  transform: translateY(-2px);
 }
 
 @keyframes wave-bounce {
@@ -230,7 +263,18 @@ button.bg-iris-600:active,
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation: none !important;
-    transition-duration: 150ms !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.001ms !important;
+  }
+  .btn-tactile:hover,
+  .btn-tactile:active,
+  .btn-press:active,
+  button:hover,
+  button:active,
+  a:hover,
+  a:active,
+  [role="button"]:hover,
+  [role="button"]:active {
     transform: none !important;
   }
 }

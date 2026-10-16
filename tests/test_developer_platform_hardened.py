@@ -52,6 +52,7 @@ def test_api_key_high_entropy_generation_and_storage(services_app_client, user):
     assert res.status_code == 201
     data = res.json()
     assert "plaintext_key" in data
+    assert data["status"] == "active"
     plaintext = data["plaintext_key"]
     key_id = data["id"]
     prefix = data["prefix"]
@@ -67,6 +68,17 @@ def test_api_key_high_entropy_generation_and_storage(services_app_client, user):
     assert created_entry is not None
     assert "plaintext_key" not in created_entry
     assert created_entry["prefix"] == prefix
+
+
+def test_api_key_accepts_write_scope(services_app_client, user):
+    """The web developer portal may issue a key for the canonical Write API."""
+    res = services_app_client.post(
+        "/api/v1/api-keys",
+        headers=user["headers"],
+        json={"name": "Writing Key", "scopes": ["write"]},
+    )
+    assert res.status_code == 201
+    assert res.json()["scopes"] == ["write"]
 
 
 def test_api_key_granular_scope_enforcement(services_app_client, user):

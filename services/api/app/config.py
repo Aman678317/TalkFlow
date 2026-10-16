@@ -109,6 +109,11 @@ class Settings(BaseSettings):
     # --- AI providers ---
     translation_provider: str = "auto"
     translation_model: str = ""
+    airllm_model_id: str = "meta-llama/Llama-3.1-70B-Instruct"
+    airllm_hf_token: str = ""
+    airllm_layer_shards_path: str = ""
+    airllm_max_input_tokens: int = 512
+    airllm_max_new_tokens: int = 128
     deepl_api_key: str = ""
     deepl_api_url: str = "https://api-free.deepl.com/v2/translate"
     mt_http_url: str = ""

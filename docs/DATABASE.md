@@ -93,11 +93,38 @@ task/pair/provider; gates promotion).
 ## Migrations
 
 ```bash
-cd apps/api && alembic upgrade head        # prod path (DB_AUTOCREATE=false)
-alembic revision --autogenerate -m "…"     # new migrations
+# The API lineage — this is what deployment runs.
+cd services/api && alembic upgrade head
+cd services/api && alembic check                       # model vs schema, must be empty
+cd services/api && alembic revision --autogenerate -m "…"
+
+# The legacy worker lineage — its own database, never the API's.
+cd apps/api && alembic upgrade head
 ```
 
-Dev convenience: `DB_AUTOCREATE=true` runs `create_all` at startup (never in prod).
+Both lineages must be applied to a database before that process boots in production:
+
+- `services/api` `_ensure_schema()` (`app/main.py`) reads `alembic_version` and compares it
+  to the head **resolved from `services/api/alembic/versions`**, not a literal, so adding a
+  revision tightens the gate instead of stranding the deployment. Unknown, missing or
+  rolled-back revisions all fail closed.
+- `apps/api` `init_db()` (`globaltalk/core/db.py`) does the same against
+  `alembic_version_globaltalk`.
+
+Dev convenience: `DB_AUTOCREATE=true` (the default outside production) runs
+`Base.metadata.create_all` at startup. It never runs in production, regardless of the
+flag, and `apps/api` no longer patches columns with raw `ALTER TABLE` at boot — the
+columns that patcher invented are migration `4889ad87949b`, so a database migrated to
+head matches the models its workers use.
+
+Because deployment gives both processes the same `DATABASE_URL`, the legacy lineage keeps
+its own version table. Before that, `cd apps/api && alembic upgrade head` (which
+`docs/DATABASE.md` used to recommend as "the prod path") would overwrite the API's
+`alembic_version` row with a revision the API cannot resolve and every production API
+replica would refuse to start. Applying the legacy lineage to the API database is still
+wrong — it now fails loudly on the first `CREATE TABLE` instead of corrupting the gate.
+If you have a dev SQLite database that was migrated by `apps/api` before this split, run
+`cd apps/api && alembic stamp head` once to record its revision in the new table.
 
 ## pgvector (production)
 

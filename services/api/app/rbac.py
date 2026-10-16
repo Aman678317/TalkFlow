@@ -8,7 +8,7 @@ PERMISSIONS = [
     "create_meeting", "delete_meeting", "view_transcript", "export_document",
     "manage_integrations", "manage_security", "view_usage", "manage_documents",
     "manage_styles", "manage_tm", "manage_webhooks", "admin_platform",
-    "use_translate", "use_voice", "manage_projects", "view_audit",
+    "use_translate", "use_write", "use_voice", "manage_projects", "view_audit",
 ]
 
 ROLE_PERMISSIONS: dict[str, set[str]] = {
@@ -18,14 +18,14 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
         "manage_members", "manage_glossaries", "create_meeting", "delete_meeting",
         "view_transcript", "export_document", "manage_integrations", "view_usage",
         "manage_documents", "manage_styles", "manage_tm", "manage_webhooks",
-        "use_translate", "use_voice", "manage_projects", "view_audit",
+        "use_translate", "use_write", "use_voice", "manage_projects", "view_audit",
     },
     "member": {
         "create_meeting", "view_transcript", "export_document", "view_usage",
         "manage_documents", "manage_glossaries", "manage_styles", "manage_tm",
-        "use_translate", "use_voice",
+        "use_translate", "use_write", "use_voice",
     },
-    "viewer": {"view_transcript", "use_translate", "view_usage"},
+    "viewer": {"view_transcript", "use_translate", "use_write", "view_usage"},
 }
 
 

@@ -330,7 +330,7 @@ export default function MeetingRoom() {
   prefsRef.current = prefs;
   /** utterance short-id → language (to decide original-relay playback) */
   const utterLangRef = React.useRef<Map<string, string>>(new Map());
-  /** binary TTS frames carry no chunk index — count arrivals per segment id */
+  /** Legacy binary TTS frames carry no chunk index — count only when needed. */
   const ttsChunkSeqRef = React.useRef<Map<string, number>>(new Map());
   const namesRef = React.useRef<Map<string, string>>(new Map());
 
@@ -401,16 +401,17 @@ export default function MeetingRoom() {
           if (mode === "translated" || mode === "mixed") {
             const wavBytes = new Uint8Array(frame.pcm);
             const tag = normId(frame.shortId);
-            // The binary frame carries no chunk index; the WebSocket delivers an
-            // utterance's chunks in order, so count them here. The JSON event for
-            // the same chunk carries the server's `chunk_index`, and both must
-            // agree or dedup silently fails and the chunk plays twice.
-            const next = ttsChunkSeqRef.current.get(tag) ?? 0;
-            ttsChunkSeqRef.current.set(tag, next + 1);
+            // New clients receive an explicit chunk index. Keep the arrival
+            // counter only for old servers that still send the legacy header.
+            const legacyNext = ttsChunkSeqRef.current.get(tag) ?? 0;
+            const chunkIndex = frame.chunkIndex ?? legacyNext;
+            if (frame.chunkIndex === undefined) {
+              ttsChunkSeqRef.current.set(tag, legacyNext + 1);
+            }
             void player.deliver(wavBytes, tag, {
               source: "binary",
               sequence: 0,
-              chunkIndex: next,
+              chunkIndex,
             });
           }
         }
@@ -693,6 +694,8 @@ export default function MeetingRoom() {
             utteranceId: (evt.utterance_id as string) ?? undefined,
           })).catch(() => { /* already surfaced through the player's error callback */ });
         }
+        const completedTag = normId((evt.segment_id as string) ?? String(evt.utterance_id ?? ""));
+        ttsChunkSeqRef.current.delete(completedTag);
         break;
       }
       case "quality.degraded":

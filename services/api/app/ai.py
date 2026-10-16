@@ -100,7 +100,7 @@ class AIFacade:
             return name
         # auto: prefer real providers that can healthcheck; dev fallback last
         order = {
-            Task.MT: ["neural_online", "deepl", "madlad400", "nllb_ct2", "argos", "mt_http", "dev_echo"],
+            Task.MT: ["neural_online", "deepl", "airllm", "madlad400", "nllb_ct2", "argos", "mt_http", "dev_echo"],
             Task.STT: ["faster_whisper", "stt_http", "dev_text"],
             Task.TTS: ["kokoro", "piper", "tts_http", "dev_tone"],
             Task.LANG_DETECT: ["fasttext", "langdetect"],
@@ -123,6 +123,14 @@ class AIFacade:
         elif task == Task.MT and name == "madlad400":
             kwargs = {"model_id": settings.translation_model or "google/madlad-400-3b-mt",
                       "cache_dir": cache}
+        elif task == Task.MT and name == "airllm":
+            kwargs = {
+                "model_id": settings.airllm_model_id or settings.translation_model,
+                "hf_token": settings.airllm_hf_token,
+                "layer_shards_saving_path": settings.airllm_layer_shards_path or f"{cache}/airllm",
+                "max_input_tokens": settings.airllm_max_input_tokens,
+                "max_new_tokens": settings.airllm_max_new_tokens,
+            }
         elif task == Task.MT and name == "mt_http":
             kwargs = {"url": settings.mt_http_url, "style": settings.mt_http_style}
         elif task == Task.STT and name == "faster_whisper":
@@ -176,7 +184,12 @@ class AIFacade:
             ))
         # ensure at least one spec per task (registry may be empty in tests)
         fallback_specs = {
-            Task.MT: [ProviderSpec(name=self._configured_name(Task.MT), task=Task.MT)],
+            Task.MT: [ProviderSpec(
+                name=self._configured_name(Task.MT), task=Task.MT,
+                requires_gpu=self._configured_name(Task.MT) == "airllm",
+                private=self._configured_name(Task.MT) == "airllm",
+                latency_class="batch" if self._configured_name(Task.MT) == "airllm" else "fast",
+            )],
             Task.STT: [ProviderSpec(name=self._configured_name(Task.STT), task=Task.STT)],
             Task.TTS: [ProviderSpec(name=self._configured_name(Task.TTS), task=Task.TTS)],
             Task.LANG_DETECT: [ProviderSpec(name=self._configured_name(Task.LANG_DETECT),

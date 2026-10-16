@@ -24,6 +24,20 @@ function encodeTts(shortId: string, lang: string, pcm: Uint8Array): ArrayBuffer 
   return out.buffer;
 }
 
+function encodeIndexedTts(shortId: string, lang: string, chunkIndex: number, pcm: Uint8Array): ArrayBuffer {
+  const langBytes = new TextEncoder().encode(lang);
+  const payloadStart = 18 + langBytes.length + 5;
+  const out = new Uint8Array(payloadStart + pcm.length);
+  out[0] = 0x54;
+  out.set(new TextEncoder().encode(shortId.padEnd(16, "0").slice(0, 16)), 1);
+  out[17] = langBytes.length;
+  out.set(langBytes, 18);
+  out[18 + langBytes.length] = 0x01;
+  new DataView(out.buffer).setUint32(19 + langBytes.length, chunkIndex);
+  out.set(pcm, payloadStart);
+  return out.buffer;
+}
+
 describe("realtime binary protocol", () => {
   it("decodes original-audio relay frames", () => {
     const pcm = new Uint8Array([1, 2, 3, 4, 250, 251]);
@@ -40,6 +54,12 @@ describe("realtime binary protocol", () => {
     expect(frame.shortId).toBe("seg42");
     expect(frame.language).toBe("hi");
     expect(new Uint8Array(frame.pcm)).toEqual(pcm);
+  });
+
+  it("reads an explicit TTS chunk index when the server provides one", () => {
+    const frame = decodeBinaryFrame(encodeIndexedTts("seg42", "hi", 7, new Uint8Array([9, 8])));
+    expect(frame.chunkIndex).toBe(7);
+    expect(new Uint8Array(frame.pcm)).toEqual(new Uint8Array([9, 8]));
   });
   // The deployed backend pads the binary short-id with NUL bytes
   // (services/api/app/realtime/pipeline.py: `…[:16].ljust(16, "\x00")`), not with the

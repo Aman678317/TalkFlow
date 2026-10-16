@@ -381,6 +381,9 @@ async def _handle_event(ws: WebSocket, session, rp: RtParticipant, event) -> Non
             "sequence": 0}))
 
     elif event.type == ClientEventType.SESSION_JOIN:
+        capabilities = data.get("capabilities") or {}
+        if isinstance(capabilities, dict):
+            rp.supports_tts_chunk_index = bool(capabilities.get("tts_chunk_index"))
         if "speaking_language" in data:
             rp.speak_lang = data["speaking_language"]
         elif "speak_lang" in data:
@@ -446,7 +449,9 @@ async def _handle_event(ws: WebSocket, session, rp: RtParticipant, event) -> Non
             await pipe.feed_audio(rp.participant_id, pcm)
 
     elif event.type == ClientEventType.AUDIO_STOP:
-        pipe.stop_speaker(rp.participant_id)
+        flush_task = pipe.stop_speaker(rp.participant_id)
+        if flush_task is not None:
+            await flush_task
         await manager.broadcast(session, ServerEventType.AUDIO_STOPPED,
                                 {"participant_id": str(rp.participant_id)})
 

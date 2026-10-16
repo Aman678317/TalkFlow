@@ -13,6 +13,7 @@ import contextlib
 import logging
 import sys
 from collections.abc import AsyncGenerator
+from functools import lru_cache
 from pathlib import Path
 
 _APP_ROOT = Path(__file__).resolve().parent.parent
@@ -183,6 +184,25 @@ async def _lifespan_startup(app: FastAPI) -> None:
     log.info("startup complete")
 
 
+@lru_cache(maxsize=1)
+def _migration_head_revision() -> str:
+    """Head revision read from the Alembic script directory.
+
+    The production gate compares against this instead of a literal so it moves
+    with `alembic upgrade head`: a new revision tightens the gate automatically
+    instead of stranding the deployment on a stale constant."""
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    api_root = Path(__file__).resolve().parents[1]  # services/api
+    cfg = Config(str(api_root / "alembic.ini"))
+    cfg.set_main_option("script_location", str(api_root / "alembic"))
+    head = ScriptDirectory.from_config(cfg).get_current_head()
+    if not head:
+        raise RuntimeError("Could not resolve an Alembic head revision from services/api/alembic.")
+    return head
+
+
 async def _ensure_schema() -> None:
     """Dev/test convenience: create tables if migrations haven't run.
     Production REQUIRES alembic upgrade head (schema drift fails closed)."""
@@ -197,17 +217,17 @@ async def _ensure_schema() -> None:
         return
 
     # Production gate: Fail closed if migrations have not been applied up to head
+    expected_head = _migration_head_revision()
     async with engine().connect() as conn:
         tables = await conn.run_sync(lambda sync_conn: inspect(sync_conn).get_table_names())
         if "alembic_version" not in tables or "users" not in tables:
             raise RuntimeError("Database schema uninitialized. Run `alembic upgrade head` before booting production.")
-        
+
         result = await conn.execute(text("SELECT version_num FROM alembic_version"))
         current_rev = result.scalar_one_or_none()
-        EXPECTED_HEAD = "2202ca7dc080"
-        if current_rev != EXPECTED_HEAD:
+        if current_rev != expected_head:
             raise RuntimeError(
-                f"Database migration version mismatch in production: found '{current_rev}', expected '{EXPECTED_HEAD}'. "
+                f"Database migration version mismatch in production: found '{current_rev}', expected '{expected_head}'. "
                 "Run `alembic upgrade head` to apply pending migrations."
             )
 

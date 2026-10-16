@@ -17,15 +17,16 @@
 - **Binary frames** — audio. Layout:
 
 ```
-byte 0        'O' original relay │ 'T' translated TTS PCM
+byte 0        'O' original relay │ 'T' translated TTS WAV
 bytes 1..16   utterance/segment short-id (ASCII)
 byte 17       (T only) language-code length N
 bytes 18..    (T only) language code
-rest          PCM16 mono 16 kHz little-endian
+T only        capable clients: 0x01 marker + uint32 big-endian chunk index
+rest          O: PCM16 mono 16 kHz little-endian │ T: provider WAV bytes
 ```
 
 Clients send microphone audio as raw PCM16 mono 16 kHz binary frames (the AudioWorklet
-in `apps/web/src/lib/audio.ts` downsamples and forwards ~100 ms blocks).
+in `apps/web/src/lib/audio.ts` downsamples and forwards 50 ms blocks).
 
 ## Event envelope (version 1)
 

@@ -1,0 +1,37 @@
+# Optional GPU inference image. The normal Dockerfile.api stays CPU-safe.
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    MALLOC_ARENA_MAX=2 \
+    PYTHONPATH=/app/services/api:/app/apps/api:/app/ai:/app \
+    MODEL_CACHE_PATH=/models \
+    HF_HOME=/models/huggingface \
+    TRANSFORMERS_CACHE=/models/huggingface \
+    GPU_AVAILABLE=true \
+    TRANSLATION_PROVIDER=airllm \
+    APP_MODULE=app.main:app
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY apps/api/requirements.txt apps/api/requirements.txt
+COPY services/api/requirements.txt services/api/requirements.txt
+COPY services/api/requirements-gpu.txt services/api/requirements-gpu.txt
+RUN pip install -r apps/api/requirements.txt -r services/api/requirements-gpu.txt
+
+COPY ai/ ai/
+COPY services/ services/
+COPY apps/api/ apps/api/
+
+VOLUME ["/models", "/data"]
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s \
+  CMD curl -fsS http://localhost:8000/health || exit 1
+
+WORKDIR /app/services/api
+CMD ["sh", "-c", "python -m uvicorn ${APP_MODULE} --host 0.0.0.0 --port ${API_PORT:-8000} --workers 1"]
