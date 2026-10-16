@@ -235,40 +235,78 @@ def reconstruct_xlsx(blocks: list[DocBlock], original: bytes) -> tuple[bytes, st
 
 
 def parse_pdf(data: bytes) -> list[DocBlock]:
+    """Extract PDF text while recording page coverage and optional OCR fallback.
+
+    OCR is opt-in via DOCUMENT_OCR_ENABLED=true because it requires Tesseract
+    and can be expensive. Text-layer extraction remains the preferred path.
+    """
     try:
         import fitz  # PyMuPDF
     except ImportError:
         fitz = None
     blocks: list[DocBlock] = []
     idx = 0
+    ocr_enabled = str(getattr(settings, "document_ocr_enabled", False)).lower() in {"1", "true", "yes", "on"}
+    ocr_languages = str(getattr(settings, "document_ocr_languages", "eng"))
     if fitz is not None:
         doc = fitz.open(stream=data, filetype="pdf")
-        for pno in range(len(doc)):
-            page = doc[pno]
-            raw = page.get_text("blocks")  # (x0,y0,x1,y1,text,block_no,type)
-            for x0, y0, x1, y1, text, _bno, btype in raw:
-                if btype != 0:
-                    continue
-                text = text.strip()
-                if _is_translatable(text):
-                    pw, ph = page.rect.width, page.rect.height
-                    blocks.append(DocBlock(
-                        idx, "text", pno, text,
-                        bbox=[round(x0 / pw, 5), round(y0 / ph, 5),
-                              round(x1 / pw, 5), round(y1 / ph, 5)],
-                        ctx={"mode": "pymupdf"}))
-                    idx += 1
-        doc.close()
+        try:
+            for pno in range(len(doc)):
+                page = doc[pno]
+                raw = page.get_text("blocks")
+                page_blocks = 0
+                for x0, y0, x1, y1, text, _bno, btype in raw:
+                    if btype != 0:
+                        continue
+                    text = text.strip()
+                    if _is_translatable(text):
+                        pw, ph = page.rect.width, page.rect.height
+                        blocks.append(DocBlock(
+                            idx, "text", pno, text,
+                            bbox=[round(x0 / pw, 5), round(y0 / ph, 5),
+                                  round(x1 / pw, 5), round(y1 / ph, 5)],
+                            ctx={"mode": "pymupdf"}))
+                        idx += 1
+                        page_blocks += 1
+                # OCR only pages without a usable text layer. Never overwrite a
+                # real text layer with OCR output, to avoid duplicate paragraphs.
+                if page_blocks == 0 and ocr_enabled:
+                    try:
+                        import pytesseract
+                        from PIL import Image
+                        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+                        image = Image.open(io.BytesIO(pix.tobytes("png")))
+                        ocr_text = pytesseract.image_to_string(image, lang=ocr_languages)
+                        for para in re.split(r"\n\s*\n", ocr_text):
+                            para = para.strip()
+                            if _is_translatable(para):
+                                blocks.append(DocBlock(
+                                    idx, "text", pno, para,
+                                    ctx={"mode": "ocr", "ocr": True,
+                                         "ocr_language": ocr_languages}))
+                                idx += 1
+                    except Exception as exc:
+                        log.warning("PDF OCR unavailable page=%d error=%s", pno + 1, type(exc).__name__)
+        finally:
+            doc.close()
+        if blocks:
+            return blocks
+        if ocr_enabled:
+            raise DocumentProcessingError(
+                "No PDF text could be extracted even with OCR enabled; verify Tesseract and OCR languages.")
         return blocks
-    # fallback: pypdf text extraction (no layout)
+
+    # Fallback: pypdf text extraction (no layout/OCR).
     from pypdf import PdfReader
     reader = PdfReader(io.BytesIO(data))
     for pno, page in enumerate(reader.pages):
         text = page.extract_text() or ""
-        for para in re.split(r"\n{2,}", text):
+        for para in re.split(r"\n\s*\n", text):
             if _is_translatable(para):
                 blocks.append(DocBlock(idx, "text", pno, para, ctx={"mode": "pypdf"}))
                 idx += 1
+    if not blocks and ocr_enabled:
+        raise DocumentProcessingError("PDF OCR requires PyMuPDF, Pillow, and pytesseract.")
     return blocks
 
 
