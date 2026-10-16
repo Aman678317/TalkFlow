@@ -5,7 +5,7 @@
 import { forwardRef, useEffect, useId, useRef, type ButtonHTMLAttributes,
          type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes,
          type TextareaHTMLAttributes } from 'react';
-import { AnimatePresence, motion } from 'motion/react';
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { cn } from '@/lib/utils';
 import { springSheet, springSnappy, TAP_TRANSITION, PRESS_SCALE, EASE_STANDARD } from '@/lib/motion';
 export { Field, SegmentedControl } from './ui/index';
@@ -18,11 +18,11 @@ type Variant = 'primary' | 'secondary' | 'ghost' | 'danger' | 'accent';
 type Size = 'sm' | 'md' | 'lg' | 'icon';
 
 const VARIANTS: Record<Variant, string> = {
-  primary: 'bg-iris-600 text-white hover:bg-iris-700 active:bg-iris-800 shadow-sm disabled:bg-iris-300',
-  secondary: 'bg-white text-slate-700 border border-slate-300 hover:bg-slate-50 active:bg-slate-100 disabled:text-slate-400',
-  ghost: 'text-slate-600 hover:bg-slate-100 hover:text-slate-900 active:bg-slate-200',
-  danger: 'bg-rose-600 text-white hover:bg-rose-700 active:bg-rose-800 disabled:bg-rose-300',
-  accent: 'bg-lagoon-600 text-white hover:bg-lagoon-700 active:bg-lagoon-800 disabled:bg-lagoon-300',
+  primary: 'bg-iris-600 text-white shadow-xs hover:-translate-y-0.5 hover:bg-iris-700 hover:shadow-accent active:bg-iris-800 disabled:bg-ink-300',
+  secondary: 'border border-border bg-surface-panel text-ink-700 shadow-xs hover:-translate-y-0.5 hover:bg-surface-subtle active:bg-ink-100 disabled:text-ink-400',
+  ghost: 'text-ink-600 hover:bg-surface-subtle hover:text-ink-950 active:bg-ink-100',
+  danger: 'bg-rose-600 text-white shadow-xs hover:-translate-y-0.5 hover:bg-rose-700 active:bg-rose-800 disabled:bg-rose-300',
+  accent: 'bg-lagoon-600 text-white shadow-xs hover:-translate-y-0.5 hover:bg-lagoon-700 hover:shadow-accent active:bg-lagoon-800 disabled:bg-ink-300',
 };
 
 const SIZES: Record<Size, string> = {
@@ -40,6 +40,7 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
   ({ variant = 'primary', size = 'md', loading, className, children, disabled, ...props }, ref) => {
+    const reducedMotion = useReducedMotion();
     // motion.button redefines drag/animation handlers; buttons don't use them
     const { onDrag, onDragStart, onDragEnd, onAnimationStart, onAnimationEnd,
             onAnimationIteration, onTransitionEnd, ...rest } = props as ButtonHTMLAttributes<HTMLButtonElement> &
@@ -48,11 +49,11 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
     return (
       <motion.button
         ref={ref}
-        whileTap={disabled || loading ? undefined : { scale: PRESS_SCALE }}
-        transition={TAP_TRANSITION}
+        whileTap={reducedMotion || disabled || loading ? undefined : { scale: PRESS_SCALE }}
+        transition={reducedMotion ? undefined : TAP_TRANSITION}
         className={cn(
-          'inline-flex items-center font-medium transition-colors select-none',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris-500 focus-visible:ring-offset-2',
+          'inline-flex select-none items-center font-medium transition-[background-color,border-color,color,box-shadow,transform] duration-200 ease-standard',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2',
           'disabled:cursor-not-allowed',
           VARIANTS[variant], SIZES[size], className)}
         disabled={disabled || loading}
@@ -79,7 +80,7 @@ export function Spinner({ className }: { className?: string }) {
 }
 
 export function Skeleton({ className }: { className?: string }) {
-  return <div className={cn('animate-pulse-soft rounded-lg bg-slate-200', className)}
+  return <div className={cn('animate-pulse-soft rounded-lg bg-ink-100', className)}
               aria-hidden="true" />;
 }
 
@@ -95,7 +96,7 @@ export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputE
     return (
       <div className="w-full">
         {label && (
-          <label htmlFor={inputId} className="mb-1.5 block text-sm font-medium text-slate-700">
+          <label htmlFor={inputId} className="mb-1.5 block text-sm font-medium text-ink-700">
             {label}
           </label>
         )}
@@ -103,12 +104,12 @@ export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputE
           ref={ref} id={inputId}
           aria-invalid={!!error} aria-describedby={error ? `${inputId}-err` : undefined}
           className={cn(
-            'h-10 w-full rounded-xl2 border bg-white px-3 text-sm text-slate-900 placeholder:text-slate-400',
-            'focus:outline-none focus:ring-2 focus:ring-iris-500/40 focus:border-iris-500',
-            'disabled:bg-slate-50 disabled:text-slate-400',
-            error ? 'border-rose-400' : 'border-slate-300', className)}
+            'h-10 w-full rounded-xl2 border bg-surface-panel px-3 text-sm text-ink-900 placeholder:text-ink-400',
+            'transition-[background-color,border-color,box-shadow] duration-200 focus:border-iris-600 focus:outline-none focus:ring-4 focus:ring-iris-600/10',
+            'disabled:bg-ink-50 disabled:text-ink-400',
+            error ? 'border-rose-400 focus:border-rose-500 focus:ring-rose-500/10' : 'border-border', className)}
           {...props} />
-        {error && <p id={`${inputId}-err`} className="mt-1 text-xs text-rose-600" role="alert">{error}</p>}
+         {error && <p id={`${inputId}-err`} className="mt-1 text-xs text-rose-700" role="alert">{error}</p>}
       </div>
     );
   });
@@ -121,11 +122,11 @@ export const Textarea = forwardRef<HTMLTextAreaElement,
     const taId = id ?? autoId.current;
     return (
       <div className="w-full">
-        {label && <label htmlFor={taId} className="mb-1.5 block text-sm font-medium text-slate-700">{label}</label>}
+         {label && <label htmlFor={taId} className="mb-1.5 block text-sm font-medium text-ink-700">{label}</label>}
         <textarea ref={ref} id={taId}
           className={cn(
-            'w-full rounded-xl2 border border-slate-300 bg-white p-3 text-sm text-slate-900',
-            'placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-iris-500/40 focus:border-iris-500',
+            'w-full rounded-xl2 border border-border bg-surface-panel p-3 text-sm text-ink-900',
+            'placeholder:text-ink-400 transition-[background-color,border-color,box-shadow] duration-200 focus:border-iris-600 focus:outline-none focus:ring-4 focus:ring-iris-600/10',
             className)}
           {...props} />
       </div>
@@ -140,12 +141,12 @@ export const Select = forwardRef<HTMLSelectElement,
     const selId = id ?? autoId.current;
     return (
       <div className="w-full">
-        {label && <label htmlFor={selId} className="mb-1.5 block text-sm font-medium text-slate-700">{label}</label>}
+         {label && <label htmlFor={selId} className="mb-1.5 block text-sm font-medium text-ink-700">{label}</label>}
         <select ref={ref} id={selId}
           className={cn(
-            'h-10 w-full rounded-xl2 border border-slate-300 bg-white px-3 text-sm text-slate-900',
-            'focus:outline-none focus:ring-2 focus:ring-iris-500/40 focus:border-iris-500',
-            'disabled:bg-slate-50 disabled:text-slate-400', className)}
+            'h-10 w-full rounded-xl2 border border-border bg-surface-panel px-3 text-sm text-ink-900',
+            'transition-[background-color,border-color,box-shadow] duration-200 focus:border-iris-600 focus:outline-none focus:ring-4 focus:ring-iris-600/10',
+            'disabled:bg-ink-50 disabled:text-ink-400', className)}
           {...props}>
           {children}
         </select>
@@ -156,16 +157,17 @@ Select.displayName = 'Select';
 
 export function Toggle({ checked, onChange, label, id }:
   { checked: boolean; onChange: (v: boolean) => void; label: string; id?: string }) {
+  const reducedMotion = useReducedMotion();
   return (
     <button id={id} type="button" role="switch" aria-checked={checked} aria-label={label}
       onClick={() => onChange(!checked)}
-      className={cn('relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris-500 focus-visible:ring-offset-2',
-        checked ? 'bg-iris-600' : 'bg-slate-300')}>
+      className={cn('relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors duration-200',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2',
+        checked ? 'bg-iris-600' : 'bg-ink-300')}>
       <motion.span
-        layout
-        transition={springSnappy}
-        className={cn('inline-block h-4 w-4 rounded-full bg-white shadow-sm',
+        layout={reducedMotion ? undefined : true}
+        transition={reducedMotion ? undefined : springSnappy}
+        className={cn('inline-block h-4 w-4 rounded-full bg-white shadow-xs',
           checked ? 'ml-6' : 'ml-1')} />
     </button>
   );
@@ -183,7 +185,7 @@ export interface CardProps extends Omit<React.HTMLAttributes<HTMLDivElement>, 't
 
 export function Card({ className, children, title, subtitle, action, ...rest }: CardProps) {
   return (
-    <div className={cn('rounded-2xl border border-slate-200 bg-white shadow-card overflow-hidden', className)} {...rest}>
+    <div className={cn('overflow-hidden rounded-2xl border border-border bg-surface-panel shadow-card', className)} {...rest}>
       {(title !== undefined || subtitle !== undefined || action !== undefined) && (
         <CardHeader title={title} subtitle={subtitle} action={action} />
       )}
@@ -197,10 +199,10 @@ export function Card({ className, children, title, subtitle, action, ...rest }: 
 export function CardHeader({ title, subtitle, action }:
   { title: ReactNode; subtitle?: ReactNode; action?: ReactNode }) {
   return (
-    <div className="flex items-start justify-between gap-4 border-b border-slate-100 px-5 py-4">
+    <div className="flex items-start justify-between gap-4 border-b border-ink-100 px-5 py-4">
       <div>
-        <h2 className="text-base font-semibold text-slate-900">{title}</h2>
-        {subtitle && <p className="mt-0.5 text-sm text-slate-500">{subtitle}</p>}
+        <h2 className="text-base font-semibold text-ink-950">{title}</h2>
+        {subtitle && <p className="mt-0.5 text-sm text-ink-500">{subtitle}</p>}
       </div>
       {action}
     </div>
@@ -208,7 +210,7 @@ export function CardHeader({ title, subtitle, action }:
 }
 
 const BADGE_TONES: Record<string, string> = {
-  neutral: 'bg-slate-100 text-slate-700 border-slate-200',
+  neutral: 'bg-ink-100 text-ink-700 border-ink-200',
   good: 'bg-emerald-50 text-emerald-700 border-emerald-200',
   warn: 'bg-amber-50 text-amber-700 border-amber-200',
   bad: 'bg-rose-50 text-rose-700 border-rose-200',
@@ -238,6 +240,7 @@ export function Badge({ tone = 'neutral', children, className, title }:
 export function Modal({ open, onClose, title, children, wide }:
   { open: boolean; onClose: () => void; title: ReactNode; children: ReactNode; wide?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
+  const reducedMotion = useReducedMotion();
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -252,18 +255,19 @@ export function Modal({ open, onClose, title, children, wide }:
       {open && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog"
              aria-modal="true" aria-label={typeof title === 'string' ? title : 'Dialog'}>
-          <motion.div className="absolute inset-0 bg-slate-950/50" onClick={onClose}
-               initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-               exit={{ opacity: 0 }} transition={{ duration: 0.2, ease: EASE_STANDARD }} />
-          <motion.div ref={ref}
-               initial={{ opacity: 0, scale: 0.96, y: 14 }}
-               animate={{ opacity: 1, scale: 1, y: 0 }}
-               exit={{ opacity: 0, scale: 0.97, y: 8, transition: { duration: 0.16, ease: 'easeIn' } }}
-               transition={springSheet}
-               className={cn('relative w-full rounded-2xl bg-white shadow-lift',
-                 wide ? 'max-w-3xl' : 'max-w-lg')}>
-            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
-              <h2 className="text-base font-semibold tracking-title text-slate-900">{title}</h2>
+           <motion.div className="absolute inset-0 bg-ink-950/65" onClick={onClose}
+                initial={reducedMotion ? false : { opacity: 0 }} animate={{ opacity: 1 }}
+                exit={reducedMotion ? { opacity: 1 } : { opacity: 0 }}
+                transition={reducedMotion ? undefined : { duration: 0.2, ease: EASE_STANDARD }} />
+           <motion.div ref={ref}
+                initial={reducedMotion ? false : { opacity: 0, scale: 0.96, y: 14 }}
+                animate={reducedMotion ? { opacity: 1 } : { opacity: 1, scale: 1, y: 0 }}
+                exit={reducedMotion ? { opacity: 1 } : { opacity: 0, scale: 0.97, y: 8, transition: { duration: 0.16, ease: 'easeIn' } }}
+                transition={reducedMotion ? undefined : springSheet}
+                className={cn('relative w-full rounded-2xl border border-border bg-surface-panel shadow-lift',
+                  wide ? 'max-w-3xl' : 'max-w-lg')}>
+             <div className="flex items-center justify-between border-b border-ink-100 px-5 py-4">
+               <h2 className="text-base font-semibold tracking-title text-ink-950">{title}</h2>
               <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close dialog">✕</Button>
             </div>
             <div className="px-5 py-4">{children}</div>
@@ -282,10 +286,10 @@ export function EmptyState({ icon, title, hint, body, action }:
   { icon?: ReactNode; title: string; hint?: string; body?: string; action?: ReactNode }) {
   const desc = hint || body;
   return (
-    <div className="flex flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-slate-300 bg-slate-50/60 px-6 py-12 text-center">
-      {icon && <div className="text-2xl text-slate-400">{icon}</div>}
-      <p className="text-sm font-semibold text-slate-700">{title}</p>
-      {desc && <p className="max-w-sm text-xs text-slate-500">{desc}</p>}
+    <div className="flex flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-ink-300 bg-surface-canvas px-6 py-12 text-center">
+      {icon && <div className="text-2xl text-ink-400">{icon}</div>}
+      <p className="text-sm font-semibold text-ink-700">{title}</p>
+      {desc && <p className="max-w-sm text-xs text-ink-500">{desc}</p>}
       {action && <div className="mt-2">{action}</div>}
     </div>
   );
@@ -312,10 +316,11 @@ export function ErrorState({ title, detail, message, code, retry, onRetry }:
 
 export function Tabs({ tabs, active, onChange }:
   { tabs: Array<{ id: string; label: ReactNode }>; active: string;
-    onChange: (id: string) => void }) {
+     onChange: (id: string) => void }) {
   const groupId = useId();
+  const reducedMotion = useReducedMotion();
   return (
-    <div role="tablist" aria-label="Tabs" className="flex gap-1 rounded-xl2 bg-slate-100 p-1">
+    <div role="tablist" aria-label="Tabs" className="flex gap-1 rounded-xl2 bg-ink-100 p-1">
       {tabs.map((t) => (
         <button key={t.id} role="tab" aria-selected={active === t.id}
           tabIndex={active === t.id ? 0 : -1}
@@ -326,12 +331,12 @@ export function Tabs({ tabs, active, onChange }:
             if (e.key === 'ArrowLeft') onChange(tabs[(i - 1 + tabs.length) % tabs.length].id);
           }}
           className={cn('relative rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris-500',
-            active === t.id ? 'text-slate-900' : 'text-slate-500 hover:text-slate-800')}>
+             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus',
+             active === t.id ? 'text-ink-950' : 'text-ink-500 hover:text-ink-800')}>
           {active === t.id && (
-            <motion.span layoutId={`tab-pill-${groupId}`}
-              transition={springSnappy}
-              className="absolute inset-0 rounded-lg bg-white shadow-sm" />
+            <motion.span layout={reducedMotion ? undefined : true} layoutId={reducedMotion ? undefined : `tab-pill-${groupId}`}
+              transition={reducedMotion ? undefined : springSnappy}
+               className="absolute inset-0 rounded-lg bg-surface-panel shadow-xs" />
           )}
           <span className="relative z-10">{t.label}</span>
         </button>
@@ -349,11 +354,11 @@ export function Table({ head, children }: { head: ReactNode[]; children: ReactNo
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead>
-          <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-500">
+          <tr className="border-b border-ink-200 text-left text-xs uppercase tracking-wide text-ink-500">
             {head.map((h, i) => <th key={i} className="px-4 py-3 font-medium">{h}</th>)}
           </tr>
         </thead>
-        <tbody className="divide-y divide-slate-100">{children}</tbody>
+        <tbody className="divide-y divide-ink-100">{children}</tbody>
       </table>
     </div>
   );

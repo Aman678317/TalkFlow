@@ -78,13 +78,18 @@ def test_short_ids_keep_their_padding_stripped() -> None:
     assert norm_id("abc123") == "abc123"
 
 
-def test_binary_frame_header_layout_is_unchanged() -> None:
-    """byte0='T', bytes1-16=short id, byte17=lang length, then lang, then payload."""
+def test_capable_binary_frame_header_carries_chunk_index() -> None:
+    """Capable clients receive an explicit index before the WAV payload."""
     short_id = "a1b2c3d4e5f60718"
     lang = "hi"
-    header = b"\x54" + short_id.encode() + bytes([len(lang)]) + lang.encode()
+    header = (
+        b"\x54" + short_id.encode() + bytes([len(lang)]) + lang.encode()
+        + b"\x01" + (3).to_bytes(4, "big")
+    )
     assert header[0] == 0x54
     assert header[1:17].decode() == short_id
     assert header[17] == 2
     assert header[18:20].decode() == "hi"
-    assert len(header) == 20
+    assert header[20] == 1
+    assert int.from_bytes(header[21:25], "big") == 3
+    assert len(header) == 25

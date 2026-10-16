@@ -15,6 +15,7 @@ import {
   Radio,
   RefreshCw,
   Search,
+  Share2,
   Shield,
   ShieldCheck,
   Sparkles,
@@ -24,7 +25,7 @@ import {
 } from "lucide-react";
 import { api } from "../lib/api";
 import type { Meeting } from "../lib/types";
-import { Badge, Button, Card, Field, Input, Modal } from "../components/ui";
+import { Badge, Button, Card, Input, Modal } from "../components/ui";
 import { toast } from "../stores/toasts";
 
 export default function Meetings() {
@@ -32,11 +33,16 @@ export default function Meetings() {
   const qc = useQueryClient();
   const [params] = useSearchParams();
 
-  // Dialog & Form State
-  const [open, setOpen] = React.useState(false);
+  // New meeting menu & invite sharing state
+  const [menuOpen, setMenuOpen] = React.useState(false);
   const [title, setTitle] = React.useState("");
   const [joinUrl, setJoinUrl] = React.useState("");
+  const [calendarUrl, setCalendarUrl] = React.useState("");
   const [copiedId, setCopiedId] = React.useState<string | null>(null);
+  const menuRef = React.useRef<HTMLDivElement>(null);
+  const newMeetingButtonRef = React.useRef<HTMLButtonElement>(null);
+
+  type NewMeetingAction = "instant" | "later" | "calendar";
 
   // Direct Code / Link Join Bar State
   const [joinInput, setJoinInput] = React.useState("");
@@ -55,15 +61,96 @@ export default function Meetings() {
   });
 
   const create = useMutation({
-    mutationFn: () => api<Meeting>("/api/v1/meetings", { method: "POST", body: { title } }),
-    onSuccess: (m) => {
+    mutationFn: (action: NewMeetingAction) =>
+      api<Meeting>("/api/v1/meetings", {
+        method: "POST",
+        body: { title: title.trim() || "Untitled meeting" },
+      }).then((meeting) => ({ meeting, action })),
+    onSuccess: ({ meeting: m, action }) => {
       qc.invalidateQueries({ queryKey: ["meetings"] });
-      setOpen(false);
+      setMenuOpen(false);
       setTitle("");
-      nav(`/meeting/${m.id}`);
+      if (action === "instant") {
+        nav(`/meeting/${m.id}`);
+        return;
+      }
+
+      const inviteUrl = meetingUrl(m.id);
+      setJoinUrl(inviteUrl);
+      setCalendarUrl(action === "calendar" ? googleCalendarUrl(m, inviteUrl) : "");
     },
     onError: (e: any) => toast.error("Could not create meeting", e.message),
   });
+
+  function meetingUrl(id: string) {
+    return `${location.origin}/meeting/${id}`;
+  }
+
+  function googleCalendarUrl(meeting: Meeting, inviteUrl: string) {
+    const details = [
+      "Join this TalkFlow meeting:",
+      inviteUrl,
+      "",
+      "Real-time multilingual video meeting. No Google account is required for guests.",
+    ].join("\n");
+    const query = new URLSearchParams({
+      action: "TEMPLATE",
+      text: meeting.title || "TalkFlow meeting",
+      details,
+      location: inviteUrl,
+    });
+    return `https://calendar.google.com/calendar/render?${query.toString()}`;
+  }
+
+  function closeMeetingMenu() {
+    setMenuOpen(false);
+    newMeetingButtonRef.current?.focus();
+  }
+
+  function handleNewMeetingAction(action: NewMeetingAction) {
+    if (create.isPending) return;
+    closeMeetingMenu();
+    create.mutate(action);
+  }
+
+  React.useEffect(() => {
+    if (!menuOpen) return;
+
+    const handleOutsidePointer = (event: PointerEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) closeMeetingMenu();
+    };
+    const handleMenuKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeMeetingMenu();
+        return;
+      }
+
+      const items = Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>("[role=menuitem]") ?? []);
+      const current = document.activeElement;
+      const index = items.indexOf(current as HTMLButtonElement);
+      if (index < 0 || items.length === 0) return;
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        const next = event.key === "ArrowDown"
+          ? (index + 1) % items.length
+          : (index - 1 + items.length) % items.length;
+        items[next].focus();
+      } else if (event.key === "Home" || event.key === "End") {
+        event.preventDefault();
+        items[event.key === "Home" ? 0 : items.length - 1].focus();
+      }
+    };
+
+    document.addEventListener("pointerdown", handleOutsidePointer);
+    document.addEventListener("keydown", handleMenuKey);
+    const firstItem = menuRef.current?.querySelector<HTMLButtonElement>("[role=menuitem]");
+    firstItem?.focus();
+    return () => {
+      document.removeEventListener("pointerdown", handleOutsidePointer);
+      document.removeEventListener("keydown", handleMenuKey);
+    };
+  }, [menuOpen]);
 
   const endMeeting = useMutation({
     mutationFn: (id: string) => api(`/api/v1/meetings/${id}/end`, { method: "POST" }),
@@ -106,12 +193,30 @@ export default function Meetings() {
   }
 
   async function copyInvite(m: Meeting) {
-    const url = `${location.origin}/meeting/${m.id}`;
+    const url = meetingUrl(m.id);
     await navigator.clipboard.writeText(url);
     setJoinUrl(url);
     setCopiedId(m.id);
     setTimeout(() => setCopiedId(null), 2500);
     toast.success("Invite link copied", "Guests can join with this link.");
+  }
+
+  async function shareInvite() {
+    if (!joinUrl) return;
+    try {
+      if (typeof navigator.share === "function") {
+        await navigator.share({
+          title: "TalkFlow meeting invite",
+          text: "Join this TalkFlow meeting",
+          url: joinUrl,
+        });
+        return;
+      }
+      await navigator.clipboard.writeText(joinUrl);
+      toast.success("Invite link copied", "Share it with your guests.");
+    } catch (error: any) {
+      if (error?.name !== "AbortError") toast.error("Could not share invite", error?.message);
+    }
   }
 
   const allMeetings = meetingsQ.data ?? [];
@@ -190,14 +295,89 @@ export default function Meetings() {
 
           {/* Action Row: Google Meet Signature Layout */}
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 pt-1">
-            <Button
-              size="lg"
-              className="h-12 px-6 rounded-xl bg-dl-blue hover:bg-dl-blue-hover text-white font-medium shadow-sm flex items-center justify-center gap-2.5 shrink-0 transition-all active:scale-[0.99]"
-              onClick={() => setOpen(true)}
-            >
-              <Video className="h-5 w-5" />
-              <span>New meeting</span>
-            </Button>
+            <div ref={menuRef} className="relative shrink-0">
+              <Button
+                ref={newMeetingButtonRef}
+                size="lg"
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
+                loading={create.isPending}
+                className="h-12 w-full px-6 rounded-xl bg-dl-blue hover:bg-dl-blue-hover text-white font-medium shadow-sm flex items-center justify-center gap-2.5 transition-all active:scale-[0.99]"
+                onClick={() => setMenuOpen((current) => !current)}
+              >
+                {!create.isPending && <Video className="h-5 w-5" />}
+                <span>{create.isPending ? "Creating…" : "New meeting"}</span>
+              </Button>
+
+              {menuOpen && (
+                <div
+                  role="menu"
+                  aria-label="New meeting options"
+                  className="absolute left-0 top-full z-40 mt-2 w-[min(22rem,calc(100vw-2rem))] rounded-2xl border border-slate-200 bg-white p-2 shadow-xl"
+                >
+                  <div className="px-2 pb-2 pt-1">
+                    <label htmlFor="new-meeting-title" className="text-xs font-medium text-slate-600">
+                      Meeting title <span className="font-normal text-slate-400">(optional)</span>
+                    </label>
+                    <Input
+                      id="new-meeting-title"
+                      value={title}
+                      onChange={(event) => setTitle(event.target.value)}
+                      placeholder="Untitled meeting"
+                      className="mt-1 h-10 rounded-xl"
+                    />
+                  </div>
+
+                  <div className="space-y-1 border-t border-slate-100 pt-2">
+                    <Button
+                      type="button"
+                      role="menuitem"
+                      aria-label="Start an instant meeting"
+                      variant="ghost"
+                      disabled={create.isPending}
+                      onClick={() => handleNewMeetingAction("instant")}
+                      className="h-auto w-full justify-start rounded-xl px-3 py-2.5 text-left text-slate-800 hover:bg-blue-50 hover:text-dl-blue"
+                    >
+                      <Video className="h-4 w-4 shrink-0 text-dl-blue" />
+                      <span>
+                        <span className="block text-sm font-semibold">Start an instant meeting</span>
+                        <span className="mt-0.5 block text-xs font-normal text-slate-500">Create a room and join now</span>
+                      </span>
+                    </Button>
+                    <Button
+                      type="button"
+                      role="menuitem"
+                      aria-label="Create a meeting for later"
+                      variant="ghost"
+                      disabled={create.isPending}
+                      onClick={() => handleNewMeetingAction("later")}
+                      className="h-auto w-full justify-start rounded-xl px-3 py-2.5 text-left text-slate-800 hover:bg-blue-50 hover:text-dl-blue"
+                    >
+                      <Link2 className="h-4 w-4 shrink-0 text-dl-blue" />
+                      <span>
+                        <span className="block text-sm font-semibold">Create a meeting for later</span>
+                        <span className="mt-0.5 block text-xs font-normal text-slate-500">Get a link without joining</span>
+                      </span>
+                    </Button>
+                    <Button
+                      type="button"
+                      role="menuitem"
+                      aria-label="Schedule in Google Calendar"
+                      variant="ghost"
+                      disabled={create.isPending}
+                      onClick={() => handleNewMeetingAction("calendar")}
+                      className="h-auto w-full justify-start rounded-xl px-3 py-2.5 text-left text-slate-800 hover:bg-blue-50 hover:text-dl-blue"
+                    >
+                      <Calendar className="h-4 w-4 shrink-0 text-dl-blue" />
+                      <span>
+                        <span className="block text-sm font-semibold">Schedule in Google Calendar</span>
+                        <span className="mt-0.5 block text-xs font-normal text-slate-500">Create a room, then open a draft event</span>
+                      </span>
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
 
             <form onSubmit={handleJoinWithCode} className="flex items-center gap-2 flex-1">
               <div className="relative flex-1">
@@ -455,9 +635,9 @@ export default function Meetings() {
                   Clear Search
                 </Button>
               ) : (
-                <Button size="sm" onClick={() => setOpen(true)}>
-                  Create New Meeting
-                </Button>
+                 <Button size="sm" onClick={() => setMenuOpen(true)}>
+                   Create New Meeting
+                 </Button>
               )}
             </div>
           </Card>
@@ -577,60 +757,6 @@ export default function Meetings() {
       </div>
 
       {/* =========================================================================
-          MODAL 1: NEW MEETING CREATION (Strictly preserving form field name)
-         ========================================================================= */}
-      <Modal open={open} onClose={() => setOpen(false)} title="New meeting">
-        <form
-          className="space-y-4"
-          onSubmit={(e) => {
-            e.preventDefault();
-            create.mutate();
-          }}
-        >
-          <Field label="Meeting title">
-            <Input
-              autoFocus
-              required
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="Weekly sync — EN/HI/JA"
-            />
-          </Field>
-
-          {/* Quick preset chips for rapid creation */}
-          <div className="space-y-1.5">
-            <p className="text-[11px] font-medium text-slate-500">Quick suggestions:</p>
-            <div className="flex flex-wrap gap-1.5">
-              {[
-                "Instant Multilingual Sync",
-                "Product & Engineering Standup",
-                "Client Briefing (EN ↔ ES)",
-                "Global Townhall",
-              ].map((preset) => (
-                <button
-                  key={preset}
-                  type="button"
-                  onClick={() => setTitle(preset)}
-                  className="px-2.5 py-1 rounded-md bg-slate-100 hover:bg-slate-200 text-[11px] text-slate-700 transition-colors"
-                >
-                  {preset}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
-            <Button type="button" variant="secondary" onClick={() => setOpen(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" loading={create.isPending} className="bg-dl-blue hover:bg-dl-blue-hover text-white">
-              Create & join
-            </Button>
-          </div>
-        </form>
-      </Modal>
-
-      {/* =========================================================================
           MODAL 2: INVITE LINK SHARING (Strictly preserving copy & token display)
          ========================================================================= */}
       <Modal open={!!joinUrl} onClose={() => setJoinUrl("")} title="Invite link">
@@ -647,6 +773,15 @@ export default function Meetings() {
             <Button
               type="button"
               variant="secondary"
+              onClick={shareInvite}
+              className="gap-1.5"
+            >
+              <Share2 className="h-3.5 w-3.5" />
+              Share
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
               onClick={async () => {
                 await navigator.clipboard.writeText(joinUrl);
                 toast.success("Copied to clipboard!");
@@ -656,6 +791,16 @@ export default function Meetings() {
               <Copy className="h-3.5 w-3.5" />
               Copy link
             </Button>
+            {calendarUrl && (
+              <Button
+                type="button"
+                onClick={() => window.open(calendarUrl, "_blank", "noopener,noreferrer")}
+                className="gap-1.5 bg-dl-blue hover:bg-dl-blue-hover"
+              >
+                <Calendar className="h-3.5 w-3.5" />
+                Open Google Calendar
+              </Button>
+            )}
             <Button type="button" onClick={() => setJoinUrl("")}>
               Done
             </Button>

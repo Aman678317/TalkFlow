@@ -13,8 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import models as M
 from app.db.session import get_db
-from app.deps import Principal, require_scope, rl_translate
-from app.errors import AuthenticationError, AuthorizationError, NotFoundError, ValidationError
+from app.deps import Principal, require_permission, require_scope, rl_translate
+from app.errors import AuthenticationError, AuthorizationError, NotFoundError, ProviderError, ValidationError
 from app.schemas import (
     DetectRequest, DetectResponse, LanguageOut, TranslateRequest,
     TranslateResponse, TranslationOut,
@@ -233,10 +233,15 @@ def _get_whisper_model():
             return None
     return _whisper_instance
 
-@router.post("/voice/transcribe", response_model=VoiceTranscribeResponse)
+@router.post(
+    "/voice/transcribe",
+    response_model=VoiceTranscribeResponse,
+    dependencies=[Depends(rl_translate), Depends(require_permission("use_voice"))],
+)
 async def voice_transcribe(body: VoiceTranscribeRequest):
     import base64
     import numpy as np
+    from app.config import settings
     try:
         raw_bytes = base64.b64decode(body.audio_base64)
     except Exception as e:
@@ -270,8 +275,19 @@ async def voice_transcribe(body: VoiceTranscribeRequest):
             except Exception as w_err:
                 log.warning("Local faster-whisper unavailable (%s), trying AIFacade fallback", w_err)
                 from app.ai import ai
-                chunk, _decision = await ai.transcribe(raw_bytes, body.sample_rate, lang_hint=body.language)
+                chunk, decision = await ai.transcribe(raw_bytes, body.sample_rate, lang_hint=body.language)
+                if settings.is_production and (
+                    getattr(chunk, "is_dev", False)
+                    or str(getattr(decision, "provider", "")).startswith("dev_")
+                ):
+                    raise ProviderError(
+                        "Speech recognition is unavailable. Try again later.",
+                        details={"capability": "stt"},
+                        recoverable=True,
+                    )
                 return VoiceTranscribeResponse(text=chunk.text or "", language=chunk.language or body.language or "en")
+    except ProviderError:
+        raise
     except Exception as e:
         log.error("Voice transcription error: %s", e)
         return VoiceTranscribeResponse(text="", language=body.language or "en")
@@ -288,7 +304,11 @@ class VoiceTtsResponse(BaseModel):
     format: str = "mp3"
     sample_rate: int = 24000
 
-@router.post("/voice/tts", response_model=VoiceTtsResponse)
+@router.post(
+    "/voice/tts",
+    response_model=VoiceTtsResponse,
+    dependencies=[Depends(rl_translate), Depends(require_permission("use_voice"))],
+)
 async def voice_tts(body: VoiceTtsRequest):
     import base64
     import io
@@ -321,7 +341,15 @@ async def voice_tts(body: VoiceTtsRequest):
     # Tier 2: AIFacade / local engine (Kokoro / Piper / tts_http)
     try:
         from app.ai import ai
-        chunk, _decision = await ai.synthesize(clean_text, lang, voice=body.voice)
+        chunk, decision = await ai.synthesize(clean_text, lang, voice=body.voice)
+        if settings.is_production and (
+            getattr(chunk, "is_dev", False) or decision.provider.startswith("dev_")
+        ):
+            raise ProviderError(
+                "Speech output is unavailable. Captions remain available.",
+                details={"capability": "tts", "language": lang},
+                recoverable=True,
+            )
         audio_bytes = chunk.data
         fmt = chunk.format or "wav"
         if not audio_bytes.startswith(b"RIFF") and fmt == "wav":
@@ -332,14 +360,21 @@ async def voice_tts(body: VoiceTtsRequest):
     except Exception as ai_err:
         log.warning("AIFacade synthesis failed (%s), trying dev_tone", ai_err)
 
-    # Tier 3: DevTone fallback
-    try:
-        from gt_ai.tts.dev_tone import DevToneProvider
-        provider = DevToneProvider()
-        chunk = await provider.synthesize(clean_text, lang, voice=body.voice)
-        b64 = base64.b64encode(chunk.data).decode("ascii")
-        return VoiceTtsResponse(audio_base64=b64, format="wav", sample_rate=chunk.sample_rate)
-    except Exception as dev_err:
-        log.error("All TTS options failed: %s", dev_err)
-        return VoiceTtsResponse(audio_base64="", format="mp3", sample_rate=24000)
+    # A generated development tone is useful for local pipeline tests, but it is
+    # not translated speech and must never be presented as production audio.
+    if not settings.is_production:
+        try:
+            from gt_ai.tts.dev_tone import DevToneProvider
+            provider = DevToneProvider()
+            chunk = await provider.synthesize(clean_text, lang, voice=body.voice)
+            b64 = base64.b64encode(chunk.data).decode("ascii")
+            return VoiceTtsResponse(audio_base64=b64, format="wav", sample_rate=chunk.sample_rate)
+        except Exception as dev_err:
+            log.warning("Development TTS tone unavailable: %s", dev_err)
+
+    raise ProviderError(
+        "Speech output is unavailable. Captions remain available.",
+        details={"capability": "tts", "language": lang},
+        recoverable=True,
+    )
 

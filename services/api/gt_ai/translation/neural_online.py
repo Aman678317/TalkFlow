@@ -279,6 +279,25 @@ def adjust_formality(text: str, target_lang: str, formality: str) -> str:
     return res
 
 
+def _is_distinct_translation(source: str, candidate: str | None,
+                             source_lang: str, target_lang: str) -> bool:
+    """Reject a provider response that silently echoes the source sentence.
+
+    Free translation endpoints sometimes return HTTP 200 with the input text
+    when a language pair is unavailable. Passing that through looks successful
+    to the backend, but the web client correctly rejects it as unusable. Treat
+    it as a failed provider attempt so the next configured fallback can run.
+    """
+    if not candidate or not candidate.strip():
+        return False
+    src = (source_lang or "").lower().split("-")[0]
+    tgt = (target_lang or "").lower().split("-")[0]
+    if not src or src in ("auto", "unknown") or not tgt or src == tgt:
+        return True
+    compact = lambda value: re.sub(r"\s+", " ", normalize_unicode(value)).strip().casefold()
+    return compact(candidate) != compact(source)
+
+
 async def query_deepl(
     text: str,
     src_lang: str,
@@ -474,13 +493,17 @@ class NeuralOnlineTranslationProvider(BaseProvider):
         # 1. Try DeepL if API key is present
         if self.api_key:
             try:
-                translated_text, alts, detected = await query_deepl(
+                candidate, alts, detected = await query_deepl(
                     text, src, tgt, self.api_key, formality, self.api_url
                 )
-                alternatives = alts
-                provider_used = "deepl"
-                model_used = "deepl-v2"
-                quality_flags.append("deepl_verified")
+                if _is_distinct_translation(text, candidate, src, tgt):
+                    translated_text = candidate
+                    alternatives = alts
+                    provider_used = "deepl"
+                    model_used = "deepl-v2"
+                    quality_flags.append("deepl_verified")
+                else:
+                    log.warning("DeepL returned source text unchanged for %s->%s", src, tgt)
             except Exception as e:
                 log.warning("DeepL API query failed: %s; falling back to MyMemory", e)
 
@@ -489,10 +512,13 @@ class NeuralOnlineTranslationProvider(BaseProvider):
             try:
                 src_code = "en" if src in ("auto", "") else src
                 primary, alts = await query_mymemory(text, src_code, tgt)
-                translated_text = primary
-                alternatives = alts
-                provider_used = "mymemory"
-                model_used = "neural-mymemory-v1"
+                if _is_distinct_translation(text, primary, src, tgt):
+                    translated_text = primary
+                    alternatives = alts
+                    provider_used = "mymemory"
+                    model_used = "neural-mymemory-v1"
+                else:
+                    log.warning("MyMemory returned source text unchanged for %s->%s", src, tgt)
             except Exception as e:
                 log.warning("MyMemory translation failed: %s; falling back to Google Web", e)
 
@@ -500,10 +526,13 @@ class NeuralOnlineTranslationProvider(BaseProvider):
         if not translated_text:
             try:
                 primary, alts = await query_google_web(text, src, tgt)
-                translated_text = primary
-                alternatives = alts
-                provider_used = "google_web"
-                model_used = "google-nmt-web"
+                if _is_distinct_translation(text, primary, src, tgt):
+                    translated_text = primary
+                    alternatives = alts
+                    provider_used = "google_web"
+                    model_used = "google-nmt-web"
+                else:
+                    log.warning("Google Web returned source text unchanged for %s->%s", src, tgt)
             except Exception as e:
                 log.warning("Google Web translation failed: %s; trying offline linguistic fallback", e)
 
@@ -511,10 +540,13 @@ class NeuralOnlineTranslationProvider(BaseProvider):
         if not translated_text:
             offline = offline_linguistic_translate(text, src, tgt)
             if offline:
-                translated_text, alternatives = offline
-                provider_used = "linguistic_rule"
-                model_used = "linguistic-v1"
-                quality_flags.append("rule_matched")
+                candidate, alts = offline
+                if _is_distinct_translation(text, candidate, src, tgt):
+                    translated_text = candidate
+                    alternatives = alts
+                    provider_used = "linguistic_rule"
+                    model_used = "linguistic-v1"
+                    quality_flags.append("rule_matched")
 
         # 5. Failover signal when all attempts in this provider fail
         if not translated_text:

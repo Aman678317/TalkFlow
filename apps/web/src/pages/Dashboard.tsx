@@ -2,7 +2,7 @@ import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowRight, Languages, Mic, Video, FileText, Activity, Clock, Globe } from "lucide-react";
 import { api } from "../lib/api";
-import { Button, Skeleton } from "../components/ui";
+import { Skeleton } from "../components/ui";
 import { Stagger, StaggerItem } from "../components/Motion";
 import { useAuth } from "../stores/auth";
 import { useLanguages } from "../hooks/useLanguages";
@@ -56,7 +56,7 @@ export default function Dashboard() {
   const planName = (org?.plan || usageQ.data?.plan || "pro").toUpperCase();
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6 p-4 lg:p-6">
+    <div className="mx-auto max-w-6xl space-y-8 px-4 py-6 sm:px-6 lg:px-8 lg:py-10">
       {/* Welcome Banner & Quick Action Buttons */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-slate-200/80 pb-5">
         <div>
@@ -66,25 +66,17 @@ export default function Dashboard() {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Link to="/translate">
-            <Button size="sm" className="bg-dl-blue hover:bg-dl-blue-hover text-white">
-              Translate text
-            </Button>
+          <Link to="/translate" className="btn-tactile inline-flex min-h-11 items-center justify-center gap-2 rounded-xl2 bg-accent-600 px-4 py-2 text-sm font-semibold text-white shadow-xs hover:bg-accent-700">
+            Translate text <ArrowRight aria-hidden="true" className="h-4 w-4" />
           </Link>
-          <Link to="/write">
-            <Button size="sm" variant="secondary" className="border-slate-200">
-              Write companion
-            </Button>
+          <Link to="/write" className="btn-tactile inline-flex min-h-11 items-center justify-center rounded-xl2 border border-border bg-surface-panel px-4 py-2 text-sm font-medium text-ink-700 hover:bg-surface-subtle">
+            Write companion
           </Link>
-          <Link to="/voice">
-            <Button size="sm" variant="secondary" className="border-slate-200">
-              Live Voice
-            </Button>
+          <Link to="/voice" className="btn-tactile inline-flex min-h-11 items-center justify-center rounded-xl2 border border-border bg-surface-panel px-4 py-2 text-sm font-medium text-ink-700 hover:bg-surface-subtle">
+            Live Voice
           </Link>
-          <Link to="/meetings">
-            <Button size="sm" variant="secondary" className="border-slate-200">
-              Start a meeting
-            </Button>
+          <Link to="/meetings" className="btn-tactile inline-flex min-h-11 items-center justify-center rounded-xl2 border border-border bg-surface-panel px-4 py-2 text-sm font-medium text-ink-700 hover:bg-surface-subtle">
+            Start a meeting
           </Link>
         </div>
       </div>
@@ -104,7 +96,7 @@ export default function Dashboard() {
               {usageQ.isLoading ? (
                 <Skeleton className="h-8 w-24 rounded-lg" />
               ) : (
-                <p className="text-2xl font-bold text-slate-900 font-mono tracking-tight">{s.value}</p>
+                <p className="break-words font-display text-2xl font-semibold tabular-nums tracking-title text-ink-950 sm:text-3xl">{s.value}</p>
               )}
             </StaggerItem>
           );
@@ -133,7 +125,7 @@ export default function Dashboard() {
           ) : historyItems.length === 0 ? (
             <p className="py-6 text-center text-xs text-slate-600">No translations yet. Try the Translate workspace.</p>
           ) : (
-            <ul className="divide-y divide-slate-100">
+            <ul className="divide-y divide-ink-100">
               {historyItems.map((h: any) => (
                 <li key={h.id} className="py-2.5 text-xs">
                   <div className="flex items-center justify-between gap-2 text-[11px] text-slate-600 mb-1">
@@ -142,8 +134,8 @@ export default function Dashboard() {
                     </span>
                     <span className="font-mono">{Math.round(h.latency_ms ?? 0)} ms</span>
                   </div>
-                  <p className="truncate text-slate-600 font-normal">{h.source_text}</p>
-                  <p className="truncate font-semibold text-dl-navy">{h.target_text || h.translated_text}</p>
+                  <p className="truncate font-normal text-ink-600">{h.source_text}</p>
+                  <p className="truncate font-semibold text-ink-950">{h.target_text || h.translated_text}</p>
                 </li>
               ))}
             </ul>
@@ -170,7 +162,7 @@ export default function Dashboard() {
           ) : meetingItems.length === 0 ? (
             <p className="py-6 text-center text-xs text-slate-600">No meetings yet.</p>
           ) : (
-            <ul className="divide-y divide-slate-100">
+            <ul className="divide-y divide-ink-100">
               {meetingItems.map((m: any) => (
                 <li key={m.id} className="flex items-center justify-between gap-2 py-2.5 text-xs">
                   <Link to={`/meeting/${m.id}`} className="min-w-0 flex-1 hover:text-dl-blue">
@@ -180,10 +172,10 @@ export default function Dashboard() {
                     </p>
                   </Link>
                   <span
-                    className={`rounded-md px-2 py-0.5 text-[10px] font-semibold uppercase ${
+                    className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${
                       m.status === "live"
                         ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
-                        : "bg-slate-100 text-slate-600"
+                        : "bg-surface-subtle text-ink-600"
                     }`}
                   >
                     {m.status}
@@ -214,12 +206,12 @@ export default function Dashboard() {
           ) : docItems.length === 0 ? (
             <p className="py-6 text-center text-xs text-slate-600">No documents translated yet.</p>
           ) : (
-            <ul className="divide-y divide-slate-100">
+            <ul className="divide-y divide-ink-100">
               {docItems.slice(0, 5).map((d: any) => (
-                <li key={d.id} className="flex items-center justify-between gap-2 py-2.5 text-xs">
-                  <span className="min-w-0 truncate text-slate-800 font-medium">{d.filename}</span>
+                <li key={d.id} className="flex items-center justify-between gap-3 py-3.5 text-sm">
+                  <span className="min-w-0 truncate font-medium text-ink-800">{d.filename}</span>
                   <span
-                    className={`rounded-md px-2 py-0.5 text-[10px] font-semibold uppercase ${
+                    className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${
                       d.status === "ready"
                         ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
                         : d.status === "failed"
@@ -236,13 +228,13 @@ export default function Dashboard() {
         </StaggerItem>
 
         {/* Supported Languages Card */}
-        <StaggerItem className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
-          <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-3">
-            <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
-              <Globe className="h-4 w-4 text-dl-blue" /> Language capabilities
-            </h3>
+        <StaggerItem className="min-w-0 rounded-2xl border border-border bg-surface-panel p-5 shadow-xs sm:p-6">
+          <div className="mb-4 flex items-center justify-between border-b border-ink-100 pb-4">
+            <h2 className="flex items-center gap-2 text-base font-semibold text-ink-950">
+              <Globe className="h-4 w-4 text-accent-600" /> Language capabilities
+            </h2>
           </div>
-          <div className="flex flex-wrap gap-1.5 max-h-36 overflow-y-auto">
+          <div className="flex max-h-44 flex-wrap gap-2 overflow-y-auto rounded-lg p-1" role="region" aria-label="Language capabilities" tabIndex={0}>
             {(langs ?? []).map((l) => (
               <span
                 key={l.code}

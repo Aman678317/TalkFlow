@@ -84,19 +84,29 @@ export function getAccessToken() {
   return accessToken;
 }
 
-export const getApiBaseUrl = (): string => {
-  if (typeof window !== "undefined" && window.location.hostname.endsWith(".vercel.app")) {
-    return "";
-  }
-  const envUrl = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim();
-  if (envUrl) {
-    return envUrl.replace(/\/+$/, "");
-  }
-  if (import.meta.env.PROD) {
-    return "https://talkflow-csbw.onrender.com";
-  }
-  return "";
-};
+export const DEFAULT_PRODUCTION_API_BASE_URL = "https://talkflow-csbw.onrender.com";
+
+/**
+ * Resolve the API origin used by both REST and WebSocket traffic.
+ *
+ * Vercel serves the SPA, but it is not a durable database or WebSocket host.
+ * The previous `.vercel.app` special case forced preview builds back to same-
+ * origin `/api` and `/ws` routes, which made login state disappear between
+ * serverless invocations and caused meeting seats to be rejected. A deployment
+ * may still override this with VITE_API_BASE_URL, but production defaults to
+ * the durable API service when no override is supplied.
+ */
+export function resolveApiBaseUrl(envUrl: string | undefined, isProduction: boolean): string {
+  const configured = envUrl?.trim().replace(/\/+$/, "");
+  if (configured) return configured;
+  return isProduction ? DEFAULT_PRODUCTION_API_BASE_URL : "";
+}
+
+export const getApiBaseUrl = (): string =>
+  resolveApiBaseUrl(
+    import.meta.env.VITE_API_BASE_URL as string | undefined,
+    import.meta.env.PROD,
+  );
 
 const BASE = getApiBaseUrl();
 
@@ -105,6 +115,11 @@ async function doRefreshRequest(): Promise<boolean> {
   if (Date.now() - lastRefreshSuccess < REFRESH_DEDUPE_MS && accessToken) {
     return true;
   }
+
+  // A page can start its silent cookie refresh at the same time that the user
+  // submits login or signup. If that request finishes with the old unauthenticated
+  // result after the explicit auth call succeeds, it must not clear the new session.
+  const tokenAtStart = accessToken;
 
   try {
     // Cookie-only: the HttpOnly refresh cookie authenticates this call; we never
@@ -116,10 +131,16 @@ async function doRefreshRequest(): Promise<boolean> {
       body: "{}",
     });
     if (!r.ok) {
-      if (r.status === 401) {
+      if (r.status === 401 && accessToken === tokenAtStart) {
         broadcastLogout();
       }
       return false;
+    }
+    // An explicit login/signup or another tab may have established a newer token
+    // while this request was in flight. Preserve that token rather than replacing
+    // it with a stale cookie-refresh response.
+    if (accessToken !== tokenAtStart) {
+      return true;
     }
     const data = await r.json();
     // The server rotates the cookie (Set-Cookie) and blanks refresh in the body;

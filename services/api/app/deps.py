@@ -33,6 +33,7 @@ bearer = HTTPBearer(auto_error=False)
 # membership role; their scopes ARE their permissions)
 API_KEY_PERMISSION_SCOPES: dict[str, set[str] | str] = {
     "use_translate": {"translate", "translate:write"},
+    "use_write": {"write", "write:correct", "write:rephrase"},
     "manage_documents": {"documents", "documents:write"},
     "export_document": {"documents", "documents:read", "documents:write"},
     "create_meeting": {"meetings", "meetings:write", "meetings:create"},

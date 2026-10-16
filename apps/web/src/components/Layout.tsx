@@ -86,7 +86,7 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
             <p className="text-xs text-rose-700 font-mono break-words">{this.state.error?.message || "Unknown error"}</p>
             <button
               onClick={() => { this.setState({ hasError: false, error: null }); window.location.reload(); }}
-              className="mt-2 inline-flex items-center rounded-lg bg-rose-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-xs hover:bg-rose-700 active:scale-95 transition-all"
+              className="mt-2 inline-flex items-center rounded-lg bg-rose-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-xs transition-[background-color,transform] hover:bg-rose-700 active:scale-95"
             >
               Reload View
             </button>
@@ -119,22 +119,22 @@ export default function Layout() {
   const byPath = Object.fromEntries(allNav.map((n) => [n.to, n]));
 
   return (
-    <div className="flex h-full bg-[#F8F9FA]">
+    <div className="flex h-full min-h-0 bg-surface-canvas text-ink-900">
       {/* ── Sidebar ─────────────────────────────────────────────── */}
       <aside
-        className={`fixed inset-y-0 left-0 z-40 flex flex-col bg-dl-navy transition-transform duration-200 lg:static lg:translate-x-0 border-r border-white/[.08] shadow-sm
+        className={`fixed inset-y-0 left-0 z-40 flex flex-col border-r border-white/[.1] bg-ink-950 shadow-lift transition-transform duration-300 ease-emphasized lg:static lg:translate-x-0
                     ${open ? "translate-x-0" : "-translate-x-full"}`}
         style={{ width: "var(--sidebar-w, 240px)" }}
         aria-label="Main navigation"
       >
         {/* Brand */}
-        <div className="flex items-center gap-3 px-5 py-4 border-b border-white/[.08]">
-          <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-dl-blue shadow-sm">
+        <div className="flex items-center gap-3 border-b border-white/[.1] px-5 py-4">
+          <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-accent-600 shadow-accent">
             <Logo className="h-5 w-5 brightness-0 invert" />
           </div>
           <div>
             <p className="text-[13px] font-bold tracking-tight text-white leading-tight">
-              GlobalTalk <span className="text-blue-400">AI</span>
+              GlobalTalk <span className="text-accent-300">AI</span>
             </p>
             <p className="text-[9px] font-medium uppercase tracking-widest text-white/75 leading-tight mt-0.5">
               Every language
@@ -143,7 +143,7 @@ export default function Layout() {
         </div>
 
         {/* Nav groups */}
-        <nav className="flex-1 min-h-0 overflow-y-auto px-3 py-3 space-y-3">
+        <nav className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 py-4">
           {NAV_GROUPS.map((group, index) => {
             const items = group.items
               .map((p) => byPath[p])
@@ -196,10 +196,10 @@ export default function Layout() {
         </nav>
 
         {/* User footer */}
-        <div className="shrink-0 mt-auto border-t border-white/[.08] p-3">
-          <div className="flex items-center gap-2.5 rounded-xl bg-white/[.04] border border-white/[.06] p-2.5">
+        <div className="mt-auto shrink-0 border-t border-white/[.1] p-3">
+          <div className="flex items-center gap-2.5 rounded-xl border border-white/[.08] bg-white/[.05] p-2.5">
             <div
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-dl-blue text-xs font-bold text-white shadow-xs"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent-600 text-xs font-bold text-white shadow-xs"
               aria-hidden
             >
               {(user?.full_name || user?.email || "?").slice(0, 1).toUpperCase()}
@@ -234,7 +234,7 @@ export default function Layout() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.2 }}
-            className="fixed inset-0 z-30 bg-black/40 backdrop-blur-sm lg:hidden"
+            className="fixed inset-0 z-30 bg-ink-950/70 backdrop-blur-sm lg:hidden"
             onClick={() => setOpen(false)}
           />
         )}
@@ -244,9 +244,9 @@ export default function Layout() {
       <div className="flex min-w-0 flex-1 flex-col">
         {/* Top bar — frosted material, content scrolls under */}
         <header className="material-bar sticky top-0 z-20">
-          <div className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-4 py-2.5 lg:px-6">
+          <div className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-4 py-3 lg:px-6">
             <button
-              className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 lg:hidden transition-colors"
+              className="rounded-lg p-2 text-ink-500 transition-colors hover:bg-ink-100 lg:hidden"
               onClick={() => setOpen(true)}
               aria-label="Open navigation"
             >
@@ -257,18 +257,18 @@ export default function Layout() {
             <div className="flex-1" />
             <div className="flex items-center gap-2.5">
               {org && (
-                <span className="rounded-full border border-blue-200 bg-blue-50/80 px-2.5 py-0.5 text-[11px] font-bold uppercase tracking-wider text-dl-blue">
+                <span className="rounded-full border border-accent-200 bg-accent-50 px-2.5 py-0.5 text-[11px] font-bold uppercase tracking-wider text-accent-700">
                   {org.plan}
                 </span>
               )}
               <a
                 href="/api/docs"
-                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-600 hover:text-dl-navy hover:bg-slate-50 transition-colors shadow-xs"
+                className="inline-flex items-center gap-1 rounded-lg border border-border bg-surface-panel px-2.5 py-1 text-xs font-medium text-ink-600 shadow-xs transition-colors hover:bg-surface-subtle hover:text-ink-950"
                 target="_blank"
                 rel="noreferrer"
               >
                 <span>API docs</span>
-                <ExternalLink className="h-3 w-3 text-slate-400" />
+                  <ExternalLink className="h-3 w-3 text-ink-400" />
               </a>
             </div>
           </div>

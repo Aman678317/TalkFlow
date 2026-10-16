@@ -1,10 +1,12 @@
 # GlobalTalk AI — developer workflow
 .PHONY: bootstrap dev api web test test-unit test-integration test-realtime verify-ai-stack \
-        models migrate lint build docker-up docker-down clean
+        models migrate lint build docker-up docker-gpu-up docker-down clean
 
 PY := python3
 PIP := pip
-export PYTHONPATH := apps/api:.
+# services/api is the deployed FastAPI service. apps/api remains a legacy
+# compatibility tree until its schema/model lineage is intentionally migrated.
+export PYTHONPATH := services/api:apps/api:ai:.
 export MALLOC_ARENA_MAX := 2
 
 ## one-command local bootstrap (no Docker required)
@@ -20,14 +22,14 @@ dev:
 	@bash scripts/run_dev.sh
 
 api:
-	cd apps/api && $(PY) -m uvicorn globaltalk.main:app --reload --port 8000
+	$(PY) run_api.py
 
 web:
 	cd apps/web && npx vite
 
 ## database
 migrate:
-	cd apps/api && $(PY) -m alembic upgrade head
+	cd services/api && $(PY) -m alembic upgrade head
 
 ## tests
 test: test-unit test-integration test-realtime
@@ -51,6 +53,8 @@ verify-ai-stack:
 ## docker full topology
 docker-up:
 	docker compose -f infrastructure/docker/docker-compose.yml up --build
+docker-gpu-up:
+	docker compose -f infrastructure/docker/docker-compose.yml --profile gpu up --build inference-worker
 docker-down:
 	docker compose -f infrastructure/docker/docker-compose.yml down
 

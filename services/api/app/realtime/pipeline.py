@@ -195,13 +195,47 @@ class MeetingPipeline:
                                    name=f"pipeline-{p.participant_id}")
         self.speaker_tasks[p.participant_id] = task
 
-    def stop_speaker(self, participant_id: uuid.UUID) -> None:
+    def stop_speaker(self, participant_id: uuid.UUID) -> asyncio.Task | None:
+        """Stop capture without discarding a valid in-flight final utterance.
+
+        The browser can send ``audio.stop`` while the VAD still considers the
+        speaker to be talking. Preserve the same 50-ms minimum used by normal
+        finalization, then let the WebSocket handler await the flush before it
+        announces ``audio.stopped``.
+        """
         task = self.speaker_tasks.pop(participant_id, None)
         self.audio_queues.pop(participant_id, None)
         self.vads.pop(participant_id, None)
+        utterance = self.utterances.get(participant_id)
+        participant = self.session.participants.get(str(participant_id))
+        flush_task: asyncio.Task | None = None
+        if (
+            not self._closed
+            and participant is not None
+            and utterance is not None
+            and utterance.in_speech
+            and len(utterance.buffer) >= MIN_AUDIO_BYTES
+        ):
+            audio = bytes(utterance.buffer)
+            utterance.buffer = bytearray()
+            utterance.in_speech = False
+            flush_task = asyncio.create_task(
+                self._finalize_utterance(
+                    participant,
+                    utterance,
+                    forced=True,
+                    audio_bytes=audio,
+                    start_ms=utterance.started_at_ms,
+                    capture_started=utterance.capture_started,
+                    utterance_id=utterance.utterance_id,
+                    seq=utterance.seq,
+                ),
+                name=f"stop-finalize-{participant_id}",
+            )
         self.utterances.pop(participant_id, None)
         if task:
             task.cancel()
+        return flush_task
 
     async def shutdown(self) -> None:
         self._closed = True
@@ -962,7 +996,11 @@ class MeetingPipeline:
         # queue tags for one chunk and the client cannot dedup the duplicate.
         short_id_bytes = str(segment_id).replace("-", "")[:16].ljust(16, "\x00").encode("utf-8")
         lang_bytes = target_lang.encode("utf-8")
-        bin_header = b"\x54" + short_id_bytes + bytes([len(lang_bytes)]) + lang_bytes
+        # TTS header: [T][short id][language length][language][0x01][uint32 chunk index].
+        # The marker keeps old clients safe during a rolling deploy; they will
+        # treat the extension as part of the WAV payload, while new clients can
+        # stop guessing chunk order from binary arrival timing.
+        bin_header_prefix = b"\x54" + short_id_bytes + bytes([len(lang_bytes)]) + lang_bytes
 
         async def deliver(ready: TtsChunkReady, audio: bytes,
                           _recipients: list[str]) -> None:
@@ -984,14 +1022,21 @@ class MeetingPipeline:
                 to=recipients, speaker_id=str(speaker.participant_id))
 
             # Binary frame delivery for lowest-latency audio playback.
-            # NOTE: payload = [tag][shortId][langLen][lang][WAV bytes].
+            # Legacy payload = [tag][shortId][langLen][lang][WAV bytes].
+            # Capable clients get [0x01][uint32 chunk index] before the WAV.
             # Frontend decodes via decodeBinaryFrame and routes TTS frames
             # through AudioPlayer.enqueueWav (not enqueuePcm16) — see
             # apps/web/src/lib/audio.ts and MeetingRoom.tsx onBinary.
-            bin_frame = bin_header + audio
             for listener in recipients:
                 if listener.connected and listener.ws is not None:
                     try:
+                        extension = (
+                            b"\x01"
+                            + int(ready.chunk_index).to_bytes(4, "big", signed=False)
+                            if listener.supports_tts_chunk_index
+                            else b""
+                        )
+                        bin_frame = bin_header_prefix + extension + audio
                         await listener.ws.send_bytes(bin_frame)
                     except Exception:
                         pass

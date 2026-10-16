@@ -21,6 +21,8 @@ import {
   Phone,
 } from "lucide-react";
 import { api, friendlyMessage } from "@/lib/api";
+import { MicCapture } from "@/lib/audio";
+import { translateCanonical } from "@/lib/translation";
 import { Button, Card, Select } from "@/components/ui";
 import { toast } from "@/stores/toasts";
 import { useAuth } from "@/stores/auth";
@@ -55,29 +57,8 @@ const VOICE_LANGUAGES = [
   { code: "ko", name: "Korean (한국어)", locale: "ko-KR" },
 ];
 
-function toBCP47(code: string): string {
-  const match = VOICE_LANGUAGES.find((l) => l.code === code.toLowerCase());
-  if (match) return match.locale;
-  const map: Record<string, string> = {
-    en: "en-US",
-    de: "de-DE",
-    es: "es-ES",
-    fr: "fr-FR",
-    hi: "hi-IN",
-    ja: "ja-JP",
-    zh: "zh-CN",
-    it: "it-IT",
-    pt: "pt-BR",
-    ru: "ru-RU",
-    nl: "nl-NL",
-    pl: "pl-PL",
-    ko: "ko-KR",
-    ar: "ar-SA",
-  };
-  return map[code.toLowerCase()] || code;
-}
-
-// High-accuracy live translation helper with multi-tier fallback
+/*
+// Legacy client-side translation fallback implementation intentionally disabled.
 async function translateLiveText(
   text: string,
   sourceLang: string,
@@ -184,9 +165,7 @@ async function translateLiveText(
   // 2. Try online neural MT
   try {
     const pair = `${src}|${tgt}`;
-    const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(
-      trimmed
-    )}&langpair=${pair}`;
+    const url = ""; // legacy browser provider removed
     const resp = await fetch(url, { signal: AbortSignal.timeout(3000) });
     if (resp.ok) {
       const data = await resp.json();
@@ -213,6 +192,7 @@ async function translateLiveText(
 
   return trimmed;
 }
+*/
 
 export default function Voice() {
   const navigate = useNavigate();
@@ -234,6 +214,9 @@ export default function Voice() {
   // === LIVE TRANSLATION STATE ===
   const [liveSourceLang, setLiveSourceLang] = useState("en");
   const [liveTargetLang, setLiveTargetLang] = useState("de"); // Default English -> German as in user screenshot
+  const [liveDetectedLanguage, setLiveDetectedLanguage] = useState("");
+  const [liveDetectedConfidence, setLiveDetectedConfidence] = useState<number | null>(null);
+  const [liveTranslationError, setLiveTranslationError] = useState<string | null>(null);
   const [isLiveListening, setIsLiveListening] = useState(false);
   const [liveOriginalText, setLiveOriginalText] = useState("");
   const [liveTranslatedText, setLiveTranslatedText] = useState("");
@@ -241,6 +224,9 @@ export default function Voice() {
   const [liveInterimTranslated, setLiveInterimTranslated] = useState("");
   const [isLiveTranslating, setIsLiveTranslating] = useState(false);
   const [autoPlayLiveAudio, setAutoPlayLiveAudio] = useState(true);
+  const [audioEnabled, setAudioEnabled] = useState(false);
+  const [liveTtsStatus, setLiveTtsStatus] = useState<"idle" | "ready" | "blocked" | "unavailable">("idle");
+  const [liveTtsError, setLiveTtsError] = useState<string | null>(null);
   const [copiedOriginal, setCopiedOriginal] = useState(false);
   const [copiedTranslated, setCopiedTranslated] = useState(false);
 
@@ -277,22 +263,54 @@ export default function Voice() {
   }, [activeTab, liveOriginalText, liveTranslatedText, liveSourceLang, liveTargetLang, user?.name, transcripts]);
 
   // Refs
-  const recognitionRef = useRef<any>(null);
   const micStreamRef = useRef<MediaStream | null>(null);
   const liveFinalOriginalRef = useRef("");
   const liveFinalTranslatedRef = useRef("");
-  const interimDebounceRef = useRef<any>(null);
   const isSimulatingRef = useRef(false);
   const isLiveListeningRef = useRef(false);
   const transcriptBottomRef = useRef<HTMLDivElement>(null);
   const [quickInputText, setQuickInputText] = useState("");
   const [isSpeakingTts, setIsSpeakingTts] = useState<boolean>(false);
   const audioContextRef = useRef<AudioContext | null>(null);
-  const audioProcessorRef = useRef<ScriptProcessorNode | null>(null);
-  const backendPcmBufferRef = useRef<Float32Array[]>([]);
+  const liveMicCaptureRef = useRef<MicCapture | null>(null);
+  const backendPcmBufferRef = useRef<Int16Array[]>([]);
+  const backendPcmSamplesRef = useRef(0);
   const isBackendTranscribingRef = useRef<boolean>(false);
+  const backendTranscriptionChainRef = useRef<Promise<void>>(Promise.resolve());
+  const liveSessionIdRef = useRef(0);
+  const liveCaptureEpochRef = useRef(0);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
-  const webSpeechFailedRef = useRef<boolean>(false);
+  const ttsQueueRef = useRef<Array<{ text: string; langCode: string }>>([]);
+  const ttsDrainingRef = useRef(false);
+  const ttsGenerationRef = useRef(0);
+  const currentTtsResolveRef = useRef<(() => void) | null>(null);
+  const faceMicStreamRef = useRef<MediaStream | null>(null);
+  const faceAudioContextRef = useRef<AudioContext | null>(null);
+  const faceAudioProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const faceAudioChunksRef = useRef<Float32Array[]>([]);
+  const faceCaptureSpeakerRef = useRef<"speaker1" | "speaker2" | null>(null);
+
+  const requestLiveTranslation = async (text: string, sourceLang: string, targetLang: string) => {
+    try {
+      const { response, sourceLanguage, detectedConfidence } = await translateCanonical(
+        text,
+        sourceLang,
+        targetLang,
+        { intent: "latency_optimized" },
+      );
+      if (sourceLang.toLowerCase() === "auto") {
+        setLiveDetectedLanguage(sourceLanguage);
+        setLiveDetectedConfidence(detectedConfidence);
+      }
+      setLiveTranslationError(null);
+      return response.translated_text;
+    } catch (err) {
+      const message = friendlyMessage(err);
+      setLiveTranslationError(message);
+      toast.error("Translation unavailable", message);
+      return null;
+    }
+  };
 
   // Spacebar toggle listener for Live Voice
   useEffect(() => {
@@ -319,78 +337,129 @@ export default function Voice() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [activeTab]);
 
-  // High-Fidelity Text-To-Speech Playback (Neural Audio with WebSpeech Fallback)
-  const speakUtterance = async (text: string, langCode: string) => {
-    const clean = text?.trim();
-    if (!clean) return;
+  const enableAudio = async () => {
+    try {
+      const AudioContextCtor = window.AudioContext || (window as typeof window & {
+        webkitAudioContext?: typeof AudioContext;
+      }).webkitAudioContext;
+      if (AudioContextCtor) {
+        const context = audioContextRef.current || new AudioContextCtor();
+        audioContextRef.current = context;
+        await context.resume();
+      }
+      setAudioEnabled(true);
+      setLiveTtsError(null);
+      setLiveTtsStatus("idle");
+    } catch {
+      setAudioEnabled(false);
+      setLiveTtsStatus("blocked");
+      setLiveTtsError("Browser audio is blocked. Allow audio for TalkFlow and try again.");
+    }
+  };
 
-    // 1. Try backend high-fidelity TTS (synthesizes natural speech for all languages including Hindi/German/Spanish)
+  // Server-side TTS only. Browser speech synthesis is deliberately not used as a
+  // translation fallback because it can make an unavailable provider look ready.
+  const playTtsItem = async (item: { text: string; langCode: string }, generation: number) => {
     try {
       const res = await api<{ audio_base64?: string; format?: string }>("/api/v1/voice/tts", {
         method: "POST",
-        body: {
-          text: clean,
-          language: langCode,
-        },
+        body: { text: item.text, language: item.langCode },
         timeoutMs: 9000,
       });
 
-      if (res?.audio_base64) {
-        if (currentAudioRef.current) {
-          try {
-            currentAudioRef.current.pause();
-            currentAudioRef.current.currentTime = 0;
-          } catch { }
-        }
-
-        const mime = res.format === "wav" ? "audio/wav" : "audio/mp3";
-        const audio = new Audio(`data:${mime};base64,${res.audio_base64}`);
-        currentAudioRef.current = audio;
-        setIsSpeakingTts(true);
-
-        audio.onended = () => {
-          setIsSpeakingTts(false);
-          currentAudioRef.current = null;
-        };
-        audio.onerror = () => {
-          setIsSpeakingTts(false);
-          currentAudioRef.current = null;
-        };
-
-        await audio.play();
+      // Stopping the live session invalidates an in-flight provider response.
+      if (generation !== ttsGenerationRef.current) return;
+      if (!res?.audio_base64) {
+        setLiveTtsStatus("unavailable");
+        setLiveTtsError("Translated audio is unavailable. Captions remain available.");
         return;
       }
+
+      const mime = res.format === "wav" ? "audio/wav" : "audio/mpeg";
+      const audio = new Audio(`data:${mime};base64,${res.audio_base64}`);
+      currentAudioRef.current = audio;
+      setIsSpeakingTts(true);
+      setLiveTtsStatus("ready");
+      setLiveTtsError(null);
+
+      await new Promise<void>((resolve) => {
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          if (currentTtsResolveRef.current === finish) currentTtsResolveRef.current = null;
+          if (currentAudioRef.current === audio) currentAudioRef.current = null;
+          setIsSpeakingTts(false);
+          resolve();
+        };
+        currentTtsResolveRef.current = finish;
+        audio.onended = finish;
+        audio.onerror = () => {
+          if (generation !== ttsGenerationRef.current) {
+            finish();
+            return;
+          }
+          setLiveTtsStatus("unavailable");
+          setLiveTtsError("Translated audio could not be played. Captions remain available.");
+          finish();
+        };
+        void audio.play().catch(() => {
+          setLiveTtsStatus("blocked");
+          setLiveTtsError("Browser blocked audio playback. Enable audio and try again.");
+          finish();
+        });
+      });
     } catch (err) {
-      console.warn("Backend neural TTS notice, trying browser synthesis fallback:", err);
+      if (generation !== ttsGenerationRef.current) return;
+      const message = friendlyMessage(err);
+      setLiveTtsStatus("unavailable");
+      setLiveTtsError(message || "Translated audio is unavailable. Captions remain available.");
+      setIsSpeakingTts(false);
     }
+  };
 
-    // 2. Safe Fallback: Browser Web SpeechSynthesis
-    if (typeof window !== "undefined" && "speechSynthesis" in window) {
-      try {
-        window.speechSynthesis.resume();
-        const utterance = new SpeechSynthesisUtterance(clean);
-        utterance.lang = toBCP47(langCode);
-        utterance.rate = 1.0;
-        utterance.pitch = 1.0;
-
-        const voices = window.speechSynthesis.getVoices();
-        const bcp47 = toBCP47(langCode).toLowerCase();
-        const shortLang = langCode.toLowerCase().split("-")[0];
-        const match = voices.find(
-          (v) => v.lang.toLowerCase() === bcp47 || v.lang.toLowerCase().startsWith(shortLang)
-        );
-        if (match) utterance.voice = match;
-
-        utterance.onstart = () => setIsSpeakingTts(true);
-        utterance.onend = () => setIsSpeakingTts(false);
-        utterance.onerror = () => setIsSpeakingTts(false);
-
-        window.speechSynthesis.speak(utterance);
-      } catch (e) {
-        console.warn("Browser SpeechSynthesis playback error:", e);
-        setIsSpeakingTts(false);
+  const drainTtsQueue = async () => {
+    if (ttsDrainingRef.current) return;
+    ttsDrainingRef.current = true;
+    const generation = ttsGenerationRef.current;
+    try {
+      while (ttsQueueRef.current.length > 0 && generation === ttsGenerationRef.current) {
+        const item = ttsQueueRef.current.shift();
+        if (item) await playTtsItem(item, generation);
       }
+    } finally {
+      ttsDrainingRef.current = false;
+      // A new utterance may have arrived while the previous item was ending or
+      // while cancellation was resolving its current audio promise.
+      if (ttsQueueRef.current.length > 0) void drainTtsQueue();
     }
+  };
+
+  const cancelTts = () => {
+    ttsGenerationRef.current += 1;
+    ttsQueueRef.current = [];
+    currentTtsResolveRef.current?.();
+    currentTtsResolveRef.current = null;
+    if (currentAudioRef.current) {
+      try {
+        currentAudioRef.current.pause();
+        currentAudioRef.current.currentTime = 0;
+      } catch { }
+      currentAudioRef.current = null;
+    }
+    setIsSpeakingTts(false);
+  };
+
+  const speakUtterance = (text: string, langCode: string) => {
+    const clean = text?.trim();
+    if (!clean) return;
+    if (!audioEnabled) {
+      setLiveTtsStatus("blocked");
+      setLiveTtsError("Enable audio before playing translated speech.");
+      return;
+    }
+    ttsQueueRef.current.push({ text: clean, langCode });
+    void drainTtsQueue();
   };
 
   // Swap Live Languages
@@ -410,27 +479,23 @@ export default function Voice() {
   };
 
   // Backend PCM Audio Capture Fallback (Ensures voice recognition is available 100% of the time)
-  const flushBackendPcmTranscription = async (chunks: Float32Array[]) => {
-    if (chunks.length === 0 || !isLiveListeningRef.current) return;
+  const flushBackendPcmTranscription = async (chunks: Int16Array[], sessionId: number) => {
+    if (chunks.length === 0) return;
     try {
       isBackendTranscribingRef.current = true;
-      let totalLen = 0;
-      for (const c of chunks) totalLen += c.length;
-      const merged = new Float32Array(totalLen);
+      let totalSamples = 0;
+      for (const c of chunks) totalSamples += c.length;
+      const merged = new Int16Array(totalSamples);
       let offset = 0;
       for (const c of chunks) {
         merged.set(c, offset);
         offset += c.length;
       }
 
-      // Convert Float32 to 16-bit PCM
-      const int16 = new Int16Array(merged.length);
-      for (let i = 0; i < merged.length; i++) {
-        const s = Math.max(-1, Math.min(1, merged[i]));
-        int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-      }
-
-      const bytes = new Uint8Array(int16.buffer);
+      // MicCapture already resamples and quantizes each frame to 16 kHz mono
+      // PCM16, so the server receives the bytes it expects instead of 48-kHz
+      // samples mislabeled as 16 kHz.
+      const bytes = new Uint8Array(merged.buffer);
       let binary = "";
       const len = bytes.byteLength;
       for (let i = 0; i < len; i++) {
@@ -447,6 +512,7 @@ export default function Voice() {
         },
       });
 
+      if (sessionId !== liveSessionIdRef.current) return;
       if (res?.text && res.text.trim()) {
         const chunk = res.text.trim();
         const updatedOriginal = liveFinalOriginalRef.current
@@ -457,7 +523,12 @@ export default function Voice() {
         setLiveInterimOriginal("");
 
         setIsLiveTranslating(true);
-        const translatedChunk = await translateLiveText(chunk, liveSourceLang, liveTargetLang);
+        const translatedChunk = await requestLiveTranslation(chunk, liveSourceLang, liveTargetLang);
+        if (sessionId !== liveSessionIdRef.current) return;
+        if (!translatedChunk) {
+          setIsLiveTranslating(false);
+          return;
+        }
         const updatedTranslated = liveFinalTranslatedRef.current
           ? `${liveFinalTranslatedRef.current} ${translatedChunk}`
           : translatedChunk;
@@ -477,269 +548,118 @@ export default function Voice() {
     }
   };
 
-  const startBackendPcmCapture = (stream: MediaStream) => {
+  const enqueueBackendPcmTranscription = (chunks: Int16Array[], sessionId: number) => {
+    if (chunks.length === 0) return;
+    backendTranscriptionChainRef.current = backendTranscriptionChainRef.current
+      .catch(() => undefined)
+      .then(() => flushBackendPcmTranscription(chunks, sessionId));
+  };
+
+  const startBackendPcmCapture = async (stream: MediaStream, sessionId: number) => {
+    const track = stream.getAudioTracks()[0];
+    if (!track) return;
     try {
-      if (audioProcessorRef.current) {
-        try {
-          audioProcessorRef.current.disconnect();
-        } catch { }
-        audioProcessorRef.current = null;
-      }
-      if (audioContextRef.current) {
-        try {
-          audioContextRef.current.close().catch(() => { });
-        } catch { }
-        audioContextRef.current = null;
-      }
-
-      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-      if (!AudioCtx) return;
-      const ctx = new AudioCtx({ sampleRate: 16000 });
-      if (ctx.state === "suspended") {
-        ctx.resume().catch(() => { });
-      }
-      audioContextRef.current = ctx;
-
-      const source = ctx.createMediaStreamSource(stream);
-      const processor = ctx.createScriptProcessor(4096, 1, 1);
-      audioProcessorRef.current = processor;
+      liveMicCaptureRef.current?.stop();
+      const captureEpoch = ++liveCaptureEpochRef.current;
+      const capture = new MicCapture();
+      liveMicCaptureRef.current = capture;
       backendPcmBufferRef.current = [];
+      backendPcmSamplesRef.current = 0;
 
-      let silenceCount = 0;
+      let silenceSamples = 0;
       let hasSpeech = false;
 
-      processor.onaudioprocess = (e) => {
-        if (!isLiveListeningRef.current) return;
-        const channel = e.inputBuffer.getChannelData(0);
-        const copy = new Float32Array(channel.length);
-        copy.set(channel);
-        backendPcmBufferRef.current.push(copy);
+      await capture.startFromTrack(track, 16000, (frame) => {
+        if (!isLiveListeningRef.current || sessionId !== liveSessionIdRef.current) return;
+        const pcm = new Int16Array(frame);
+        backendPcmBufferRef.current.push(pcm);
+        backendPcmSamplesRef.current += pcm.length;
 
         // VAD root mean square calculation
         let sum = 0;
-        for (let i = 0; i < copy.length; i++) {
-          sum += copy[i] * copy[i];
+        for (let i = 0; i < pcm.length; i++) {
+          const sample = pcm[i] / 32768;
+          sum += sample * sample;
         }
-        const rms = Math.sqrt(sum / copy.length);
+        const rms = Math.sqrt(sum / pcm.length);
 
         // Sensitive threshold suitable for laptop and headset microphones
         if (rms > 0.003) {
           hasSpeech = true;
-          silenceCount = 0;
+          silenceSamples = 0;
         } else if (hasSpeech) {
-          silenceCount++;
+          silenceSamples += pcm.length;
         }
 
-        // Flush on speech pause (~0.6s silence) or max buffer duration (~3s)
+        // Flush on speech pause (~0.6s silence) or max buffer duration (~3s).
+        // These thresholds are sample-based because MicCapture emits fixed
+        // 50-ms frames, unlike the old ScriptProcessor callback size.
         if (
           hasSpeech &&
-          (silenceCount >= 2 || backendPcmBufferRef.current.length >= 12) &&
+          (silenceSamples >= 9600 || backendPcmSamplesRef.current >= 48000) &&
           !isBackendTranscribingRef.current
         ) {
           hasSpeech = false;
-          silenceCount = 0;
+          silenceSamples = 0;
           const chunks = backendPcmBufferRef.current;
           backendPcmBufferRef.current = [];
-          void flushBackendPcmTranscription(chunks);
+          backendPcmSamplesRef.current = 0;
+          enqueueBackendPcmTranscription(chunks, sessionId);
         }
-      };
-
-      // Mute gain node so microphone audio is not routed back to the speakers/headphones
-      const muteGain = ctx.createGain();
-      muteGain.gain.setValueAtTime(0, ctx.currentTime);
-      source.connect(processor);
-      processor.connect(muteGain);
-      muteGain.connect(ctx.destination);
+      });
+      if (captureEpoch !== liveCaptureEpochRef.current || !isLiveListeningRef.current) {
+        capture.stop();
+      }
     } catch (err) {
       console.warn("Direct microphone PCM capture note:", err);
     }
   };
 
-  // START LIVE STREAMING SPEECH RECOGNITION (Live Voice Mode)
+  // Start microphone capture and send PCM frames to the canonical backend STT
+  // endpoint. Browser speech recognition is intentionally not used here.
   const startLiveListening = async () => {
-    webSpeechFailedRef.current = false;
-    const SpeechRecognition =
-      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.abort();
-      } catch { }
-      recognitionRef.current = null;
-    }
-
-    // Acquire microphone stream cleanly
     let micStream = micStreamRef.current;
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-      try {
-        micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        micStreamRef.current = micStream;
-      } catch (err) {
-        console.warn("Direct microphone stream note:", err);
-      }
-    }
-
-    isLiveListeningRef.current = true;
-    setIsLiveListening(true);
-
-    // Start background PCM capture from microphone as guaranteed STT fallback
-    if (micStream) {
-      startBackendPcmCapture(micStream);
-    }
-
-    if (!SpeechRecognition) {
-      // Browser does not have WebSpeech, backend PCM capture is already active
+    if (!navigator.mediaDevices?.getUserMedia) {
+      toast.error("Microphone unavailable", "This browser cannot provide microphone audio to TalkFlow.");
       return;
     }
 
     try {
-      const recognition = new SpeechRecognition();
-      recognition.continuous = false;
-      recognition.interimResults = true;
-      recognition.maxAlternatives = 1;
-      recognition.lang = toBCP47(liveSourceLang === "auto" ? "en" : liveSourceLang);
-
-      recognition.onstart = () => {
-        isLiveListeningRef.current = true;
-        setIsLiveListening(true);
-      };
-
-      recognition.onresult = async (event: any) => {
-        let interimText = "";
-        let newFinalText = "";
-
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          const transcriptChunk = event.results[i][0].transcript;
-          if (event.results[i].isFinal) {
-            newFinalText += transcriptChunk + " ";
-          } else {
-            interimText += transcriptChunk;
-          }
-        }
-
-        // Handle finalized chunk
-        if (newFinalText.trim()) {
-          // Prevent acoustic feedback loop while text-to-speech is playing through speakers
-          if (isSpeakingTts) {
-            return;
-          }
-          // Clear backend PCM buffer to prevent duplicate transcription
-          backendPcmBufferRef.current = [];
-          const chunk = newFinalText.trim();
-          const updatedOriginal = liveFinalOriginalRef.current
-            ? `${liveFinalOriginalRef.current} ${chunk}`
-            : chunk;
-          liveFinalOriginalRef.current = updatedOriginal;
-          setLiveOriginalText(updatedOriginal);
-          setLiveInterimOriginal("");
-
-          setIsLiveTranslating(true);
-          const translatedChunk = await translateLiveText(chunk, liveSourceLang, liveTargetLang);
-          const updatedTranslated = liveFinalTranslatedRef.current
-            ? `${liveFinalTranslatedRef.current} ${translatedChunk}`
-            : translatedChunk;
-          liveFinalTranslatedRef.current = updatedTranslated;
-          setLiveTranslatedText(updatedTranslated);
-          setLiveInterimTranslated("");
-          setIsLiveTranslating(false);
-
-          if (autoPlayLiveAudio && translatedChunk) {
-            void speakUtterance(translatedChunk, liveTargetLang);
-          }
-        }
-
-        // Handle interim live speech chunk (debounced live translation)
-        if (interimText.trim()) {
-          if (isSpeakingTts) return;
-          const interim = interimText.trim();
-          setLiveInterimOriginal(interim);
-
-          if (interimDebounceRef.current) {
-            clearTimeout(interimDebounceRef.current);
-          }
-
-          interimDebounceRef.current = setTimeout(async () => {
-            setIsLiveTranslating(true);
-            const liveTrans = await translateLiveText(interim, liveSourceLang, liveTargetLang);
-            setLiveInterimTranslated(liveTrans);
-            setIsLiveTranslating(false);
-          }, 250);
-        } else {
-          setLiveInterimOriginal("");
-          setLiveInterimTranslated("");
-        }
-      };
-
-      recognition.onerror = (event: any) => {
-        if (event.error === "not-allowed") {
-          toast.error("Microphone access denied", "Please allow microphone permissions in your browser URL bar.");
-          setIsLiveListening(false);
-          isLiveListeningRef.current = false;
-        } else if (event.error === "no-speech") {
-          // Expected silence between utterances, maintain active listening
-        } else if (event.error === "network") {
-          console.info("Speech recognition network blip, keeping session active.");
-        }
-      };
-
-      recognition.onend = () => {
-        if (isLiveListeningRef.current) {
-          setTimeout(() => {
-            if (isLiveListeningRef.current && recognitionRef.current) {
-              try {
-                recognition.start();
-              } catch { }
-            }
-          }, 150);
-        }
-      };
-
-      recognition.start();
-      recognitionRef.current = recognition;
-    } catch (err: any) {
-      console.warn("Speech recognition notice:", err);
-      // Backend audio capture is already running
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      micStreamRef.current = micStream;
+    } catch (err) {
+      toast.error("Microphone access denied", "Allow microphone access and try again.");
+      console.warn("Direct microphone stream note:", err);
+      return;
     }
+
+    const sessionId = ++liveSessionIdRef.current;
+    ++liveCaptureEpochRef.current;
+    isLiveListeningRef.current = true;
+    setIsLiveListening(true);
+    if (!micStream) return;
+    void startBackendPcmCapture(micStream, sessionId);
   };
 
   const stopLiveListening = () => {
     isLiveListeningRef.current = false;
+    ++liveCaptureEpochRef.current;
     if (isSimulatingRef.current) {
       isSimulatingRef.current = false;
     }
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.stop();
-      } catch { }
-      recognitionRef.current = null;
-    }
-    if (audioProcessorRef.current) {
-      try {
-        audioProcessorRef.current.disconnect();
-      } catch { }
-      audioProcessorRef.current = null;
-    }
-    if (audioContextRef.current) {
-      try {
-        audioContextRef.current.close().catch(() => { });
-      } catch { }
-      audioContextRef.current = null;
-    }
+    const pendingChunks = backendPcmBufferRef.current;
     backendPcmBufferRef.current = [];
+    backendPcmSamplesRef.current = 0;
+    enqueueBackendPcmTranscription(pendingChunks, liveSessionIdRef.current);
+    liveMicCaptureRef.current?.stop();
+    liveMicCaptureRef.current = null;
     if (micStreamRef.current) {
       try {
         micStreamRef.current.getTracks().forEach((track) => track.stop());
       } catch { }
       micStreamRef.current = null;
     }
-    if (currentAudioRef.current) {
-      try {
-        currentAudioRef.current.pause();
-        currentAudioRef.current.currentTime = 0;
-      } catch { }
-      currentAudioRef.current = null;
-    }
-    setIsSpeakingTts(false);
+    cancelTts();
     setIsLiveListening(false);
     setLiveInterimOriginal("");
     setLiveInterimTranslated("");
@@ -759,7 +679,11 @@ export default function Voice() {
     setLiveInterimOriginal("");
 
     setIsLiveTranslating(true);
-    const translatedChunk = await translateLiveText(trimmed, liveSourceLang, liveTargetLang);
+    const translatedChunk = await requestLiveTranslation(trimmed, liveSourceLang, liveTargetLang);
+    if (!translatedChunk) {
+      setIsLiveTranslating(false);
+      return;
+    }
     const updatedTranslated = liveFinalTranslatedRef.current
       ? `${liveFinalTranslatedRef.current} ${translatedChunk}`
       : translatedChunk;
@@ -791,18 +715,9 @@ export default function Voice() {
 
     const userName = user?.name || "Shandilya";
     const sentences = [
-      {
-        en: `Hello, my name is ${userName}.`,
-        de: `Hallo, mein Name ist ${userName}.`,
-      },
-      {
-        en: "What are you doing?",
-        de: "Was machst du gerade?",
-      },
-      {
-        en: "Today is my great day.",
-        de: "Heute ist mein großer Tag.",
-      },
+      `Hello, my name is ${userName}.`,
+      "What are you doing?",
+      "Today is my great day.",
     ];
 
     let fullOrig = "";
@@ -812,7 +727,7 @@ export default function Voice() {
       if (!isSimulatingRef.current) break;
 
       // Word by word interim stream
-      const words = item.en.split(" ");
+      const words = item.split(" ");
       let partial = "";
       for (const w of words) {
         if (!isSimulatingRef.current) break;
@@ -822,8 +737,13 @@ export default function Voice() {
       }
 
       if (!isSimulatingRef.current) break;
-      fullOrig = fullOrig ? `${fullOrig} ${item.en}` : item.en;
-      fullTrans = fullTrans ? `${fullTrans} ${item.de}` : item.de;
+      fullOrig = fullOrig ? `${fullOrig} ${item}` : item;
+      const translated = await requestLiveTranslation(item, "en", "de");
+      if (!translated) {
+        setIsLiveTranslating(false);
+        break;
+      }
+      fullTrans = fullTrans ? `${fullTrans} ${translated}` : translated;
 
       liveFinalOriginalRef.current = fullOrig;
       liveFinalTranslatedRef.current = fullTrans;
@@ -833,7 +753,7 @@ export default function Voice() {
       setLiveInterimTranslated("");
 
       if (autoPlayLiveAudio) {
-        void speakUtterance(item.de, "de");
+        void speakUtterance(translated, "de");
       }
 
       await new Promise((r) => setTimeout(r, 600));
@@ -880,7 +800,11 @@ export default function Voice() {
     const existing = liveFinalOriginalRef.current || liveOriginalText;
     if (existing.trim()) {
       setIsLiveTranslating(true);
-      const retranslated = await translateLiveText(existing.trim(), liveSourceLang, newTarget);
+      const retranslated = await requestLiveTranslation(existing.trim(), liveSourceLang, newTarget);
+      if (!retranslated) {
+        setIsLiveTranslating(false);
+        return;
+      }
       liveFinalTranslatedRef.current = retranslated;
       setLiveTranslatedText(retranslated);
       setIsLiveTranslating(false);
@@ -895,87 +819,134 @@ export default function Voice() {
 
   const handleSourceLangChange = (newSource: string) => {
     setLiveSourceLang(newSource);
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.lang = toBCP47(newSource === "auto" ? "en" : newSource);
-      } catch { }
+    setLiveTranslationError(null);
+    if (newSource !== "auto") {
+      setLiveDetectedLanguage("");
+      setLiveDetectedConfidence(null);
     }
   };
 
-  // === FACE-TO-FACE SPEECH RECOGNITION (Two-Speaker Mode) ===
-  const startListening = (speaker: "speaker1" | "speaker2") => {
-    const SpeechRecognition =
-      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+  // === FACE-TO-FACE SERVER STT (Two-Speaker Mode) ===
+  const transcribeFaceAudio = async (
+    speaker: "speaker1" | "speaker2",
+    chunks: Float32Array[],
+  ) => {
+    if (chunks.length === 0) return;
 
-    if (!SpeechRecognition) {
-      toast.warning("Speech recognition is not supported in this browser. Please use Chrome or Edge.");
-      return;
+    let totalLength = 0;
+    for (const chunk of chunks) totalLength += chunk.length;
+    const pcm = new Int16Array(totalLength);
+    let offset = 0;
+    for (const chunk of chunks) {
+      for (let i = 0; i < chunk.length; i++) {
+        const sample = Math.max(-1, Math.min(1, chunk[i]));
+        pcm[offset + i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+      }
+      offset += chunk.length;
     }
 
-    if (activeMic === speaker && recognitionRef.current) {
-      stopListening();
+    const bytes = new Uint8Array(pcm.buffer);
+    let binary = "";
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+
+    setIsTranslating(true);
+    try {
+      const result = await api<{ text?: string }>('/api/v1/voice/transcribe', {
+        method: 'POST',
+        body: {
+          audio_base64: btoa(binary),
+          sample_rate: 16000,
+          language: speaker === "speaker1" ? speaker1Lang : speaker2Lang,
+        },
+      });
+      const text = result?.text?.trim();
+      if (!text) {
+        toast.info("No speech detected", "Try speaking closer to the microphone.");
+        return;
+      }
+      setCurrentSpokenText(text);
+      await processVoiceUtterance(speaker, text);
+    } catch (err) {
+      toast.error("Speech recognition unavailable", friendlyMessage(err));
+    } finally {
+      setIsTranslating(false);
+      setCurrentSpokenText("");
+    }
+  };
+
+  const startListening = async (speaker: "speaker1" | "speaker2") => {
+    if (activeMic === speaker) {
+      await stopListening();
       return;
     }
+    if (activeMic) await stopListening();
 
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.abort();
-      } catch { }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      toast.error("Microphone unavailable", "This browser cannot provide microphone audio to TalkFlow.");
+      return;
     }
 
     try {
-      const recognition = new SpeechRecognition();
-      recognition.continuous = false;
-      recognition.interimResults = true;
-      recognition.maxAlternatives = 1;
-      recognition.lang = toBCP47(speaker === "speaker1" ? speaker1Lang : speaker2Lang);
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const AudioCtx = window.AudioContext || (window as typeof window & {
+        webkitAudioContext?: typeof AudioContext;
+      }).webkitAudioContext;
+      if (!AudioCtx) throw new Error("Web Audio is not supported in this browser.");
 
-      recognition.onstart = () => {
-        setActiveMic(speaker);
-        setCurrentSpokenText("");
+      const context = new AudioCtx({ sampleRate: 16000 });
+      const source = context.createMediaStreamSource(stream);
+      const processor = context.createScriptProcessor(4096, 1, 1);
+      const muteGain = context.createGain();
+      muteGain.gain.setValueAtTime(0, context.currentTime);
+
+      faceMicStreamRef.current = stream;
+      faceAudioContextRef.current = context;
+      faceAudioProcessorRef.current = processor;
+      faceAudioChunksRef.current = [];
+      faceCaptureSpeakerRef.current = speaker;
+
+      processor.onaudioprocess = (event) => {
+        if (faceCaptureSpeakerRef.current !== speaker) return;
+        const input = event.inputBuffer.getChannelData(0);
+        const copy = new Float32Array(input.length);
+        copy.set(input);
+        faceAudioChunksRef.current.push(copy);
       };
+      source.connect(processor);
+      processor.connect(muteGain);
+      muteGain.connect(context.destination);
+      if (context.state === "suspended") await context.resume();
 
-      recognition.onresult = (event: any) => {
-        let interim = "";
-        for (let i = 0; i < event.results.length; i++) {
-          interim += event.results[i][0].transcript + " ";
-        }
-        const text = interim.trim();
-        if (text) {
-          setCurrentSpokenText(text);
-        }
-      };
-
-      recognition.onerror = (event: any) => {
-        console.warn("Speech recognition notice:", event.error);
-        setActiveMic(null);
-      };
-
-      recognition.onend = async () => {
-        setActiveMic(null);
-        const captured = currentSpokenText.trim();
-        setCurrentSpokenText("");
-        if (captured.length > 0) {
-          await processVoiceUtterance(speaker, captured);
-        }
-      };
-
-      recognition.start();
-      recognitionRef.current = recognition;
-    } catch (err: any) {
-      toast.error("Microphone access failed", err?.message ?? String(err));
+      setCurrentSpokenText("Capturing audio for server transcription…");
+      setActiveMic(speaker);
+    } catch (err) {
+      toast.error("Microphone access failed", friendlyMessage(err));
+      faceMicStreamRef.current?.getTracks().forEach((track) => track.stop());
+      faceMicStreamRef.current = null;
       setActiveMic(null);
     }
   };
 
-  const stopListening = () => {
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.stop();
-      } catch { }
-      recognitionRef.current = null;
-    }
+  const stopListening = async () => {
+    const speaker = faceCaptureSpeakerRef.current;
+    const chunks = faceAudioChunksRef.current;
+    faceCaptureSpeakerRef.current = null;
+    faceAudioChunksRef.current = [];
+
+    try {
+      faceAudioProcessorRef.current?.disconnect();
+    } catch { }
+    faceAudioProcessorRef.current = null;
+    try {
+      await faceAudioContextRef.current?.close();
+    } catch { }
+    faceAudioContextRef.current = null;
+    faceMicStreamRef.current?.getTracks().forEach((track) => track.stop());
+    faceMicStreamRef.current = null;
     setActiveMic(null);
+    setCurrentSpokenText("");
+
+    if (speaker) await transcribeFaceAudio(speaker, chunks);
   };
 
   const processVoiceUtterance = async (speaker: "speaker1" | "speaker2", text: string) => {
@@ -985,7 +956,8 @@ export default function Voice() {
     const sName = speaker === "speaker1" ? speaker1Name : speaker2Name;
 
     try {
-      const translated = await translateLiveText(text, sourceLang, targetLang);
+      const translated = await requestLiveTranslation(text, sourceLang, targetLang);
+      if (!translated) return;
       const newItem: TranscriptItem = {
         id: "tx_" + Date.now(),
         speaker,
@@ -1192,6 +1164,16 @@ export default function Voice() {
 
               {/* Status and auto-play audio toggle */}
               <div className="flex items-center gap-2">
+                {!audioEnabled && (
+                  <button
+                    type="button"
+                    onClick={() => void enableAudio()}
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-800 shadow-2xs transition-all hover:bg-amber-100 active:scale-95"
+                  >
+                    <Volume2 className="h-3.5 w-3.5" />
+                    <span>Enable audio</span>
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => setAutoPlayLiveAudio(!autoPlayLiveAudio)}
@@ -1243,7 +1225,19 @@ export default function Voice() {
                           Listening to voice…
                         </span>
                       ) : (
-                        <span>Spoken speech ({currentSourceLangObj.name})</span>
+                        <span>
+                          Spoken speech ({currentSourceLangObj.name})
+                          {liveSourceLang === "auto" && liveDetectedLanguage && (
+                            <span className="ml-2 normal-case font-medium text-dl-blue">
+                              Detected {liveDetectedLanguage.toUpperCase()}
+                            </span>
+                          )}
+                          {liveSourceLang === "auto" && liveDetectedConfidence !== null && liveDetectedConfidence < 0.75 && (
+                            <span className="ml-2 normal-case font-semibold text-amber-600">
+                              Low confidence ({Math.round(liveDetectedConfidence * 100)}%)
+                            </span>
+                          )}
+                        </span>
                       )}
                     </span>
                     {liveOriginalText && (
@@ -1393,7 +1387,28 @@ export default function Voice() {
                   </div>
 
                   <div className="min-h-[200px] text-base lg:text-lg text-slate-900 font-normal leading-relaxed">
-                    {liveTranslatedText || liveInterimTranslated ? (
+                    {liveTtsError && !liveTranslationError && (
+                      <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                        <p className="font-semibold">Captions only</p>
+                        <p className="mt-1">{liveTtsError}</p>
+                      </div>
+                    )}
+                    {liveTranslationError ? (
+                      <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                        <p className="font-semibold">Translation unavailable</p>
+                        <p className="mt-1 text-xs">{liveTranslationError}</p>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const retryText = liveFinalOriginalRef.current || liveOriginalText;
+                            if (retryText.trim()) void handleTargetLangChange(liveTargetLang);
+                          }}
+                          className="mt-3 rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold text-amber-900 hover:bg-amber-100"
+                        >
+                          Retry translation
+                        </button>
+                      </div>
+                    ) : liveTranslatedText || liveInterimTranslated ? (
                       <p>
                         <span>{liveTranslatedText}</span>
                         {liveInterimTranslated && (
@@ -1415,12 +1430,26 @@ export default function Voice() {
                 <div className="pt-4 flex items-center justify-between text-xs text-slate-400 border-t border-slate-100">
                   <span>Target: {currentTargetLangObj.name}</span>
                   <div className="flex items-center gap-2">
-                    {isLiveListening ? (
+                    {liveTranslationError ? (
+                      <span className="flex items-center gap-1 text-rose-600 font-medium">
+                        <span className="h-2 w-2 rounded-full bg-rose-500" /> Translation unavailable
+                      </span>
+                    ) : isLiveTranslating ? (
+                      <span className="flex items-center gap-1 text-dl-blue font-medium">
+                        <span className="h-2 w-2 rounded-full bg-dl-blue animate-pulse" /> Translating
+                      </span>
+                    ) : liveTtsStatus === "ready" ? (
                       <span className="flex items-center gap-1 text-emerald-600 font-medium">
-                        <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" /> Synthesis ready
+                        <span className="h-2 w-2 rounded-full bg-emerald-500" /> Translated audio active
+                      </span>
+                    ) : liveTtsStatus === "blocked" || liveTtsStatus === "unavailable" || !audioEnabled ? (
+                      <span className="flex items-center gap-1 text-amber-700 font-medium" title={liveTtsError || undefined}>
+                        <span className="h-2 w-2 rounded-full bg-amber-500" /> Captions only
                       </span>
                     ) : (
-                      <span className="h-2 w-2 rounded-full bg-slate-300" />
+                      <span className="flex items-center gap-1 text-slate-500 font-medium">
+                        <span className="h-2 w-2 rounded-full bg-slate-300" /> Translation delayed
+                      </span>
                     )}
                   </div>
                 </div>

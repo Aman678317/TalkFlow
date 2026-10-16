@@ -48,20 +48,20 @@ export default function AppShell() {
   const logout = useAuth((s) => s.logout);
 
   return (
-    <div className="flex h-screen overflow-hidden">
-      <aside className="hidden w-60 shrink-0 flex-col border-r border-slate-200 bg-white md:flex"
+    <div className="flex h-screen overflow-hidden bg-surface-canvas text-ink-900">
+      <aside className="hidden w-64 shrink-0 flex-col border-r border-white/[.1] bg-ink-950 shadow-lift md:flex"
         aria-label="Main navigation">
-        <button className="flex items-center gap-2.5 px-5 py-5 text-left"
+        <button className="flex items-center gap-2.5 border-b border-white/[.1] px-5 py-5 text-left transition-colors hover:bg-white/[.04]"
           onClick={() => navigate(user ? '/dashboard' : '/')}>
           <Logo />
           <div>
-            <div className="text-sm font-bold tracking-tight text-slate-900">GlobalTalk AI</div>
-            <div className="text-[10px] font-medium uppercase tracking-widest text-lagoon-600">
+            <div className="text-sm font-bold tracking-tight text-white">GlobalTalk AI</div>
+            <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-accent-300">
               one conversation · every language
             </div>
           </div>
         </button>
-        <nav className="flex-1 space-y-4 overflow-y-auto px-3 pb-4">
+        <nav className="flex-1 space-y-5 overflow-y-auto px-3 py-4 pb-5">
           <NavSection items={NAV} />
           <NavSection title="Customize" items={CUSTOMIZE} />
           <NavSection title="Platform" items={[
@@ -69,10 +69,10 @@ export default function AppShell() {
             ...(isAdmin ? [{ to: '/admin', label: 'Admin', icon: ShieldCheck }] : []),
           ]} />
         </nav>
-        <div className="border-t border-slate-100 px-4 py-3">
+        <div className="border-t border-white/[.1] px-4 py-3">
           {user ? (
-            <div className="flex items-center gap-3">
-              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-iris-100 text-sm font-bold text-iris-700">
+            <div className="flex items-center gap-3 rounded-xl border border-white/[.08] bg-white/[.05] p-2">
+              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-accent-600 text-sm font-bold text-white shadow-xs">
                 {(user.name || user.email || '?').slice(0, 1).toUpperCase()}
               </div>
               <div className="min-w-0 flex-1">
@@ -89,7 +89,7 @@ export default function AppShell() {
             <div className="flex items-center gap-2">
               <button
                 onClick={() => navigate('/login')}
-                className="w-full rounded-xl bg-iris-600 px-3 py-2 text-center text-xs font-semibold text-white shadow-sm hover:bg-iris-500 active:scale-[0.98] transition-all"
+                className="w-full rounded-xl bg-accent-600 px-3 py-2 text-center text-xs font-semibold text-white shadow-accent transition-[background-color,transform] hover:-translate-y-0.5 hover:bg-accent-700 active:scale-[0.98]"
               >
                 Sign In to Save
               </button>
@@ -100,13 +100,13 @@ export default function AppShell() {
 
       <div className="flex min-w-0 flex-1 flex-col">
         {/* Mobile top bar */}
-        <header className="flex items-center justify-between border-b border-slate-200 bg-white px-4 py-3 md:hidden">
-          <button className="flex items-center gap-2" onClick={() => navigate('/dashboard')}>
+        <header className="material-bar flex items-center justify-between border-b border-border px-4 py-3 md:hidden">
+          <button className="flex items-center gap-2 rounded-lg" onClick={() => navigate('/dashboard')}>
             <Logo small />
-            <span className="text-sm font-bold">GlobalTalk AI</span>
+            <span className="text-sm font-bold tracking-tight text-ink-950">GlobalTalk AI</span>
           </button>
           <select aria-label="Navigate"
-            className="rounded-lg border border-slate-300 px-2 py-1 text-sm"
+            className="rounded-lg border border-border bg-surface-panel px-2 py-1 text-sm text-ink-700 shadow-xs focus:border-accent-600 focus:outline-none focus:ring-4 focus:ring-accent-600/10"
             onChange={(e) => navigate(e.target.value)} defaultValue="">
             <option value="" disabled>Menu…</option>
             {[...NAV, ...CUSTOMIZE, ...PLATFORM].map((i) => (
@@ -141,9 +141,9 @@ function NavSection({ title, items }: { title?: string; items: typeof NAV }) {
           <li key={to}>
             <NavLink to={to}
               className={({ isActive }) => cn(
-                'flex items-center gap-3 rounded-xl2 px-3 py-2 text-sm font-medium transition-colors',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris-500',
-                isActive ? 'bg-iris-50 text-iris-700' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900')}>
+                'group flex items-center gap-3 rounded-xl2 px-3 py-2 text-sm font-medium transition-[background-color,color,transform,box-shadow] duration-200',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus',
+                isActive ? 'bg-accent-600 text-white shadow-accent' : 'text-white/60 hover:bg-white/[.08] hover:text-white')}>
               <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />
               {label}
             </NavLink>
@@ -159,12 +159,12 @@ export function Logo({ small }: { small?: boolean }) {
   return (
     <svg width={s} height={s} viewBox="0 0 64 64" aria-hidden="true">
       <defs>
-        <linearGradient id="gt-logo" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor="#6d5fe6" />
-          <stop offset="1" stopColor="#06c3b3" />
+        <linearGradient id="app-shell-logo-gradient" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stopColor="#FFB765" />
+          <stop offset="1" stopColor="#B64A23" />
         </linearGradient>
       </defs>
-      <rect width="64" height="64" rx="14" fill="url(#gt-logo)" />
+      <rect width="64" height="64" rx="14" fill="url(#app-shell-logo-gradient)" />
       <g fill="none" stroke="#fff" strokeWidth="4.2" strokeLinecap="round">
         <path d="M20 22c-4 4-4 16 0 20" />
         <path d="M44 22c4 4 4 16 0 20" />
