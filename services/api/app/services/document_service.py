@@ -511,6 +511,10 @@ async def _run_pipeline(db: AsyncSession, doc: M.Document) -> None:
         "translated_pages_with_text": translated_pages,
         "ocr_used": any(bool(b.ctx.get("ocr")) for b in blocks),
     }
+    doc.metadata_json = {
+        **(doc.metadata_json or {}),
+        "translation_coverage": doc_coverage,
+    }
     log.info("document coverage document_id=%s coverage=%s", doc.id, doc_coverage)
     # Empty source blocks are excluded by the parser. Every eligible source
     # block must now have a translation; a permissive percentage threshold
