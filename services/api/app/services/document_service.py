@@ -472,6 +472,7 @@ async def _run_pipeline(db: AsyncSession, doc: M.Document) -> None:
     # --- translating with context + bounded batch checkpoints ---------------- #
     await _set_status(db, doc, "translating", 25, "translating")
     detected = doc.source_lang
+    recent: list[str] = []
     if detected in ("auto", ""):
         det = await ai.detect_language(translatable[0].text[:500])
         detected = det.language
@@ -480,7 +481,6 @@ async def _run_pipeline(db: AsyncSession, doc: M.Document) -> None:
 
     total = len(translatable)
     batch_size = max(1, min(5, int(getattr(settings, "document_translation_concurrency", 4))))
-    recent: list[str] = []
     completed = 0
 
     # This session is shared with translate_text; don't concurrently call it.
@@ -489,6 +489,17 @@ async def _run_pipeline(db: AsyncSession, doc: M.Document) -> None:
     for batch_start in range(0, total, batch_size):
         batch = translatable[batch_start:batch_start + batch_size]
         for b in batch:
+            cached = await db.execute(
+                select(M.DocumentSegment.target_text).where(
+                    M.DocumentSegment.document_id == doc.id,
+                    M.DocumentSegment.block_index == b.index))
+            persisted_translation = cached.scalar_one_or_none()
+            if persisted_translation and persisted_translation.strip():
+                b.translated = persisted_translation
+                recent.append(b.text)
+                recent = recent[-MAX_BATCH_CONTEXT:]
+                completed += 1
+                continue
             out = await translate_text(
                 db, b.text, detected, doc.target_lang,
                 TranslateContext(
