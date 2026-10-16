@@ -512,15 +512,6 @@ async def _run_pipeline(db: AsyncSession, doc: M.Document) -> None:
         doc.progress = 25 + int(60 * completed / total)
         await db.commit()
 
-    # persist translated segments
-    for b in translatable:
-        await db.execute(
-            M.DocumentSegment.__table__.update()
-            .where(M.DocumentSegment.document_id == doc.id,
-                   M.DocumentSegment.block_index == b.index)
-            .values(target_text=b.translated))
-    await db.commit()
-
     # --- reconstructing ---------------------------------------------------- #
     await _set_status(db, doc, "reconstructing", 90, "reconstructing")
     out_bytes, out_mime = await asyncio.to_thread(reconstruct_fn, blocks, data)
