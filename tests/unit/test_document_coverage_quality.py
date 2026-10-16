@@ -23,3 +23,17 @@ def test_translatability_keeps_unicode_letters():
     assert _is_translatable("नमस्ते")
     assert _is_translatable("مرحبا")
     assert not _is_translatable("12345")
+
+
+def test_parse_pdf_ocr_is_opt_in(monkeypatch):
+    import fitz
+    from app.config import settings
+    from app.services.document_service import parse_pdf
+
+    document = fitz.open()
+    document.new_page()
+    pdf_bytes = document.tobytes()
+    document.close()
+    monkeypatch.setattr(settings, "document_ocr_enabled", False)
+    blocks = parse_pdf(pdf_bytes)
+    assert blocks == []
