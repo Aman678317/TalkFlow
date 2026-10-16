@@ -6,9 +6,19 @@ import { useToasts } from "../stores/toast";
 
 interface ApiKey {
   id: string; name: string; prefix: string; scopes: string[];
-  created_at: string; last_used_at?: string | null; revoked: boolean;
+  created_at: string; last_used_at?: string | null; status: string;
 }
-const ALL_SCOPES = ["translate", "detect", "write", "documents", "glossaries", "meetings", "usage", "admin"];
+interface ApiKeyCreated extends ApiKey {
+  plaintext_key: string;
+}
+
+// Keep this list aligned with services/api/app/routers/platform.py. The
+// canonical API returns `plaintext_key` and `status`; the old legacy service
+// exposed `key` and `revoked`, which made successful creation look empty.
+const ALL_SCOPES = [
+  "translate", "detect", "write", "documents", "glossaries", "meetings",
+  "voice", "languages", "usage", "api_keys",
+];
 
 export default function ApiKeys() {
   const qc = useQueryClient();
@@ -21,17 +31,17 @@ export default function ApiKeys() {
   const listQ = useQuery({ queryKey: ["api-keys"], queryFn: () => api<ApiKey[]>("/api/v1/api-keys") });
 
   const create = useMutation({
-    mutationFn: () => api<ApiKey & { key: string }>("/api/v1/api-keys", { method: "POST", body: { name, scopes } }),
+    mutationFn: () => api<ApiKeyCreated>("/api/v1/api-keys", { method: "POST", body: { name, scopes } }),
     onSuccess: (r) => {
       setOpen(false); setName("");
-      setCreated({ key: r.key, name: r.name });
+      setCreated({ key: r.plaintext_key, name: r.name });
       qc.invalidateQueries({ queryKey: ["api-keys"] });
     },
     onError: (e: any) => push({ kind: "error", title: "Could not create key", body: e.message }),
   });
   const rotate = useMutation({
-    mutationFn: (id: string) => api<ApiKey & { key: string }>(`/api/v1/api-keys/${id}/rotate`, { method: "POST" }),
-    onSuccess: (r) => { setCreated({ key: r.key, name: r.name }); qc.invalidateQueries({ queryKey: ["api-keys"] }); },
+    mutationFn: (id: string) => api<ApiKeyCreated>(`/api/v1/api-keys/${id}/rotate`, { method: "POST" }),
+    onSuccess: (r) => { setCreated({ key: r.plaintext_key, name: r.name }); qc.invalidateQueries({ queryKey: ["api-keys"] }); },
   });
   const revoke = useMutation({
     mutationFn: (id: string) => api(`/api/v1/api-keys/${id}/revoke`, { method: "POST" }),
@@ -55,24 +65,27 @@ export default function ApiKeys() {
         <Card><EmptyState title="No API keys" icon="⚿" body="Create a scoped key to call /api/v1/translate, /documents, /voice/session and more." /></Card>
       ) : (
         <div className="space-y-2">
-          {(listQ.data ?? []).map((k) => (
-            <div key={k.id} className="gt-card flex flex-wrap items-center gap-3 p-4">
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-semibold text-ink-900">
-                  {k.name} {k.revoked && <Badge tone="bad">revoked</Badge>}
-                </p>
-                <p className="font-mono text-[11px] text-ink-400">{k.prefix}…  · created {new Date(k.created_at).toLocaleDateString()}
-                  {k.last_used_at ? ` · last used ${new Date(k.last_used_at).toLocaleString()}` : " · never used"}</p>
-                <div className="mt-1 flex flex-wrap gap-1">
-                  {k.scopes.map((s) => <Badge key={s} tone="info">{s}</Badge>)}
+          {(listQ.data ?? []).map((k) => {
+            const revoked = k.status === "revoked";
+            return (
+              <div key={k.id} className="gt-card flex flex-wrap items-center gap-3 p-4">
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-semibold text-ink-900">
+                    {k.name} {revoked && <Badge tone="bad">revoked</Badge>}
+                  </p>
+                  <p className="font-mono text-[11px] text-ink-400">{k.prefix}…  · created {new Date(k.created_at).toLocaleDateString()}
+                    {k.last_used_at ? ` · last used ${new Date(k.last_used_at).toLocaleString()}` : " · never used"}</p>
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {k.scopes.map((s) => <Badge key={s} tone="info">{s}</Badge>)}
+                  </div>
                 </div>
+                {!revoked && <>
+                  <Button size="sm" variant="secondary" onClick={() => rotate.mutate(k.id)}>Rotate</Button>
+                  <Button size="sm" variant="danger" onClick={() => revoke.mutate(k.id)}>Revoke</Button>
+                </>}
               </div>
-              {!k.revoked && <>
-                <Button size="sm" variant="secondary" onClick={() => rotate.mutate(k.id)}>Rotate</Button>
-                <Button size="sm" variant="danger" onClick={() => revoke.mutate(k.id)}>Revoke</Button>
-              </>}
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 

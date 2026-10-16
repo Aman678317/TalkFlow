@@ -55,7 +55,8 @@ def _org(p: Principal) -> M.Organization:
 # --------------------------------------------------------------------------- #
 
 ALLOWED_KEY_SCOPES = {
-    "*", "translate", "translate:write", "detect", "documents", "documents:read", "documents:write",
+    "*", "translate", "translate:write", "detect", "write", "write:correct", "write:rephrase",
+    "documents", "documents:read", "documents:write",
     "voice", "voice:write", "languages", "usage", "usage:read", "glossaries", "glossaries:write",
     "tm", "translation_memories", "meetings", "meetings:read", "meetings:write", "meetings:create",
     "webhooks", "webhooks:write", "styles", "styles:write", "api_keys",

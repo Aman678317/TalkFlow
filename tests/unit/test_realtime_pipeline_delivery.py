@@ -272,6 +272,7 @@ async def test_json_chunk_and_binary_frame_agree_on_one_segment_identity(
     the same chunk twice (or thinks two chunks are one).
     """
     en = _participant(hear="en")
+    en.supports_tts_chunk_index = True
     _join(session, speaker, en)
     ai = FakeAI(tts_chunks=3)
     monkeypatch.setattr(P, "ai", ai)
@@ -301,7 +302,10 @@ async def test_json_chunk_and_binary_frame_agree_on_one_segment_identity(
         assert norm(binary_id) == norm(event["segment_id"])
         lang_len = frame[17]
         assert frame[18:18 + lang_len].decode() == "en"
-        assert frame[18 + lang_len:] == __import__("base64").b64decode(event["audio_base64"])
+        extension_start = 18 + lang_len
+        assert frame[extension_start] == 1
+        assert int.from_bytes(frame[extension_start + 1:extension_start + 5], "big") == event["chunk_index"]
+        assert frame[extension_start + 5:] == __import__("base64").b64decode(event["audio_base64"])
     completed = _events(en.ws, "tts.completed")
     assert completed[-1]["chunks"] == 3
 

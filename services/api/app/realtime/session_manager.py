@@ -46,6 +46,7 @@ class RtParticipant:
     last_seq_seen: int = 0
     joined_at: float = field(default_factory=time.time)
     is_bot: bool = False             # agent bridge participants
+    supports_tts_chunk_index: bool = False
 
 
 @dataclass

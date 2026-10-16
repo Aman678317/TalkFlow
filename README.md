@@ -68,6 +68,13 @@ Each listener language is translated independently from the canonical source (Hi
 All AI providers are behind **protocol interfaces + a model router** with capability registry,  
 fallback chains, and honest health reporting. **No closed-LLM hard dependency.**
 
+The optional AirLLM integration is isolated to the NVIDIA `gpu` Docker profile.
+It can run Llama 3.x 70B with a small GPU working set by streaming one layer at
+a time, but the model checkpoint and split shards still require substantial
+persistent disk and gated Hugging Face models need a server-side token. See
+[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md#optional-airllm-gpu-worker); the normal
+API image does not install AirLLM.
+
 ---
 
 ## 🤖 Multi-Agent Systems Portfolio (`multi-agent-portfolio/`)

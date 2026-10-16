@@ -21,6 +21,7 @@ import {
   Phone,
 } from "lucide-react";
 import { api, friendlyMessage } from "@/lib/api";
+import { MicCapture } from "@/lib/audio";
 import { translateCanonical } from "@/lib/translation";
 import { Button, Card, Select } from "@/components/ui";
 import { toast } from "@/stores/toasts";
@@ -271,10 +272,18 @@ export default function Voice() {
   const [quickInputText, setQuickInputText] = useState("");
   const [isSpeakingTts, setIsSpeakingTts] = useState<boolean>(false);
   const audioContextRef = useRef<AudioContext | null>(null);
-  const audioProcessorRef = useRef<ScriptProcessorNode | null>(null);
-  const backendPcmBufferRef = useRef<Float32Array[]>([]);
+  const liveMicCaptureRef = useRef<MicCapture | null>(null);
+  const backendPcmBufferRef = useRef<Int16Array[]>([]);
+  const backendPcmSamplesRef = useRef(0);
   const isBackendTranscribingRef = useRef<boolean>(false);
+  const backendTranscriptionChainRef = useRef<Promise<void>>(Promise.resolve());
+  const liveSessionIdRef = useRef(0);
+  const liveCaptureEpochRef = useRef(0);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+  const ttsQueueRef = useRef<Array<{ text: string; langCode: string }>>([]);
+  const ttsDrainingRef = useRef(false);
+  const ttsGenerationRef = useRef(0);
+  const currentTtsResolveRef = useRef<(() => void) | null>(null);
   const faceMicStreamRef = useRef<MediaStream | null>(null);
   const faceAudioContextRef = useRef<AudioContext | null>(null);
   const faceAudioProcessorRef = useRef<ScriptProcessorNode | null>(null);
@@ -350,7 +359,98 @@ export default function Voice() {
 
   // Server-side TTS only. Browser speech synthesis is deliberately not used as a
   // translation fallback because it can make an unavailable provider look ready.
-  const speakUtterance = async (text: string, langCode: string) => {
+  const playTtsItem = async (item: { text: string; langCode: string }, generation: number) => {
+    try {
+      const res = await api<{ audio_base64?: string; format?: string }>("/api/v1/voice/tts", {
+        method: "POST",
+        body: { text: item.text, language: item.langCode },
+        timeoutMs: 9000,
+      });
+
+      // Stopping the live session invalidates an in-flight provider response.
+      if (generation !== ttsGenerationRef.current) return;
+      if (!res?.audio_base64) {
+        setLiveTtsStatus("unavailable");
+        setLiveTtsError("Translated audio is unavailable. Captions remain available.");
+        return;
+      }
+
+      const mime = res.format === "wav" ? "audio/wav" : "audio/mpeg";
+      const audio = new Audio(`data:${mime};base64,${res.audio_base64}`);
+      currentAudioRef.current = audio;
+      setIsSpeakingTts(true);
+      setLiveTtsStatus("ready");
+      setLiveTtsError(null);
+
+      await new Promise<void>((resolve) => {
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          if (currentTtsResolveRef.current === finish) currentTtsResolveRef.current = null;
+          if (currentAudioRef.current === audio) currentAudioRef.current = null;
+          setIsSpeakingTts(false);
+          resolve();
+        };
+        currentTtsResolveRef.current = finish;
+        audio.onended = finish;
+        audio.onerror = () => {
+          if (generation !== ttsGenerationRef.current) {
+            finish();
+            return;
+          }
+          setLiveTtsStatus("unavailable");
+          setLiveTtsError("Translated audio could not be played. Captions remain available.");
+          finish();
+        };
+        void audio.play().catch(() => {
+          setLiveTtsStatus("blocked");
+          setLiveTtsError("Browser blocked audio playback. Enable audio and try again.");
+          finish();
+        });
+      });
+    } catch (err) {
+      if (generation !== ttsGenerationRef.current) return;
+      const message = friendlyMessage(err);
+      setLiveTtsStatus("unavailable");
+      setLiveTtsError(message || "Translated audio is unavailable. Captions remain available.");
+      setIsSpeakingTts(false);
+    }
+  };
+
+  const drainTtsQueue = async () => {
+    if (ttsDrainingRef.current) return;
+    ttsDrainingRef.current = true;
+    const generation = ttsGenerationRef.current;
+    try {
+      while (ttsQueueRef.current.length > 0 && generation === ttsGenerationRef.current) {
+        const item = ttsQueueRef.current.shift();
+        if (item) await playTtsItem(item, generation);
+      }
+    } finally {
+      ttsDrainingRef.current = false;
+      // A new utterance may have arrived while the previous item was ending or
+      // while cancellation was resolving its current audio promise.
+      if (ttsQueueRef.current.length > 0) void drainTtsQueue();
+    }
+  };
+
+  const cancelTts = () => {
+    ttsGenerationRef.current += 1;
+    ttsQueueRef.current = [];
+    currentTtsResolveRef.current?.();
+    currentTtsResolveRef.current = null;
+    if (currentAudioRef.current) {
+      try {
+        currentAudioRef.current.pause();
+        currentAudioRef.current.currentTime = 0;
+      } catch { }
+      currentAudioRef.current = null;
+    }
+    setIsSpeakingTts(false);
+  };
+
+  const speakUtterance = (text: string, langCode: string) => {
     const clean = text?.trim();
     if (!clean) return;
     if (!audioEnabled) {
@@ -358,52 +458,8 @@ export default function Voice() {
       setLiveTtsError("Enable audio before playing translated speech.");
       return;
     }
-
-    try {
-      const res = await api<{ audio_base64?: string; format?: string }>("/api/v1/voice/tts", {
-        method: "POST",
-        body: {
-          text: clean,
-          language: langCode,
-        },
-        timeoutMs: 9000,
-      });
-
-      if (res?.audio_base64) {
-        if (currentAudioRef.current) {
-          try {
-            currentAudioRef.current.pause();
-            currentAudioRef.current.currentTime = 0;
-          } catch { }
-        }
-
-        const mime = res.format === "wav" ? "audio/wav" : "audio/mp3";
-        const audio = new Audio(`data:${mime};base64,${res.audio_base64}`);
-        currentAudioRef.current = audio;
-        setIsSpeakingTts(true);
-
-        audio.onended = () => {
-          setIsSpeakingTts(false);
-          currentAudioRef.current = null;
-        };
-        audio.onerror = () => {
-          setIsSpeakingTts(false);
-          currentAudioRef.current = null;
-        };
-
-        await audio.play();
-        setLiveTtsStatus("ready");
-        setLiveTtsError(null);
-        return;
-      }
-      setLiveTtsStatus("unavailable");
-      setLiveTtsError("Translated audio is unavailable. Captions remain available.");
-    } catch (err) {
-      const message = friendlyMessage(err);
-      setLiveTtsStatus("unavailable");
-      setLiveTtsError(message || "Translated audio is unavailable. Captions remain available.");
-      setIsSpeakingTts(false);
-    }
+    ttsQueueRef.current.push({ text: clean, langCode });
+    void drainTtsQueue();
   };
 
   // Swap Live Languages
@@ -423,27 +479,23 @@ export default function Voice() {
   };
 
   // Backend PCM Audio Capture Fallback (Ensures voice recognition is available 100% of the time)
-  const flushBackendPcmTranscription = async (chunks: Float32Array[]) => {
-    if (chunks.length === 0 || !isLiveListeningRef.current) return;
+  const flushBackendPcmTranscription = async (chunks: Int16Array[], sessionId: number) => {
+    if (chunks.length === 0) return;
     try {
       isBackendTranscribingRef.current = true;
-      let totalLen = 0;
-      for (const c of chunks) totalLen += c.length;
-      const merged = new Float32Array(totalLen);
+      let totalSamples = 0;
+      for (const c of chunks) totalSamples += c.length;
+      const merged = new Int16Array(totalSamples);
       let offset = 0;
       for (const c of chunks) {
         merged.set(c, offset);
         offset += c.length;
       }
 
-      // Convert Float32 to 16-bit PCM
-      const int16 = new Int16Array(merged.length);
-      for (let i = 0; i < merged.length; i++) {
-        const s = Math.max(-1, Math.min(1, merged[i]));
-        int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-      }
-
-      const bytes = new Uint8Array(int16.buffer);
+      // MicCapture already resamples and quantizes each frame to 16 kHz mono
+      // PCM16, so the server receives the bytes it expects instead of 48-kHz
+      // samples mislabeled as 16 kHz.
+      const bytes = new Uint8Array(merged.buffer);
       let binary = "";
       const len = bytes.byteLength;
       for (let i = 0; i < len; i++) {
@@ -460,6 +512,7 @@ export default function Voice() {
         },
       });
 
+      if (sessionId !== liveSessionIdRef.current) return;
       if (res?.text && res.text.trim()) {
         const chunk = res.text.trim();
         const updatedOriginal = liveFinalOriginalRef.current
@@ -471,6 +524,7 @@ export default function Voice() {
 
         setIsLiveTranslating(true);
         const translatedChunk = await requestLiveTranslation(chunk, liveSourceLang, liveTargetLang);
+        if (sessionId !== liveSessionIdRef.current) return;
         if (!translatedChunk) {
           setIsLiveTranslating(false);
           return;
@@ -494,79 +548,68 @@ export default function Voice() {
     }
   };
 
-  const startBackendPcmCapture = (stream: MediaStream) => {
+  const enqueueBackendPcmTranscription = (chunks: Int16Array[], sessionId: number) => {
+    if (chunks.length === 0) return;
+    backendTranscriptionChainRef.current = backendTranscriptionChainRef.current
+      .catch(() => undefined)
+      .then(() => flushBackendPcmTranscription(chunks, sessionId));
+  };
+
+  const startBackendPcmCapture = async (stream: MediaStream, sessionId: number) => {
+    const track = stream.getAudioTracks()[0];
+    if (!track) return;
     try {
-      if (audioProcessorRef.current) {
-        try {
-          audioProcessorRef.current.disconnect();
-        } catch { }
-        audioProcessorRef.current = null;
-      }
-      if (audioContextRef.current) {
-        try {
-          audioContextRef.current.close().catch(() => { });
-        } catch { }
-        audioContextRef.current = null;
-      }
-
-      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-      if (!AudioCtx) return;
-      const ctx = new AudioCtx({ sampleRate: 16000 });
-      if (ctx.state === "suspended") {
-        ctx.resume().catch(() => { });
-      }
-      audioContextRef.current = ctx;
-
-      const source = ctx.createMediaStreamSource(stream);
-      const processor = ctx.createScriptProcessor(4096, 1, 1);
-      audioProcessorRef.current = processor;
+      liveMicCaptureRef.current?.stop();
+      const captureEpoch = ++liveCaptureEpochRef.current;
+      const capture = new MicCapture();
+      liveMicCaptureRef.current = capture;
       backendPcmBufferRef.current = [];
+      backendPcmSamplesRef.current = 0;
 
-      let silenceCount = 0;
+      let silenceSamples = 0;
       let hasSpeech = false;
 
-      processor.onaudioprocess = (e) => {
-        if (!isLiveListeningRef.current) return;
-        const channel = e.inputBuffer.getChannelData(0);
-        const copy = new Float32Array(channel.length);
-        copy.set(channel);
-        backendPcmBufferRef.current.push(copy);
+      await capture.startFromTrack(track, 16000, (frame) => {
+        if (!isLiveListeningRef.current || sessionId !== liveSessionIdRef.current) return;
+        const pcm = new Int16Array(frame);
+        backendPcmBufferRef.current.push(pcm);
+        backendPcmSamplesRef.current += pcm.length;
 
         // VAD root mean square calculation
         let sum = 0;
-        for (let i = 0; i < copy.length; i++) {
-          sum += copy[i] * copy[i];
+        for (let i = 0; i < pcm.length; i++) {
+          const sample = pcm[i] / 32768;
+          sum += sample * sample;
         }
-        const rms = Math.sqrt(sum / copy.length);
+        const rms = Math.sqrt(sum / pcm.length);
 
         // Sensitive threshold suitable for laptop and headset microphones
         if (rms > 0.003) {
           hasSpeech = true;
-          silenceCount = 0;
+          silenceSamples = 0;
         } else if (hasSpeech) {
-          silenceCount++;
+          silenceSamples += pcm.length;
         }
 
-        // Flush on speech pause (~0.6s silence) or max buffer duration (~3s)
+        // Flush on speech pause (~0.6s silence) or max buffer duration (~3s).
+        // These thresholds are sample-based because MicCapture emits fixed
+        // 50-ms frames, unlike the old ScriptProcessor callback size.
         if (
           hasSpeech &&
-          (silenceCount >= 2 || backendPcmBufferRef.current.length >= 12) &&
+          (silenceSamples >= 9600 || backendPcmSamplesRef.current >= 48000) &&
           !isBackendTranscribingRef.current
         ) {
           hasSpeech = false;
-          silenceCount = 0;
+          silenceSamples = 0;
           const chunks = backendPcmBufferRef.current;
           backendPcmBufferRef.current = [];
-          void flushBackendPcmTranscription(chunks);
+          backendPcmSamplesRef.current = 0;
+          enqueueBackendPcmTranscription(chunks, sessionId);
         }
-      };
-
-      // Mute gain node so microphone audio is not routed back to the speakers/headphones
-      const muteGain = ctx.createGain();
-      muteGain.gain.setValueAtTime(0, ctx.currentTime);
-      source.connect(processor);
-      processor.connect(muteGain);
-      muteGain.connect(ctx.destination);
+      });
+      if (captureEpoch !== liveCaptureEpochRef.current || !isLiveListeningRef.current) {
+        capture.stop();
+      }
     } catch (err) {
       console.warn("Direct microphone PCM capture note:", err);
     }
@@ -590,44 +633,33 @@ export default function Voice() {
       return;
     }
 
+    const sessionId = ++liveSessionIdRef.current;
+    ++liveCaptureEpochRef.current;
     isLiveListeningRef.current = true;
     setIsLiveListening(true);
     if (!micStream) return;
-    startBackendPcmCapture(micStream);
+    void startBackendPcmCapture(micStream, sessionId);
   };
 
   const stopLiveListening = () => {
     isLiveListeningRef.current = false;
+    ++liveCaptureEpochRef.current;
     if (isSimulatingRef.current) {
       isSimulatingRef.current = false;
     }
-    if (audioProcessorRef.current) {
-      try {
-        audioProcessorRef.current.disconnect();
-      } catch { }
-      audioProcessorRef.current = null;
-    }
-    if (audioContextRef.current) {
-      try {
-        audioContextRef.current.close().catch(() => { });
-      } catch { }
-      audioContextRef.current = null;
-    }
+    const pendingChunks = backendPcmBufferRef.current;
     backendPcmBufferRef.current = [];
+    backendPcmSamplesRef.current = 0;
+    enqueueBackendPcmTranscription(pendingChunks, liveSessionIdRef.current);
+    liveMicCaptureRef.current?.stop();
+    liveMicCaptureRef.current = null;
     if (micStreamRef.current) {
       try {
         micStreamRef.current.getTracks().forEach((track) => track.stop());
       } catch { }
       micStreamRef.current = null;
     }
-    if (currentAudioRef.current) {
-      try {
-        currentAudioRef.current.pause();
-        currentAudioRef.current.currentTime = 0;
-      } catch { }
-      currentAudioRef.current = null;
-    }
-    setIsSpeakingTts(false);
+    cancelTts();
     setIsLiveListening(false);
     setLiveInterimOriginal("");
     setLiveInterimTranslated("");
