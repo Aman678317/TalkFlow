@@ -1,3 +1,5 @@
+import pytest
+
 from app.services.document_service import DocBlock, _is_translatable, parse_txt, reconstruct_txt
 
 
@@ -26,7 +28,7 @@ def test_translatability_keeps_unicode_letters():
 
 
 def test_parse_pdf_ocr_is_opt_in(monkeypatch):
-    import fitz
+    fitz = pytest.importorskip("fitz", reason="PyMuPDF is optional in the unit-test environment")
     from app.config import settings
     from app.services.document_service import parse_pdf
 
