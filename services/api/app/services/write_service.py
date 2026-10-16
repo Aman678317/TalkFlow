@@ -1604,7 +1604,6 @@ def improve_text(
     improved = _fix_punctuation(improved)
     improved = _format_sentence_terminals(improved)
     improved = _restore_immutable_spans(improved, protected_spans)
-    improved = _restore_immutable_spans(improved, protected_spans)
 
     # 7. Generate DeepL Write-grade alternative rewrites
     alternatives = _generate_alternatives(improved, raw, style, tone)
