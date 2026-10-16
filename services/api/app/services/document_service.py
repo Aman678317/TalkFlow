@@ -500,6 +500,8 @@ async def _run_pipeline(db: AsyncSession, doc: M.Document) -> None:
                 recent = recent[-MAX_BATCH_CONTEXT:]
                 completed += 1
                 continue
+            # Once the persisted translation is missing, downstream context
+            # is rebuilt only from source text, never from translated output.
             out = await translate_text(
                 db, b.text, detected, doc.target_lang,
                 TranslateContext(
