@@ -14,6 +14,7 @@ event envelope is versioned and typed.
 """
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 import pytest
@@ -257,6 +258,42 @@ async def test_agent2_calls_the_provider_once_per_distinct_language_per_recipien
     assert {e.recipient_id for e in bus.trace} == {LISTENER_EN_1, LISTENER_EN_2, LISTENER_UR}
     # canonical source text is preserved alongside the translation
     assert bus.trace[0].payload["source_text"] == HINDI
+
+
+@pytest.mark.asyncio
+async def test_agent2_runs_target_languages_concurrently_and_returns_sorted_results():
+    class OverlapTranslator:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, tuple[str, ...]]] = []
+            self.active = 0
+            self.max_active = 0
+
+        async def translate(self, text: str, source_lang: str, target_lang: str,
+                            context: tuple[str, ...] = (), *,
+                            segment_id: str | None = None,
+                            speaker_id: str | None = None):
+            self.calls.append((source_lang, target_lang, tuple(context)))
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            # Yield once so independently scheduled target calls can overlap;
+            # this does not depend on a wall-clock duration.
+            await asyncio.sleep(0)
+            self.active -= 1
+            return ProviderTranslation(text=f"[{target_lang}] {text}", provider="fake",
+                                       model="fake-mt")
+
+    translator = OverlapTranslator()
+    agent = TranslationAgent(AgentBus(), translator, meeting_id=MEETING)
+
+    out = await agent.fan_out(
+        _transcript_segment(),
+        recipients_by_lang={"ur": [LISTENER_UR], "en": [LISTENER_EN_1]},
+    )
+
+    assert translator.max_active == 2
+    assert [translation.target_language for translation in out] == ["en", "ur"]
+    assert {target for _, target, _ in translator.calls} == {"en", "ur"}
+    assert agent.context_for(SPEAKER) == (HINDI,)
 
 
 @pytest.mark.asyncio

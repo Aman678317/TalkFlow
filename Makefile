@@ -1,5 +1,5 @@
 # GlobalTalk AI — developer workflow
-.PHONY: bootstrap dev api web test test-unit test-integration test-realtime verify-ai-stack \
+.PHONY: bootstrap dev api web test test-unit test-integration test-realtime benchmark-translation verify-ai-stack \
         models migrate lint build docker-up docker-gpu-up docker-down clean
 
 PY := python3
@@ -39,6 +39,9 @@ test-integration:
 	$(PY) -m pytest tests/integration -q
 test-realtime:
 	$(PY) -m pytest tests/realtime -q -m realtime
+
+benchmark-translation:
+	$(PY) scripts/benchmark_translation_fanout.py
 
 ## frontend
 lint:
