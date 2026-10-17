@@ -304,9 +304,16 @@ def parse_pdf(data: bytes) -> list[DocBlock]:
         finally:
             doc.close()
 
+        # A page without usable text must be explicitly resolved by OCR.
+        # Otherwise the downstream coverage check could mistake partial content
+        # for a complete document simply because omitted pages have no blocks.
+        if not ocr_enabled:
+            extraction_failures.extend(
+                f"page {pno + 1}: no usable text layer and OCR disabled"
+                for pno in range(len(doc))
+                if not any(b.page == pno for b in blocks)
+            )
         if extraction_failures:
-            # Do not allow a mixed PDF to be marked ready while scanned pages
-            # have silently been omitted from the translated output.
             summary = "; ".join(extraction_failures[:10])
             raise DocumentProcessingError(
                 f"PDF extraction incomplete; enable a working OCR configuration or review {summary}")
