@@ -63,3 +63,32 @@ def test_production_readiness_marks_development_providers_unavailable(monkeypatc
     for task in ("stt", "mt", "tts"):
         assert report["providers"][task]["status"] == "unavailable"
         assert "development_provider_forbidden_in_production" in report["providers"][task]["missing_requirements"]
+
+
+
+def test_metrics_inventory_distinguishes_registered_from_runtime_observed(monkeypatch, tmp_path):
+    monkeypatch.setattr(diagnostics.settings, "app_env", "test")
+    monkeypatch.setattr(diagnostics.settings, "model_cache_path", str(tmp_path))
+    monkeypatch.setattr(diagnostics.settings, "document_ocr_enabled", False)
+    monkeypatch.setattr(diagnostics.settings, "livekit_enabled", False)
+    monkeypatch.setattr(diagnostics.settings, "tts_voice_map", "")
+    monkeypatch.setattr(diagnostics.settings, "stt_provider", "auto")
+    monkeypatch.setattr(diagnostics.settings, "translation_provider", "auto")
+    monkeypatch.setattr(diagnostics.settings, "tts_provider", "auto")
+    monkeypatch.setattr(diagnostics, "_registered_metric_names", lambda: {
+        "gt_stt_latency_ms", "gt_realtime_stage_duration_ms"
+    })
+
+    report = diagnostics.build_realtime_readiness(_FakeAI())
+    metrics = report["metrics"]
+
+    assert metrics["expected_inventory"]["gt_stt_latency_ms"] == {
+        "description": "STT latency histogram",
+        "registered": True,
+        "runtime_observed": False,
+    }
+    assert metrics["expected_inventory"]["gt_e2e_latency_ms"]["registered"] is False
+    assert "gt_e2e_latency_ms" in metrics["missing_expected_metrics"]
+    assert "gt_realtime_stage_duration_ms" not in metrics["missing_expected_metrics"]
+    assert report["tracing"]["websocket_request_id_supported"] is True
+    assert report["tracing"]["cross_stage_propagation_runtime_verified"] is False
