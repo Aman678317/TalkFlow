@@ -304,10 +304,12 @@ def parse_pdf(data: bytes) -> list[DocBlock]:
         finally:
             doc.close()
 
-        # A page without usable text must be explicitly resolved by OCR.
-        # Otherwise the downstream coverage check could mistake partial content
-        # for a complete document simply because omitted pages have no blocks.
-        if not ocr_enabled:
+        # Strict page coverage is configurable to protect existing consumers
+        # while allowing production deployments to fail closed on image-only pages.
+        strict_page_coverage = bool(getattr(
+            settings, "document_ocr_fail_on_unreadable_page", True
+        ))
+        if strict_page_coverage and not ocr_enabled:
             extraction_failures.extend(
                 f"page {pno + 1}: no usable text layer and OCR disabled"
                 for pno in range(len(doc))
