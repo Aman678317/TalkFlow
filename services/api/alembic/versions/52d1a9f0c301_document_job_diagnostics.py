@@ -20,7 +20,6 @@ def upgrade() -> None:
         "document_jobs",
         sa.Column("diagnostics_json", sa.JSON(), nullable=False, server_default=sa.text("'{}'")),
     )
-    op.alter_column("document_jobs", "diagnostics_json", server_default=None)
 
 
 def downgrade() -> None:
