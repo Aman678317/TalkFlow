@@ -28,7 +28,9 @@ log = logging.getLogger("app.routers.agent_studio")
 router = APIRouter(prefix="/api/v1/agent-studio", tags=["agent-studio"],
                    dependencies=[Depends(require_org_user)])
 
-# Paths to multi-agent portfolio
+# Paths to multi-agent portfolio. In serverless deployments the portfolio
+# tree is not shipped inside the API bundle; its endpoints use safe in-process
+# fallbacks. Local/monorepo deployments can still discover the sibling project.
 def _find_portfolio_root() -> Path:
     candidates = [
         Path(__file__).resolve().parent.parent.parent / "multi_agent_portfolio",
@@ -49,16 +51,14 @@ def _find_portfolio_root() -> Path:
 _PORTFOLIO_ROOT = _find_portfolio_root()
 _BRIDGE_SCRIPT = _PORTFOLIO_ROOT / "bridge.py"
 
-# Preferred python interpreter in dedicated venv
+# Prefer the dedicated portfolio virtualenv when present; otherwise use the
+# active API interpreter (development and serverless fallback).
 if os.name == "nt":
     _VENV_PYTHON = _PORTFOLIO_ROOT / ".venv" / "Scripts" / "python.exe"
 else:
     _VENV_PYTHON = _PORTFOLIO_ROOT / ".venv" / "bin" / "python"
 
-if not _VENV_PYTHON.exists():
-    _PYTHON_BIN = sys.executable
-else:
-    _PYTHON_BIN = str(_VENV_PYTHON)
+_PYTHON_BIN = str(_VENV_PYTHON) if _VENV_PYTHON.exists() else sys.executable
 
 
 def _exec_bridge_sync(cmd: List[str], cwd: str) -> subprocess.CompletedProcess[str]:
