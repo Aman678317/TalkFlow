@@ -39,3 +39,37 @@ def test_parse_pdf_ocr_is_opt_in(monkeypatch):
     monkeypatch.setattr(settings, "document_ocr_enabled", False)
     blocks = parse_pdf(pdf_bytes)
     assert blocks == []
+
+
+def test_parse_pdf_fails_closed_for_textless_page_when_strict(monkeypatch):
+    fitz = pytest.importorskip("fitz", reason="PyMuPDF is optional in some test environments")
+    from app.config import settings
+    from app.errors import DocumentProcessingError
+    from app.services.document_service import parse_pdf
+
+    document = fitz.open()
+    document.new_page()
+    pdf_bytes = document.tobytes()
+    document.close()
+
+    monkeypatch.setattr(settings, "document_ocr_enabled", False)
+    monkeypatch.setattr(settings, "document_ocr_fail_on_unreadable_page", True)
+    with pytest.raises(DocumentProcessingError, match="no usable text layer"):
+        parse_pdf(pdf_bytes)
+
+
+def test_parse_pdf_ocr_failure_is_not_silently_ignored(monkeypatch):
+    fitz = pytest.importorskip("fitz", reason="PyMuPDF is optional in some test environments")
+    from app.config import settings
+    from app.errors import DocumentProcessingError
+    from app.services.document_service import parse_pdf
+
+    document = fitz.open()
+    document.new_page()
+    pdf_bytes = document.tobytes()
+    document.close()
+
+    monkeypatch.setattr(settings, "document_ocr_enabled", True)
+    monkeypatch.setattr(settings, "document_ocr_languages", "this-language-does-not-exist")
+    with pytest.raises(DocumentProcessingError, match="PDF extraction incomplete"):
+        parse_pdf(pdf_bytes)
