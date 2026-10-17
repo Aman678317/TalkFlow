@@ -65,6 +65,31 @@ def anyio_backend():
     return "asyncio"
 
 
+@pytest.fixture(scope="session", autouse=True)
+def prepare_services_db():
+    """Ensure database schema is created and initialized for services tests."""
+    from app.db.base import Base
+    import app.db.models  # noqa: F401
+    from app.db.session import engine, init_db
+    import asyncio
+    async def _init():
+        await init_db()
+        async with engine().begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    if loop.is_running():
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            executor.submit(asyncio.run, _init()).result()
+    else:
+        loop.run_until_complete(_init())
+    yield
+
+
 @pytest.fixture(scope="session")
 def app():
     from app.config import get_settings
@@ -116,6 +141,7 @@ def second_user(services_app_client) -> dict:
     return {
         "email": email,
         "token": data["tokens"]["access_token"],
+        "user_id": data["user"]["id"],
         "headers": {"Authorization": f"Bearer {data['tokens']['access_token']}"},
         "org_id": data["organization"]["id"],
     }

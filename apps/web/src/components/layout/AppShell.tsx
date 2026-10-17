@@ -19,6 +19,7 @@ const NAV = [
   { to: '/voice?tab=phone', label: 'Global Call', icon: Phone },
   { to: '/meetings', label: 'Meetings', icon: Video },
   { to: '/chat', label: 'Chat', icon: MessageSquare },
+  { to: '/knowledge', label: 'Knowledge Base', icon: BookOpen },
   { to: '/documents', label: 'Documents', icon: FileText },
   { to: '/history', label: 'History', icon: History },
 ];
@@ -75,11 +76,11 @@ export default function AppShell() {
                 {(user.name || user.email || '?').slice(0, 1).toUpperCase()}
               </div>
               <div className="min-w-0 flex-1">
-                <div className="truncate text-sm font-medium text-white">{user.name || user.email}</div>
-                <div className="truncate text-xs text-white/50">{org?.name ?? '—'}</div>
+                <div className="truncate text-sm font-medium text-slate-800">{user.name || user.email}</div>
+                <div className="truncate text-xs text-slate-600">{org?.name ?? '—'}</div>
               </div>
               <button onClick={() => { void logout(); navigate('/'); }}
-                className="rounded-lg px-1.5 py-1 text-xs font-medium text-white/45 transition-colors hover:bg-white/[.08] hover:text-white"
+                className="text-xs font-medium text-slate-600 hover:text-rose-600"
                 aria-label="Sign out">
                 Sign out
               </button>
@@ -131,7 +132,7 @@ function NavSection({ title, items }: { title?: string; items: typeof NAV }) {
   return (
     <div>
       {title && (
-        <div className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-white/40">
+        <div className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-widest text-slate-600">
           {title}
         </div>
       )}

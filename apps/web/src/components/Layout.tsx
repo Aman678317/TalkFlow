@@ -18,10 +18,10 @@ export function Logo({ className = "h-8 w-8" }: { className?: string }) {
 
 const NAV = [
   { to: "/dashboard",          label: "Dashboard",          Icon: LayoutDashboard },
-  { to: "/translate",          label: "Translate",          Icon: ArrowLeftRight },
-  { to: "/write",              label: "Write",              Icon: PenLine },
-  { to: "/voice",              label: "Voice",              Icon: Mic2 },
-  { to: "/documents",          label: "Documents",          Icon: FileText },
+  { to: "/translate",          label: "AMPL Translate",     Icon: ArrowLeftRight },
+  { to: "/write",              label: "AMPL Refine",        Icon: PenLine },
+  { to: "/voice",              label: "AMPL Voice",         Icon: Mic2 },
+  { to: "/documents",          label: "AMPL Documents",     Icon: FileText },
   { to: "/meetings",           label: "Meetings",           Icon: Video },
   { to: "/chat",               label: "Chat rooms",         Icon: MessageSquare },
   { to: "/history",            label: "History",            Icon: Clock },
@@ -136,7 +136,7 @@ export default function Layout() {
             <p className="text-[13px] font-bold tracking-tight text-white leading-tight">
               GlobalTalk <span className="text-accent-300">AI</span>
             </p>
-            <p className="text-[9px] font-medium uppercase tracking-widest text-white/40 leading-tight mt-0.5">
+            <p className="text-[9px] font-medium uppercase tracking-widest text-white/75 leading-tight mt-0.5">
               Every language
             </p>
           </div>
@@ -152,9 +152,9 @@ export default function Layout() {
             const isCollapsed = Boolean(collapsedGroups[group.label]);
 
             return (
-              <div key={group.label} className={index > 0 ? "border-t border-white/[.08] pt-3" : ""}>
-                <div className="mb-1 flex items-center justify-between px-3">
-                  <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-white/40">
+              <div key={group.label} className={index > 0 ? "pt-2.5 border-t border-white/[.07]" : ""}>
+                <div className="flex items-center justify-between mb-1 px-3">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-white/75">
                     {group.label}
                   </p>
                   {isCollapsible && (
@@ -162,47 +162,34 @@ export default function Layout() {
                       type="button"
                       onClick={() => toggleGroup(group.label)}
                       aria-expanded={!isCollapsed}
-                      aria-label={`${isCollapsed ? "Expand" : "Collapse"} ${group.label} category`}
-                      className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium text-white/40 transition-colors hover:bg-white/[.08] hover:text-white"
+                      aria-label={`${isCollapsed ? "Show" : "Hide"} ${group.label} category`}
+                      className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium text-white/75 hover:bg-white/[.08] hover:text-white transition-colors"
                     >
                       <span>{isCollapsed ? "Show" : "Hide"}</span>
                       <ChevronDown className={`h-3 w-3 transition-transform duration-200 ${isCollapsed ? "-rotate-90" : "rotate-0"}`} />
                     </button>
                   )}
                 </div>
-                <AnimatePresence initial={false}>
-                  {!isCollapsed && (
-                    <motion.div
-                      key="group-items"
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: "auto", opacity: 1 }}
-                      exit={{ height: 0, opacity: 0 }}
-                      transition={springSoft}
-                      className="overflow-hidden"
-                    >
-                      {items.map(({ to, label, Icon }) => (
-                        <NavLink
-                          key={to}
-                          to={to}
-                          onClick={() => setOpen(false)}
-                          className={({ isActive }) =>
-                             `group mb-0.5 flex items-center gap-3 rounded-xl px-3 py-2 text-[13px] font-medium transition-[background-color,color,transform,box-shadow] duration-200 active:scale-[0.98]
-                              ${isActive
-                                ? "bg-accent-600 text-white shadow-accent"
-                                : "text-white/60 hover:bg-white/[.07] hover:text-white"}`
-                          }
-                        >
-                          {({ isActive }) => (
-                            <>
-                               <Icon className={`h-4 w-4 shrink-0 transition-colors ${isActive ? "text-white" : "text-white/40 group-hover:text-white/80"}`} />
-                              <span className="truncate">{label}</span>
-                            </>
-                          )}
-                        </NavLink>
-                      ))}
-                    </motion.div>
-                  )}
-                </AnimatePresence>
+                {!isCollapsed && items.map(({ to, label, Icon }) => (
+                  <NavLink
+                    key={to}
+                    to={to}
+                    onClick={() => setOpen(false)}
+                    className={({ isActive }) =>
+                      `group flex items-center gap-3 rounded-xl px-3 py-2 text-[13px] font-medium transition-all duration-150 mb-0.5 active:scale-[0.98]
+                       ${isActive
+                         ? "bg-dl-blue text-white shadow-xs"
+                         : "text-white/80 hover:bg-white/[.07] hover:text-white"}`
+                    }
+                  >
+                    {({ isActive }) => (
+                      <>
+                        <Icon className={`h-4 w-4 shrink-0 transition-colors ${isActive ? "text-white" : "text-white/60 group-hover:text-white/90"}`} />
+                        <span className="truncate">{label}</span>
+                      </>
+                    )}
+                  </NavLink>
+                ))}
               </div>
             );
           })}
@@ -223,7 +210,7 @@ export default function Layout() {
               </p>
               <p
                 title={`${org?.name ?? ""} · ${role ?? ""}`}
-                className="text-[11px] text-white/50 leading-tight mt-0.5 truncate"
+                className="text-[11px] text-white/75 leading-tight mt-0.5 truncate"
               >
                 {org?.name || "GlobalTalk"} · {role || "member"}
               </p>
@@ -231,9 +218,9 @@ export default function Layout() {
           </div>
           <button
             onClick={async () => { await logout(); nav("/login"); }}
-            className="group mt-2 flex w-full items-center gap-2.5 rounded-xl px-3 py-1.5 text-xs font-medium text-white/50 transition-[background-color,color] hover:bg-white/[.07] hover:text-white"
+            className="group mt-2 flex w-full items-center gap-2.5 rounded-xl px-3 py-1.5 text-xs font-medium text-white/75 hover:bg-white/[.07] hover:text-white transition-all"
           >
-            <LogOut className="h-3.5 w-3.5 shrink-0 text-white/40 group-hover:text-white/70 transition-colors" aria-hidden="true" />
+            <LogOut className="h-3.5 w-3.5 shrink-0 text-white/60 group-hover:text-white/90 transition-colors" aria-hidden="true" />
             <span>Sign out</span>
           </button>
         </div>

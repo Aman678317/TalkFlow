@@ -58,11 +58,10 @@ export default function Dashboard() {
   return (
     <div className="mx-auto max-w-6xl space-y-8 px-4 py-6 sm:px-6 lg:px-8 lg:py-10">
       {/* Welcome Banner & Quick Action Buttons */}
-      <div className="flex flex-col gap-6 border-b border-border pb-8">
-        <div className="min-w-0">
-          <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-accent-600">Workspace overview</p>
-          <h1 className="break-words text-3xl font-semibold tracking-title text-ink-950 sm:text-4xl">Welcome back, {userName} <span aria-hidden="true">👋</span></h1>
-          <p className="mt-3 text-sm leading-relaxed text-ink-600">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-slate-200/80 pb-5">
+        <div>
+          <h1 className="text-xl font-bold tracking-tight text-slate-900">Welcome back, {userName} 👋</h1>
+          <p className="text-xs text-slate-600 mt-0.5">
             {org?.name || "GlobalTalk"} · {planName} plan · {realtimeLangs} realtime-ready languages
           </p>
         </div>
@@ -87,10 +86,10 @@ export default function Dashboard() {
         {stats.map((s) => {
           const Icon = s.icon;
           return (
-            <StaggerItem key={s.label} className="min-w-0 rounded-2xl border border-border bg-surface-panel p-4 shadow-xs sm:p-5">
-              <div className="mb-5 flex items-start justify-between gap-2">
-                <p className="text-xs font-medium leading-relaxed text-ink-600">{s.label}</p>
-                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-surface-canvas text-ink-600">
+            <StaggerItem key={s.label} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xs transition-shadow duration-200 hover:shadow-lift-sm">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">{s.label}</p>
+                <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-slate-50 text-slate-600">
                   <Icon className="h-3.5 w-3.5" />
                 </div>
               </div>
@@ -107,12 +106,12 @@ export default function Dashboard() {
       {/* Workspace Activity Cards */}
       <Stagger className="grid gap-5 lg:grid-cols-2">
         {/* Recent Translations Card */}
-        <StaggerItem className="min-w-0 rounded-2xl border border-border bg-surface-panel p-5 shadow-xs sm:p-6">
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-ink-100 pb-4">
-            <h2 className="flex items-center gap-2 text-base font-semibold text-ink-950">
-              <Languages className="h-4 w-4 text-accent-600" /> Recent translations
-            </h2>
-            <Link to="/history" className="flex items-center gap-1 text-xs font-semibold text-accent-600 hover:text-accent-700 hover:underline">
+        <StaggerItem className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
+          <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-3">
+            <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
+              <Languages className="h-4 w-4 text-dl-blue" /> Recent translations
+            </h3>
+            <Link to="/history" className="text-xs font-semibold text-[#084C92] hover:underline flex items-center gap-1">
               View all <ArrowRight className="h-3 w-3" />
             </Link>
           </div>
@@ -124,13 +123,13 @@ export default function Dashboard() {
               ))}
             </div>
           ) : historyItems.length === 0 ? (
-            <p className="rounded-xl2 border border-dashed border-border bg-surface-canvas px-5 py-10 text-center text-sm leading-relaxed text-ink-600">No translations yet. Try the Translate workspace.</p>
+            <p className="py-6 text-center text-xs text-slate-600">No translations yet. Try the Translate workspace.</p>
           ) : (
             <ul className="divide-y divide-ink-100">
               {historyItems.map((h: any) => (
-                <li key={h.id} className="py-3.5 text-sm">
-                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-ink-600">
-                    <span className="rounded bg-surface-subtle px-2 py-0.5 font-semibold text-ink-700">
+                <li key={h.id} className="py-2.5 text-xs">
+                  <div className="flex items-center justify-between gap-2 text-[11px] text-slate-600 mb-1">
+                    <span className="font-semibold text-slate-700 bg-slate-100 px-2 py-0.5 rounded">
                       {h.source_lang || h.source_language || "?"} → {h.target_lang || h.target_language || "?"}
                     </span>
                     <span className="font-mono">{Math.round(h.latency_ms ?? 0)} ms</span>
@@ -144,12 +143,12 @@ export default function Dashboard() {
         </StaggerItem>
 
         {/* Recent Meetings Card */}
-        <StaggerItem className="min-w-0 rounded-2xl border border-border bg-surface-panel p-5 shadow-xs sm:p-6">
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-ink-100 pb-4">
-            <h2 className="flex items-center gap-2 text-base font-semibold text-ink-950">
-              <Video className="h-4 w-4 text-accent-600" /> Recent meetings
-            </h2>
-            <Link to="/meetings" className="flex items-center gap-1 text-xs font-semibold text-accent-600 hover:text-accent-700 hover:underline">
+        <StaggerItem className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
+          <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-3">
+            <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
+              <Video className="h-4 w-4 text-dl-blue" /> Recent meetings
+            </h3>
+            <Link to="/meetings" className="text-xs font-semibold text-[#084C92] hover:underline flex items-center gap-1">
               View all <ArrowRight className="h-3 w-3" />
             </Link>
           </div>
@@ -161,14 +160,14 @@ export default function Dashboard() {
               ))}
             </div>
           ) : meetingItems.length === 0 ? (
-            <p className="rounded-xl2 border border-dashed border-border bg-surface-canvas px-5 py-10 text-center text-sm text-ink-600">No meetings yet.</p>
+            <p className="py-6 text-center text-xs text-slate-600">No meetings yet.</p>
           ) : (
             <ul className="divide-y divide-ink-100">
               {meetingItems.map((m: any) => (
-                <li key={m.id} className="flex items-center justify-between gap-3 py-3.5 text-sm">
-                  <Link to={`/meeting/${m.id}`} className="group min-w-0 flex-1 rounded-md">
-                    <p className="truncate font-medium text-ink-950 group-hover:text-accent-700">{m.title}</p>
-                    <p className="mt-1 flex items-center gap-1 text-xs text-ink-600">
+                <li key={m.id} className="flex items-center justify-between gap-2 py-2.5 text-xs">
+                  <Link to={`/meeting/${m.id}`} className="min-w-0 flex-1 hover:text-dl-blue">
+                    <p className="truncate font-semibold text-slate-900">{m.title}</p>
+                    <p className="text-[11px] text-slate-600 flex items-center gap-1 mt-0.5">
                       <Clock className="h-3 w-3" /> {m.created_at ? new Date(m.created_at).toLocaleString() : ""}
                     </p>
                   </Link>
@@ -188,12 +187,12 @@ export default function Dashboard() {
         </StaggerItem>
 
         {/* Documents Summary Card */}
-        <StaggerItem className="min-w-0 rounded-2xl border border-border bg-surface-panel p-5 shadow-xs sm:p-6">
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-ink-100 pb-4">
-            <h2 className="flex items-center gap-2 text-base font-semibold text-ink-950">
-              <FileText className="h-4 w-4 text-accent-600" /> Documents
-            </h2>
-            <Link to="/documents" className="flex items-center gap-1 text-xs font-semibold text-accent-600 hover:text-accent-700 hover:underline">
+        <StaggerItem className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
+          <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-3">
+            <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
+              <FileText className="h-4 w-4 text-dl-blue" /> Documents
+            </h3>
+            <Link to="/documents" className="text-xs font-semibold text-[#084C92] hover:underline flex items-center gap-1">
               View all <ArrowRight className="h-3 w-3" />
             </Link>
           </div>
@@ -205,7 +204,7 @@ export default function Dashboard() {
               ))}
             </div>
           ) : docItems.length === 0 ? (
-            <p className="rounded-xl2 border border-dashed border-border bg-surface-canvas px-5 py-10 text-center text-sm text-ink-600">No documents translated yet.</p>
+            <p className="py-6 text-center text-xs text-slate-600">No documents translated yet.</p>
           ) : (
             <ul className="divide-y divide-ink-100">
               {docItems.slice(0, 5).map((d: any) => (
@@ -242,8 +241,8 @@ export default function Dashboard() {
                 title={`${l.name}: STT ${l.stt_status}, MT ${l.mt_status}, TTS ${l.tts_status}`}
                 className={`rounded-md border px-2 py-1 text-xs font-medium ${
                   l.translation_supported
-                    ? "border-accent-200 bg-accent-50 text-ink-800"
-                    : "border-border bg-surface-canvas text-ink-600"
+                    ? "border-blue-200 bg-blue-50/60 text-slate-800"
+                    : "border-slate-200 bg-slate-50 text-slate-600"
                 }`}
               >
                 {l.native_name || l.name}
@@ -251,7 +250,7 @@ export default function Dashboard() {
               </span>
             ))}
           </div>
-          <p className="mt-4 border-t border-ink-100 pt-4 text-xs leading-relaxed text-ink-600">
+          <p className="mt-3 text-[11px] leading-relaxed text-slate-600">
             Capabilities are validated per deployment. A language is only shown as supported when models are installed and healthy. 🔊 = translated voice available.
           </p>
         </StaggerItem>
