@@ -347,11 +347,16 @@ def parse_pdf(data: bytes) -> list[DocBlock]:
                 page_blocks += 1
         if page_blocks == 0:
             empty_pages.append(pno + 1)
-    if ocr_enabled and empty_pages:
-        raise DocumentProcessingError(
+    strict_page_coverage = bool(getattr(
+        settings, "document_ocr_fail_on_unreadable_page", True
+    ))
+    if empty_pages and (ocr_enabled or strict_page_coverage):
+        detail = (
             "PDF OCR requires PyMuPDF, Pillow, and pytesseract; pages without text layer: "
-            + ", ".join(map(str, empty_pages[:20]))
+            if ocr_enabled
+            else "PDF extraction incomplete; pages without a usable text layer (OCR disabled): "
         )
+        raise DocumentProcessingError(detail + ", ".join(map(str, empty_pages[:20])))
     return blocks
 
 def reconstruct_pdf(blocks: list[DocBlock], original: bytes) -> tuple[bytes, str]:
