@@ -309,12 +309,18 @@ def parse_pdf(data: bytes) -> list[DocBlock]:
         strict_page_coverage = bool(getattr(
             settings, "document_ocr_fail_on_unreadable_page", True
         ))
+        # Do not use page count from parsed blocks as the expected count:
+        # a scan-only page may have no blocks precisely because OCR is off.
         if strict_page_coverage and not ocr_enabled:
-            extraction_failures.extend(
-                f"page {pno + 1}: no usable text layer and OCR disabled"
-                for pno in range(len(doc))
+            missing_pages = [
+                pno + 1 for pno in range(page_total)
                 if not any(b.page == pno for b in blocks)
-            )
+            ]
+            if missing_pages:
+                extraction_failures.append(
+                    "pages without a usable text layer (OCR disabled): "
+                    + ", ".join(map(str, missing_pages[:20]))
+                )
         if extraction_failures:
             summary = "; ".join(extraction_failures[:10])
             raise DocumentProcessingError(
