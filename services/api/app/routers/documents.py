@@ -106,8 +106,14 @@ async def upload_document(
                                resource_type="document", resource_id=str(doc.id),
                                details={"filename": safe_name, "size": len(data)})
     await db.commit()
-    await queue().push("document.process", {"document_id": str(doc.id)},
-                       queue="documents")
+    from app import context
+    ctx = context.get_ctx()
+    payload = {
+        "document_id": str(doc.id),
+        "request_id": ctx.request_id if ctx else uuid.uuid4().hex[:16],
+        "trace_id": ctx.trace_id if ctx else uuid.uuid4().hex,
+    }
+    await queue().push("document.process", payload, queue="documents")
     await db.refresh(doc)
     return DocumentOut.model_validate(doc)
 
@@ -136,15 +142,34 @@ async def get_document(doc_id: uuid.UUID,
 async def document_status(doc_id: uuid.UUID,
                           principal: Principal = Depends(require_org_user),
                           db: AsyncSession = Depends(get_db)):
+    from sqlalchemy import func
     doc = await _get_doc(db, doc_id, principal)
     job = (await db.execute(select(M.DocumentJob).where(
         M.DocumentJob.document_id == doc.id).order_by(
         M.DocumentJob.created_at.desc()))).scalars().first()
+    
+    seg_total_res = await db.execute(select(func.count(M.DocumentSegment.id)).where(M.DocumentSegment.document_id == doc.id))
+    seg_total = seg_total_res.scalar() or 0
+    seg_done_res = await db.execute(select(func.count(M.DocumentSegment.id)).where(
+        M.DocumentSegment.document_id == doc.id,
+        M.DocumentSegment.target_text.isnot(None),
+    ))
+    seg_done = seg_done_res.scalar() or 0
+
+    warnings = []
+    if job and job.message and "warning" in job.message.lower():
+        warnings.append(job.message)
+
     return DocumentStatusOut(
         id=doc.id, status=doc.status, progress=doc.progress,
         stage=job.stage if job else doc.status,
         message=job.message if job else "",
-        error_code=doc.error_code, error_message=doc.error_message)
+        error_code=doc.error_code, error_message=doc.error_message,
+        pages_total=doc.page_count,
+        segments_total=seg_total,
+        segments_done=seg_done,
+        warnings=warnings,
+    )
 
 
 @router.get("/{doc_id}/segments", response_model=list[dict])
@@ -165,6 +190,19 @@ async def document_segments(doc_id: uuid.UUID,
         "bbox": s.bbox_json,
     } for s in res.scalars().all()]
 
+
+@router.get("/{doc_id}/original")
+async def download_original_document(doc_id: uuid.UUID,
+                                     principal: Principal = Depends(require_org_user),
+                                     db: AsyncSession = Depends(get_db)):
+    principal.require("export_document")
+    doc = await _get_doc(db, doc_id, principal)
+    if not doc.source_object_key:
+        raise DocumentProcessingError("Original document not available.", recoverable=True)
+    data = await storage().get(doc.source_object_key)
+    fname = f"original_{doc.filename}"
+    return Response(content=data, media_type=doc.mime_type,
+                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 @router.get("/{doc_id}/download")
 async def download_document(doc_id: uuid.UUID,
@@ -203,14 +241,20 @@ async def retry_document(doc_id: uuid.UUID,
         raise DocumentProcessingError("Only failed documents can be retried.",
                                       recoverable=True)
     doc.status = "uploaded"
-    doc.progress = 0
     doc.error_code = None
     doc.error_message = None
     db.add(M.DocumentJob(document_id=doc.id, job_type="translate",
-                         status="queued", stage="queued"))
+                         status="queued", stage="queued", message="Resuming translation"))
     await db.commit()
-    await queue().push("document.process", {"document_id": str(doc.id)},
-                       queue="documents")
+    from app import context
+    ctx = context.get_ctx()
+    payload = {
+        "document_id": str(doc.id),
+        "request_id": ctx.request_id if ctx else uuid.uuid4().hex[:16],
+        "trace_id": ctx.trace_id if ctx else uuid.uuid4().hex,
+        "resume": True,
+    }
+    await queue().push("document.process", payload, queue="documents")
     return DocumentOut.model_validate(doc)
 
 

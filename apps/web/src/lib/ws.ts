@@ -6,7 +6,7 @@
  * - heartbeat ping/pong with connection-quality estimate
  */
 import type { Preferences, RealtimeEvent } from "./types";
-import { api, getAccessToken, getApiBaseUrl } from "./api";
+import { api, ApiError, getAccessToken, resolveWsUrl } from "./api";
 
 export type BinaryFrameKind = "original" | "tts";
 export interface BinaryFrame {
@@ -114,35 +114,42 @@ export class MeetingSocket {
   }
 
   private async mintTicket(): Promise<string | null> {
-    if (!this.opts.sessionKey) return null;
+    if (!this.opts.sessionKey && !getAccessToken()) return null;
     try {
+      const body = this.opts.sessionKey ? { session_key: this.opts.sessionKey } : {};
       const r = await api<{ ticket: string }>(
         `/api/v1/meetings/${this.opts.meetingId}/join-ticket`,
-        { method: "POST", body: { session_key: this.opts.sessionKey } },
+        { method: "POST", body },
       );
       return r?.ticket ?? null;
-    } catch {
+    } catch (err: any) {
+      if (err instanceof ApiError && (err.status === 401 || err.status === 403 || err.status === 404)) {
+        this.setState("error");
+      }
       return null;
     }
   }
 
   private async open() {
     this.setState(this.everJoined ? "reconnecting" : "connecting");
-    if (this.opts.sessionKey) {
+    if (this.opts.sessionKey || (this.everJoined && !this.opts.ticket)) {
       // Tickets are single-use and expire in 120s, so every (re)connect mints
       // a fresh one; the WS URL never carries a long-lived credential.
       const ticket = await this.mintTicket();
       if (!ticket) {
-        this.mintFailures += 1;
-        if (this.mintFailures >= 5) {
-          this.setState("error");
+        if (this.opts.sessionKey) {
+          this.mintFailures += 1;
+          if (this.mintFailures >= 5) {
+            this.setState("error");
+            return;
+          }
+          this.scheduleReconnect();
           return;
         }
-        this.scheduleReconnect();
-        return;
+      } else {
+        this.mintFailures = 0;
+        this.pendingTicket = ticket;
       }
-      this.mintFailures = 0;
-      this.pendingTicket = ticket;
     }
     const ws = new WebSocket(this.wsUrl());
     ws.binaryType = "arraybuffer";
@@ -212,8 +219,8 @@ export class MeetingSocket {
         this.setState("closed");
         return;
       }
-      // 4401/4404 are permanent failures — do not hammer the server
-      if (ev.code === 4401 || ev.code === 4404) {
+      // 4401/4404/4403 are permanent failures — do not hammer the server
+      if (ev.code === 4401 || ev.code === 4404 || ev.code === 4403) {
         this.setState("error");
         return;
       }
@@ -236,9 +243,8 @@ export class MeetingSocket {
   }
 
   private wsUrl(): string {
-    const proto = location.protocol === "https:" ? "wss" : "ws";
     const params = new URLSearchParams();
-    if (this.opts.sessionKey && this.pendingTicket) {
+    if (this.pendingTicket) {
       params.set("ticket", this.pendingTicket);
     } else if (this.opts.ticket) {
       params.set("ticket", this.opts.ticket);
@@ -246,23 +252,15 @@ export class MeetingSocket {
       const jwt = getAccessToken();
       if (jwt) params.set("token", jwt);
     }
-    const q = params.toString();
-    // Resolve the API host exactly like REST traffic does (api.ts). Production
-    // Vercel builds use the durable backend origin so WebSocket sessions and
-    // their database-backed seat credentials survive serverless invocations.
-    const rawBase = getApiBaseUrl();
-    let host = location.host;
-    let customProto = proto;
-    if (rawBase) {
-      try {
-        const parsed = new URL(rawBase);
-        host = parsed.host;
-        customProto = parsed.protocol === "https:" ? "wss" : "ws";
-      } catch {
-        host = rawBase.replace(/^https?:\/\//, "").replace(/\/+$/, "");
-      }
+
+    if (typeof resolveWsUrl === "function") {
+      return resolveWsUrl(`/ws/meetings/${this.opts.meetingId}`, params);
     }
-    return `${customProto}://${host}/ws/meetings/${this.opts.meetingId}${q ? `?${q}` : ""}`;
+
+    const proto = typeof location !== "undefined" && location.protocol === "https:" ? "wss" : "ws";
+    const host = typeof location !== "undefined" ? location.host : "localhost:5173";
+    const q = params.toString();
+    return `${proto}://${host}/ws/meetings/${this.opts.meetingId}${q ? `?${q}` : ""}`;
   }
 
   private setState(s: SocketState) {

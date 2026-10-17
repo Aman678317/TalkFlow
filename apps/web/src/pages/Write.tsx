@@ -25,7 +25,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ArrowRight, BookOpen, Check, ChevronDown, Copy, Download,
+  ArrowRight, BookOpen, Check, ChevronDown, Copy, Download, Languages,
   Lock, Mic, MicOff, PenTool, RefreshCw, RotateCcw,
   Search, Sparkles, TrendingDown, Unlock, Volume2, Wand2, X, Zap,
 } from 'lucide-react';
@@ -1414,6 +1414,7 @@ export default function WritePage() {
   const [activePopover, setActivePopover] = useState<ActiveWordPopover | null>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   const langDropdownRef = useRef<HTMLDivElement>(null);
+  const writeReqIdRef = useRef(0);
 
   // Dictionary Lookup State
   const [dictQuery, setDictQuery] = useState('');
@@ -1452,12 +1453,13 @@ export default function WritePage() {
     const timer = setTimeout(() => {
       void runRewrite(sourceText);
       setReadability(computeReadability(sourceText));
-    }, 350);
+    }, 400);
     return () => clearTimeout(timer);
   }, [sourceText, style, tone, correctionsOnly, language, detectedLang]);
 
   async function runRewrite(text: string) {
     if (!text.trim()) return;
+    const currentReqId = ++writeReqIdRef.current;
     setLoading(true);
     setActivePopover(null);
     setIsEditingImproved(false);
@@ -1474,6 +1476,7 @@ export default function WritePage() {
           corrections_only: correctionsOnly,
         },
       });
+      if (currentReqId !== writeReqIdRef.current) return;
       if (res && res.improved_text) {
         setResult(res);
         setLoading(false);
@@ -1481,6 +1484,7 @@ export default function WritePage() {
       }
       throw new Error('Writing provider returned no correction. Please retry.');
     } catch (err) {
+      if (currentReqId !== writeReqIdRef.current) return;
       setResult(null);
       setWriteError(friendlyMessage(err));
       setLoading(false);
@@ -2327,6 +2331,20 @@ export default function WritePage() {
             </div>
 
             <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => {
+                  if (!result?.improved_text) return;
+                  window.location.href = `/translate?text=${encodeURIComponent(result.improved_text)}`;
+                }}
+                disabled={!result}
+                className="gap-1.5 text-slate-600 hover:text-slate-900"
+                title="Translate improved text into another language"
+              >
+                <Languages className="h-3.5 w-3.5 text-slate-600" />
+                <span className="hidden sm:inline">Translate</span>
+              </Button>
               <Button
                 size="sm"
                 variant="secondary"

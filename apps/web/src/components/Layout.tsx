@@ -119,24 +119,24 @@ export default function Layout() {
   const byPath = Object.fromEntries(allNav.map((n) => [n.to, n]));
 
   return (
-    <div className="flex h-full min-h-0 bg-surface-canvas text-ink-900">
-      {/* ── Sidebar ─────────────────────────────────────────────── */}
+    <div className="flex h-full min-h-0 bg-[#F4F6F8] text-neutral-900 font-sans">
+      {/* ── Sidebar (Apple HIG iPadOS / macOS Navigation) ─────────────── */}
       <aside
-        className={`fixed inset-y-0 left-0 z-40 flex flex-col border-r border-white/[.1] bg-ink-950 shadow-lift transition-transform duration-300 ease-emphasized lg:static lg:translate-x-0
+        className={`fixed inset-y-0 left-0 z-40 flex flex-col border-r border-black/[0.08] bg-[#FBFBFD] shadow-sm transition-transform duration-300 ease-emphasized lg:static lg:translate-x-0
                     ${open ? "translate-x-0" : "-translate-x-full"}`}
         style={{ width: "var(--sidebar-w, 240px)" }}
         aria-label="Main navigation"
       >
         {/* Brand */}
-        <div className="flex items-center gap-3 border-b border-white/[.1] px-5 py-4">
-          <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-accent-600 shadow-accent">
+        <div className="flex items-center gap-3 border-b border-black/[0.06] px-5 py-4">
+          <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-[#007AFF] shadow-xs">
             <Logo className="h-5 w-5 brightness-0 invert" />
           </div>
           <div>
-            <p className="text-[13px] font-bold tracking-tight text-white leading-tight">
-              GlobalTalk <span className="text-accent-300">AI</span>
+            <p className="text-[13px] font-semibold tracking-[-0.015em] text-neutral-950 leading-tight">
+              GlobalTalk <span className="text-[#007AFF]">AI</span>
             </p>
-            <p className="text-[9px] font-medium uppercase tracking-widest text-white/40 leading-tight mt-0.5">
+            <p className="text-[9px] font-semibold uppercase tracking-widest text-neutral-400 leading-tight mt-0.5">
               Every language
             </p>
           </div>
@@ -152,9 +152,9 @@ export default function Layout() {
             const isCollapsed = Boolean(collapsedGroups[group.label]);
 
             return (
-              <div key={group.label} className={index > 0 ? "border-t border-white/[.08] pt-3" : ""}>
+              <div key={group.label} className={index > 0 ? "border-t border-black/[0.06] pt-3" : ""}>
                 <div className="mb-1 flex items-center justify-between px-3">
-                  <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-white/40">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-neutral-400">
                     {group.label}
                   </p>
                   {isCollapsible && (
@@ -163,7 +163,7 @@ export default function Layout() {
                       onClick={() => toggleGroup(group.label)}
                       aria-expanded={!isCollapsed}
                       aria-label={`${isCollapsed ? "Expand" : "Collapse"} ${group.label} category`}
-                      className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium text-white/40 transition-colors hover:bg-white/[.08] hover:text-white"
+                      className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium text-neutral-400 transition-colors hover:bg-black/[0.04] hover:text-neutral-700"
                     >
                       <span>{isCollapsed ? "Show" : "Hide"}</span>
                       <ChevronDown className={`h-3 w-3 transition-transform duration-200 ${isCollapsed ? "-rotate-90" : "rotate-0"}`} />
@@ -178,7 +178,7 @@ export default function Layout() {
                       animate={{ height: "auto", opacity: 1 }}
                       exit={{ height: 0, opacity: 0 }}
                       transition={springSoft}
-                      className="overflow-hidden"
+                      className="overflow-hidden space-y-0.5"
                     >
                       {items.map(({ to, label, Icon }) => (
                         <NavLink
@@ -186,15 +186,15 @@ export default function Layout() {
                           to={to}
                           onClick={() => setOpen(false)}
                           className={({ isActive }) =>
-                             `group mb-0.5 flex items-center gap-3 rounded-xl px-3 py-2 text-[13px] font-medium transition-[background-color,color,transform,box-shadow] duration-200 active:scale-[0.98]
+                             `group flex items-center gap-2.5 rounded-xl px-3 py-2 text-[13px] font-medium transition-all duration-150 active:scale-[0.98]
                               ${isActive
-                                ? "bg-accent-600 text-white shadow-accent"
-                                : "text-white/60 hover:bg-white/[.07] hover:text-white"}`
+                                ? "bg-[#007AFF] text-white shadow-xs font-semibold"
+                                : "text-neutral-700 hover:bg-black/[0.05] hover:text-neutral-950"}`
                           }
                         >
                           {({ isActive }) => (
                             <>
-                               <Icon className={`h-4 w-4 shrink-0 transition-colors ${isActive ? "text-white" : "text-white/40 group-hover:text-white/80"}`} />
+                               <Icon className={`h-4 w-4 shrink-0 transition-colors ${isActive ? "text-white" : "text-neutral-400 group-hover:text-neutral-700"}`} />
                               <span className="truncate">{label}</span>
                             </>
                           )}
@@ -209,21 +209,21 @@ export default function Layout() {
         </nav>
 
         {/* User footer */}
-        <div className="mt-auto shrink-0 border-t border-white/[.1] p-3">
-          <div className="flex items-center gap-2.5 rounded-xl border border-white/[.08] bg-white/[.05] p-2.5">
+        <div className="mt-auto shrink-0 border-t border-black/[0.06] p-3">
+          <div className="flex items-center gap-2.5 rounded-2xl border border-black/[0.06] bg-black/[0.02] p-2.5">
             <div
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent-600 text-xs font-bold text-white shadow-xs"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#007AFF] text-xs font-bold text-white shadow-xs"
               aria-hidden
             >
               {(user?.full_name || user?.email || "?").slice(0, 1).toUpperCase()}
             </div>
             <div className="min-w-0 flex-1">
-              <p className="truncate text-xs font-semibold text-white leading-tight">
+              <p className="truncate text-xs font-semibold text-neutral-900 leading-tight">
                 {user?.full_name || user?.email}
               </p>
               <p
                 title={`${org?.name ?? ""} · ${role ?? ""}`}
-                className="text-[11px] text-white/50 leading-tight mt-0.5 truncate"
+                className="text-[11px] text-neutral-500 leading-tight mt-0.5 truncate"
               >
                 {org?.name || "GlobalTalk"} · {role || "member"}
               </p>
@@ -231,9 +231,9 @@ export default function Layout() {
           </div>
           <button
             onClick={async () => { await logout(); nav("/login"); }}
-            className="group mt-2 flex w-full items-center gap-2.5 rounded-xl px-3 py-1.5 text-xs font-medium text-white/50 transition-[background-color,color] hover:bg-white/[.07] hover:text-white"
+            className="group mt-2 flex w-full items-center gap-2.5 rounded-xl px-3 py-1.5 text-xs font-medium text-neutral-500 transition-colors hover:bg-black/[0.04] hover:text-neutral-900"
           >
-            <LogOut className="h-3.5 w-3.5 shrink-0 text-white/40 group-hover:text-white/70 transition-colors" aria-hidden="true" />
+            <LogOut className="h-3.5 w-3.5 shrink-0 text-neutral-400 group-hover:text-neutral-600 transition-colors" aria-hidden="true" />
             <span>Sign out</span>
           </button>
         </div>
@@ -247,7 +247,7 @@ export default function Layout() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.2 }}
-            className="fixed inset-0 z-30 bg-ink-950/70 backdrop-blur-sm lg:hidden"
+            className="fixed inset-0 z-30 bg-black/40 backdrop-blur-sm lg:hidden"
             onClick={() => setOpen(false)}
           />
         )}
@@ -255,11 +255,11 @@ export default function Layout() {
 
       {/* ── Main content ────────────────────────────────────────── */}
       <div className="flex min-w-0 flex-1 flex-col">
-        {/* Top bar — frosted material, content scrolls under */}
-        <header className="material-bar sticky top-0 z-20">
-          <div className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-4 py-3 lg:px-6">
+        {/* Top bar — frosted material (Apple HIG) */}
+        <header className="material-bar sticky top-0 z-20 backdrop-blur-xl bg-white/80 border-b border-black/[0.06]">
+          <div className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-4 py-2.5 lg:px-6">
             <button
-              className="rounded-lg p-2 text-ink-500 transition-colors hover:bg-ink-100 lg:hidden"
+              className="rounded-xl p-2 text-neutral-600 transition-colors hover:bg-black/[0.05] lg:hidden"
               onClick={() => setOpen(true)}
               aria-label="Open navigation"
             >
@@ -270,18 +270,18 @@ export default function Layout() {
             <div className="flex-1" />
             <div className="flex items-center gap-2.5">
               {org && (
-                <span className="rounded-full border border-accent-200 bg-accent-50 px-2.5 py-0.5 text-[11px] font-bold uppercase tracking-wider text-accent-700">
+                <span className="apple-pill-badge">
                   {org.plan}
                 </span>
               )}
               <a
                 href="/api/docs"
-                className="inline-flex items-center gap-1 rounded-lg border border-border bg-surface-panel px-2.5 py-1 text-xs font-medium text-ink-600 shadow-xs transition-colors hover:bg-surface-subtle hover:text-ink-950"
+                className="inline-flex min-h-[32px] items-center gap-1.5 rounded-full border border-black/[0.06] bg-white px-3 py-1 text-xs font-medium text-neutral-700 shadow-xs transition-colors hover:bg-black/[0.03] hover:text-neutral-950"
                 target="_blank"
                 rel="noreferrer"
               >
                 <span>API docs</span>
-                  <ExternalLink className="h-3 w-3 text-ink-400" />
+                <ExternalLink className="h-3 w-3 text-neutral-400" />
               </a>
             </div>
           </div>

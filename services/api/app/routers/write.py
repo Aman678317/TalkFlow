@@ -23,7 +23,7 @@ async def improve_text(
 ):
     """Desi Write equivalent: rewrites text, fixes grammar/punctuation, adjusts tone and generates diffs."""
     principal.require("use_write")
-    return write_service.improve_text(
+    return await write_service.improve_text_async(
         text=body.text,
         language=body.language,
         style=body.style,

@@ -12,6 +12,7 @@ const ACCEPT = ".pdf,.docx,.pptx,.xlsx,.txt,.html,.htm";
 interface DocRow {
   id: string; filename: string; status: string; source_language: string; target_language: string;
   detected_language: string; pages: number; segments_total: number; segments_done: number;
+  warnings?: string[];
   error?: string | null; created_at: string; size_bytes: number; mime_type: string;
 }
 
@@ -270,6 +271,24 @@ export default function Documents() {
                           {d.status}
                         </span>
 
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          className="gap-1 h-8 text-slate-600 hover:text-slate-900"
+                          title="Download original file"
+                          onClick={async () => {
+                            const res = await api<Response>(`/api/v1/documents/${d.id}/original`, { raw: true });
+                            const blob = await res.blob();
+                            const a = document.createElement("a");
+                            a.href = URL.createObjectURL(blob);
+                            a.download = d.filename;
+                            a.click();
+                            URL.revokeObjectURL(a.href);
+                          }}
+                        >
+                          Original
+                        </Button>
+
                         {d.status === "ready" && (
                           <Button
                             size="sm"
@@ -314,6 +333,15 @@ export default function Documents() {
                         <p className="text-[11px] text-slate-400">
                           {d.status}… {d.segments_total > 0 && `(${d.segments_done}/${d.segments_total} segments)`}
                         </p>
+                      </div>
+                    )}
+                    {d.warnings && d.warnings.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {d.warnings.map((w, idx) => (
+                          <span key={idx} className="rounded-md bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-800 border border-amber-200">
+                            ⚠️ {w}
+                          </span>
+                        ))}
                       </div>
                     )}
                     {d.error && <p className="mt-2 rounded-lg bg-rose-50 px-2.5 py-1 text-xs text-rose-700">{d.error}</p>}

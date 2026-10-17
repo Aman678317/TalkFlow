@@ -426,6 +426,115 @@ class AIFacade:
             out[task.value] = {"provider": name, "healthy": ok}
         return out
 
+    async def diagnostics(self) -> dict[str, Any]:
+        """Readiness diagnostics for configured providers, weights, voices, language pairs,
+        and OCR availability, strictly without exposing secrets."""
+        import os
+        import shutil
+        from app.realtime.voices import parse_voice_map
+
+        task_diags: dict[str, Any] = {}
+        cache = settings.model_cache_path
+
+        for task in TASKS:
+            cfg_name = self._configured_name(task)
+            provider = self.provider(task, cfg_name)
+            is_healthy = False
+            try:
+                # 1.5s deadline to avoid blocking on large on-demand model weight downloads
+                is_healthy = await asyncio.wait_for(provider.healthcheck(), timeout=1.5)
+            except Exception:
+                is_healthy = False
+
+            weights_loaded = True
+            if task == Task.STT and cfg_name == "faster_whisper":
+                weights_loaded = os.path.exists(cache)
+            elif task == Task.TTS and cfg_name == "kokoro":
+                weights_loaded = os.path.exists(f"{cache}/kokoro-v1.0.onnx")
+            elif task == Task.TTS and cfg_name == "piper":
+                weights_loaded = os.path.exists(f"{cache}/piper")
+            elif task == Task.LANG_DETECT and cfg_name == "fasttext":
+                weights_loaded = os.path.exists(settings.fasttext_lid_model or f"{cache}/lid.176.ftz")
+
+            fallbacks: list[str] = []
+            if self.router and task in self.router.providers:
+                fallbacks = [spec.name for spec in self.router.providers[task]]
+            if not fallbacks:
+                fallbacks = [cfg_name]
+
+            model_info = getattr(settings, f"{task.value.lower()}_model", "")
+            if not model_info:
+                if task == Task.MT:
+                    model_info = settings.translation_model or "google/madlad-400-3b-mt"
+                elif task == Task.STT:
+                    model_info = settings.stt_model
+                elif task == Task.TTS:
+                    model_info = settings.tts_model
+
+            task_diags[task.value] = {
+                "configured_provider": cfg_name,
+                "active_provider": cfg_name,
+                "model": model_info,
+                "healthy": is_healthy,
+                "weights_present": weights_loaded,
+                "fallback_chain": fallbacks,
+            }
+
+        voice_map = parse_voice_map(settings.tts_voice_map)
+        default_voices = {
+            "hi": voice_map.get("hi", "hi-IN-SwaraNeural" if "azure" in settings.tts_provider else "hf_alpha"),
+            "mr": voice_map.get("mr", "mr-IN-AarohiNeural" if "azure" in settings.tts_provider else "mr_female"),
+            "en": voice_map.get("en", "en-US-JennyNeural" if "azure" in settings.tts_provider else "af_heart"),
+            "es": voice_map.get("es", "es-ES-ElviraNeural" if "azure" in settings.tts_provider else "ef_dora"),
+            "fr": voice_map.get("fr", "fr-FR-DeniseNeural" if "azure" in settings.tts_provider else "ff_siwis"),
+        }
+
+        ocr_status = {"available": False, "engine": "none", "details": ""}
+        try:
+            import fitz
+            doc = fitz.open()
+            page = doc.new_page()
+            try:
+                _ = page.get_textpage_ocr(language="eng")
+                ocr_status["available"] = True
+                ocr_status["engine"] = "pymupdf_tesseract"
+                ocr_status["details"] = "PyMuPDF integrated Tesseract engine active"
+            except Exception as ocr_err:
+                tess_bin = shutil.which("tesseract")
+                if tess_bin:
+                    ocr_status["available"] = True
+                    ocr_status["engine"] = f"tesseract_cli:{tess_bin}"
+                    ocr_status["details"] = "Tesseract binary found on PATH"
+                else:
+                    ocr_status["details"] = f"Tesseract not available: {ocr_err}"
+            doc.close()
+        except Exception as e:
+            ocr_status["details"] = f"PyMuPDF not available: {e}"
+
+        core_pairs = [
+            ("en", "hi"), ("hi", "en"),
+            ("en", "mr"), ("mr", "en"),
+            ("en", "es"), ("es", "en"),
+            ("en", "fr"), ("fr", "en"),
+            ("en", "de"), ("de", "en"),
+            ("en", "ja"), ("ja", "en"),
+            ("en", "zh"), ("zh", "en"),
+        ]
+
+        return {
+            "status": "ready" if all(t["healthy"] for t in task_diags.values()) else "degraded",
+            "tasks": task_diags,
+            "voices": {
+                "voice_map": voice_map,
+                "supported_targets": default_voices,
+            },
+            "ocr": ocr_status,
+            "language_pairs": {
+                "supported_count": len(core_pairs),
+                "core_sample": [f"{s}->{t}" for s, t in core_pairs],
+            },
+        }
+
     def is_dev_mode(self, task: Task) -> bool:
         # `transcript.inject` etc. are dev affordances. The configured name is
         # the operator's preference (often `auto` -> "kokoro"), but at runtime
