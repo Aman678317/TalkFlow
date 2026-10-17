@@ -441,3 +441,47 @@ async def test_multilingual_chat_canonical_fanout_and_no_fabrication(services_ap
         for tgt in ("es", "fr", "de"):
             assert msg.translations_json[tgt]["text"] is not None
             assert msg.translations_json[tgt]["model"] is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "frame",
+    [b"", b"\\x00", b"\\x00\\x00" * (pl.MAX_AUDIO_FRAME_BYTES // 2 + 1)],
+    ids=["empty", "odd_pcm16_bytes", "oversized"],
+)
+async def test_feed_audio_rejects_invalid_pcm16_frames(sample_rt_session, frame):
+    """Invalid PCM16 frames are rejected before entering the VAD queue."""
+    pipe = pl.get_pipeline(sample_rt_session)
+    speaker = RtParticipant(
+        participant_id=uuid.uuid4(), user_id=uuid.uuid4(), display_name="Speaker",
+        speak_lang="en", hear_lang="en", connected=True,
+    )
+    manager.add_participant(sample_rt_session, speaker)
+    pipe.start_speaker(speaker)
+    queue = pipe.audio_queues[speaker.participant_id]
+    assert await pipe.feed_audio(speaker.participant_id, frame) is False
+    assert queue.empty()
+    pipe.stop_speaker(speaker.participant_id)
+    await asyncio.sleep(0.05)
+
+
+@pytest.mark.asyncio
+async def test_feed_audio_accepts_valid_pcm16_frame(sample_rt_session):
+    pipe = pl.get_pipeline(sample_rt_session)
+    speaker = RtParticipant(
+        participant_id=uuid.uuid4(), user_id=uuid.uuid4(), display_name="Speaker",
+        speak_lang="en", hear_lang="en", connected=True,
+    )
+    manager.add_participant(sample_rt_session, speaker)
+    pipe.start_speaker(speaker)
+    queue = pipe.audio_queues[speaker.participant_id]
+    assert await pipe.feed_audio(speaker.participant_id, b"\\x00\\x00" * 800) is True
+    assert queue.qsize() == 1
+    pipe.stop_speaker(speaker.participant_id)
+    await asyncio.sleep(0.05)
+
+
+@pytest.mark.asyncio
+async def test_feed_audio_rejects_inactive_speaker(sample_rt_session):
+    pipe = pl.get_pipeline(sample_rt_session)
+    assert await pipe.feed_audio(uuid.uuid4(), b"\\x00\\x00" * 800) is False
