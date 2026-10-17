@@ -27,49 +27,47 @@ def test_translatability_keeps_unicode_letters():
     assert not _is_translatable("12345")
 
 
-def test_parse_pdf_ocr_is_opt_in(monkeypatch):
-    fitz = pytest.importorskip("fitz", reason="PyMuPDF is optional in the unit-test environment")
-    from app.config import settings
-    from app.services.document_service import parse_pdf
-
+def _blank_pdf(fitz):
     document = fitz.open()
     document.new_page()
-    pdf_bytes = document.tobytes()
+    output = document.tobytes()
     document.close()
-    monkeypatch.setattr(settings, "document_ocr_enabled", False)
-    blocks = parse_pdf(pdf_bytes)
-    assert blocks == []
+    return output
 
 
-def test_parse_pdf_fails_closed_for_textless_page_when_strict(monkeypatch):
-    fitz = pytest.importorskip("fitz", reason="PyMuPDF is optional in some test environments")
+def test_parse_pdf_textless_page_fails_closed_when_ocr_disabled(monkeypatch):
+    fitz = pytest.importorskip("fitz", reason="PyMuPDF optional in test environment")
     from app.config import settings
     from app.errors import DocumentProcessingError
     from app.services.document_service import parse_pdf
-
-    document = fitz.open()
-    document.new_page()
-    pdf_bytes = document.tobytes()
-    document.close()
 
     monkeypatch.setattr(settings, "document_ocr_enabled", False)
     monkeypatch.setattr(settings, "document_ocr_fail_on_unreadable_page", True)
-    with pytest.raises(DocumentProcessingError, match="no usable text layer"):
-        parse_pdf(pdf_bytes)
+    with pytest.raises(DocumentProcessingError, match="page 1.*OCR disabled"):
+        parse_pdf(_blank_pdf(fitz))
 
 
 def test_parse_pdf_ocr_failure_is_not_silently_ignored(monkeypatch):
-    fitz = pytest.importorskip("fitz", reason="PyMuPDF is optional in some test environments")
+    fitz = pytest.importorskip("fitz", reason="PyMuPDF optional in some test environments")
     from app.config import settings
     from app.errors import DocumentProcessingError
     from app.services.document_service import parse_pdf
 
-    document = fitz.open()
-    document.new_page()
-    pdf_bytes = document.tobytes()
-    document.close()
-
     monkeypatch.setattr(settings, "document_ocr_enabled", True)
     monkeypatch.setattr(settings, "document_ocr_languages", "this-language-does-not-exist")
+    monkeypatch.setattr(settings, "document_ocr_fail_on_unreadable_page", True)
     with pytest.raises(DocumentProcessingError, match="PDF extraction incomplete"):
-        parse_pdf(pdf_bytes)
+        parse_pdf(_blank_pdf(fitz))
+
+
+def test_pdf_reading_copy_escapes_translated_html(monkeypatch):
+    pytest.importorskip("fitz", reason="PyMuPDF optional in test environment")
+    from app.services.document_service import reconstruct_pdf
+
+    source = _blank_pdf(__import__("fitz"))
+    block = DocBlock(index=0, kind="text", page=0, text="Original", translated="<script>alert(1)</script>",
+                     ctx={"mode": "ocr"})
+    output, mime = reconstruct_pdf([block], source)
+    assert mime == "text/html"
+    assert b"&lt;script&gt;" in output
+    assert b"<script>" not in output

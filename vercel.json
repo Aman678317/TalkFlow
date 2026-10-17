@@ -17,92 +17,19 @@
     }
   },
   "rewrites": [
-    {
-      "source": "/api-docs",
-      "destination": {
-        "service": "api"
-      }
-    },
-    {
-      "source": "/api",
-      "destination": {
-        "service": "api"
-      }
-    },
-    {
-      "source": "/api/:path*",
-      "destination": {
-        "service": "api"
-      }
-    },
-    {
-      "source": "/v2/:path*",
-      "destination": {
-        "service": "api"
-      }
-    },
-    {
-      "source": "/v3/:path*",
-      "destination": {
-        "service": "api"
-      }
-    },
-    {
-      "source": "/ws/:path*",
-      "destination": {
-        "service": "api"
-      }
-    },
-    {
-      "source": "/health",
-      "destination": {
-        "service": "api"
-      }
-    },
-    {
-      "source": "/healthz",
-      "destination": {
-        "service": "api"
-      }
-    },
-    {
-      "source": "/ready",
-      "destination": {
-        "service": "api"
-      }
-    },
-    {
-      "source": "/readyz",
-      "destination": {
-        "service": "api"
-      }
-    },
-    {
-      "source": "/metrics",
-      "destination": {
-        "service": "api"
-      }
-    },
-    {
-      "source": "/connect",
-      "destination": {
-        "service": "connect",
-        "path": "/"
-      }
-    },
-    {
-      "source": "/connect/:path*",
-      "destination": {
-        "service": "connect",
-        "path": "/:path*"
-      }
-    },
-    {
-      "source": "/(.*)",
-      "destination": {
-        "service": "web",
-        "path": "/index.html"
-      }
-    }
+    { "source": "/api-docs", "destination": { "service": "api" } },
+    { "source": "/api", "destination": { "service": "api" } },
+    { "source": "/api/:path*", "destination": { "service": "api" } },
+    { "source": "/v2/:path*", "destination": { "service": "api" } },
+    { "source": "/v3/:path*", "destination": { "service": "api" } },
+    { "source": "/ws/:path*", "destination": { "service": "api" } },
+    { "source": "/health", "destination": { "service": "api" } },
+    { "source": "/healthz", "destination": { "service": "api" } },
+    { "source": "/ready", "destination": { "service": "api" } },
+    { "source": "/readyz", "destination": { "service": "api" } },
+    { "source": "/metrics", "destination": { "service": "api" } },
+    { "source": "/connect", "destination": { "service": "connect", "path": "/" } },
+    { "source": "/connect/:path*", "destination": { "service": "connect", "path": "/:path*" } },
+    { "source": "/(.*)", "destination": { "service": "web", "path": "/index.html" } }
   ]
 }
