@@ -418,6 +418,9 @@ export async function api<T = any>(path: string, opts: RequestOptions = {}): Pro
     res = await doFetch();
   } catch (err: any) {
     if (err?.name === "AbortError") {
+      // A caller-supplied abort is deliberate cancellation (superseded
+      // request), not a timeout; let it propagate untouched.
+      if (opts.signal?.aborted) throw err;
       throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s. Please check connection and try again.`);
     }
     throw err;

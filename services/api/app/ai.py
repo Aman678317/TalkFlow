@@ -299,6 +299,8 @@ class AIFacade:
                 if self.router is not None:
                     self.router.record_outcome(task, decision.provider, latency, ok=False)
                 last_err = e
+                met.PROVIDER_RETRIES.labels(
+                    stage=task.value, provider=decision.provider).inc()
                 log.warning("provider %s/%s unavailable (%s); failing over",
                             task, decision.provider, e)
             except Exception as e:
@@ -306,6 +308,11 @@ class AIFacade:
                 if self.router is not None:
                     self.router.record_outcome(task, decision.provider, latency, ok=False)
                 last_err = e
+                met.PROVIDER_RETRIES.labels(
+                    stage=task.value, provider=decision.provider).inc()
+                met.STAGE_FAILURES.labels(
+                    stage=task.value, provider=decision.provider,
+                    reason=type(e).__name__).inc()
                 log.exception("provider %s/%s failed", task, decision.provider)
         raise ProviderError(
             "AI capability temporarily unavailable. Original content is unaffected.",
@@ -317,6 +324,8 @@ class AIFacade:
     async def detect_language(self, text: str) -> DetectionResult:
         result, decision = await self._execute(
             Task.LANG_DETECT, {}, lambda p: p.detect(text))
+        met.LANG_DETECT_CONFIDENCE.labels(
+            language=result.language or "unknown").observe(result.confidence or 0.0)
         return result
 
     async def translate(self, req: TranslationRequest,
@@ -330,6 +339,11 @@ class AIFacade:
         pair = (req.source_lang, req.target_lang)
         met.TRANSLATION_LATENCY.labels(src=pair[0], tgt=pair[1],
                                        provider=decision.provider).observe(result.latency_ms)
+        met.MT_STAGE_LATENCY.labels(
+            src=pair[0] or "auto", tgt=pair[1] or "unknown",
+            provider=decision.provider or "unknown",
+            model=result.model or "unknown",
+        ).observe(result.latency_ms)
         return result, decision
 
     async def translate_stream(self, req: TranslationRequest):
@@ -346,14 +360,20 @@ class AIFacade:
         t0 = time.perf_counter()
         result, decision = await self._execute(
             Task.STT, {}, lambda p: p.transcribe(audio, sample_rate, lang_hint))
-        met.STT_LATENCY.labels(provider=decision.provider).observe(
-            (time.perf_counter() - t0) * 1000)
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        met.STT_LATENCY.labels(provider=decision.provider).observe(elapsed_ms)
+        met.STT_STAGE_LATENCY.labels(
+            provider=decision.provider or "unknown", stage="final").observe(elapsed_ms)
         return result, decision
 
     async def synthesize(self, text: str, lang: str,
                          voice: str | None = None) -> tuple[AudioChunk, RouteDecision]:
+        t0 = time.perf_counter()
         result, decision = await self._execute(
             Task.TTS, {}, lambda p: p.synthesize(text, lang, voice))
+        met.TTS_STAGE_TTFB.labels(
+            provider=decision.provider or "unknown", voice=voice or "default",
+        ).observe((time.perf_counter() - t0) * 1000)
         return result, decision
 
     async def synthesize_stream(self, text: str, lang: str, voice: str | None = None):

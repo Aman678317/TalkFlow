@@ -173,7 +173,17 @@ class Settings(BaseSettings):
 
     gpu_available: bool = False
 
+    # --- writing service (P2): provider-backed contextual grammar tier --------
+    write_neural_timeout_s: float = 12.0
+
     # realtime tuning (PDD §11.4)
+    # Per-stage provider deadlines (remediation plan §2.3). A stage that blows its
+    # deadline fails over / degrades instead of stalling the room's event loop.
+    rt_stt_deadline_ms: float = 3000.0
+    rt_mt_deadline_ms: float = 2500.0
+    rt_tts_ttfb_deadline_ms: float = 2000.0
+    # Bounded local-inference concurrency across STT/MT/TTS in one process.
+    rt_inference_concurrency: int = 4
     rt_target_latency_ms: float = 2500.0
     rt_stale_after_ms: float = 6000.0
     rt_min_chunk_ms: int = 200

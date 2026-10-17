@@ -158,6 +158,19 @@ async def _lifespan_startup(app: FastAPI) -> None:
     async with db_session() as db:
         await ai.load_registry(db)
 
+    # Model warm pool (remediation P1): pre-load configured STT/MT/TTS weights in
+    # the background so the first realtime call does not pay model-load latency.
+    # Best effort — a warmup failure never blocks startup; providers still
+    # lazy-load on first use.
+    async def _warm_models() -> None:
+        try:
+            await ai.warmup()
+            log.info("model warmup complete")
+        except Exception:
+            log.exception("model warmup failed (non-fatal)")
+
+    app.state.warmup_task = asyncio.create_task(_warm_models())
+
     # workers
     app.state.workers = []
     from app.queue import WorkerRunner, queue

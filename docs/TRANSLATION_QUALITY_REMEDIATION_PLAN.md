@@ -92,10 +92,12 @@ graph TD
   - `gt_tts_stage_ttfb_ms{provider, model, voice}` (p50/p95/p99)
   - `gt_doc_batch_latency_ms{format, page}`
 - Reliability & Health counters:
-  - `gt_dropped_frames_total{reason="vad_blip|buffer_overflow|barge_in|stale_tts"}`
-  - `gt_provider_retries_total{stage, provider, error_type}`
-  - `gt_doc_coverage_ratio{status="complete|partial|failed"}`
-  - `gt_lang_detect_confidence{language, provider}`
+  - `gt_dropped_audio_frames_total{reason="invalid_contract|audio_backpressure"}` (implemented metric name; an earlier draft of this plan said `gt_dropped_frames_total`)
+  - `gt_provider_retries_total{stage, provider}` — incremented per failed failover attempt in `app/ai.py::_execute`
+  - `gt_stage_failures_total{stage, provider, reason}` — includes `reason="deadline_exceeded"` for stage-deadline breaches
+  - `gt_doc_coverage_ratio{document_id, status="complete|partial|failed"}`
+  - `gt_lang_detect_confidence{language}` — observed in `app/ai.py::detect_language`
+  - `gt_write_neural_rewrite_total{status="applied|provider_unavailable|unchanged|rejected_protected_span|rejected_length"}`
 
 ---
 
@@ -133,7 +135,7 @@ graph TD
 
 #### 3.1 Multi-Tier Grammar Engine
 - **Tier 1: Immutable Span Preservation**:
-  - Protect URLs, email addresses, phone numbers, inline code blocks (`` `code` ``), named entities, and numerical values with deterministic placeholders (`⟦PROT_0⟧`, `⟦PROT_1⟧`).
+  - Protect URLs, email addresses, phone numbers, inline code blocks (`` `code` ``), named entities, and numerical values with deterministic placeholders (`__TF_IMMUTABLE_0__`, `__TF_IMMUTABLE_1__` — implemented in `_protect_immutable_spans`). The neural engine is contract-checked: a rewrite that drops any placeholder is rejected and the offline rules take over.
 - **Tier 2: Provider-Backed Neural Grammar Correction**:
   - Use neural provider (DeepL Write / OpenAI / Claude / local fine-tuned LLM) with instruction prompt to fix grammar, spelling, verb tense, and awkward phrasing while preserving 100% of the author's original meaning and facts.
 - **Tier 3: Offline Heuristic & Regex Fallback**:
@@ -192,10 +194,10 @@ graph TD
 - Provide `/api/v1/documents/{doc_id}/original` to retrieve the original uploaded file.
 - Update `/status` to include page progress (`current_page / total_pages`), segment progress (`completed_segments / total_segments`), and any OCR/layout warnings.
 
+
 ---
 
 ## 3. Degradation Matrix
-
 | Component | Failure Mode | System Response | User Feedback |
 |---|---|---|---|
 | **STT Engine** | Faster-Whisper / Provider Timeout | Re-route to secondary STT; if all fail, original call continues unaffected | "Speech Recognition Unavailable — Original Audio Continuing" |

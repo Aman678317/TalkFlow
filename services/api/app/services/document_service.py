@@ -443,6 +443,34 @@ async def _set_status(db: AsyncSession, doc: M.Document, status: str,
     await db.commit()
 
 
+def _set_partial_coverage(doc: M.Document,
+                          translatable: list) -> None:
+    """A QA gate failed: record the *actual* translation coverage so partial
+    documents are visible in metrics, not just complete ones."""
+    import contextlib
+    total = len(translatable)
+    if not total:
+        return
+    covered = sum(1 for b in translatable if (b.translated or "").strip())
+    with contextlib.suppress(Exception):
+        met.DOC_COVERAGE_RATIO.labels(
+            document_id=str(doc.id), status="partial").set(covered / total)
+
+
+async def _record_failed_coverage(db: AsyncSession, doc: M.Document) -> None:
+    """After a failed job, expose how much actually got translated."""
+    import contextlib
+    total = (await db.execute(
+        select(M.DocumentSegment).where(M.DocumentSegment.document_id == doc.id)
+    )).scalars().all()
+    if not total:
+        return
+    covered = sum(1 for s in total if (s.target_text or "").strip())
+    with contextlib.suppress(Exception):
+        met.DOC_COVERAGE_RATIO.labels(
+            document_id=str(doc.id), status="failed").set(covered / len(total))
+
+
 async def process_document_job(payload: dict) -> None:
     """Queue handler: runs the full parse->translate->reconstruct pipeline."""
     from app.db.session import db_session
@@ -467,6 +495,7 @@ async def process_document_job(payload: dict) -> None:
             doc.error_code = "document_processing_error"
             doc.error_message = str(e)[:500]
             await db.commit()
+            await _record_failed_coverage(db, doc)
             await _dispatch_webhook(db, doc, "document.failed")
             raise
         except Exception as e:
@@ -475,6 +504,7 @@ async def process_document_job(payload: dict) -> None:
             doc.error_code = "internal_error"
             doc.error_message = str(e)[:500]
             await db.commit()
+            await _record_failed_coverage(db, doc)
             await _dispatch_webhook(db, doc, "document.failed")
             raise
 
@@ -592,11 +622,13 @@ async def _run_pipeline(db: AsyncSession, doc: M.Document, resume: bool = False)
     await _set_status(db, doc, "quality_check", 95, "quality_check")
     missing_count = sum(1 for b in translatable if b.translated is None)
     if missing_count > 0:
+        _set_partial_coverage(doc, translatable)
         raise DocumentProcessingError(
             f"Quality gate failed: {missing_count}/{len(translatable)} segments uncompleted.")
 
     empty = sum(1 for b in translatable if not (b.translated or "").strip())
     if empty > len(translatable) * 0.1:
+        _set_partial_coverage(doc, translatable)
         raise DocumentProcessingError(
             f"Quality gate failed: {empty}/{len(translatable)} empty segments.")
 

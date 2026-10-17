@@ -16,12 +16,15 @@ supervisor can still count and report the duplication.
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from app.realtime.agents import inference_gate
 from app.realtime.agents.bus import AgentBus
 from app.realtime.agents.contracts import (
     RealtimeEvent,
@@ -29,6 +32,7 @@ from app.realtime.agents.contracts import (
     TranslationSegment,
     TtsChunkReady,
 )
+from app.realtime.agents.inference_gate import StageDeadlineExpired
 from gt_ai.types import AudioChunk, RouteDecision
 
 log = logging.getLogger("app.realtime.agents.voice")
@@ -49,13 +53,49 @@ class TtsStreamProvider(Protocol):
 
 
 class RealtimeTtsProvider:
-    """Production adapter: delegates to the configured AI facade."""
+    """Production adapter: delegates to the configured AI facade.
+
+    Adds the two P1 guarantees around the provider call: the process-wide
+    inference slot cap on stream open, and the configured TTFB deadline on
+    stream open *and* first chunk — a recorder that hangs degrades this one
+    language run to captions instead of stalling the fan-out task.
+    """
 
     def __init__(self, facade) -> None:
         self._facade = facade
 
     async def synthesize_stream(self, text: str, lang: str, voice: str | None = None):
-        return await self._facade.synthesize_stream(text, lang, voice)
+        from app.config import settings
+        deadline_ms = float(getattr(settings, "rt_tts_ttfb_deadline_ms", 2000.0))
+        timeout = max(0.05, deadline_ms / 1000.0)
+        t0 = time.perf_counter()
+        try:
+            async with inference_gate.default_gate().slot():
+                stream, decision = await asyncio.wait_for(
+                    self._facade.synthesize_stream(text, lang, voice),
+                    timeout=timeout)
+        except TimeoutError:
+            if (time.perf_counter() - t0) * 1000 >= deadline_ms * 0.9:
+                raise StageDeadlineExpired("tts_open", deadline_ms)
+            # The provider itself failed fast: report the outage, not a deadline.
+            raise
+
+        async def _ttfb_bounded(s: AsyncIterator[AudioChunk]
+                                ) -> AsyncIterator[AudioChunk]:
+            t_first = time.perf_counter()
+            try:
+                first = await asyncio.wait_for(s.__anext__(), timeout=timeout)
+            except StopAsyncIteration:
+                return
+            except TimeoutError:
+                if (time.perf_counter() - t_first) * 1000 >= deadline_ms * 0.9:
+                    raise StageDeadlineExpired("tts_ttfb", deadline_ms)
+                raise
+            yield first
+            async for chunk in s:
+                yield chunk
+
+        return _ttfb_bounded(stream), decision
 
 
 @dataclass
@@ -104,6 +144,9 @@ class VoiceAgent:
         try:
             stream, decision = await self.tts.synthesize_stream(
                 translation.translated_text, translation.target_language, voice)
+        except StageDeadlineExpired as exc:
+            await self._fail(translation, exc, reason="deadline_exceeded")
+            return 0
         except Exception as exc:
             await self._fail(translation, exc)
             return 0
@@ -117,6 +160,12 @@ class VoiceAgent:
                 if should_continue is not None and not should_continue():
                     break
                 if index == 0 and on_first_audio is not None:
+                    with contextlib.suppress(Exception):
+                        from app import metrics as met
+                        met.TTS_STAGE_TTFB.labels(
+                            provider=decision.provider or "unknown",
+                            voice=voice or "default").observe(
+                                (time.perf_counter() - t0) * 1000)
                     await on_first_audio(
                         TtsChunkReady(
                             correlation_id=translation.correlation_id,
@@ -135,6 +184,10 @@ class VoiceAgent:
                     codec=chunk.format, recipients=recipients, deliver=deliver,
                     provider=decision.provider, model=chunk.model, is_dev=chunk.is_dev)
                 index += 1
+        except StageDeadlineExpired as exc:
+            log.warning("TTS ttfb deadline breached for %s: %s",
+                        translation.correlation_id, exc)
+            await self._fail(translation, exc, reason="deadline_exceeded")
         except Exception as exc:
             log.warning("TTS stream aborted for %s: %s",
                         translation.correlation_id, exc)
