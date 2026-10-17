@@ -48,7 +48,7 @@ jobs:
           JWT_SECRET: ci-jwt-secret-0123456789abcdef0123456789
           RATE_LIMIT_AUTH: 100000/minute
           RATE_LIMIT_TRANSLATE: 100000/minute
-        run: python -m pytest tests/unit/test_write_service.py tests/unit/test_write_immutable_spans.py tests/unit/test_document_coverage_quality.py -q
+        run: python -m pytest tests/unit/test_write_service.py tests/unit/test_write_immutable_spans.py tests/unit/test_document_coverage_quality.py tests/unit/test_realtime_diagnostics.py -q
       - name: Unit + integration tests (SQLite fast lane)
         env:
           APP_ENV: test
