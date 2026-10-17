@@ -12,6 +12,8 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from prometheus_client import REGISTRY
+
 from app.config import settings
 from gt_ai.types import Task
 
@@ -27,6 +29,27 @@ _TASK_MODEL = {
     Task.TTS: "tts_model",
 }
 _DEV_PROVIDERS = {"dev_text", "dev_echo", "dev_tone"}
+_EXPECTED_METRICS = {
+    "gt_realtime_stage_duration_ms": "stage-level latency histogram",
+    "gt_realtime_stage_failures_total": "stage-level failure counter",
+    "gt_stt_latency_ms": "STT latency histogram",
+    "gt_translation_latency_ms": "translation latency histogram",
+    "gt_tts_first_audio_ms": "TTS time-to-first-audio histogram",
+    "gt_e2e_latency_ms": "end-to-end latency histogram",
+    "gt_language_detection_confidence": "language confidence histogram",
+    "gt_stale_audio_dropped_total": "stale audio drop counter",
+    "gt_translation_failures_total": "translation failure counter",
+    "gt_queue_depth": "queue depth gauge",
+}
+
+
+def _registered_metric_names() -> set[str]:
+    """Return registered Prometheus family names without inferring observations."""
+    try:
+        return {family.name for family in REGISTRY.collect()}
+    except Exception:
+        return set()
+
 
 
 def _has_module(name: str) -> bool:
@@ -190,7 +213,6 @@ def build_realtime_readiness(ai_facade: Any | None = None) -> dict[str, Any]:
         "unavailable" if unavailable else "degraded_unverified"
     )
 
-    router = getattr(ai_facade, "router", None)
     specs = getattr(ai_facade, "_specs", {}) or {}
     pair_set: set[tuple[str, str]] = set()
     language_set: set[str] = set()
@@ -224,12 +246,14 @@ def build_realtime_readiness(ai_facade: Any | None = None) -> dict[str, Any]:
         and settings.livekit_api_key
         and settings.livekit_api_secret
     )
-    realtime_stage_metrics = {
-        "gt_realtime_stage_duration_ms": ["stt", "mt", "tts_first_audio", "delivery"],
-        "gt_stt_latency_ms": True,
-        "gt_translation_latency_ms": True,
-        "gt_tts_first_audio_ms": True,
-        "gt_e2e_latency_ms": True,
+    registered = _registered_metric_names()
+    metric_inventory = {
+        name: {
+            "description": description,
+            "registered": name in registered,
+            "runtime_observed": False,
+        }
+        for name, description in _EXPECTED_METRICS.items()
     }
     return {
         "overall_state": overall,
@@ -246,10 +270,7 @@ def build_realtime_readiness(ai_facade: Any | None = None) -> dict[str, Any]:
         },
         "tts": {
             "configured_voice_map_languages": voice_map_languages,
-            "loaded_voice_count": next(
-                (entry["loaded_voice_count"] for entry in [providers["tts"]]
-                 if entry["loaded_voice_count"] is not None), None
-            ),
+            "loaded_voice_count": providers["tts"]["loaded_voice_count"],
         },
         "media": {
             "livekit_enabled": bool(settings.livekit_enabled),
@@ -265,8 +286,16 @@ def build_realtime_readiness(ai_facade: Any | None = None) -> dict[str, Any]:
         },
         "metrics": {
             "endpoint": "/metrics",
-            "available_stage_metrics": realtime_stage_metrics,
+            "expected_inventory": metric_inventory,
+            "missing_expected_metrics": sorted(set(_EXPECTED_METRICS) - registered),
             "quantiles": "Use Prometheus histogram_quantile(0.50|0.95|0.99, ...) over histogram buckets.",
+            "runtime_note": "Registration confirms metric definitions, not nonzero observations; inspect /metrics samples for live traffic.",
+        },
+        "tracing": {
+            "websocket_request_id_supported": True,
+            "websocket_trace_id_supported": True,
+            "ids_generated_when_missing": True,
+            "cross_stage_propagation_runtime_verified": False,
         },
         "privacy": {
             "secrets_included": False,
