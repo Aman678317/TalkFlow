@@ -554,6 +554,7 @@ async def _run_pipeline(db: AsyncSession, doc: M.Document) -> None:
                 continue
             # Once the persisted translation is missing, downstream context
             # is rebuilt only from source text, never from translated output.
+            # Keep provider/context behavior unchanged while preserving source text.
             out = await translate_text(
                 db, b.text, detected, doc.target_lang,
                 TranslateContext(
