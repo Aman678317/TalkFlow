@@ -1,26 +1,14 @@
 # Database
 
-PostgreSQL in production (pgvector enabled), SQLite in dev.
-
-**There are two schema models in this repository, and they are not the same.** They
-are reconciled by separate Alembic lineages with separate version rows:
-
-| Lineage | Owned by | Migrations | Tables | Version table | Deployed? |
-|---|---|---|---|---|---|
-| API | `services/api` (`app/db/models.py`, async SQLAlchemy) | `services/api/alembic` — `eae02319e4b2_initial_schema` → `2202ca7dc080_harmonize_schema_models` | 43 | `alembic_version` | yes — every entrypoint (`render-build.sh`, `start.sh`, `Dockerfile.api` WORKDIR, k8s migration Job, docker-compose) runs `alembic upgrade head` here |
-| Legacy worker | `apps/api` (`globaltalk/models.py`, sync SQLAlchemy) | `apps/api/alembic` — `d6049c5192e5` → `e7150a82b3d1` → `4889ad87949b_complete_webhook_and_language_columns` | 39 | `alembic_version_globaltalk` | only `globaltalk.workers.run` (k8s `inference-gpu`), never the HTTP API |
-
-The API lineage is the schema source of truth for the product. The table descriptions
-below follow `services/api`. UUID primary keys, `created_at/updated_at` everywhere, FK
+PostgreSQL in production (pgvector enabled), SQLite in dev — identical SQLAlchemy models,
+the Alembic revisions in `services/api/alembic/versions` (`eae02319e4b2_initial_schema`
++ `2202ca7dc080_harmonize_schema_models`, 43 tables) are the schema source of truth for the
+deployed backend. UUID (CHAR(36)) primary keys, `created_at/updated_at` everywhere, FK
 cascades, deliberate indexes (tenant+time, meeting+sequence, lookup hashes).
 
-The two model sets still diverge — 35 tables are shared but with different column names
-and id types (`sa.Uuid` vs `GUID(36)`), and each side has tables the other lacks
-(API: `phone_numbers`, `call_sessions`, `call_events`, `agent_prompts`, `prompt_versions`,
-`language_pair_capabilities`, `translation_memory_entries`, `webhook_endpoints`;
-legacy: `webhooks`, `voice_consents`, `translation_history`, `language_pair_validations`).
-Merging them into one model file is a deliberate, separate piece of work; what Phase 7
-fixed is the part that could silently corrupt a live database (see Migrations).
+**This document describes `services/api` (the deployed backend).** `apps/api` is a second,
+older tree with its own models and its own migration (`d6049c5192e5_initial_schema`); where
+it has a table this one does not, the section says so.
 
 ## ER overview (mermaid)
 
@@ -56,7 +44,6 @@ erDiagram
   organizations ||--o{ memory_items : ""
   organizations ||--o{ agent_sessions : ""
   organizations ||--o{ audit_logs : ""
-  users ||--o{ voice_consents : ""
 ```
 
 ## Table groups
@@ -76,8 +63,17 @@ participant_preferences ("I speak / I hear / audio_mode / caption_mode / latency
 the routing truth), audio_sessions (transport, dropouts, reconnects), transcript_segments
 (**canonical source**; immutable finals; sequence per meeting; audio_key under retention),
 translation_segments (**derivatives**; UNIQUE(source_segment_id, target_language) —
-the dedup guarantee at storage level), chat_messages (original immutable) +
-voice_consents (AI voice safety: granted/revoked/audit + synthetic flag).
+the dedup guarantee at storage level), chat_messages (original immutable).
+
+**Voice consent — not in this schema.** `apps/api` has a `voice_consents` table
+(`apps/api/globaltalk/models/__init__.py`, "AI voice safety: granted/revoked/audit +
+synthetic flag") and a cleanup worker that destroys samples for revoked rows
+(`apps/api/globaltalk/workers/cleanup.py`). The deployed backend has **neither**: no
+consent table, no voice enrollment, and `ff_voice_preservation` defaults to `False` with
+nothing behind it. Today no voice is cloned, preserved or re-used anywhere in `services/api`;
+translated speech is a stock TTS voice, marked per audio chunk with `is_dev` only when the
+engine is a dev stand-in. If voice preservation is ever built here, the consent table has to
+be built with it — see `docs/AI.md` and `docs/PHASE5_FACE_AND_VIDEO_DECISION.md`.
 
 **Documents** — documents (checksum, mime sniffed, versions_used: parser/model/glossary/
 style versions + QA result), document_jobs (stage machine + audit log), document_segments
@@ -139,6 +135,38 @@ mandatory on every vector query — cross-tenant retrieval is structurally impos
 
 ## Retention
 
-Per-org policy (`organizations.retention_policy`, defaults from env): audio (7 d),
-transcripts (90 d), documents (90 d). `workers/cleanup.py` deletes objects + rows,
-revoked voice-consent samples destroyed on sweep. Every deletion auditable via job logs.
+Three layers, narrowest wins: the deployment's `RETENTION_*_DAYS` defaults, an
+organization's `organizations.retention_json`, one room's `meetings.retention_json`.
+Defaults are audio 7 d, transcripts 365 d, documents 90 d, usage 730 d; a `null`
+value in a policy means that kind of data is not on a clock.
+
+`app.services.retention_service.sweep()` is the only thing that deletes. It runs
+hourly from the API's background loop (`app.main._retention_loop`) and from
+`workers/cleanup-worker`, once per bucket of rooms that resolve to the same windows:
+
+* **audio** — objects behind `transcript_segments.audio_object_key` and
+  `audio_sessions.audio_object_key` are deleted and the column set to NULL. The
+  caption row stays, because its window is the longer one on purpose. The realtime
+  write path reads the same resolved number before storing a turn's WAV, so a room
+  with `audio_days: 0` never writes one.
+* **transcripts** — rows past the room's `transcript_days` go, and so do the
+  `translation_segments` made from them. Derived rows are deleted by `segment_id`
+  explicitly rather than trusted to `ondelete=CASCADE`: SQLite in tests enforces no
+  foreign keys at all.
+* **documents** — rows with `expires_at` in the past lose both objects and are
+  marked `deleted`.
+* **usage / sessions / refresh tokens / memory items** — purged on their own clocks.
+
+The `counts` dict (`audio_objects`, `transcripts`, `translations`, `documents`,
+`usage`, `expired_tokens`) is logged every pass; it is the only evidence an operator
+gets that a policy ran rather than merely was configured. An object that refuses to
+delete is logged and its pointer left in place.
+
+The same resolved numbers are what the room tells its participants:
+`GET /api/v1/meetings/{id}` returns them under `retention`, and the lobby shows them
+before anyone speaks — a guest joining by link sees them too, and that is the person
+whose voice is being kept.
+
+Tests: `tests/integration/test_retention_sweep.py`,
+`tests/integration/test_meeting_retention_disclosure.py`,
+`tests/unit/test_realtime_audio_retention.py`.

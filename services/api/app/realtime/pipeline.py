@@ -21,6 +21,7 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
+from typing import Any
 
 from sqlalchemy import func, select, update
 
@@ -32,7 +33,9 @@ from app.db.base import utcnow
 from app.db.session import db_session
 from app.errors import AppError
 from app.realtime.agents.bus import AgentBus
-from app.realtime.agents.contracts import TtsChunkReady, TranscriptSegment
+from app.realtime.agents.contracts import (
+    TtsChunkReady, TranscriptSegment, failure_reason,
+)
 from app.realtime.agents.listening import (
     MIN_AUDIO_BYTES, ListeningAgent, RealtimeSttProvider,
 )
@@ -60,6 +63,23 @@ AUDIO_QUEUE_MAX = 500          # ~50s of 100ms chunks — backpressure bound
 #: in half. A tuple because `str.endswith` only accepts one.
 _CLAUSE_ENDINGS = ("。", "．", "！", "？", ".", "!", "?", "؟", "।", "॥")
 
+#: What a listener is told, per failure reason. One sentence used for every
+#: failure — "taking longer than expected" — is a promise to keep waiting for a
+#: pair this meeting will never serve. Each of these says what will still work,
+#: because that is the part the listener can act on.
+_FAILED_MESSAGES = {
+    "unsupported_language":
+        "Translation into your language is not available in this meeting. "
+        "The original audio and captions are still active.",
+    "timeout":
+        "Translation is taking longer than expected. "
+        "The original audio is still active.",
+    "rate_limited":
+        "Translation is busy. The original audio and captions are still active.",
+}
+_FAILED_GENERIC = ("Translation is unavailable right now. "
+                   "The original audio and captions are still active.")
+
 
 def _ends_at_clause(text: str) -> bool:
     """Whether a partial transcript ends on a clause boundary.
@@ -77,6 +97,25 @@ def _ends_at_clause(text: str) -> bool:
     while stripped and stripped[-1] in '"\'”’」』)]}>':
         stripped = stripped[:-1].rstrip()
     return stripped.endswith(_CLAUSE_ENDINGS)
+
+
+def dev_flags() -> dict[str, bool]:
+    """Which AI tasks are answering from a dev stand-in right now.
+
+    Reading the module-level ``ai`` rather than importing it inside keeps the
+    seam testable, which is how the stage-health tests pin this to "real".
+    """
+    from gt_ai.types import Task
+    return {
+        "stt_dev_mode": ai.is_dev_mode(Task.STT),
+        "mt_dev_mode": ai.is_dev_mode(Task.MT),
+        "tts_dev_mode": ai.is_dev_mode(Task.TTS),
+    }
+
+
+#: Which provider task stands behind each stage of the chain.
+_DEV_FLAG_FOR_STAGE = {"listening": "stt_dev_mode", "translation": "mt_dev_mode",
+                       "voice": "tts_dev_mode"}
 
 
 @dataclass
@@ -237,6 +276,37 @@ class MeetingPipeline:
             task.cancel()
         return flush_task
 
+    def release_participant(self, participant_id: uuid.UUID) -> None:
+        """Release everything this meeting holds for one departed participant.
+
+        ``stop_speaker`` only stops the loop that reads their microphone; it is
+        the right call for someone who put their microphone down and stayed in
+        the room. Leaving is a different question, and the meeting kept four
+        things afterwards: their translation context window — raw transcript text,
+        held for a room they are no longer in — their sequence ledger, their
+        language-switch marks, and the fan-out of a turn they abandoned
+        mid-sentence, which kept producing audio for a listener nobody introduced.
+
+        Deliberately synchronous and deliberately silent: the WebSocket handler
+        calls it from a ``finally`` of a task being cancelled, where an ``await``
+        can raise before it reaches the room, and ``participant.left`` already
+        says who went away. Idempotent, because a socket closing races an explicit
+        REST leave.
+        """
+        self.stop_speaker(participant_id)
+        pid = str(participant_id)
+        self._latest_final_seq.pop(participant_id, None)
+        self.translating.forget_speaker(pid)
+        for corr in self.supervisor.forget_participant(pid):
+            self._fanout_pending.pop(corr, None)
+            self._detected.pop(corr, None)
+            self.listening.reset_utterance(corr)
+            self.voice.forget_correlation(corr)
+            met.STALE_AUDIO_DROPPED.labels(reason="speaker_left").inc()
+        for (owner, _seq, _lang), task in list(self.translation_tasks.items()):
+            if owner == pid:
+                task.cancel()
+
     async def shutdown(self) -> None:
         self._closed = True
         for pid in list(self.speaker_tasks):
@@ -246,6 +316,59 @@ class MeetingPipeline:
         self.translation_tasks.clear()
         await self.supervisor.close()
         await self.bus.close()
+
+    # ------------------------------------------------------------------ #
+    # Health
+    # ------------------------------------------------------------------ #
+    #: Statuses that are not a problem. `dev_stand_in` is deliberately absent: the
+    #: path ran, but not on an engine, which is precisely the thing a deployment
+    #: needs to see rather than sail past as green.
+    HEALTHY_STATUSES = frozenset({"ok", "not_yet_ran", "not_expected"})
+
+    def stage_health(self) -> dict[str, Any]:
+        """What this meeting's speech path has proved it did.
+
+        The supervisor's evidence is room-blind — chunks with no delivery look
+        identical to a lost socket — so the two facts only this class holds are
+        applied here: who in the room is owed audio at all, and whether the stage
+        ran on a real engine or a stand-in. Nothing in the payload is a claim
+        about intent; every field is derived from events that already happened.
+        """
+        flags = dev_flags()
+        stages = self.supervisor.stage_status()
+        audio_wanted = any(manager.audio_listener(p)
+                           for p in self.session.participants.values())
+        for state in stages.values():
+            # A stage that has produced before can still stall, and "ok" would
+            # hide it: outstanding work older than the staleness window is a
+            # stall whatever the history says.
+            if (state["status"] == "ok"
+                    and state["pending_ms"] >= settings.rt_stale_after_ms):
+                state["status"] = "waiting"
+        for key, state in stages.items():
+            if key == "delivery" and not audio_wanted and not state["events"]:
+                state["status"] = "not_expected"
+            elif state["status"] in ("ok", "degraded") and flags.get(
+                    _DEV_FLAG_FOR_STAGE.get(key, ""), False):
+                state["status"] = "dev_stand_in"
+        return {
+            "stages": stages,
+            "healthy": all(s["status"] in self.HEALTHY_STATUSES
+                           for s in stages.values()),
+            "dev_mode": flags,
+            "audio_listeners": sum(1 for p in self.session.participants.values()
+                                   if manager.audio_listener(p)),
+            # A stage that produced everything and delivered none of it is not
+            # healthy, and only the send queues would know.
+            "send": manager.send_stats(self.session),
+            "bus": self.bus.health(),
+            "supervisor": self.supervisor.health(),
+            # What the room has actually waited, not what the stages claim to
+            # take: p50/p95 from the end of the speaker's turn to the first
+            # translated audio byte the listener was handed.
+            "latency": self.supervisor.latency_summary(),
+            "closed": self._closed,
+        }
 
     # ------------------------------------------------------------------ #
     # Audio ingestion
@@ -278,7 +401,17 @@ class MeetingPipeline:
         in the realtime translation status banner — without this, a silent
         empty transcript on the prod Render deploy (faster-whisper not
         installed, dev_text returns empty text) looked like "translation
-        active" with zero output to the listener."""
+        active" with zero output to the listener.
+
+        A record may describe the pipeline, never the content that went through
+        it. `_broadcast_diag` sends this to *every* connected participant with no
+        role and no capability check, so a transcript fragment on a diagnostic is
+        a caption handed to people who have not been shown it yet — and a
+        provider's error string, which routinely quotes the sentence it refused,
+        is the same leak wearing a different name. Lengths, timings, providers,
+        models, language codes and error *class* names are all fair: they say how
+        the room is doing without saying what anyone said.
+        """
         rec: dict[str, object] = {
             "stage": stage,
             "meeting_id": str(self.session.meeting_id),
@@ -365,11 +498,19 @@ class MeetingPipeline:
                             cap_start = u.capture_started
                             curr_uid = u.utterance_id
                             curr_seq = u.seq
+                            # The VAD only declares an end after
+                            # `vad_min_silence_ms` of real quiet, so the speaker
+                            # stopped talking that much ago. Anchoring on the
+                            # decision would credit the pipeline with the
+                            # speaker's own pause.
+                            end_wall = (int(time.time() * 1000)
+                                        - settings.vad_min_silence_ms)
                             asyncio.create_task(
                                 self._finalize_utterance(
                                     p, u, forced=False, audio_bytes=audio_payload,
                                     start_ms=start_ms, capture_started=cap_start,
-                                    utterance_id=curr_uid, seq=curr_seq
+                                    utterance_id=curr_uid, seq=curr_seq,
+                                    end_wall_ms=end_wall
                                 ),
                                 name=f"finalize-{p.participant_id}-{start_ms}"
                             )
@@ -404,9 +545,11 @@ class MeetingPipeline:
             # flush any in-flight speech on disconnect if session not closed
             if not self._closed and u.in_speech and len(u.buffer) > 3200:
                 try:
-                    await asyncio.shield(self._finalize_utterance(p, u, forced=True,
-                                                                 utterance_id=u.utterance_id,
-                                                                 seq=u.seq))
+                    await asyncio.shield(self._finalize_utterance(
+                        p, u, forced=True,
+                        utterance_id=u.utterance_id,
+                        seq=u.seq,
+                        end_wall_ms=int(time.time() * 1000)))
                 except Exception:
                     log.exception("flush on disconnect failed")
 
@@ -445,7 +588,10 @@ class MeetingPipeline:
             self._finalize_utterance(
                 p, u, forced=False, audio_bytes=audio_payload,
                 start_ms=start_ms, capture_started=cap_start,
-                utterance_id=curr_uid, seq=curr_seq
+                utterance_id=curr_uid, seq=curr_seq,
+                # A mid-speech commit has no trailing silence to subtract: this
+                # turn's audio simply stops being included at this instant.
+                end_wall_ms=int(time.time() * 1000)
             ),
             name=f"split-finalize-{p.participant_id}-{start_ms}"
         )
@@ -585,7 +731,8 @@ class MeetingPipeline:
                                   start_ms: int | None = None,
                                   capture_started: float | None = None,
                                   utterance_id: uuid.UUID | None = None,
-                                  seq: int | None = None) -> None:
+                                  seq: int | None = None,
+                                  end_wall_ms: int = 0) -> None:
         audio = audio_bytes if audio_bytes is not None else bytes(u.buffer)
         if audio_bytes is None:
             u.buffer = bytearray()
@@ -616,14 +763,24 @@ class MeetingPipeline:
             sequence_number=seq_num, audio=audio, start_ms=started_at_ms, end_ms=0,
             lang_hint=self._lang_hint(p, u))
         stt_ms = self.listening.take_provider_ms(corr)
+        # Taken before the outcome is known. Detection reports from inside the
+        # transcript stage and the stage can still decide it has no language to
+        # commit, so a record kept for the failure paths would outlive the only
+        # thing that was ever going to read it.
+        detected = self._take_detected_language(corr)
         if segment is None:
             failure = self.listening.take_failure(corr) or {}
             reason = failure.get("reason", "provider_unavailable")
+            if reason != "empty_speech":
+                # The cause goes to the log, which the room does not read. A
+                # recogniser that fails usually says why in words that name the
+                # audio it failed on.
+                log.warning("stt failed (%s): %s", reason,
+                            failure.get("error", ""))
             self._broadcast_diag(self._diag(
                 "stt_empty" if reason == "empty_speech" else "stt_failed",
                 utt=corr, seq=seq_num, speaker=p.participant_id, reason=reason,
-                error_type=failure.get("error_code", ""),
-                error=str(failure.get("error", ""))[:160]))
+                error_type=failure.get("error_code", "")))
             if reason == "empty_speech":
                 # No words recognised is not an outage — the listener only needs
                 # to know the speech ended, so no error event is sent. The
@@ -643,7 +800,6 @@ class MeetingPipeline:
             u.locked_language = None
             return
         met.STT_LATENCY.labels(provider=segment.provider or "unknown").observe(stt_ms)
-        detected = self._take_detected_language(corr)
         if detected is not None:
             self._broadcast_diag(self._diag("lang_detect", utt=corr, seq=seq_num,
                                             speaker=p.participant_id, **detected))
@@ -652,7 +808,6 @@ class MeetingPipeline:
             provider=segment.provider, model=segment.model,
             stt_ms=round(stt_ms, 1),
             text_len=len(segment.recognized_text),
-            text_preview=segment.recognized_text[:80],
             language=segment.source_language, confidence=segment.confidence))
         u.locked_language = None  # Reset locked language for the next speech segment
         await self._commit_segment(
@@ -661,6 +816,7 @@ class MeetingPipeline:
             stt_model=segment.model or "", stt_provider=segment.provider or "",
             stt_ms=stt_ms, capture_ms=capture_ms, start_ms=started_at_ms,
             start_wall_ms=start_wall_ms, duration_ms=duration_ms,
+            speech_end_wall_ms=end_wall_ms,
             utterance_id=utterance_id or u.utterance_id,
             seq_num=seq_num)
 
@@ -685,7 +841,11 @@ class MeetingPipeline:
                                    audio=b"", confidence=1.0,
                                    stt_model="injected", stt_provider="inject",
                                    stt_ms=0.0, capture_ms=0.0, start_ms=0,
-                                   start_wall_ms=int(time.time() * 1000))
+                                   start_wall_ms=int(time.time() * 1000),
+                                   # An injected turn is complete the instant it
+                                   # arrives, so its speech-end is its receipt.
+                                   speech_end_wall_ms=int(time.time() * 1000),
+                                   injected=True)
 
     # ------------------------------------------------------------------ #
     # Canonical segment + fan-out
@@ -696,8 +856,10 @@ class MeetingPipeline:
                               stt_provider: str, stt_ms: float,
                               capture_ms: float, start_ms: int,
                               start_wall_ms: int = 0, duration_ms: int = 0,
+                              speech_end_wall_ms: int = 0,
                               utterance_id: uuid.UUID | None = None,
-                              seq_num: int | None = None) -> None:
+                              seq_num: int | None = None,
+                              injected: bool = False) -> None:
         session = self.session
         # --- persist canonical source (immutable) ---
         async with db_session() as db:
@@ -718,8 +880,12 @@ class MeetingPipeline:
             await db.commit()
             segment_id = segment.id
 
-        # optionally store audio artifact (retention-controlled)
-        if audio and settings.retention_audio_days:
+        # Store the turn's recording only if this room's window keeps audio at
+        # all — the number the lobby disclosed is the number that decides here.
+        audio_days = (session.retention_audio_days
+                      if session.retention_audio_days is not None
+                      else settings.retention_audio_days)
+        if audio and audio_days:
             try:
                 from app.storage import object_key, sha256_bytes, storage
                 from gt_ai.audio_utils import pcm16_to_wav
@@ -737,6 +903,17 @@ class MeetingPipeline:
 
         now_ms = int(time.time() * 1000)
         u_id = str(utterance_id) if utterance_id is not None else str(segment_id)
+        if injected:
+            # An injected turn replaces Agent 1's provider call, but the rest of
+            # the room is built to read Agent 1's stage event: the supervisor
+            # takes the source language of its latency rollup, its ordering
+            # ledger and its stage health from here. Skip it and the operator's
+            # number is labelled `unknown->en`.
+            await self.listening.note_injected_segment(
+                correlation_id=u_id, speaker_id=str(p.participant_id),
+                segment_id=str(segment_id), sequence_number=seq,
+                language=source_lang, text=text, provider=stt_provider,
+                model=stt_model)
         await manager.broadcast(
             session, ServerEventType.SPEECH_ENDED,
             {"timestamp_ms": start_ms, "utterance_id": u_id, "utteranceId": u_id,
@@ -760,6 +937,7 @@ class MeetingPipeline:
              # these, not from arrival order, which translation latency reorders.
              "start_wall_ms": start_wall_ms, "startWallMs": start_wall_ms,
              "duration_ms": duration_ms, "durationMs": duration_ms,
+             "speech_end_wall_ms": speech_end_wall_ms,
              "latency": {"audio_capture_ms": capture_ms, "stt_final_ms": stt_ms},
              "created_at": now_ms, "createdAt": now_ms,
              "dedup_key": f"{session.meeting_id}:{p.participant_id}:{seq}",
@@ -788,17 +966,19 @@ class MeetingPipeline:
         self._broadcast_diag(self._diag(
             "fanout_start", utt=str(u_id), seq=seq, speaker=p.participant_id,
             source_lang=source_lang, targets=sorted(targets),
-            text_preview=text[:80]))
+            text_len=len(text)))
         self._start_fanout(speaker=p, segment_id=segment_id, seq=seq,
                            utterance_id=str(u_id), text=text, source_lang=source_lang,
                            targets=targets, stt_ms=stt_ms, capture_ms=capture_ms,
                            start_wall_ms=start_wall_ms, duration_ms=duration_ms,
+                           speech_end_wall_ms=speech_end_wall_ms,
                            prev_context=prev_context)
 
     def _start_fanout(self, *, speaker: RtParticipant, segment_id: uuid.UUID,
                       seq: int, utterance_id: str, text: str, source_lang: str,
                       targets: set[str], stt_ms: float, capture_ms: float,
                       start_wall_ms: int = 0, duration_ms: int = 0,
+                      speech_end_wall_ms: int = 0,
                       prev_context: tuple[str, ...]) -> None:
         """Launch one language run per distinct target, and declare the turn
         active so a barge-in has something to cancel.
@@ -810,7 +990,8 @@ class MeetingPipeline:
         self.supervisor.note_active_segment(str(speaker.participant_id),
                                             correlation_id=utterance_id,
                                             sequence_number=seq,
-                                            target_languages=sorted(targets))
+                                            target_languages=sorted(targets),
+                                            speech_end_wall_ms=speech_end_wall_ms)
         self._fanout_pending[utterance_id] = len(targets)
         for target_lang in sorted(targets):
             key = (str(speaker.participant_id), seq, target_lang)
@@ -820,6 +1001,7 @@ class MeetingPipeline:
                     source_lang=source_lang, target_lang=target_lang,
                     stt_ms=stt_ms, capture_ms=capture_ms,
                     start_wall_ms=start_wall_ms, duration_ms=duration_ms,
+                    speech_end_wall_ms=speech_end_wall_ms,
                     prev_context=prev_context, utterance_id=utterance_id),
                 name=f"fanout-{seq}-{target_lang}")
             self.translation_tasks[key] = task
@@ -846,12 +1028,14 @@ class MeetingPipeline:
                                         source_lang: str, target_lang: str,
                                         stt_ms: float, capture_ms: float,
                                         start_wall_ms: int = 0, duration_ms: int = 0,
+                                        speech_end_wall_ms: int = 0,
                                         prev_context: tuple[str, ...] = (),
                                         utterance_id: str | None = None) -> None:
         session = self.session
         trace = LatencyTrace(segment_id=str(segment_id), seq=seq,
                              utterance_id=utterance_id or str(segment_id),
                              start_wall_ms=start_wall_ms, duration_ms=duration_ms,
+                             speech_end_wall_ms=speech_end_wall_ms,
                              source_lang=source_lang, target_lang=target_lang,
                              audio_capture_ms=capture_ms, stt_final_ms=stt_ms)
         t0 = time.perf_counter()
@@ -871,7 +1055,7 @@ class MeetingPipeline:
         self._broadcast_diag(self._diag(
             "mt_enter", utt=str(u_id), seq=seq, speaker=speaker.participant_id,
             source_lang=source_lang, target_lang=target_lang,
-            text_len=len(text), text_preview=text[:80]))
+            text_len=len(text)))
 
         # --- Agent 2: one provider call per (segment, target language) ---
         source = TranscriptSegment(
@@ -885,16 +1069,18 @@ class MeetingPipeline:
         try:
             done = await self.translating.translate_one(
                 source, target_lang, caption_recipients, prior_context=prev_context)
-        except AppError as e:
+        except Exception as e:
+            reason = failure_reason(e)
             self._broadcast_diag(self._diag(
                 "mt_failed", utt=str(u_id), seq=seq, speaker=speaker.participant_id,
                 source_lang=source_lang, target_lang=target_lang,
-                error_type=type(e).__name__, error=str(e)[:160]))
-            await self._translation_failed(segment_id, seq, source_lang,
-                                           target_lang, e)
-            return
-        except Exception as e:
-            log.exception("translation crashed")
+                reason=reason, error_type=type(e).__name__))
+            if reason == "provider_unavailable":
+                # Nothing in the failure named itself, so this is the surprise it
+                # looks like. A refused language pair or a deadline is a known
+                # answer, and a traceback for it every few seconds is how a real
+                # crash gets lost in the noise.
+                log.exception("translation crashed")
             await self._translation_failed(segment_id, seq, source_lang,
                                            target_lang, e)
             return
@@ -906,7 +1092,7 @@ class MeetingPipeline:
             source_lang=source_lang, target_lang=target_lang,
             provider=done.provider, model=done.model,
             translation_ms=round(trace.translation_ms, 1),
-            translated_text_preview=translated[:80]))
+            translated_len=len(translated)))
 
         # --- Phase 5 translation.segment.final + translation.final contract ---
         final_translation_event = {
@@ -1028,18 +1214,7 @@ class MeetingPipeline:
             # through AudioPlayer.enqueueWav (not enqueuePcm16) — see
             # apps/web/src/lib/audio.ts and MeetingRoom.tsx onBinary.
             for listener in recipients:
-                if listener.connected and listener.ws is not None:
-                    try:
-                        extension = (
-                            b"\x01"
-                            + int(ready.chunk_index).to_bytes(4, "big", signed=False)
-                            if listener.supports_tts_chunk_index
-                            else b""
-                        )
-                        bin_frame = bin_header_prefix + extension + audio
-                        await listener.ws.send_bytes(bin_frame)
-                    except Exception:
-                        pass
+                manager.send_audio(session, listener, bin_frame)
 
         def audio_still_wanted() -> bool:
             """Stop mid-stream if the speaker moved on or barged in, and report
@@ -1063,6 +1238,9 @@ class MeetingPipeline:
             # Measured from before the provider call, as this metric always was;
             # Agent 3's own elapsed starts after the stream opens.
             trace.tts_first_audio_ms = (time.perf_counter() - t_tts) * 1000
+            if speech_end_wall_ms:
+                trace.speech_end_to_first_audio_ms = max(
+                    0, int(time.time() * 1000) - speech_end_wall_ms)
             met.TTS_LATENCY.labels(provider=ready.provider).observe(
                 trace.tts_first_audio_ms)
             self._broadcast_diag(self._diag(
@@ -1103,8 +1281,7 @@ class MeetingPipeline:
             self._broadcast_diag(self._diag(
                 "tts_failed", utt=str(u_id), seq=seq, speaker=speaker.participant_id,
                 target_lang=target_lang,
-                error_type=failure.get("error_code", ""),
-                error=str(failure.get("error", ""))[:160]))
+                error_type=failure.get("error_code", "")))
             await manager.broadcast(
                 session, ServerEventType.ERROR,
                 {"code": "tts_unavailable",
@@ -1114,28 +1291,46 @@ class MeetingPipeline:
                 to=self._audio_recipients(target_lang, speaker.participant_id),
                 speaker_id=str(speaker.participant_id))
         trace.delivery_ms = (time.perf_counter() - t0) * 1000
-        trace.total_e2e_latency_ms = capture_ms + stt_ms + trace.delivery_ms
-        met.E2E_LATENCY.labels(src=source_lang, tgt=target_lang).observe(
-            trace.total_e2e_latency_ms)
+        if failure is None:
+            # With a failure there is no delivered audio, so no total: a number
+            # would measure a wait that never ended. The stage timings stand.
+            if speech_end_wall_ms:
+                trace.speech_end_to_delivery_ms = max(
+                    0, int(time.time() * 1000) - speech_end_wall_ms)
+                trace.total_e2e_latency_ms = trace.speech_end_to_delivery_ms
+                # `gt_e2e_latency_ms` is labelled "speech end -> translated audio
+                # delivered", so it gets that interval. The stage sum it used to
+                # observe adds a wall-clock turn length to per-stage durations and
+                # counts the speaker's own speech twice.
+                met.E2E_LATENCY.labels(src=source_lang, tgt=target_lang).observe(
+                    trace.speech_end_to_delivery_ms)
+            else:
+                # No speech-end anchor: the best available number is the sum of
+                # the stages that were actually timed, and it stays out of the
+                # histogram, which only holds the measured interval.
+                trace.total_e2e_latency_ms = capture_ms + stt_ms + trace.delivery_ms
         await self._report_latency(trace)
 
     async def _translation_failed(self, segment_id: uuid.UUID, seq: int,
                                   source_lang: str, target_lang: str,
                                   e: Exception) -> None:
-        message = ("Translation is taking longer than expected. "
-                   "The original audio is still active.")
-        code = e.__class__.__name__
-        detail = getattr(e, "message", str(e))
-        if isinstance(e, AppError):
-            code = getattr(e, "code", code)
+        """Tell the room why translation stopped, in words that match the reason.
+
+        The provider's own sentence is deliberately not on the wire: it goes to
+        the log and the meeting's diagnostic stream, which is where an operator
+        reads it. What reaches a browser is a code, a sentence, and the promise
+        that holds for every one of them — the conversation continues.
+        """
+        reason = failure_reason(e)
         await manager.broadcast(
             self.session, ServerEventType.TRANSLATION_FAILED,
             {"segment_id": str(segment_id), "seq": seq,
              "source_lang": source_lang, "target_lang": target_lang,
-             "code": code, "message": message, "detail": detail[:200],
+             "code": reason, "message": _FAILED_MESSAGES.get(reason,
+                                                             _FAILED_GENERIC),
              "recoverable": True})
-        met.TRANSLATION_FAILURES.labels(src=source_lang or "?", tgt=target_lang,
-                                        provider="router", reason=code).inc()
+        met.TRANSLATION_FAILURES.labels(src=source_lang, tgt=target_lang,
+                                        provider="router", reason=reason).inc()
 
     async def _report_latency(self, trace: LatencyTrace) -> None:
         await manager.broadcast(
@@ -1168,3 +1363,26 @@ def get_pipeline(session: RtSession) -> MeetingPipeline:
     if session.pipeline is None:
         session.pipeline = MeetingPipeline(session)
     return session.pipeline
+
+
+def meeting_health(meeting_id: uuid.UUID) -> dict[str, Any]:
+    """Stage health for a meeting as seen from *this* process.
+
+    A pipeline lives in the process that accepted the websocket, so a second API
+    worker genuinely cannot answer this question. Saying so is the difference
+    between an unknown and a false "healthy" — the empty `stages` is what the
+    event ledger of a meeting with no session here actually looks like.
+    """
+    session = manager.get_session_for_meeting(meeting_id)
+    if session is None:
+        return {"live": False, "meeting_id": str(meeting_id), "stages": {},
+                "healthy": True,
+                "reason": "no session in this process"}
+    health = get_pipeline(session).stage_health()
+    return {**health,
+            "live": True,
+            "meeting_id": str(meeting_id),
+            "session_id": session.session_id,
+            "mode": session.mode,
+            "connected": sum(1 for p in session.participants.values() if p.connected),
+            "quality_degraded": session.quality_degraded}

@@ -11,6 +11,7 @@ Responsibilities:
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import logging
 import time
 from typing import Any
@@ -33,6 +34,45 @@ from gt_ai.types import (
 log = logging.getLogger("app.ai")
 
 TASKS = (Task.STT, Task.MT, Task.TTS, Task.LANG_DETECT, Task.SUMMARIZE, Task.EMBED)
+
+# Each local-model adapter defers its heavy `import` until first use, so a build
+# whose requirements omit the package still registers the provider and still
+# answers with its name. This table is the only place that records which module
+# each provider is waiting for, which is what lets a deployment report the runtimes
+# it actually has instead of the ones it was configured to prefer. Providers not
+# listed here need no local model package.
+_RUNTIME_MODULE = {
+    "faster_whisper": "faster_whisper",
+    "piper": "piper",
+    "kokoro": "kokoro_onnx",
+    "argos": "argostranslate",
+    "nllb_ct2": "ctranslate2",
+    "madlad400": "transformers",
+    "sentence_transformers": "sentence_transformers",
+    "fasttext": "fasttext",
+    "langdetect": "langdetect",
+}
+
+# Providers whose work happens outside this process, with the setting that has to
+# be non-empty before they can do anything. `neural_online` is absent because it
+# needs neither a key nor a URL — it cascades over public web endpoints.
+_REMOTE_REQUIREMENT = {
+    "stt_http": "stt_http_url",
+    "mt_http": "mt_http_url",
+    "tts_http": "tts_http_url",
+    "llm_http": "llm_http_url",
+    "deepl": "deepl_api_key",
+}
+
+#: Network providers that need no configuration of their own to be reachable.
+_NETWORK_ONLY = frozenset({"neural_online"})
+
+
+def _module_present(module: str) -> bool:
+    try:
+        return importlib.util.find_spec(module) is not None
+    except (ImportError, ValueError):
+        return False
 
 
 class AIFacade:
@@ -175,8 +215,15 @@ class AIFacade:
                     if s.name == cfg:
                         s.priority += 2000
         self._specs = specs
+        # A registry reload must not erase what the last hour of calls proved:
+        # the health records and the open circuits are the process's memory of
+        # which providers answer on this host.
         health = self.router.health if self.router else {}
-        self.router = ModelRouter(specs, gpu_available=settings.gpu_available, health=health)
+        breakers = self.router.breakers if self.router else {}
+        self.router = ModelRouter(specs, gpu_available=settings.gpu_available,
+                                  health=health, breakers=breakers,
+                                  breaker_cooldown_s=settings.provider_cooldown_s,
+                                  breaker_max_cooldown_s=settings.provider_max_cooldown_s)
         log.info("model registry loaded: %s",
                  {t.value: [s.name for s in specs[t]] for t in TASKS})
 
@@ -184,76 +231,80 @@ class AIFacade:
     # Routed execution with failover
     # ------------------------------------------------------------------ #
     def _ordered_candidates(self, task: Task, route_kw: dict) -> list[RouteDecision]:
-        """Ask the router for a decision, then re-rank excluding providers we
-        already tried. Health is restored after routing so long-term state is
-        not corrupted by a single request's failover."""
+        """Ask the router for its best route, then for the next best, and so on.
+
+        Walking is done by excluding tried providers from the routing call, not
+        by marking them unhealthy. The version this replaces flipped
+        `available` to make the router move on and restored it afterwards —
+        which zeroed every candidate's health counters on every failover, so the
+        error rate the circuit breaker reads described how many candidates this
+        request happened to have rather than how often the provider failed.
+        """
         assert self.router is not None
         order: list[RouteDecision] = []
         tried: set[str] = set()
-        touched: list[tuple[Task, str, bool]] = []
         candidates = list(self.router.providers.get(task, []))
-        max_attempts = max(10, len(candidates) + 2)
-        try:
-            for _ in range(max_attempts):
-                try:
-                    decision = self.router.route(task, **route_kw)
-                except Exception:
-                    break
-                if decision.provider in tried:
-                    break
-                tried.add(decision.provider)
-                order.append(decision)
-                t_key = task.value if isinstance(task, Task) else task
-                prev_h = self.router.health.get((t_key, decision.provider))
-                touched.append((task, decision.provider, prev_h.available if prev_h is not None else True))
-                self.router.mark_available(task, decision.provider, False)
+        for _ in range(max(10, len(candidates) + 2)):
+            try:
+                decision = self.router.route(task, exclude=frozenset(tried),
+                                             **route_kw)
+            except Exception:
+                break
+            tried.add(decision.provider)
+            order.append(decision)
 
-            # Providers the router may not have listed, tried after everything it did.
-            if task == Task.MT:
-                extras = [("neural_online", "neural translation provider"),
-                          ("dev_echo", "fallback to dev provider")]
-            else:
-                fallback = {
-                    Task.STT: "dev_text",
-                    Task.TTS: "dev_tone",
-                    Task.LANG_DETECT: "langdetect",
-                    Task.SUMMARIZE: "extractive",
-                    Task.EMBED: "hash_tfidf",
-                }.get(task)
-                extras = [(fallback, "fallback provider")] if fallback else []
-            for cand, rsn in extras:
-                if cand in tried:
-                    continue
-                # A `dev_*` stand-in echoes source text, transcribes nothing, or
-                # plays a tone. Outside production that is how the pipe gets
-                # exercised without model weights; in a live meeting the same
-                # output would reach listeners as a real translation, so an
-                # outage there must stay an outage. An operator who *configures*
-                # a dev provider still routes to it — that comes through the
-                # registry, not this list.
-                if cand.startswith("dev_") and settings.is_production:
-                    continue
-                order.append(RouteDecision(provider=cand, model=cand, task=task,
-                                           reason=rsn))
-        finally:
-            for t, name, prev in touched:
-                t_key = t.value if isinstance(t, Task) else t
-                self.router.mark_available(t, name, prev)
-                # mark_available reset counters only when flipping to unavailable;
-                # ensure original state restored
-                h = self.router.health.get((t_key, name))
-                if h is not None:
-                    h.available = prev
+        # The last resort is named here because it is not in the registry: an
+        # online translator with no key configured, and the local dev stand-in.
+        # The network one obeys the circuit breaker — a public endpoint that is
+        # down should cost the room one timeout, not one per turn forever. The
+        # local one does not: it is what answers when everything else has
+        # tripped, and refusing it fast is cheaper than reasoning about it.
+        if task == Task.MT:
+            last = [("neural_online", "neural translation provider", True),
+                    ("dev_echo", "fallback to dev provider", False)]
+        else:
+            dev_fallback = {
+                Task.STT: "dev_text",
+                Task.TTS: "dev_tone",
+                Task.LANG_DETECT: "langdetect",
+                Task.SUMMARIZE: "extractive",
+                Task.EMBED: "hash_tfidf",
+            }.get(task)
+            last = [(dev_fallback, "fallback provider", False)] if dev_fallback else []
+        for cand, rsn, obey_breaker in last:
+            if cand and cand not in tried and (
+                    not obey_breaker or not self.router.circuit_open(task, cand)):
+                order.append(RouteDecision(provider=cand, model=cand,
+                                           task=task, reason=rsn))
         return order
 
     async def _execute(self, task: Task, route_kw: dict, call):
-        """call(provider) -> result; failover across providers."""
+        """call(provider) -> result; failover across providers, on a clock.
+
+        The deadline is what makes the failover reachable. The loop moves on when
+        a provider *raises*, and a provider that accepts the request and then
+        stalls never does: without a ceiling, one wedged candidate is the end of
+        the walk, and the candidates behind it — including the local fallback —
+        are never tried.
+        """
         last_err: Exception | None = None
+        budget = settings.ai_retry_budget_s
+        cap = settings.ai_timeout_s
+        started = time.perf_counter()
         for decision in self._ordered_candidates(task, route_kw):
+            elapsed = time.perf_counter() - started
+            remaining = budget - elapsed
+            if remaining <= 0:
+                last_err = last_err or TimeoutError(
+                    f"retry budget of {budget:.1f}s exhausted")
+                log.warning("AI %s: retry budget of %.1fs exhausted after %.1fs; "
+                            "not trying further candidates", task, budget, elapsed)
+                break
             t0 = time.perf_counter()
             try:
                 provider = self.provider(task, decision.provider)
-                result = await call(provider)
+                result = await asyncio.wait_for(call(provider),
+                                                min(cap, remaining))
                 latency = (time.perf_counter() - t0) * 1000
                 if self.router is not None:
                     self.router.record_outcome(task, decision.provider, latency, ok=True)
@@ -265,6 +316,16 @@ class AIFacade:
                 last_err = e
                 log.warning("provider %s/%s unavailable (%s); failing over",
                             task, decision.provider, e)
+            except TimeoutError as e:
+                latency = (time.perf_counter() - t0) * 1000
+                if self.router is not None:
+                    self.router.record_outcome(task, decision.provider, latency, ok=False)
+                # `e` is empty for a wait_for cancellation; name what was cut, so
+                # the log says which provider to go and look at.
+                last_err = TimeoutError(
+                    f"{task}/{decision.provider} did not answer within {cap:.1f}s")
+                log.warning("provider %s/%s timed out after %.1fs; failing over",
+                            task, decision.provider, latency / 1000)
             except Exception as e:
                 latency = (time.perf_counter() - t0) * 1000
                 if self.router is not None:
@@ -321,33 +382,42 @@ class AIFacade:
         return result, decision
 
     async def synthesize_stream(self, text: str, lang: str, voice: str | None = None):
+        """Return (chunk iterator, decision) for the first voice that answers.
+
+        A stream is committed to once it is handed out: Agent 3 is already
+        waiting on its first frame and the room is waiting on Agent 3, so a
+        provider that only fails when somebody pulls a frame leaves the caller
+        with no candidate to fall back to. Checking here is cheap and is the last
+        moment the choice can still be changed.
+        """
         if self.router is None:
             raise ProviderError("AI router not initialized")
-        candidates = self._ordered_candidates(Task.TTS, {})
-        for name in candidates:
+        for decision in self._ordered_candidates(Task.TTS, {}):
+            name = decision.provider
+            if self.router.circuit_open(Task.TTS, name):
+                continue
             try:
                 provider = self.provider(Task.TTS, name)
-                if hasattr(provider, "healthcheck"):
-                    ok = await provider.healthcheck()
-                    if not ok:
-                        continue
-                if hasattr(provider, "synthesize_stream"):
-                    decision = self.router.route(Task.TTS, force_provider=name)
-                    return provider.synthesize_stream(text, lang, voice), decision  # type: ignore[attr-defined]
-            except Exception:
-                continue
-        # In production there is no test-tone stand-in: a generated beep must
-        # not be delivered as somebody's translated voice (Phase 5).
-        if not settings.is_production:
-            try:
-                provider = self.provider(Task.TTS, "dev_tone")
-                decision = self.router.route(Task.TTS, force_provider="dev_tone")
-                return provider.synthesize_stream(text, lang, voice), decision  # type: ignore[attr-defined]
-            except Exception:
-                pass
-        decision = self.router.route(Task.TTS)
-        provider = self.provider(Task.TTS, decision.provider)
-        return provider.synthesize_stream(text, lang, voice), decision  # type: ignore[attr-defined]
+                if not hasattr(provider, "synthesize_stream"):
+                    self.router.trip(Task.TTS, name, "cannot stream audio")
+                    continue
+                if hasattr(provider, "healthcheck") and not await provider.healthcheck():
+                    # A voice that will not answer a healthcheck is not going to
+                    # answer the room either, and it is asked again on the next
+                    # turn unless something remembers. This host was paying two
+                    # refused probes per turn for a Piper and a Kokoro that are
+                    # not installed.
+                    self.router.trip(Task.TTS, name, "healthcheck refused")
+                    continue
+                return provider.synthesize_stream(text, lang, voice), decision
+            except Exception as exc:
+                self.router.trip(Task.TTS, name, f"unusable: {type(exc).__name__}")
+                log.warning("TTS stream candidate %s unusable: %s", name, exc)
+        # Saying so is the useful failure. Returning a stream that dies on the
+        # first frame turns "no voice on this host" into a per-turn mystery.
+        raise ProviderError(
+            "No text-to-speech voice is available. Translated captions remain "
+            "active.", details={"task": Task.TTS.value})
 
     async def summarize(self, text: str, instruction: str = "",
                         max_length: int = 400, lang: str = "en") -> str:
@@ -388,6 +458,35 @@ class AIFacade:
             except Exception:
                 ok = False
             out[task.value] = {"provider": name, "healthy": ok}
+        return out
+
+    def runtime_report(self) -> dict[str, dict[str, str]]:
+        """Per task: the configured provider and whether this process can run it.
+
+        Answers the question `_configured_name()` alone cannot: an operator
+        setting of `auto` resolves to the head of a preference list, so a build
+        that installs no speech runtime still reported `faster_whisper` while
+        every call fell through to the dev stand-in.
+
+        `importable` means the package is in the image and nothing more —
+        weights, voice files, API keys and a loadable onnxruntime are proven only
+        when a stage actually runs, which is what `health()` and the stage
+        counters report.
+        """
+        out: dict[str, dict[str, str]] = {}
+        for task in TASKS:
+            name = self._configured_name(task)
+            if name.startswith("dev_"):
+                runtime = "dev_stand_in"
+            elif name in _REMOTE_REQUIREMENT:
+                runtime = ("remote" if getattr(settings, _REMOTE_REQUIREMENT[name], "")
+                           else "remote_unconfigured")
+            elif name in _RUNTIME_MODULE:
+                runtime = ("importable" if _module_present(_RUNTIME_MODULE[name])
+                           else "missing")
+            else:
+                runtime = "remote" if name in _NETWORK_ONLY else "builtin"
+            out[task.value] = {"provider": name, "runtime": runtime}
         return out
 
     def is_dev_mode(self, task: Task) -> bool:

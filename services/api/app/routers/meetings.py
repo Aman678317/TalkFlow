@@ -26,7 +26,7 @@ from app.schemas import (
     TranscriptSegmentOut, VoiceSessionCreate,
 )
 from app.security import create_session_ticket
-from app.services import audit_service, meeting_service, webhook_service
+from app.services import audit_service, meeting_service, retention_service, webhook_service
 
 log = logging.getLogger("app.routers.meetings")
 
@@ -94,6 +94,8 @@ async def _detail(db: AsyncSession, meeting: M.Meeting,
     base = MeetingDetailOut.model_validate(meeting)
     base.transport = meeting.mode
     base.has_summary = bool(meeting.summary_json)
+    base.retention = retention_service.policy_for(
+        await db.get(M.Organization, meeting.org_id), meeting)
     if meeting.mode == "livekit" and livekit_bridge.enabled():
         base.livekit_url = livekit_bridge.public_url()
     base.participants = [
@@ -162,7 +164,6 @@ async def join_meeting(meeting_id: uuid.UUID, body: JoinMeetingRequest,
     if meeting.status == "live" and meeting.started_at:
         pass  # webhook fired on transition below
     ticket = create_session_ticket(meeting.room_name, str(p.id))
-    rt_url = f"{settings.web_origin.replace('http', 'ws', 1) if settings.web_origin.startswith('http') else 'ws://localhost:8000'}"
     resp = JoinMeetingResponse(
         meeting_id=meeting.id, participant_id=p.id, session_key=session_key,
         rt_url=f"/ws/realtime?ticket={ticket}",
@@ -292,6 +293,11 @@ async def leave_meeting(
         session = manager.get_session_for_meeting(meeting_id)
         if session:
             manager.remove_participant(session, p_uuid)
+            if session.pipeline is not None:
+                # Only if a pipeline exists: leaving through REST and hanging up
+                # the socket are two orders of the same departure, and this one
+                # must not build the state it is meant to release.
+                session.pipeline.release_participant(p_uuid)
             with contextlib.suppress(Exception):
                 await manager.broadcast(
                     session,
@@ -536,6 +542,23 @@ async def _all_segments(db: AsyncSession, meeting_id: uuid.UUID):
         M.TranscriptSegment.is_final.is_(True))
         .order_by(M.TranscriptSegment.seq))
     return res.scalars().all()
+
+
+@router.get("/meetings/{meeting_id}/realtime/health")
+async def realtime_health(meeting_id: uuid.UUID,
+                          principal: Principal = Depends(require_org_user),
+                          db: AsyncSession = Depends(get_db)):
+    """What this meeting's speech path has actually proved it did.
+
+    `/api/v1/health` answers "is the process up". This answers the question an
+    operator in a degraded meeting is asking: which stage stopped producing, and
+    is it running on a real provider. Read-only, content-free — counters and
+    timings, never audio or transcript text.
+    """
+    meeting = await _meeting_or_404(db, meeting_id, principal)
+    principal.require("view_usage")
+    from app.realtime import pipeline as rt_pipeline
+    return rt_pipeline.meeting_health(meeting.id)
 
 
 @router.post("/meetings/{meeting_id}/end", response_model=MeetingOut)

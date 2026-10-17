@@ -17,13 +17,17 @@ The rules this module enforces, all from the guide:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections import abc, defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from app.config import settings
 from app.realtime.agents.bus import AgentBus
-from app.realtime.agents.contracts import RealtimeEvent, Stage, TranscriptSegment, TranslationSegment
+from app.realtime.agents.contracts import (
+    RealtimeEvent, Stage, TranscriptSegment, TranslationSegment, failure_reason,
+)
 
 log = logging.getLogger("app.realtime.agents.translation")
 
@@ -76,7 +80,14 @@ class RealtimeTranslatorProvider:
             translate_fn = self._translate_fn
         ctx = self._context_factory(segment_id, context, speaker_id)
         async with self._session_factory() as db:
-            out = await translate_fn(db, text, source_lang, target_lang, ctx)
+            # Agent 2 waits for the meeting, not for the provider. Past this
+            # point a late translation describes a turn the room has moved on
+            # from, and the fan-out task holding it is a task not working on the
+            # next one. Letting it go raises, which lands on the pipeline's
+            # existing failure path: the listener keeps the original caption.
+            out = await asyncio.wait_for(
+                translate_fn(db, text, source_lang, target_lang, ctx),
+                settings.rt_translate_timeout_s)
         r = out.result
         return ProviderTranslation(
             text=r.text, provider=r.provider, model=r.model,
@@ -118,7 +129,7 @@ class TranslationAgent:
                 text, segment.source_language, target_lang, prior,
                 segment_id=segment.segment_id, speaker_id=segment.speaker_id)
         except Exception as exc:
-            await self._fail(segment, target_lang, exc, reason="provider_unavailable")
+            await self._fail(segment, target_lang, exc)
             raise
         if not out.text.strip():
             error = ValueError("empty translation result")
@@ -137,6 +148,7 @@ class TranslationAgent:
             source_segment_id=segment.segment_id,
             source_language=segment.source_language, target_language=target_lang,
             translated_text=out.text, translation_revision=segment.transcript_revision,
+            source_sequence_number=segment.sequence_number,
             source_start_time_ms=segment.start_time_ms,
             source_end_time_ms=segment.end_time_ms,
             source_text=segment.recognized_text,
@@ -196,17 +208,32 @@ class TranslationAgent:
         return produced
 
     async def _fail(self, segment: TranscriptSegment, target_lang: str,
-                    exc: Exception, *, reason: str = "provider_unavailable") -> None:
+                    exc: Exception, *, reason: str | None = None) -> None:
+        # The provider's own message goes to the log, not to the event: an engine
+        # that rejects a sentence usually quotes it back, and the exception text
+        # would then sit in the meeting's trace as a second copy of the words.
+        log.warning("translation failed %s->%s (%s): %s",
+                    segment.source_language, target_lang, type(exc).__name__, exc)
         await self.bus.publish(RealtimeEvent(
             type=Stage.STAGE_FAILED, correlation_id=segment.correlation_id,
             meeting_id=self.meeting_id, speaker_id=segment.speaker_id,
             segment_id=segment.segment_id, sequence=segment.sequence_number,
             payload={"stage": "translation", "target_language": target_lang,
                      "source_language": segment.source_language,
-                     "reason": reason, "recoverable": True,
-                     "error_code": type(exc).__name__, "error": str(exc)[:160]}))
+                     # Named from the failure, not assumed: a pair this deployment
+                     # has not enabled is not an outage, and reporting it as one
+                     # sends an operator to look for a down provider.
+                     "reason": reason or failure_reason(exc),
+                     "recoverable": True,
+                     "error_code": type(exc).__name__}))
 
     # ------------------------------------------------------------------ #
-    def note_language_change(self, speaker_id: str) -> None:
-        """The speaker switched language — their old context no longer applies."""
+    def forget_speaker(self, speaker_id: str) -> None:
+        """A speaker left the meeting. Their window goes with them.
+
+        The deque holds their recognised words, and a ``defaultdict`` never drops
+        a key on its own, so a room that runs for hours keeps the transcript text
+        of everyone who ever joined it — and ``participant_id`` is per join, so a
+        reconnecting speaker is counted again each time.
+        """
         self._context.pop(speaker_id, None)

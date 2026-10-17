@@ -91,7 +91,30 @@ on production GPU workers make the guard inert. Measured sandbox envelope: whisp
 
 ## Voice safety (section 41)
 
-Synthetic output always flagged (`synthetic: true` in TTS events + `TTSResult.synthetic`);
-voice preservation requires explicit consent rows (`voice_consents`) with grant/revoke
-timestamps and audit trail; revoked samples destroyed by the cleanup worker. No anonymous
-voice impersonation features exist.
+Two different duties, and this section states which one the deployed backend meets.
+
+**A stand-in engine must not pretend to be a real one.** `services/api` carries this
+truthfully: `TranslationResult.is_dev` (true when `dev_provider` is in its quality flags) and
+`AudioChunk.is_dev` mark output from the dev stand-in providers, `dev_tone` and `dev_echo`,
+which never claim to be speech or translation. The flags reach the client on the `tts.*`
+events and as `stt_dev_mode` / `mt_dev_mode` / `tts_dev_mode` in `session.created`. There is
+no `synthetic: true` field on TTS events and no `TTSResult.synthetic` — that shape belongs to
+the older `apps/api` tree (`apps/api/globaltalk/realtime/audio_pipeline.py`).
+
+**A synthetic voice must be identified as one, whatever the engine.** This is not satisfied by
+`is_dev`: when a real TTS provider is running, every translated voice is machine-generated and
+carries no per-chunk synthetic marker. The room now discloses it where the listener chooses it —
+under *Audio Playback Mode*, "Translated playback is a machine-generated voice, not the speaker"
+(`apps/web/src/pages/MeetingRoom.tsx`) — and every `tts.*` event names the `provider` and `model`
+that produced the audio.
+
+**Voice preservation and cloning do not exist in the deployed backend.** `ff_voice_preservation`
+defaults to `False` with nothing behind it: no enrollment path, no stored voiceprint, no consent
+table. The `voice_consents` schema this document used to describe — grant/revoke timestamps,
+audit trail, sample destruction by the cleanup worker — is `apps/api`'s
+(`apps/api/globaltalk/models/__init__.py`, `apps/api/globaltalk/workers/cleanup.py`) and is not
+deployed. Building voice preservation here means building the consent table and the revocation
+sweep in the same change, not after. See `docs/DATABASE.md` and
+`docs/PHASE5_FACE_AND_VIDEO_DECISION.md`.
+
+No anonymous voice impersonation features exist.

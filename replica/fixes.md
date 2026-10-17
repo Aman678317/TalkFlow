@@ -1,36 +1,55 @@
 # Competitive Fix Plan & Positioning Angle: TalkFlow
 
-Grounded in real user feedback analyzed from 5 distinct public platforms (Reddit, Hacker News, G2, Trustpilot, Capterra).
+These are our own hypotheses about gaps in existing tools, not observed review
+data. `feedback.md` explains why the earlier citations in this file — quotes with
+star ratings and permalinks attributed to Reddit, Hacker News, G2, Trustpilot and
+Capterra — were removed: the evidence did not exist. Real competitor research has
+not been done; until it is, no claim below may be presented as a review.
 
 ---
 
-## 1. What Users Hate About Existing Tools
+## 1. Pain Points We Assume Exist (Hypotheses, Not Reviews)
 
 1. **Intrusive "Ghost Bots" in Video Calls**:
-   - *Problem*: Meeting translation services send an awkward virtual bot into Zoom/Teams meetings that records everything, distracting clients and creating privacy concerns.
-   - *Evidence*: Hacker News (2★): *"Bot-based meeting translators are intrusive. Having a fake bot user join Zoom and record everything creeps out clients."* [Link](https://news.ycombinator.com/item?id=38129402)
+   - *Hypothesis*: Meeting translation services send an awkward virtual bot into
+     Zoom/Teams meetings that records everything, distracting clients and creating
+     privacy concerns.
+   - *Status*: unverified assumption; our build avoids it by using a direct
+     WebSocket PCM transport with no bot participant.
 2. **Conversation-Killing Latency (>3–4s delay)**:
-   - *Problem*: Users must wait 4 seconds after finishing speaking before translated audio plays, creating awkward silence.
-   - *Evidence*: Reddit (1★): *"The lag is unbearable. Live speech translation takes forever with a 4 second delay that makes natural conversation impossible."* [Link](https://www.reddit.com/r/remotework/comments/multilingual_meetings)
+   - *Hypothesis*: users wait several seconds after finishing speaking before
+     translated audio plays, creating awkward silence.
+   - *Status*: unverified assumption; we measure our own p50/p95 instead of
+     quoting anyone else's — see `docs/PRODUCTION_VERIFICATION_REPORT.md`.
 3. **Guest Onboarding Friction & Account Walls**:
-   - *Problem*: Meeting guests must download software, register accounts, or configure plugins just to listen to translated audio.
-   - *Evidence*: Reddit (2★): *"Too many clicks to join. Why does my client have to create an account and download software just to listen to translated audio?"* [Link](https://www.reddit.com/r/sales/comments/global_calls_guest_login)
+   - *Hypothesis*: meeting guests may have to download software or register an
+     account just to listen to translated audio.
+   - *Status*: unverified assumption; our design goal is a link-only, no-install
+     join (`/meeting/:id`).
 4. **Predatory Per-Seat Enterprise Pricing**:
-   - *Problem*: Forcing small teams into $50+/seat minimums with rigid annual contracts for occasional calls.
-   - *Evidence*: Reddit (2★): *"Every tool charges insane enterprise pricing per seat. We only need translated calls twice a week and can't justify $50/user per month."* [Link](https://www.reddit.com/r/startups/comments/translation_tools)
+   - *Hypothesis*: small teams with occasional needs are pushed toward high
+     per-seat minimums with rigid contracts.
+   - *Status*: unverified assumption; we gate our plans on usage, not seats.
 
 ---
 
 ## 2. What Is Missing
 
-1. **Direct In-Browser Zero-Login Guest Links**:
-   - *Request*: *"We need an instant browser link where attendees just pick their language and it works."* [Capterra 2★](https://www.capterra.com/p/multilingual-conferencing/reviews)
-2. **Instant Domain Glossaries (Brand & Acronym Protection)**:
-   - *Request*: *"It lacks custom glossary support. Translating our proprietary API names and medical terms literally produced ridiculous errors."* [Hacker News 3★](https://news.ycombinator.com/item?id=39014120)
-3. **Clean Timestamped Transcripts (SRT/VTT)**:
-   - *Request*: *"Exporting transcripts is buggy and missing timestamps. We need clean SRT and WebVTT exports for video replays."* [Hacker News 2★](https://news.ycombinator.com/item?id=39581203)
-4. **Layout-Preserving Document Translation**:
-   - *Request*: *"I wish it preserved exact font sizes and margins."* [G2 3★](https://www.g2.com/products/deepl/reviews/12093)
+These are our own product requirements. They are not quotations and not cited
+review data — see `feedback.md` for why the earlier citations in this file were
+removed.
+
+1. **Direct In-Browser Zero-Login Guest Links**: a guest should open the meeting
+   link, choose a language and hear translated audio, with no signup and no
+   install.
+2. **Instant Domain Glossaries (Brand & Acronym Protection)**: brand names,
+   acronyms and product vocabulary must survive translation, so a glossary has to
+   be attachable at join time rather than after a batch job.
+3. **Clean Timestamped Transcripts (SRT/VTT)**: replays and captions need
+   per-segment timings in an importable format, not a flat text dump.
+4. **Layout-Preserving Document Translation**: translated output should keep the
+   source document's structure, font sizes and margins rather than rebuilding it
+   as plain flow.
 
 ---
 
@@ -43,14 +62,14 @@ Grounded in real user feedback analyzed from 5 distinct public platforms (Reddit
 
 ## 4. The Fix Plan for TalkFlow
 
-| # | Fix | Size | Handled By | Evidence |
+| # | Fix | Size | Handled By | Rationale (our hypothesis, not a review) |
 | --- | --- | --- | --- | --- |
-| 1 | **Native WebRTC (No Ghost Bots)**: Native LiveKit audio track routing directly in-browser. Zero intrusive bot participants in the room. | M | Core LiveKit Architecture | Hacker News #38129402 |
-| 2 | **Zero-Login Guest Join (`/join/:roomId`)**: Recipients click a short link on phone or desktop, pick their language, and hear translated audio immediately. | S | S09 Screen & Router | Capterra Review #19 |
-| 3 | **Sub-Second Streaming Voice Pipeline**: Concurrent VAD + chunked LLM + streaming TTS over WebSockets. | M | WebSocket `/voice/stream` | Reddit #multilingual_meetings |
-| 4 | **Built-in Brand Glossary Overrides**: Instant terms dictionary to prevent literal translations of brand names and industry terms. | S | S12 Glossaries Screen & API | Hacker News #39014120 |
-| 5 | **One-Click Transparent Billing & Self-Serve Cancellation**: Stripe Customer Portal integration with 1-click cancel. Zero lock-in. | S | S14 Billing (`/replica-launch`) | Trustpilot #translationai |
-| 6 | **One-Click SRT/VTT Bilingual Export**: Direct download of timestamped subtitles from `/history`. | S | S13 Transcripts & API | Hacker News #39581203 |
+| 1 | **Native WebRTC (No Ghost Bots)**: Native LiveKit audio track routing directly in-browser. Zero intrusive bot participants in the room. | M | Core LiveKit Architecture | §1.1: a bot leg reads as intrusive and adds media overhead |
+| 2 | **Zero-Login Guest Join (`/join/:roomId`)**: Recipients click a short link on phone or desktop, pick their language, and hear translated audio immediately. | S | S09 Screen & Router | §1.3: account/install walls block guests |
+| 3 | **Sub-Second Streaming Voice Pipeline**: Concurrent VAD + chunked LLM + streaming TTS over WebSockets. | M | WebSocket `/voice/stream` | §1.2: turn-based silence makes replies feel late |
+| 4 | **Built-in Brand Glossary Overrides**: Instant terms dictionary to prevent literal translations of brand names and industry terms. | S | S12 Glossaries Screen & API | §2.2: domain vocabulary mistranslates without a glossary |
+| 5 | **One-Click Transparent Billing & Self-Serve Cancellation**: Stripe Customer Portal integration with 1-click cancel. Zero lock-in. | S | S14 Billing (`/replica-launch`) | §1.4: per-seat lock-in is hard to justify for occasional use |
+| 6 | **One-Click SRT/VTT Bilingual Export**: Direct download of timestamped subtitles from `/history`. | S | S13 Transcripts & API | §2.3: replays need per-segment timings, not a flat dump |
 
 ---
 

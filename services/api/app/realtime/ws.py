@@ -32,7 +32,7 @@ from app.realtime import pipeline as pl
 from app.realtime.protocol import ClientEventType, ServerEventType, parse_client_event
 from app.realtime.session_manager import RtParticipant, manager
 from app.security import verify_session_ticket
-from app.services import chat_service, meeting_service
+from app.services import chat_service, meeting_service, retention_service
 
 log = logging.getLogger("app.realtime.ws")
 
@@ -148,6 +148,11 @@ async def realtime_ws(
         org_id = meeting.org_id
         room_name = meeting.room_name
         mode = meeting.mode
+        # The room's own audio window, resolved once per connection by the same
+        # function the sweep deletes by: a disclosure and a deletion that
+        # disagree is a promise nobody keeps.
+        audio_days = retention_service.policy_for(
+            await db.get(M.Organization, meeting.org_id), meeting)["audio_days"]
         db_seq = (await db.execute(
             select(func.coalesce(func.max(M.TranscriptSegment.seq), 0))
             .where(M.TranscriptSegment.meeting_id == meeting.id))).scalar() or 0
@@ -188,7 +193,8 @@ async def realtime_ws(
     resumed = False
     if session is None:
         session = await manager.create_session(meeting_id_uuid, org_id, room_name,
-                                               mode, db_seq_start=db_seq)
+                                               mode, db_seq_start=db_seq,
+                                               retention_audio_days=audio_days)
         pl.get_pipeline(session)
     else:
         resumed = True
@@ -223,7 +229,7 @@ async def realtime_ws(
         "audio_mode": rp.audio_mode,
         "protocol_version": 1,
         "server_sequence": session.sequence,
-        "ai": {"translation": "active", "dev_mode": _dev_flags()},
+        "ai": pl.get_pipeline(session).stage_health(),
         "participants": [_participant_snapshot(k, v)
                          for k, v in session.participants.items()],
     }, sequenced=False)
@@ -303,29 +309,47 @@ async def realtime_ws(
             if rp_in_session is not None and rp_in_session.ws == ws:
                 rp_in_session.connected = False
                 rp_in_session.ws = None
+            # The socket is gone, so nothing will ever feed this participant's
+            # audio queue again — and nothing else in the meeting is allowed to
+            # keep holding what they said, or to keep producing audio for the
+            # turn they abandoned.
+            pl.get_pipeline(session).release_participant(rp.participant_id)
             with contextlib.suppress(Exception):
                 await manager.broadcast(
                     session, ServerEventType.PARTICIPANT_LEFT,
                     {"participant_id": str(rp.participant_id)},
                     to=[v for v in session.participants.values() if v.connected])
-            # Mark participant status as left in database so GET /participants stays clean
+            # Mark participant status as left in database so GET /participants stays clean.
+            # Deliberately detached: this finally runs *while* the task is being
+            # cancelled, and an await cancelled halfway through a write leaves that
+            # transaction open on a connection nobody will ever hand back.
             try:
-                async with db_session() as db:
-                    await meeting_service.leave_participant(db, rp.participant_id)
+                cleanup = asyncio.create_task(_mark_participant_left(rp.participant_id))
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                # `cleanup` keeps running on its own and commits; that is the point.
+                pass
             except Exception:
                 log.exception("failed to mark participant %s as left", rp.participant_id)
         log.info("ws closed for participant %s (session %s)", rp.participant_id,
                  session.session_id)
 
 
-def _dev_flags() -> dict:
-    from gt_ai.types import Task
-    from app.ai import ai
-    return {
-        "stt_dev_mode": ai.is_dev_mode(Task.STT),
-        "mt_dev_mode": ai.is_dev_mode(Task.MT),
-        "tts_dev_mode": ai.is_dev_mode(Task.TTS),
-    }
+async def _mark_participant_left(participant_id: uuid.UUID) -> None:
+    async with db_session() as db:
+        await meeting_service.leave_participant(db, participant_id)
+
+
+def _auth(ticket: str, meeting_id: str) -> tuple[str, uuid.UUID]:
+    if not ticket:
+        raise AuthenticationError("Missing realtime ticket.")
+    try:
+        sid, pid = verify_session_ticket(ticket, consume=True)
+        return sid, uuid.UUID(pid)
+    except AuthenticationError:
+        raise
+    except Exception as e:
+        raise AuthenticationError(f"Invalid ticket: {e}")
 
 
 def _participant_snapshot(key: str, p: RtParticipant) -> dict:
@@ -376,25 +400,30 @@ async def _handle_event(ws: WebSocket, session, rp: RtParticipant, event) -> Non
         last_seq = int(data.get("last_sequence", 0))
         if last_seq > 0:
             missed = manager.replay_since(session, last_seq)
-            await ws.send_text(json.dumps({
+            # The ack and the replayed frames go through the connection's queue,
+            # in this order: a live caption produced meanwhile would otherwise
+            # overtake the backlog it is supposed to follow.
+            manager.send_event(session, rp, json.dumps({
                 "version": 1, "type": ServerEventType.SESSION_RESUMED,
                 "session_id": session.session_id,
                 "data": {"resumed_from": last_seq, "replayed": len(missed),
                          "server_sequence": session.sequence}}))
             for raw in missed:
-                await ws.send_text(raw)
+                manager.send_event(session, rp, raw)
+            await asyncio.sleep(0)
             met.RECONNECTS.inc()
 
     elif event.type == ClientEventType.SESSION_RESUME:
         last_seq = int(data.get("last_sequence", 0))
         missed = manager.replay_since(session, last_seq)
-        await ws.send_text(json.dumps({
+        manager.send_event(session, rp, json.dumps({
             "version": 1, "type": ServerEventType.SESSION_RESUMED,
             "session_id": session.session_id,
             "data": {"resumed_from": last_seq, "replayed": len(missed),
                      "server_sequence": session.sequence}}))
         for raw in missed:
-            await ws.send_text(raw)
+            manager.send_event(session, rp, raw)
+        await asyncio.sleep(0)
         met.RECONNECTS.inc()
 
     elif event.type == ClientEventType.AUDIO_START:
@@ -514,17 +543,17 @@ async def _handle_event(ws: WebSocket, session, rp: RtParticipant, event) -> Non
                     target_p = p
                     break
         if target_p and target_p.ws:
-            with contextlib.suppress(Exception):
-                await target_p.ws.send_text(json.dumps({
-                    "version": 1,
-                    "type": ServerEventType.SIGNAL,
-                    "session_id": session.session_id,
-                    "data": {
-                        "sender_id": str(rp.participant_id),
-                        "signal": signal_data,
-                    },
-                    "timestamp": time.time(),
-                }))
+            manager.send_event(session, target_p, json.dumps({
+                "version": 1,
+                "type": ServerEventType.SIGNAL,
+                "session_id": session.session_id,
+                "data": {
+                    "sender_id": str(rp.participant_id),
+                    "signal": signal_data,
+                },
+                "timestamp": time.time(),
+            }))
+            await asyncio.sleep(0)
         elif not target_id:
             await manager.broadcast(session, ServerEventType.SIGNAL, {
                 "sender_id": str(rp.participant_id),

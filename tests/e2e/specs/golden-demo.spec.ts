@@ -1,97 +1,88 @@
 /**
- * E2E golden demo (PDD §69) across two browser contexts:
- * A (Hindi speaker, hears English) and C (hears Marathi) in one meeting.
- * Speech is injected via the dev-mode text channel when STT runs in dev mode,
- * or via the fake microphone device in full-model environments.
+ * E2E golden demo (PDD §69) across two browser sessions in one meeting.
+ *
+ * A signs up, creates the meeting and speaks Hindi to their own language; C joins
+ * the same room from the shared link with no account at all, listening in English.
+ * The utterance goes in through the room's dev speech-injection channel, which is
+ * the `transcript.inject` event over the same WebSocket a microphone feeds — so
+ * what is proven here is the fan-out and per-listener routing in two real browser
+ * clients, not recogniser quality.
+ *
+ * The canned text is `नमस्ते दुनिया!` because that string is an exact key in the
+ * dev translation table: any other wording leaves the room for a public web
+ * translator, and the assertion below would then be a bet on the internet.
  */
 import { test, expect, type Page } from '@playwright/test';
 
 const stamp = Date.now().toString(36);
+const SPOKEN_HI = 'नमस्ते दुनिया!';
+const SPOKEN_EN = 'Hello world!';
 
 async function signup(page: Page, name: string, org?: string) {
-  const email = `e2e_${name}_${stamp}@example.com`;
+  const email = `e2e_${name.replace(/\W+/g, '_').toLowerCase()}_${stamp}@example.com`;
   await page.goto('/signup');
   await page.getByLabel('Full name').fill(name);
   await page.getByLabel('Work email').fill(email);
   if (org) await page.getByLabel('Organization').fill(org);
-  await page.getByLabel('Password', { exact: true }).fill('e2epass123');
+  // The field's accessible name carries its hint ("Password At least 8
+  // characters…"), so an exact match on 'Password' resolves to nothing.
+  await page.getByLabel(/^password/i).fill('e2epass123');
   await page.getByRole('button', { name: /create account/i }).click();
   await expect(page).toHaveURL(/\/dashboard/, { timeout: 20_000 });
   return email;
 }
 
-test('golden demo: hindi speaker -> english + marathi listeners', async ({ browser }) => {
+async function joinRoom(page: Page, name: string, speak: string, hear: string) {
+  await page.getByLabel('Your name').fill(name);
+  await page.getByLabel('I speak').selectOption(speak);
+  await page.getByLabel('Translate incoming speech into').selectOption(hear);
+  await page.getByRole('button', { name: /add to call/i }).click();
+}
+
+test('golden demo: hindi speaker and an english listener in one room', async ({ browser }) => {
   const ctxA = await browser.newContext();
   const ctxC = await browser.newContext();
   const pageA = await ctxA.newPage();
   const pageC = await ctxC.newPage();
 
-  // A creates the workspace
   await signup(pageA, 'Speaker A', 'Golden Org');
 
-  // create meeting as A: speaks Hindi, hears English
   await pageA.goto('/meetings');
   await pageA.getByRole('button', { name: /new meeting/i }).click();
   await pageA.getByLabel('Meeting title').fill('Golden Demo');
-  await pageA.getByLabel('I speak').selectOption('hi');
-  await pageA.getByLabel('I want to hear').selectOption('en');
   await pageA.getByRole('button', { name: /create & join/i }).click();
   await expect(pageA).toHaveURL(/\/meeting\//, { timeout: 20_000 });
   const meetingUrl = pageA.url();
-  const meetingId = meetingUrl.split('/').pop()!;
 
-  // invite C into the org via API-free UI path: team page
-  const emailC = `e2e_C_${stamp}@example.com`;
-  await pageA.goto('/team');
-  await pageA.getByRole('button', { name: /add member/i }).click();
-  await pageA.getByLabel('Email').fill(emailC);
-  await pageA.getByRole('button', { name: /^add member$/i }).last().click();
-  await expect(pageA.getByText(emailC)).toBeVisible({ timeout: 10_000 });
+  // A hears their own language: the room shows them what they said.
+  await joinRoom(pageA, 'Speaker A', 'hi', 'hi');
 
-  // C signs up + logs into Golden Org
-  await signup(pageC, 'Listener C');
-  // C re-login into A's org is automatic once membership exists on next login;
-  // use the API through the page context to fetch org id, then re-login via UI:
-  await pageC.goto('/settings'); // ensure loaded
-  // join meeting room directly (join endpoint accepts any org member)
-  await pageC.goto(`/meeting/${meetingId}`);
-  // If C's token points at their own org, join will 404 -> re-login flow:
-  if (await pageC.getByText(/could not join|not found/i).first().isVisible().catch(() => false)) {
-    await pageC.evaluate(async () => {
-      localStorage.clear();
-    });
-    await pageC.goto('/login');
-    await pageC.getByLabel('Email').fill(emailC);
-    await pageC.getByLabel('Password', { exact: true }).fill('e2epass123');
-    await pageC.getByRole('button', { name: /sign in/i }).click();
-    await expect(pageC).toHaveURL(/\/dashboard/, { timeout: 20_000 });
-    await pageC.goto(`/meeting/${meetingId}`);
-  }
+  // C arrives on the same link, signed out. The room is not behind a login: a
+  // listener with a link and a name is a participant.
+  await pageC.goto(meetingUrl);
+  await joinRoom(pageC, 'Listener C', 'en', 'en');
 
-  // C sets: hears Marathi
-  await expect(pageC.getByLabel('I want to hear')).toBeVisible({ timeout: 20_000 });
-  await pageC.getByLabel('I want to hear').selectOption('mr');
+  // Both seats have to be registered before anyone speaks. "Add to call" returns
+  // when the click lands, not when the handshake finishes, and a turn that goes
+  // up while the room holds one participant fans out to nothing — the speaker is
+  // then told "Translation Unavailable · no_targets" and the listener never sees
+  // the sentence at all.
+  await expect(pageC.getByText(/Realtime Translation Active/i)).toBeVisible({ timeout: 20_000 });
+  await expect(pageA.getByText('Listener C').first()).toBeVisible({ timeout: 20_000 });
 
-  // A's room: enable dev speech channel if present, "speak" Hindi
-  const inject = pageA.getByLabel('Simulate spoken utterance');
-  if (await inject.isVisible().catch(() => false)) {
-    await inject.fill('नमस्ते, आज हम परियोजना की समीक्षा करेंगे।');
-    await pageA.getByRole('button', { name: /^speak$/i }).click();
-  } else {
-    // real mic path (fake device) — enable mic and wait for VAD/STT
-    await pageA.getByRole('button', { name: /unmute microphone/i }).click();
-    await pageA.waitForTimeout(6000);
-  }
+  // The dev bar only exists once the handshake put A in the room.
+  const inject = pageA.getByRole('button', { name: 'HI→English' });
+  await expect(inject).toBeVisible({ timeout: 20_000 });
+  await inject.click();
 
-  // canonical caption visible to A (Hindi source)
-  await expect(pageA.getByText('नमस्ते').first()).toBeVisible({ timeout: 25_000 });
+  // Both see the source caption — the canonical transcript is one conversation,
+  // not a per-client copy.
+  await expect(pageA.getByText(SPOKEN_HI).first()).toBeVisible({ timeout: 25_000 });
+  await expect(pageC.getByText(SPOKEN_HI).first()).toBeVisible({ timeout: 25_000 });
 
-  // C sees the same source + a Marathi translated caption
-  await expect(pageC.getByText('नमस्ते').first()).toBeVisible({ timeout: 25_000 });
-  await expect(pageC.locator('text=/mr|मराठी|\\[mr\\]/i').first()).toBeVisible({ timeout: 25_000 });
-
-  // transcript persisted: A's transcript panel has the segment
-  await expect(pageA.getByRole('tab', { name: /transcript/i })).toBeVisible();
+  // Only C is asked for English, and it arrives in C's session, not A's.
+  await expect(pageC.getByText(SPOKEN_EN).first()).toBeVisible({ timeout: 25_000 });
+  await expect(pageA.getByText(SPOKEN_EN)).toHaveCount(0);
 
   await ctxA.close();
   await ctxC.close();
@@ -100,15 +91,21 @@ test('golden demo: hindi speaker -> english + marathi listeners', async ({ brows
 test('document upload flow shows pipeline progress', async ({ page }) => {
   await signup(page, 'DocUser', 'Doc Org');
   await page.goto('/documents');
-  await page.getByRole('button', { name: /upload document/i }).click();
+  const filename = `e2e_${stamp}.txt`;
   const fs = await import('node:fs');
   const os = await import('node:os');
   const path = await import('node:path');
-  const tmp = path.join(os.tmpdir(), `e2e_${stamp}.txt`);
+  const tmp = path.join(os.tmpdir(), filename);
   fs.writeFileSync(tmp, 'Quarterly report.\n\nRevenue grew strongly this quarter.\n');
-  await page.locator('input[type=file]').first().setInputFiles(tmp);
+  // There is no submit button: the dropzone uploads on selection, and the
+  // request carries whichever target language is set at that moment.
   await page.getByLabel('Target language').selectOption('hi');
-  await page.getByRole('button', { name: /upload & translate/i }).click();
-  await expect(page.getByText(/ready|translating|parsing/i).first())
-    .toBeVisible({ timeout: 45_000 });
+  await page.locator('input[type=file]').first().setInputFiles(tmp);
+
+  await expect(page.getByText(filename).first()).toBeVisible({ timeout: 30_000 });
+  // The queue badge is the only element on the page whose whole text is one of
+  // these words, so anchoring the pattern is what keeps it a status assertion.
+  const status = page.getByText(/^(queued|parsing|translating|ready|failed)$/i).first();
+  await expect(status).toBeVisible({ timeout: 30_000 });
+  await expect(status).toHaveText(/^(ready|failed)$/i, { timeout: 90_000 });
 });

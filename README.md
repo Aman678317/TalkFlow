@@ -268,11 +268,13 @@ A speaks Hindi → B hears English, C sees Marathi captions, transcripts stored,
 | [`mcp/desi-mcp-server/`](mcp/desi-mcp-server/) | Stdio MCP Server for Claude Code, Cursor, and VS Code |
 | [`plugins/desi-claude-plugin/`](plugins/desi-claude-plugin/) | Official Claude Plugin exposing Desi translation, writing, glossaries, and docs |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System architecture & design decisions |
-| [`docs/api.md`](docs/api.md) | Internal API reference |
+| [`docs/API.md`](docs/API.md) | API reference (routes, per-tree availability) |
 | [`docs/AI.md`](docs/AI.md) | AI provider system, model router, fallback chains |
 | [`docs/REALTIME.md`](docs/REALTIME.md) | WebSocket protocol & realtime pipeline |
 | [`docs/DATABASE.md`](docs/DATABASE.md) | Schema & migration guide |
 | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) | Docker, k8s, cloud deployment |
+| [`docs/PRODUCTION_RUNBOOK.md`](docs/PRODUCTION_RUNBOOK.md) | Deploy / staging / rollback / metrics alerting |
+| [`docs/PRODUCTION_VERIFICATION_REPORT.md`](docs/PRODUCTION_VERIFICATION_REPORT.md) | Release-gate evidence: what is proven, what is skipped, what is not proven |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | Security model |
 | [`docs/LOCAL_DEVELOPMENT.md`](docs/LOCAL_DEVELOPMENT.md) | Full local dev setup |
 | [`docs/TESTING.md`](docs/TESTING.md) | Test strategy & running tests |

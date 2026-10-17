@@ -96,7 +96,7 @@ async function translateLiveText(
   // Direct fast matching for standard greeting & demo phrases
   const lower = cleaned.toLowerCase().replace(/[.,!?;:]/g, "").trim();
 
-  // Special match for the DeepL reference sample
+  // Deterministic en->de fast path for the demo greeting phrases
   if (
     src === "en" &&
     tgt === "de" &&

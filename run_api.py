@@ -10,9 +10,15 @@ AI_DIR = ROOT / "ai"
 (ROOT / "data").mkdir(parents=True, exist_ok=True)
 (API_DIR / "data").mkdir(parents=True, exist_ok=True)
 
-# Add directories to Python module search path
-sys.path.insert(0, str(API_DIR))
+# Module search path. ORDER MATTERS: the repo carries two `gt_ai` packages —
+# `ai/gt_ai`, used by the legacy `apps/api` backend, and `services/api/gt_ai`, the
+# one this backend's code is written against. Whichever comes first wins, and it has
+# to be `services/api`: app.ai builds ModelRouter(..., breakers=...), which the older
+# `ai/gt_ai` signature does not accept, so startup dies with a TypeError before
+# anything listens. This is also the order pytest uses (pyproject.toml pythonpath)
+# and the order Render gets, where rootDir: services/api makes it the cwd.
 sys.path.insert(0, str(AI_DIR))
+sys.path.insert(0, str(API_DIR))
 
 # Change current working directory to services/api
 os.chdir(str(API_DIR))

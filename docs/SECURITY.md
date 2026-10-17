@@ -37,15 +37,25 @@ webhook `api_key.revoked`), last_used tracked, revocation audited.
 
 ## Privacy (section 40)
 
-Per-org retention policy (audio/transcripts/documents) enforced by the cleanup worker;
-originals and derivatives stored separately; user/org deletion cascades via FKs +
-storage sweep; voice preservation requires explicit revocable consent with audit trail
-(`voice_consents`); synthetic audio always flagged in metadata/events.
+Retention is three layers and the narrowest one wins: deployment defaults,
+`organizations.retention_json`, `meetings.retention_json`. `retention_service.sweep()` is the
+only thing that deletes; it runs hourly in the API process and in the cleanup worker. Originals
+and derivatives live in separate tables, and a transcript's `translation_segments` go with it.
+The resolved windows are also published to participants — `GET /api/v1/meetings/{id}` returns
+them and the lobby shows them before anyone speaks, a guest on a share link included.
+User/org deletion anonymizes the row and marks it deleted; objects go on the next sweep.
+Details: docs/DATABASE.md §Retention.
+
+Not implemented, whatever earlier drafts of this file implied: a revocable voice-consent store
+(no `voice_consents` table exists), per-speaker media export, and deletion of a specific
+person's transcripts. Synthetic translated audio is flagged as such in events and track names.
 
 ## Production hardening checklist
 
 - [ ] Rotate all default secrets (JWT_SECRET, SECRET_KEY, DB, MinIO, LiveKit)
-- [ ] Enable MALWARE_SCAN_ENABLED with ClamAV sidecar
+- [ ] Set CLAMAV_HOST (+ port) with a ClamAV sidecar — that is what enables the
+      ClamAV leg; Tree A has no MALWARE_SCAN_ENABLED flag, always rejects executable
+      magic bytes, and fails closed (rejects uploads) when ClamAV is unreachable
 - [ ] TLS at ingress (cert-manager), HSTS via ingress annotation
 - [ ] Postgres: TLS + least-privilege role; backups (pg_basebackup/WAL-G) + restore drills
 - [ ] Redis: AUTH + TLS; S3: bucket policy + SSE-KMS

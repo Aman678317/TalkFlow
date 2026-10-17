@@ -6,7 +6,9 @@ stale `data/*.db-wal/-shm` files together with the `.db` when resetting.
 
 **Everything translates to the same text (`untranslated_fallback` flag)**
 No MT provider is healthy: run `make verify-ai-stack`. Fix: `bash scripts/download_models.sh`
-(Argos packages download into `MODEL_CACHE_PATH/argos`). Check `/internal/components`.
+(Argos packages download into `MODEL_CACHE_PATH/argos`). On the deployed tree check the
+`ai` object in `/version` (`runtime: dev_stand_in` = falling through to a fixture);
+`/internal/components` and `/internal/audio-health` exist only on Tree B.
 
 **A language is missing from UI selectors**
 The registry only lists what THIS deployment validated. Install models, then

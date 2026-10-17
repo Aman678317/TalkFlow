@@ -1,11 +1,19 @@
 # Testing
 
 ```bash
-make test            # everything
+make test            # everything the Makefile knows about (unit + integration + realtime)
 make test-unit       # tests/unit        — pure logic, no models needed
 make test-integration# tests/integration — FastAPI + real DB/storage/queue
 make test-realtime   # tests/realtime    — golden multilingual call (needs weights)
 cd apps/web && npx vitest run && npx tsc -b
+
+# The Makefile does NOT cover these two — CI runs them, so run them too:
+APP_ENV=test CACHE_BACKEND=memory REDIS_URL="" JWT_SECRET=<32-char test value> \
+  python -m pytest tests -q -rs --ignore=tests/unit --ignore=tests/integration \
+  --ignore=tests/realtime                    # 121 hardening + deployment + runner tests
+cd tests/e2e && npx playwright install --with-deps chromium
+#   then, with a Tree A API on :8088 and Vite on :5173 (see tests/e2e/playwright.config.ts):
+WEB_URL=http://localhost:5173 npx playwright test
 ```
 
 ## Layers
@@ -31,6 +39,17 @@ cd apps/web && npx vitest run && npx tsc -b
   binary relay, multilingual chat + per-listener chat translation, reconnect with
   `session.resumed` + monotonic replay, live preference updates, AI summary from the
   stable transcript.
+- **Browser journeys** (`tests/e2e`, Playwright + Chromium, run by CI's `browser-e2e`
+  job against a live Tree A API on :8088 and Vite on :5173 with `dev_text`/`dev_echo`/
+  `dev_tone`): the golden demo opens **two distinct browser sessions** in one meeting —
+  a Hindi speaker plus an anonymous guest joining over the share link — injects a turn
+  over the real WebSocket, and asserts the source caption reaches both while the English
+  translation appears on the listener's screen and is **absent** from the speaker's.
+  Also covers the document upload pipeline and signup→translate→history→re-login.
+  What it does **not** prove: real microphone capture (speech is injected through the
+  dev `transcript.inject` channel with a fake media device), audible playback on a
+  remote seat (assertions are on captions), or any real provider's translation quality.
+  See `docs/PRODUCTION_VERIFICATION_REPORT.md` §4.
 - **Realtime conversation gate** (tests/integration/test_realtime_phase3_gate.py): the
   composed Tree A path — real `MeetingPipeline`, real `SessionManager` routing, real wire
   protocol, four real agents — with only the providers faked. Four tests, one per exit
@@ -42,11 +61,15 @@ cd apps/web && npx vitest run && npx tsc -b
   not arrival order), and per-stage latency, printed with `-s`:
   `APP_ENV=test python -m pytest tests/integration/test_realtime_phase3_gate.py -q -s`.
   Those millisecond figures are pipeline overhead plus fake providers. Provider-side
-  numbers with real weights exist only for the second backend tree (`apps/api`, run by
-  `tests/realtime/test_golden_call.py` and `bench_latency.py`); the deployed
-  `services/api` tree has no real-provider latency harness yet, so production latency
-  for this path is still unmeasured. A green tick here is not a listening check either —
-  only two browsers with two microphones can prove a conversation feels natural.
+  numbers with real weights used to exist only for the second backend tree
+  (`apps/api`, run by `tests/realtime/test_golden_call.py` and `bench_latency.py`);
+  the deployed `services/api` tree now has its own golden call
+  (`tests/realtime/test_deployed_tree_golden_call.py`, marked `realtime`) which runs
+  on real engines wherever the weights are present — that is CI's `realtime-golden`
+  job, and it **skips with its prerequisites named** on any machine without them.
+  Until such a run is recorded here, production latency for this path is unmeasured.
+  A green tick here is not a listening check either — only two browsers with two
+  microphones can prove a conversation feels natural.
 - **Voice benchmark** (`python scripts/bench_tts_voices.py --lang en,hi,ur`): the Phase 3
   requirement to *benchmark target-language TTS voices*. Measures, per
   (language, provider, voice), time-to-first-audio, real-time factor, produced audio

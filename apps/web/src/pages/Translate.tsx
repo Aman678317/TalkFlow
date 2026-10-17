@@ -658,7 +658,7 @@ export default function TranslatePage() {
     return () => window.clearTimeout(t);
   }, [result]);
 
-  // DeepL-style keyboard shortcuts: swap languages, copy translation, clear.
+  // Keyboard shortcuts: swap languages, copy translation, clear.
   React.useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const mod = e.metaKey || e.ctrlKey;

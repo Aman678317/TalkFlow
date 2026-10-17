@@ -15,6 +15,7 @@ segment rather than a rewrite of the one already translating.
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -80,13 +81,14 @@ class Recorder:
     """
 
     def __init__(self) -> None:
-        self.commits: list[tuple[str, int, bytes]] = []
+        self.commits: list[tuple[str, int, bytes, int]] = []
         self.first = asyncio.Event()
 
     async def __call__(self, _p, _u, *, forced=False, audio_bytes=b"",
                        start_ms=0, capture_started=None,
-                       utterance_id=None, seq=0) -> None:
-        self.commits.append((str(utterance_id), seq, bytes(audio_bytes)))
+                       utterance_id=None, seq=0, end_wall_ms=0) -> None:
+        self.commits.append((str(utterance_id), seq, bytes(audio_bytes),
+                             end_wall_ms))
         self.first.set()
 
     async def wait(self, timeout: float = 2.0) -> None:
@@ -143,6 +145,7 @@ async def test_a_long_speaker_is_committed_at_the_clause_boundary(room, monkeypa
 
     pipe.start_speaker(speaker)
     try:
+        started_at = int(time.time() * 1000)
         await _speak(pipe, speaker, 60)
         await rec.wait()
     finally:
@@ -159,6 +162,11 @@ async def test_a_long_speaker_is_committed_at_the_clause_boundary(room, monkeypa
     assert all(len(c[2]) > CHUNK_BYTES for c in rec.commits), "committed a stub"
     # The first commit carried a real clause, not a scrap of the turn.
     assert len(rec.commits[0][2]) / 32.0 >= settings.vad_phrase_commit_ms
+    # Phase 4: committing mid-speech means this segment's audio stops *now*, so
+    # "now" is its speech-end. Without an anchor there is no honest number for
+    # how long a listener waited for it.
+    assert all(c[3] >= started_at for c in rec.commits), (
+        f"a break committed without a speech-end anchor: {rec.commits}")
 
 
 @pytest.mark.asyncio

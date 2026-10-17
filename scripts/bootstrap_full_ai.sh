@@ -38,7 +38,14 @@ mkdir -p data data/storage "${MODEL_CACHE_PATH:-/tmp/globaltalk-models}"
 
 # ---------------------------------------------------------- python deps
 echo "-- installing python dependencies (CPU wheels) --"
-pip install -q --no-input -r apps/api/requirements.txt && ok "api requirements installed" || fail "pip install failed"
+# services/api is the tree `make dev`/`make api` starts and the tree Render deploys
+# (README points here too); apps/api is the legacy tree the golden test drives. The
+# two have separate requirements files, and installing only the legacy one leaves the
+# shipped backend without its dependencies.
+pip install -q --no-input -r services/api/requirements.txt \
+  && ok "services/api requirements installed" || fail "pip install (services/api) failed"
+pip install -q --no-input -r apps/api/requirements.txt \
+  && ok "apps/api requirements installed" || fail "pip install (apps/api) failed"
 # livekit SDKs: optional, needed only when LIVEKIT_* is configured
 if [ "${WITH_LIVEKIT:-false}" = "true" ]; then
   pip install -q --no-input "livekit-api==0.8.2" && ok "livekit-api installed" || warn "livekit-api install failed"
@@ -59,13 +66,29 @@ fi
 
 # ---------------------------------------------------------- database
 echo "-- initializing database --"
-export PYTHONPATH="apps/api:."
-python3 - <<'EOF' && ok "database initialized + seeded" || fail "database init failed"
+# Seed the tree you are about to run. This used to import `globaltalk.core.db` /
+# `globaltalk.seed`, which builds the LEGACY backend's database, so a fresh
+# "bootstrap complete" left services/api with no tables and no seeded
+# admin@globaltalk.dev account — the one docs/LOCAL_DEVELOPMENT.md tells you to sign
+# in with. `alembic upgrade head` matches services/api/start.sh, so dev and prod get
+# the same schema; set SEED_LEGACY=true to seed apps/api as well.
+export PYTHONPATH="services/api:apps/api:."
+(cd services/api && python3 -m alembic upgrade head) \
+  && ok "services/api schema migrated" || fail "services/api migration failed"
+(cd services/api && python3 -c "import asyncio; from app.seed import run_seed; asyncio.run(run_seed())") \
+  && ok "services/api seeded (languages, flags, styles, model registry, demo org)" \
+  || fail "services/api seed failed"
+if [ "${SEED_LEGACY:-false}" = "true" ]; then
+  (cd apps/api && PYTHONPATH="apps/api:." python3 - <<'EOF' && ok "legacy apps/api database initialized + seeded" || fail "legacy seed failed"
 from globaltalk.core.db import init_db
 init_db()
 from globaltalk.seed import seed_all
 seed_all()
 EOF
+  )
+else
+  opt "legacy apps/api seed skipped (set SEED_LEGACY=true; only tests/realtime/test_golden_call.py needs it)"
+fi
 
 # ---------------------------------------------------------- model weights
 if [ "${SKIP_MODELS:-false}" != "true" ]; then

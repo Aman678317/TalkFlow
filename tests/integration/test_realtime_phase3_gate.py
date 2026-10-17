@@ -195,12 +195,24 @@ async def _drain(pipe: P.MeetingPipeline) -> None:
     while pipe.translation_tasks and time.time() < deadline:
         await asyncio.gather(*list(pipe.translation_tasks.values()),
                              return_exceptions=True)
+        # The bookkeeping that empties `translation_tasks` is a done-callback, so
+        # it is *scheduled* when the task finishes — including when it finishes
+        # cancelled, which is how an interrupted turn ends. `gather` returning is
+        # not the same as that callback having run, and without this yield the
+        # loop below re-gathers the same finished task until the deadline.
+        await asyncio.sleep(0)
     assert not pipe.translation_tasks, "fan-out never came home"
 
 
 async def _speak(room, speaker: RtParticipant, *, seq: int,
                  held_ms: int = 700) -> str:
-    """One complete turn, through the path a microphone drives."""
+    """One complete turn, through the path a microphone drives.
+
+    `held_ms` is how long the speaker talked, and the anchor is when they
+    stopped — which for this harness is the moment the turn is handed over. The
+    distinction is the Phase 4 measurement: a listener's wait starts at the
+    anchor, not at the turn's first frame.
+    """
     u = P.UtteranceState(
         participant_id=speaker.participant_id,
         capture_started=time.perf_counter() - held_ms / 1000.0,
@@ -208,7 +220,8 @@ async def _speak(room, speaker: RtParticipant, *, seq: int,
     utterance_id = uuid.uuid4()
     await room.pipe._finalize_utterance(
         speaker, u, audio_bytes=AUDIO, start_ms=0,
-        capture_started=u.capture_started, utterance_id=utterance_id, seq=seq)
+        capture_started=u.capture_started, utterance_id=utterance_id, seq=seq,
+        end_wall_ms=int(time.time() * 1000))
     await _drain(room.pipe)
     return str(utterance_id)
 
@@ -363,6 +376,8 @@ async def test_captions_align_across_the_exchange(room):
 
 _STAGES = ["audio_capture_ms", "stt_final_ms", "translation_ms",
            "tts_first_audio_ms", "delivery_ms", "total_e2e_latency_ms"]
+#: The two the Phase 4 gate names as the measurement of a listener's wait.
+_SPEECH_END_STAGES = ["speech_end_to_first_audio_ms", "speech_end_to_delivery_ms"]
 
 
 @pytest.mark.asyncio
@@ -384,13 +399,105 @@ async def test_latency_is_reported_for_every_language_run(room):
         assert r["stale_dropped"] is False
         for stage in _STAGES:
             assert r[stage] >= 0
+        # Phase 4: the turn has an anchor, and the headline total is measured
+        # from it. The old total was a sum of stage durations that started at
+        # the turn's first audio frame, so it grew with how long the speaker
+        # talked — a number about the meeting, labelled as a number about us.
+        assert r["speech_end_wall_ms"] > 0
+        for stage in _SPEECH_END_STAGES:
+            assert r[stage] > 0, f"{stage} was not measured"
+        assert r["total_e2e_latency_ms"] == r["speech_end_to_delivery_ms"]
+        assert (r["speech_end_to_first_audio_ms"]
+                <= r["speech_end_to_delivery_ms"])
 
     # The gate asks for the numbers, not just a green tick. These are the
     # pipeline's own overhead against fake providers — the providers' share is
     # measured separately (tests/realtime, CI golden call with real weights).
     print()
     print("phase 3 gate — measured per-stage latency (ms, fake providers)")
-    for stage in _STAGES:
+    for stage in _STAGES + _SPEECH_END_STAGES:
         vals = [float(r[stage]) for r in by_turn.values()]
-        print(f"  {stage:26s} mean {statistics.mean(vals):8.1f}  "
+        print(f"  {stage:32s} mean {statistics.mean(vals):8.1f}  "
               f"max {max(vals):8.1f}")
+
+
+@pytest.mark.asyncio
+async def test_the_meeting_reports_p50_and_p95_of_the_listeners_wait(room):
+    """Phase 4 asks for percentiles, not a sample per turn, and it asks for them
+    where an operator can read them: the same health payload that says which
+    stages ran.
+
+    A provider-free harness cannot produce a meaningful percentile *value*, so
+    what is asserted here is that the rollup exists, is keyed per language pair,
+    counts every measured turn, and refuses to invent a row for a pair that
+    produced no audio.
+    """
+    for seq in range(1, 4):
+        await _speak(room, room.aman, seq=seq)
+
+    latency = room.pipe.stage_health()["latency"]
+    assert latency["window"] > 0
+    # Aman speaks Hindi and Chen hears English.
+    assert set(latency["pairs"]) == {"hi->en"}, (
+        f"expected one language pair, got {sorted(latency['pairs'])}")
+    row = latency["pairs"]["hi->en"]
+    assert row["n"] == 3, "a measured turn was missing from the percentile"
+    assert row["p50_ms"] <= row["p95_ms"] <= row["max_ms"]
+    assert latency["overall"]["n"] == 3
+
+    # A pair nobody listened to has no row: a zero would read as a fast meeting.
+    assert "hi->ta" not in latency["pairs"]
+
+
+@pytest.mark.asyncio
+async def test_the_injected_turn_is_keyed_by_its_language_pair_too(room):
+    """`transcript.inject` is the path the benchmark and the dev console drive.
+
+    It stands in for Agent 1, so it owes Agent 1's bus contract: without a
+    transcript stage event the supervisor cannot name the source language, and
+    the operator's rollup reads `unknown->en` — which does not answer the guide's
+    question, "what is the p95 for this language pair". Observed in a live run.
+    """
+    await room.pipe.inject_transcript(room.aman,
+                                      "नमस्ते, आज हम योजना पर चर्चा करेंगे।", "hi")
+    await _drain(room.pipe)
+
+    latency = room.pipe.stage_health()["latency"]
+    assert set(latency["pairs"]) == {"hi->en"}, (
+        f"the injected turn was keyed {sorted(latency['pairs'])}")
+    assert latency["pairs"]["hi->en"]["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_injected_turns_accumulate_one_sample_each(room):
+    """Three turns in two source languages, because a percentile is a count
+    before it is a number: the live run reported `n=1` for twelve turns and the
+    single-turn test above could not see it.
+
+    Aman's Hindi goes only to Chen (Beth and Divya hear Hindi, so Hindi is their
+    own source language and not a translation). His Marathi turn is a translation
+    for all three listeners, and it counts once per *pair* — an English caption
+    and a Hindi caption are two different waits, and averaging them into one row
+    would hide whichever one is slow.
+    """
+    for text, lang in (("नमस्ते, आज हम योजना पर चर्चा करेंगे।", "hi"),
+                       ("आमची बैठक उद्या सकाळी आहे.", "mr"),
+                       ("दोनऱ्याची गोष्ट.", "hi")):
+        await room.pipe.inject_transcript(room.aman, text, lang)
+        await _drain(room.pipe)
+
+    latency = room.pipe.stage_health()["latency"]
+    assert {p: row["n"] for p, row in latency["pairs"].items()} == {
+        "hi->en": 2, "mr->en": 1, "mr->hi": 1}
+    assert latency["overall"]["n"] == 4
+
+
+@pytest.mark.asyncio
+async def test_an_unmeasured_meeting_reports_no_percentiles(room):
+    """Before a single turn, the rollup has to be empty rather than zero. The
+    Phase 4 gate is a number an operator is judged on; the honest answer to
+    "what is your p95" when nothing has run is "nothing has run"."""
+    latency = room.pipe.stage_health()["latency"]
+
+    assert latency["pairs"] == {}
+    assert "overall" not in latency

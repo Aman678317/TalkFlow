@@ -64,12 +64,14 @@ async def version():
 
 
 def _ai_info() -> dict:
+    """Per AI task: the configured provider plus whether this image can run it.
+
+    Reporting the configured name alone let a deployment advertise
+    `faster_whisper` while the build installed no speech runtime and every call
+    fell through to the dev stand-in.
+    """
     from app.ai import ai
-    from gt_ai.types import Task
-    out = {}
-    for task in Task:
-        out[task.value] = ai._configured_name(task)
-    return out
+    return ai.runtime_report()
 
 
 @router.get("/metrics")
