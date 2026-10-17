@@ -52,6 +52,34 @@ async def ready():
         content={"ready": ok, "checks": checks})
 
 
+@router.get("/diagnostics/realtime")
+@router.get("/api/v1/diagnostics/realtime")
+async def realtime_diagnostics(request: Request):
+    """Operational readiness snapshot; never performs inference or logs speech.
+
+    Production requires the existing METRICS_TOKEN. Without a token configured,
+    the endpoint is hidden rather than accidentally publishing deployment detail.
+    """
+    if settings.is_production:
+        expected = settings.metrics_token
+        if not expected:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="Realtime diagnostics are disabled.")
+        import secrets
+        auth = request.headers.get("Authorization", "")
+        supplied = (
+            auth.removeprefix("Bearer ").strip()
+            if auth.startswith("Bearer ")
+            else request.headers.get("X-Metrics-Token", "")
+        )
+        if not secrets.compare_digest(supplied, expected):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=401, detail="Unauthorized diagnostics access.")
+
+    from app.realtime.diagnostics import build_realtime_readiness
+    return build_realtime_readiness()
+
+
 @router.get("/version")
 async def version():
     return {

@@ -235,42 +235,130 @@ def reconstruct_xlsx(blocks: list[DocBlock], original: bytes) -> tuple[bytes, st
 
 
 def parse_pdf(data: bytes) -> list[DocBlock]:
+    """Extract PDF text and fail closed when an enabled OCR page cannot be read.
+
+    OCR is opt-in because it requires the Tesseract executable and matching
+    language packs. When OCR is enabled, every page without a usable text layer
+    must either yield translatable OCR text or cause the document to fail.
+    """
     try:
         import fitz  # PyMuPDF
     except ImportError:
         fitz = None
+
     blocks: list[DocBlock] = []
     idx = 0
+    ocr_enabled = str(getattr(settings, "document_ocr_enabled", False)).lower() in {
+        "1", "true", "yes", "on"
+    }
+    ocr_languages = str(getattr(settings, "document_ocr_languages", "eng"))
+    extraction_failures: list[str] = []
+
     if fitz is not None:
         doc = fitz.open(stream=data, filetype="pdf")
-        for pno in range(len(doc)):
-            page = doc[pno]
-            raw = page.get_text("blocks")  # (x0,y0,x1,y1,text,block_no,type)
-            for x0, y0, x1, y1, text, _bno, btype in raw:
-                if btype != 0:
-                    continue
-                text = text.strip()
-                if _is_translatable(text):
-                    pw, ph = page.rect.width, page.rect.height
-                    blocks.append(DocBlock(
-                        idx, "text", pno, text,
-                        bbox=[round(x0 / pw, 5), round(y0 / ph, 5),
-                              round(x1 / pw, 5), round(y1 / ph, 5)],
-                        ctx={"mode": "pymupdf"}))
-                    idx += 1
-        doc.close()
+        page_total = len(doc)
+        try:
+            for pno in range(page_total):
+                page = doc[pno]
+                raw = page.get_text("blocks")
+                page_blocks = 0
+                for x0, y0, x1, y1, text, _bno, btype in raw:
+                    if btype != 0:
+                        continue
+                    text = text.strip()
+                    if _is_translatable(text):
+                        pw, ph = page.rect.width, page.rect.height
+                        blocks.append(DocBlock(
+                            idx, "text", pno, text,
+                            bbox=[round(x0 / pw, 5), round(y0 / ph, 5),
+                                  round(x1 / pw, 5), round(y1 / ph, 5)],
+                            ctx={"mode": "pymupdf"}))
+                        idx += 1
+                        page_blocks += 1
+
+                # OCR only pages without a usable text layer; preserve page order.
+                if page_blocks == 0:
+                    if not ocr_enabled:
+                        continue
+                    try:
+                        import pytesseract
+                        from PIL import Image
+
+                        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+                        image = Image.open(io.BytesIO(pix.tobytes("png")))
+                        ocr_text = pytesseract.image_to_string(image, lang=ocr_languages)
+                        page_ocr_blocks = 0
+                        for para in re.split(r"\n\s*\n", ocr_text):
+                            para = para.strip()
+                            if _is_translatable(para):
+                                blocks.append(DocBlock(
+                                    idx, "text", pno, para,
+                                    ctx={"mode": "ocr", "ocr": True,
+                                         "ocr_language": ocr_languages}))
+                                idx += 1
+                                page_ocr_blocks += 1
+                        if page_ocr_blocks == 0:
+                            extraction_failures.append(f"page {pno + 1}: OCR found no translatable text")
+                    except Exception as exc:
+                        extraction_failures.append(
+                            f"page {pno + 1}: OCR failed ({type(exc).__name__})")
+        finally:
+            doc.close()
+
+        # Strict page coverage is configurable to protect existing consumers
+        # while allowing production deployments to fail closed on image-only pages.
+        strict_page_coverage = bool(getattr(
+            settings, "document_ocr_fail_on_unreadable_page", True
+        ))
+        # Do not use page count from parsed blocks as the expected count:
+        # a scan-only page may have no blocks precisely because OCR is off.
+        if strict_page_coverage and not ocr_enabled:
+            missing_pages = [
+                pno + 1 for pno in range(page_total)
+                if not any(b.page == pno for b in blocks)
+            ]
+            if missing_pages:
+                extraction_failures.append(
+                    "pages without a usable text layer (OCR disabled): "
+                    + ", ".join(map(str, missing_pages[:20]))
+                )
+        if extraction_failures:
+            summary = "; ".join(extraction_failures[:10])
+            raise DocumentProcessingError(
+                f"PDF extraction incomplete; enable a working OCR configuration or review {summary}")
+
+        if blocks:
+            return blocks
+        if ocr_enabled:
+            raise DocumentProcessingError(
+                "No PDF text could be extracted with OCR enabled; verify Tesseract and OCR languages.")
         return blocks
-    # fallback: pypdf text extraction (no layout)
+
+    # Fallback: pypdf text extraction does not provide OCR/layout support.
     from pypdf import PdfReader
     reader = PdfReader(io.BytesIO(data))
+    empty_pages: list[int] = []
     for pno, page in enumerate(reader.pages):
         text = page.extract_text() or ""
-        for para in re.split(r"\n{2,}", text):
+        page_blocks = 0
+        for para in re.split(r"\n\s*\n", text):
             if _is_translatable(para):
                 blocks.append(DocBlock(idx, "text", pno, para, ctx={"mode": "pypdf"}))
                 idx += 1
+                page_blocks += 1
+        if page_blocks == 0:
+            empty_pages.append(pno + 1)
+    strict_page_coverage = bool(getattr(
+        settings, "document_ocr_fail_on_unreadable_page", True
+    ))
+    if empty_pages and (ocr_enabled or strict_page_coverage):
+        detail = (
+            "PDF OCR requires PyMuPDF, Pillow, and pytesseract; pages without text layer: "
+            if ocr_enabled
+            else "PDF extraction incomplete; pages without a usable text layer (OCR disabled): "
+        )
+        raise DocumentProcessingError(detail + ", ".join(map(str, empty_pages[:20])))
     return blocks
-
 
 def reconstruct_pdf(blocks: list[DocBlock], original: bytes) -> tuple[bytes, str]:
     try:
@@ -412,6 +500,8 @@ async def _run_pipeline(db: AsyncSession, doc: M.Document) -> None:
     parse_fn, reconstruct_fn = parser_for(doc.mime_type)
     try:
         blocks = await asyncio.to_thread(parse_fn, data)
+    except DocumentProcessingError:
+        raise
     except Exception as e:
         raise DocumentProcessingError(f"Parser failed: {e}") from e
     translatable = [b for b in blocks if b.kind != "non_translatable"]
@@ -431,39 +521,61 @@ async def _run_pipeline(db: AsyncSession, doc: M.Document) -> None:
         doc.char_count = sum(len(b.text) for b in translatable)
         await db.commit()
 
-    # --- translating (batched, with context window) ------------------------ #
+    # --- translating with context + bounded batch checkpoints ---------------- #
     await _set_status(db, doc, "translating", 25, "translating")
     detected = doc.source_lang
+    recent: list[str] = []
     if detected in ("auto", ""):
         det = await ai.detect_language(translatable[0].text[:500])
         detected = det.language
         doc.detected_lang = detected
         await db.commit()
+
     total = len(translatable)
-    recent: list[str] = []
-    for i, b in enumerate(translatable):
-        out = await translate_text(
-            db, b.text, detected, doc.target_lang,
-            TranslateContext(
-                org_id=doc.org_id, user_id=doc.created_by, product="document",
-                domain=doc.domain, glossary_id=doc.glossary_id,
-                style_profile_id=doc.style_profile_id,
-                persist=False, meter=False,  # metered per-document below
-            ))
-        b.translated = out.result.text
-        recent.append(b.translated)
-        recent = recent[-MAX_BATCH_CONTEXT:]
-        if (i + 1) % 5 == 0 or i == total - 1:
-            doc.progress = 25 + int(60 * (i + 1) / total)
-            await db.commit()
-    # persist translated segments
-    for b in translatable:
-        await db.execute(
-            M.DocumentSegment.__table__.update()
-            .where(M.DocumentSegment.document_id == doc.id,
-                   M.DocumentSegment.block_index == b.index)
-            .values(target_text=b.translated))
-    await db.commit()
+    batch_size = max(1, min(5, int(getattr(settings, "document_translation_concurrency", 4))))
+    completed = 0
+
+    # This session is shared with translate_text; don't concurrently call it.
+    # Checkpoint each small batch so completed segment translations survive a
+    # retry, while remaining within a predictable provider request cadence.
+    for batch_start in range(0, total, batch_size):
+        batch = translatable[batch_start:batch_start + batch_size]
+        for b in batch:
+            cached = await db.execute(
+                select(M.DocumentSegment.target_text).where(
+                    M.DocumentSegment.document_id == doc.id,
+                    M.DocumentSegment.block_index == b.index))
+            persisted_translation = cached.scalar_one_or_none()
+            if persisted_translation and persisted_translation.strip():
+                b.translated = persisted_translation
+                recent.append(b.text)
+                recent = recent[-MAX_BATCH_CONTEXT:]
+                completed += 1
+                continue
+            # Once the persisted translation is missing, downstream context
+            # is rebuilt only from source text, never from translated output.
+            out = await translate_text(
+                db, b.text, detected, doc.target_lang,
+                TranslateContext(
+                    org_id=doc.org_id, user_id=doc.created_by, product="document",
+                    domain=doc.domain, glossary_id=doc.glossary_id,
+                    style_profile_id=doc.style_profile_id,
+                    context="\n".join(recent[-MAX_BATCH_CONTEXT:])[-1000:] or None,
+                    persist=False, meter=False,
+                ))
+            b.translated = out.result.text
+            # Context must be source text, not the prior translation, so
+            # downstream segments never use generated translations as source.
+            recent.append(b.text)
+            recent = recent[-MAX_BATCH_CONTEXT:]
+            completed += 1
+            await db.execute(
+                M.DocumentSegment.__table__.update()
+                .where(M.DocumentSegment.document_id == doc.id,
+                       M.DocumentSegment.block_index == b.index)
+                .values(target_text=b.translated))
+        doc.progress = 25 + int(60 * completed / total)
+        await db.commit()
 
     # --- reconstructing ---------------------------------------------------- #
     await _set_status(db, doc, "reconstructing", 90, "reconstructing")
@@ -477,9 +589,48 @@ async def _run_pipeline(db: AsyncSession, doc: M.Document) -> None:
     # --- quality check ------------------------------------------------------ #
     await _set_status(db, doc, "quality_check", 95, "quality_check")
     empty = sum(1 for b in translatable if not (b.translated or "").strip())
-    if empty > len(translatable) * 0.2:
+    failed = [b.index for b in translatable if not (b.translated or "").strip()]
+    source_chars = sum(len(b.text) for b in translatable)
+    translated_chars = sum(len((b.translated or "").strip()) for b in translatable)
+    translated_blocks = sum(1 for b in translatable if (b.translated or "").strip())
+    expected_pages = len({b.page for b in blocks})
+    translated_pages = len({b.page for b in translatable if (b.translated or "").strip()})
+    doc_coverage = {
+        "source_blocks": len(translatable),
+        "translated_blocks": translated_blocks,
+        "failed_block_indices": failed[:100],
+        "source_characters": source_chars,
+        "translated_characters": translated_chars,
+        "source_pages_with_text": expected_pages,
+        "translated_pages_with_text": translated_pages,
+        "ocr_used": any(bool(b.ctx.get("ocr")) for b in blocks),
+    }
+    # Document has no diagnostics column. Persist coverage on the latest
+    # DocumentJob record, which already stores status/stage/message.
+    latest_job = (await db.execute(
+        select(M.DocumentJob).where(
+            M.DocumentJob.document_id == doc.id
+        ).order_by(M.DocumentJob.created_at.desc())
+    )).scalars().first()
+    if latest_job is not None:
+        latest_job.diagnostics_json = {
+            **(latest_job.diagnostics_json or {}),
+            "translation_coverage": doc_coverage,
+        }
+    log.info("document coverage document_id=%s coverage=%s", doc.id, doc_coverage)
+    # Empty source blocks are excluded by the parser. Every eligible source
+    # block must now have a translation; a permissive percentage threshold
+    # previously allowed a document with missing paragraphs to be marked ready.
+    if empty:
         raise DocumentProcessingError(
-            f"Quality gate failed: {empty}/{len(translatable)} empty segments.")
+            f"Quality gate failed: {empty}/{len(translatable)} translatable blocks are empty. "
+            f"Failed indices: {failed[:20]}")
+    if translated_blocks != len(translatable):
+        raise DocumentProcessingError(
+            f"Quality gate failed: translated {translated_blocks}/{len(translatable)} blocks.")
+    if expected_pages and translated_pages != expected_pages:
+        raise DocumentProcessingError(
+            f"Quality gate failed: translated text coverage on {translated_pages}/{expected_pages} pages.")
 
     # --- meter document exactly once upon successful completion (idempotent) --- #
     doc_already_metered = False

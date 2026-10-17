@@ -153,6 +153,7 @@ def transcript_partial(session_id: str, conversation_id: str, speaker_id: str,
 
 class LatencyTrace(BaseModel):
     """PDD §10 — every stage measured, reported via latency.report."""
+    correlation_id: str = ""
     segment_id: str = ""
     utterance_id: str = ""
     seq: int = 0

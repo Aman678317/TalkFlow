@@ -19,6 +19,31 @@ from app.schemas import DictionaryEntry, DictionaryResponse, WriteDiff, WriteRes
 
 log = logging.getLogger("app.services.write")
 
+# Preserve immutable spans during quick-fix processing. The provider-backed
+# contextual engine can be enabled independently; deterministic corrections
+# remain the offline fallback.
+_IMMUTABLE_SPAN_RX = re.compile(
+    r"https?://[^\s<>]+|www\.[^\s<>]+|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|"
+    r"`[^`]*`|(?<!\w)\+?\d[\d(). -]{4,}\d(?!\w)"
+)
+
+
+def _protect_immutable_spans(text: str) -> tuple[str, dict[str, str]]:
+    spans: dict[str, str] = {}
+
+    def replace(match: re.Match[str]) -> str:
+        token = f"ZZIMMUTABLE{len(spans)}TOKENZZ"
+        spans[token] = match.group(0)
+        return token
+
+    return _IMMUTABLE_SPAN_RX.sub(replace, text), spans
+
+
+def _restore_immutable_spans(text: str, spans: dict[str, str]) -> str:
+    for token, original in spans.items():
+        text = text.replace(token, original)
+    return text
+
 # --------------------------------------------------------------------------- #
 # Spelling & Slang Dictionary (Common Internet Typos & Shorthand)
 # --------------------------------------------------------------------------- #
@@ -1488,9 +1513,8 @@ def improve_text(
             style=style, tone=tone, changes_count=0, diffs=[], alternatives=[]
         )
 
-    # Protect URLs, email addresses, and inline code before punctuation
-    # normalization; otherwise the dot in `example.com` looks like a sentence
-    # boundary to the heuristic rules.
+    # Protect URLs, email addresses, phone-like numbers and inline code from
+    # grammar/punctuation heuristics, then restore the exact source spans.
     protected_text, protected_spans = _protect_immutable_spans(raw)
     raw_normalized = re.sub(r"([.!?,;:])([a-zA-Z])", r"\1 \2", protected_text)
     raw_normalized = re.sub(r"\s+", " ", raw_normalized).strip()

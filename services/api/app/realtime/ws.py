@@ -254,9 +254,15 @@ async def realtime_ws(
 
             # binary frame = audio chunk from this participant
             if (bdata := message.get("bytes")) is not None:
-                await pl.get_pipeline(session).feed_audio(rp.participant_id, bdata)
-                # relay original audio to original/mixed listeners (WS transport)
-                await manager.relay_audio(session, rp.participant_id, bdata)
+                pipe = pl.get_pipeline(session)
+                if await pipe.feed_audio(rp.participant_id, bdata):
+                    # Only valid frames are relayed to original/mixed listeners.
+                    await manager.relay_audio(session, rp.participant_id, bdata)
+                else:
+                    await _send_error(
+                        ws, "invalid_audio_frame",
+                        "Expected non-empty, bounded 16-kHz mono PCM16 frames.",
+                        recoverable=True)
                 continue
 
             tdata = message.get("text")
@@ -269,9 +275,15 @@ async def realtime_ws(
                     payload = json.loads(tdata)
                     if "source_media_chunk" in payload and "data" in payload["source_media_chunk"]:
                         chunk_b64 = payload["source_media_chunk"]["data"]
-                        raw_bytes = base64.b64decode(chunk_b64)
-                        await pl.get_pipeline(session).feed_audio(rp.participant_id, raw_bytes)
-                        await manager.relay_audio(session, rp.participant_id, raw_bytes)
+                        raw_bytes = base64.b64decode(chunk_b64, validate=True)
+                        pipe = pl.get_pipeline(session)
+                        if await pipe.feed_audio(rp.participant_id, raw_bytes):
+                            await manager.relay_audio(session, rp.participant_id, raw_bytes)
+                        else:
+                            await _send_error(
+                                ws, "invalid_audio_frame",
+                                "Expected non-empty, bounded 16-kHz mono PCM16 frames.",
+                                recoverable=True)
                         continue
                 except Exception as ex:
                     log.warning("Failed decoding source_media_chunk: %s", ex)

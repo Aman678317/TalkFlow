@@ -561,6 +561,7 @@ class DocumentJob(Base, UUIDPkMixin, TimestampMixin):
     attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     stage: Mapped[str] = mapped_column(String(30), default="", nullable=False)
     message: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    diagnostics_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
 

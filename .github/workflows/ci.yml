@@ -40,6 +40,15 @@ jobs:
         # repo clears them. Some F401 hits are deliberate re-exports (ai.bootstrap).
         continue-on-error: true
         run: ruff check apps/api ai services scripts --select E,F,W --ignore E501,E402,W505
+      - name: Targeted Issue #52 regression tests
+        env:
+          APP_ENV: test
+          CACHE_BACKEND: memory
+          REDIS_URL: ""
+          JWT_SECRET: ci-jwt-secret-0123456789abcdef0123456789
+          RATE_LIMIT_AUTH: 100000/minute
+          RATE_LIMIT_TRANSLATE: 100000/minute
+        run: python -m pytest tests/unit/test_write_service.py tests/unit/test_write_immutable_spans.py tests/unit/test_document_coverage_quality.py tests/unit/test_realtime_diagnostics.py -q
       - name: Unit + integration tests (SQLite fast lane)
         env:
           APP_ENV: test

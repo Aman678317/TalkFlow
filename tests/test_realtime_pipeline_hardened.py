@@ -441,3 +441,111 @@ async def test_multilingual_chat_canonical_fanout_and_no_fabrication(services_ap
         for tgt in ("es", "fr", "de"):
             assert msg.translations_json[tgt]["text"] is not None
             assert msg.translations_json[tgt]["model"] is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "frame",
+    [b"", b"\\x00", b"\\x00\\x00" * (pl.MAX_AUDIO_FRAME_BYTES // 2 + 1)],
+    ids=["empty", "odd_pcm16_bytes", "oversized"],
+)
+async def test_feed_audio_rejects_invalid_pcm16_frames(sample_rt_session, frame):
+    """Invalid PCM16 frames are rejected before entering the VAD queue."""
+    pipe = pl.get_pipeline(sample_rt_session)
+    speaker = RtParticipant(
+        participant_id=uuid.uuid4(), user_id=uuid.uuid4(), display_name="Speaker",
+        speak_lang="en", hear_lang="en", connected=True,
+    )
+    manager.add_participant(sample_rt_session, speaker)
+    pipe.start_speaker(speaker)
+    queue = pipe.audio_queues[speaker.participant_id]
+    assert await pipe.feed_audio(speaker.participant_id, frame) is False
+    assert queue.empty()
+    pipe.stop_speaker(speaker.participant_id)
+    await asyncio.sleep(0.05)
+
+
+@pytest.mark.asyncio
+async def test_feed_audio_accepts_valid_pcm16_frame(sample_rt_session):
+    pipe = pl.get_pipeline(sample_rt_session)
+    speaker = RtParticipant(
+        participant_id=uuid.uuid4(), user_id=uuid.uuid4(), display_name="Speaker",
+        speak_lang="en", hear_lang="en", connected=True,
+    )
+    manager.add_participant(sample_rt_session, speaker)
+    pipe.start_speaker(speaker)
+    queue = pipe.audio_queues[speaker.participant_id]
+    assert await pipe.feed_audio(speaker.participant_id, b"\\x00\\x00" * 800) is True
+    assert queue.qsize() == 1
+    pipe.stop_speaker(speaker.participant_id)
+    await asyncio.sleep(0.05)
+
+
+@pytest.mark.asyncio
+async def test_feed_audio_rejects_inactive_speaker(sample_rt_session):
+    pipe = pl.get_pipeline(sample_rt_session)
+    assert await pipe.feed_audio(uuid.uuid4(), b"\\x00\\x00" * 800) is False
+
+
+@pytest.mark.asyncio
+async def test_barge_in_cancels_speaker_tasks_even_before_supervisor_registration(sample_rt_session):
+    """Close the race between task scheduling and active-segment bookkeeping."""
+    pipe = pl.get_pipeline(sample_rt_session)
+    speaker = RtParticipant(
+        participant_id=uuid.uuid4(), user_id=uuid.uuid4(), display_name="Speaker",
+        speak_lang="en", hear_lang="en", connected=True,
+    )
+    manager.add_participant(sample_rt_session, speaker)
+    started = asyncio.Event()
+
+    async def blocked():
+        started.set()
+        await asyncio.Event().wait()
+
+    own_key = (str(speaker.participant_id), 9, "hi")
+    other_key = (str(uuid.uuid4()), 9, "fr")
+    own_task = asyncio.create_task(blocked())
+    other_task = asyncio.create_task(blocked())
+    pipe.translation_tasks[own_key] = own_task
+    pipe.translation_tasks[other_key] = other_task
+    await asyncio.sleep(0)
+    assert started.is_set()
+
+    await pipe._handle_barge_in(speaker)
+    await asyncio.sleep(0)
+    assert own_task.cancelled()
+    assert not other_task.cancelled()
+    other_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await other_task
+
+
+@pytest.mark.asyncio
+async def test_translation_fanout_registers_distinct_tasks_for_distinct_languages(sample_rt_session):
+    """One source turn schedules one independent, cancellable job per language."""
+    pipe = pl.get_pipeline(sample_rt_session)
+    speaker = RtParticipant(
+        participant_id=uuid.uuid4(), user_id=uuid.uuid4(), display_name="Speaker",
+        speak_lang="en", hear_lang="en", connected=True,
+    )
+    manager.add_participant(sample_rt_session, speaker)
+
+    async def never_run(**kwargs):
+        await asyncio.Event().wait()
+
+    with patch.object(pipe, "_translate_and_synthesize", side_effect=never_run):
+        pipe._start_fanout(
+            speaker=speaker, segment_id=uuid.uuid4(), seq=10,
+            utterance_id="corr-fanout-10", text="Canonical source",
+            source_lang="en", targets={"fr", "hi"}, stt_ms=1.0,
+            capture_ms=2.0, prev_context=(),
+        )
+        await asyncio.sleep(0)
+        keys = [key for key in pipe.translation_tasks
+                if key[0] == str(speaker.participant_id) and key[1] == 10]
+        assert {key[2] for key in keys} == {"fr", "hi"}
+        assert len(keys) == 2
+        tasks = [pipe.translation_tasks[key] for key in keys]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
