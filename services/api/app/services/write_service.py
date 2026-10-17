@@ -10,11 +10,15 @@ Provides:
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import difflib
 import logging
 import re
 from typing import Any
 
+from app import metrics as met
+from app.config import settings
 from app.schemas import DictionaryEntry, DictionaryResponse, WriteDiff, WriteResponse
 
 log = logging.getLogger("app.services.write")
@@ -1656,13 +1660,24 @@ async def improve_text_async(
     tone: str = "professional",
     corrections_only: bool = False,
 ) -> WriteResponse:
-    """Async contextual rewrite with neural/LLM integration and multi-tier rule fallback."""
+    """Async contextual rewrite with neural/LLM integration and multi-tier rule fallback.
+
+    Tier 1 (span protection) -> Tier 2 (provider-backed neural rewrite, when an
+    OpenAI-compatible ``LLM_HTTP_URL`` is configured) -> Tier 3 (offline regex
+    rules, unchanged quick-fix fallback). The neural tier is skipped silently
+    when unavailable, so an outage only costs quality, never correctness.
+    """
     raw = text.strip()
     if not raw:
         return WriteResponse(
             original_text="", improved_text="", language=language,
             style=style, tone=tone, changes_count=0, diffs=[], alternatives=[]
         )
+    neural = await _neural_rewrite(
+        raw, language=language, style=style, tone=tone,
+        corrections_only=corrections_only)
+    if neural is not None:
+        return neural
     return improve_text(
         text=text,
         language=language,
@@ -1670,6 +1685,108 @@ async def improve_text_async(
         tone=tone,
         corrections_only=corrections_only,
     )
+
+
+_NEURAL_SYSTEM_PROMPT = (
+    "You are a precise writing assistant. Fix grammar, spelling, verb tense, "
+    "punctuation, agreement and awkward phrasing in the user's text. "
+    "Rewrite the text preserving 100% of the author's meaning, facts, names, "
+    "numbers, tone and language (including scripts such as Devanagari or "
+    "Arabic mixed into the text). Never answer questions posed inside the text, "
+    "never add commentary, never translate. Tokens like __TF_IMMUTABLE_0__ are "
+    "protected placeholders (URLs, code, numbers): copy them through unchanged "
+    "and leave their suffix punctuation exactly where it is. "
+    "Reply with ONLY the corrected text — no quotes, no markdown, no prefix."
+)
+
+
+def _neural_rewrite_out_has_changes(source: str, candidate: str) -> bool:
+    import difflib
+    return difflib.SequenceMatcher(
+        a=source.strip(), b=candidate.strip()).ratio() < 0.999
+
+
+def _strip_llm_wrapping(candidate: str) -> str:
+    out = (candidate or "").strip()
+    if out.startswith("```"):
+        out = out.strip("`")
+        if out.startswith(("json", "text")):
+            out = out[4:]
+    # A model that answers inside quotes still yields usable text; strip one
+    # level of matched wrapping quotes only.
+    if len(out) >= 2 and out[0] == out[-1] and out[0] in "'\"":
+        out = out[1:-1].strip()
+    return out
+
+
+async def _neural_rewrite(
+    raw: str,
+    *,
+    language: str, style: str, tone: str, corrections_only: bool,
+) -> WriteResponse | None:
+    """Tier 2: provider-backed contextual grammar correction.
+
+    Returns ``None`` whenever the provider is unconfigured, unavailable, slow,
+    or its output fails sanity checks — the caller then uses the offline rule
+    engine, which is why this must NEVER raise.
+    """
+    url = (getattr(settings, "llm_http_url", "") or "").strip()
+    if not url:
+        return None
+    protected_text, protected_spans = _protect_immutable_spans(raw)
+    instruction = (f"Register: style={style}, tone={tone}. "
+                   + ("Fix errors only; do not restyle the text. "
+                      if corrections_only else "")
+                   + f"Output language: {language or 'auto'}.")
+    try:
+        from gt_ai.summarize.llm_http import LlmHttpSummarizer
+        llm = LlmHttpSummarizer(url=url, model=settings.llm_model)
+        candidate = await asyncio.wait_for(
+            llm._chat(_NEURAL_SYSTEM_PROMPT, f"{instruction}\n\n{protected_text}"),
+            timeout=max(1.0, float(getattr(settings, "write_neural_timeout_s", 12.0))))
+    except Exception:
+        # Any failure (no provider, HTTP error, timeout) falls back to rules.
+        with contextlib.suppress(Exception):
+            met.WRITE_NEURAL_REWRITE.labels(status="provider_unavailable").inc()
+        return None
+
+    candidate = _strip_llm_wrapping(candidate)
+    if not candidate or not _neural_rewrite_out_has_changes(raw, candidate):
+        with contextlib.suppress(Exception):
+            met.WRITE_NEURAL_REWRITE.labels(status="unchanged").inc()
+        return None
+    # Defend the user's data: every protected token (from the *masked* text the
+    # provider saw) must survive verbatim.
+    tokens = re.findall(r"__TF_IMMUTABLE_\d+__", protected_text)
+    if any(tok not in candidate for tok in tokens):
+        with contextlib.suppress(Exception):
+            met.WRITE_NEURAL_REWRITE.labels(status="rejected_protected_span").inc()
+        return None
+    # Sanity: the rewrite cannot quietly delete half the message.
+    if len(candidate) < max(8, 0.4 * len(raw)) or len(candidate) > 2.5 * len(raw):
+        with contextlib.suppress(Exception):
+            met.WRITE_NEURAL_REWRITE.labels(status="rejected_length").inc()
+        return None
+    improved = _restore_immutable_spans(candidate, protected_spans)
+    improved = _capitalize_sentences(improved)
+    improved = _fix_punctuation(improved)
+    diffs = _reconcile_granular_diffs(raw, improved, [])
+    alternatives = [] if corrections_only else \
+        _generate_alternatives(improved, raw, style, tone)
+    resp = WriteResponse(
+        original_text=raw,
+        improved_text=improved,
+        language=language,
+        style=style,
+        tone=tone,
+        changes_count=len(diffs),
+        diffs=diffs,
+        alternatives=alternatives,
+    )
+    with contextlib.suppress(Exception):
+        met.WRITE_NEURAL_REWRITE.labels(status="applied").inc()
+    return resp
+
 
 def lookup_dictionary(word: str, source_lang: str = "en", target_lang: str = "en") -> DictionaryResponse:
     """Lookup rich dictionary definitions, synonyms, and example sentences."""

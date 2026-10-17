@@ -68,6 +68,9 @@ LANG_DETECT_CONFIDENCE = Histogram(
     buckets=(0.1, 0.3, 0.5, 0.7, 0.85, 0.95, 1.0))
 PROVIDER_RETRIES = Counter(
     "gt_provider_retries_total", "Provider call retries", ["stage", "provider"])
+WRITE_NEURAL_REWRITE = Counter(
+    "gt_write_neural_rewrite_total", "Neural grammar rewrites applied vs rules fallback",
+    ["status"])
 
 
 def metrics_response():

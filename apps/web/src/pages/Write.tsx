@@ -1415,6 +1415,10 @@ export default function WritePage() {
   const popoverRef = useRef<HTMLDivElement>(null);
   const langDropdownRef = useRef<HTMLDivElement>(null);
   const writeReqIdRef = useRef(0);
+  // Abort the in-flight rewrite when a new keystroke fires the next one; a
+  // request-id guard alone still left the old provider call running and its
+  // late response fighting the response of the newer text.
+  const rewriteAbortRef = useRef<AbortController | null>(null);
 
   // Dictionary Lookup State
   const [dictQuery, setDictQuery] = useState('');
@@ -1460,6 +1464,11 @@ export default function WritePage() {
   async function runRewrite(text: string) {
     if (!text.trim()) return;
     const currentReqId = ++writeReqIdRef.current;
+    // Stale-request cancellation: the previous request is aborted so a fast
+    // typist never waits behind (or races) their own earlier input.
+    rewriteAbortRef.current?.abort();
+    const controller = new AbortController();
+    rewriteAbortRef.current = controller;
     setLoading(true);
     setActivePopover(null);
     setIsEditingImproved(false);
@@ -1468,6 +1477,7 @@ export default function WritePage() {
     try {
       const res = await api<WriteResponse>('/api/v1/write', {
         method: 'POST',
+        signal: controller.signal,
         body: {
           text,
           language: effectiveLang,
@@ -1484,10 +1494,18 @@ export default function WritePage() {
       }
       throw new Error('Writing provider returned no correction. Please retry.');
     } catch (err) {
-      if (currentReqId !== writeReqIdRef.current) return;
+      // Superseded by a newer keystroke (or unmounted): not an error, the
+      // newest request owns the UI state.
+      if (controller.signal.aborted || currentReqId !== writeReqIdRef.current) {
+        return;
+      }
       setResult(null);
       setWriteError(friendlyMessage(err));
       setLoading(false);
+    } finally {
+      if (rewriteAbortRef.current === controller) {
+        rewriteAbortRef.current = null;
+      }
     }
   }
 

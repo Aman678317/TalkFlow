@@ -279,6 +279,68 @@ def adjust_formality(text: str, target_lang: str, formality: str) -> str:
     return res
 
 
+def _is_distinct_translation(source: str, candidate: str | None,
+                             source_lang: str, target_lang: str) -> bool:
+    """Reject a provider response that silently echoes the source sentence.
+
+    Free translation endpoints sometimes return HTTP 200 with the input text
+    when a language pair is unavailable. Passing that through looks successful
+    to the backend, but the web client correctly rejects it as unusable. Treat
+    it as a failed provider attempt so the next configured fallback can run.
+    """
+    if not candidate or not candidate.strip():
+        return False
+    src = (source_lang or "").lower().split("-")[0]
+    tgt = (target_lang or "").lower().split("-")[0]
+    if not src or src in ("auto", "unknown") or not tgt or src == tgt:
+        return True
+    compact = lambda value: re.sub(r"\s+", " ", normalize_unicode(value)).strip().casefold()
+    return compact(candidate) != compact(source)
+
+
+def _is_script_valid(candidate: str | None, target_lang: str) -> bool:
+    """Verify that a candidate translation for non-Latin scripts actually contains target script characters."""
+    if not candidate or not candidate.strip():
+        return False
+    tgt = (target_lang or "").lower().split("-")[0]
+    words = candidate.strip().split()
+    if len(words) < 2 and len(candidate.strip()) < 8:
+        return True
+
+    script_ranges = {
+        "hi": (0x0900, 0x097F),  # Devanagari (Hindi)
+        "mr": (0x0900, 0x097F),  # Marathi (Devanagari)
+        "ne": (0x0900, 0x097F),  # Nepali (Devanagari)
+        "ar": (0x0600, 0x06FF),  # Arabic
+        "fa": (0x0600, 0x06FF),  # Persian
+        "ur": (0x0600, 0x06FF),  # Urdu
+        "ru": (0x0400, 0x04FF),  # Cyrillic (Russian)
+        "uk": (0x0400, 0x04FF),  # Ukrainian
+        "bg": (0x0400, 0x04FF),  # Bulgarian
+        "zh": (0x4E00, 0x9FFF),  # Chinese CJK
+        "ja": (0x3040, 0x30FF),  # Japanese Hiragana/Katakana
+        "ko": (0xAC00, 0xD7AF),  # Korean Hangul
+        "el": (0x0370, 0x03FF),  # Greek
+        "th": (0x0E00, 0x0E7F),  # Thai
+        "bn": (0x0980, 0x09FF),  # Bengali
+        "ta": (0x0B80, 0x0BFF),  # Tamil
+        "te": (0x0C00, 0x0C7F),  # Telugu
+        "gu": (0x0A80, 0x0AFF),  # Gujarati
+        "kn": (0x0C80, 0x0CFF),  # Kannada
+        "ml": (0x0D00, 0x0D7F),  # Malayalam
+        "pa": (0x0A00, 0x0A7F),  # Punjabi (Gurmukhi)
+    }
+
+    if tgt in script_ranges:
+        start, end = script_ranges[tgt]
+        has_target_script = any(start <= ord(ch) <= end for ch in candidate)
+        if not has_target_script:
+            log.warning("Rejected translation for %s lacking target script: %s", tgt, candidate[:50])
+            return False
+
+    return True
+
+
 async def query_deepl(
     text: str,
     src_lang: str,
@@ -484,28 +546,34 @@ class NeuralOnlineTranslationProvider(BaseProvider):
             except Exception as e:
                 log.warning("DeepL API query failed: %s; falling back to MyMemory", e)
 
-        # 2. Try MyMemory Neural API
+        # 2. Try Google Web MT API (Primary high-performance neural engine, 130+ languages, idiom-aware)
+        if not translated_text:
+            try:
+                primary, alts = await query_google_web(text, src, tgt)
+                if _is_distinct_translation(text, primary, src, tgt) and _is_script_valid(primary, tgt):
+                    translated_text = primary
+                    alternatives = alts
+                    provider_used = "google_web"
+                    model_used = "google-nmt-web"
+                else:
+                    log.warning("Google Web returned invalid or identical translation for %s->%s", src, tgt)
+            except Exception as e:
+                log.warning("Google Web translation failed: %s; trying MyMemory fallback", e)
+
+        # 3. Try MyMemory Neural API (Fallback only, protected by strict script validation)
         if not translated_text:
             try:
                 src_code = "en" if src in ("auto", "") else src
                 primary, alts = await query_mymemory(text, src_code, tgt)
-                translated_text = primary
-                alternatives = alts
-                provider_used = "mymemory"
-                model_used = "neural-mymemory-v1"
+                if _is_distinct_translation(text, primary, src, tgt) and _is_script_valid(primary, tgt):
+                    translated_text = primary
+                    alternatives = alts
+                    provider_used = "mymemory"
+                    model_used = "neural-mymemory-v1"
+                else:
+                    log.warning("MyMemory returned invalid or script-mismatched translation for %s->%s", src, tgt)
             except Exception as e:
-                log.warning("MyMemory translation failed: %s; falling back to Google Web", e)
-
-        # 3. Try Google Web MT API
-        if not translated_text:
-            try:
-                primary, alts = await query_google_web(text, src, tgt)
-                translated_text = primary
-                alternatives = alts
-                provider_used = "google_web"
-                model_used = "google-nmt-web"
-            except Exception as e:
-                log.warning("Google Web translation failed: %s; trying offline linguistic fallback", e)
+                log.warning("MyMemory translation failed: %s; trying offline linguistic fallback", e)
 
         # 4. Offline linguistic rule engine
         if not translated_text:
