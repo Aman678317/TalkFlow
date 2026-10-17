@@ -50,7 +50,9 @@ from gt_ai.vad import EnergyVAD, VadState, create_vad
 
 log = logging.getLogger("app.realtime.pipeline")
 
-AUDIO_QUEUE_MAX = 500          # ~50s of 100ms chunks — backpressure bound
+AUDIO_QUEUE_MAX = 500          # bounded backpressure queue
+# Audio contract: mono PCM16 at 16 kHz; cap each transport frame to 100 ms.
+MAX_AUDIO_FRAME_BYTES = 16_000 * 2 // 10
 
 #: Characters that close a clause in the languages this product ships. A live
 #: caption ending on one of these has said something a translator can render on
@@ -250,26 +252,42 @@ class MeetingPipeline:
     # ------------------------------------------------------------------ #
     # Audio ingestion
     # ------------------------------------------------------------------ #
-    async def feed_audio(self, participant_id: uuid.UUID, pcm16: bytes) -> None:
+    async def feed_audio(self, participant_id: uuid.UUID, pcm16: bytes) -> bool:
+        """Queue one bounded mono PCM16/16-kHz frame.
+
+        Invalid bytes are rejected before VAD and original-audio relay so
+        malformed frames cannot poison speech recognition or listener playback.
+        """
         q = self.audio_queues.get(participant_id)
-        if q is None:
-            return
+        if q is None or self._closed:
+            return False
+        if not isinstance(pcm16, (bytes, bytearray, memoryview)):
+            return False
+        frame = bytes(pcm16)
+        if not frame or len(frame) % 2 or len(frame) > MAX_AUDIO_FRAME_BYTES:
+            self._broadcast_diag(self._diag(
+                "audio_frame_rejected", speaker=participant_id,
+                reason=("empty_frame" if not frame else
+                        "odd_pcm16_byte_count" if len(frame) % 2 else "frame_too_large"),
+                frame_bytes=len(frame), max_frame_bytes=MAX_AUDIO_FRAME_BYTES))
+            return False
         try:
-            q.put_nowait(pcm16)
+            q.put_nowait(frame)
         except asyncio.QueueFull:
-            # backpressure: drop oldest audio, warn clients (PDD §10)
+            # Backpressure is recoverable but this frame is not accepted.
             try:
                 q.get_nowait()
-                q.put_nowait(pcm16)
-            except Exception:
+            except asyncio.QueueEmpty:
                 pass
             if not self.session.quality_degraded:
                 self.session.quality_degraded = True
                 await manager.broadcast(self.session, ServerEventType.QUALITY_DEGRADED, {
                     "reason": "audio_backpressure",
-                    "message": "Audio processing is falling behind. Some chunks were "
-                               "dropped. The original call is unaffected.",
+                    "message": "Audio processing is falling behind. Some chunks were dropped. "
+                               "The original call is unaffected.",
                     "recoverable": True})
+            return False
+        return True
 
     def _diag(self, stage: str, *, utt: str | None = None, seq: int | None = None,
               speaker: uuid.UUID | None = None, **fields: object) -> dict:
