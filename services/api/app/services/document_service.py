@@ -235,19 +235,25 @@ def reconstruct_xlsx(blocks: list[DocBlock], original: bytes) -> tuple[bytes, st
 
 
 def parse_pdf(data: bytes) -> list[DocBlock]:
-    """Extract PDF text while recording page coverage and optional OCR fallback.
+    """Extract PDF text and fail closed when an enabled OCR page cannot be read.
 
-    OCR is opt-in via DOCUMENT_OCR_ENABLED=true because it requires Tesseract
-    and can be expensive. Text-layer extraction remains the preferred path.
+    OCR is opt-in because it requires the Tesseract executable and matching
+    language packs. When OCR is enabled, every page without a usable text layer
+    must either yield translatable OCR text or cause the document to fail.
     """
     try:
         import fitz  # PyMuPDF
     except ImportError:
         fitz = None
+
     blocks: list[DocBlock] = []
     idx = 0
-    ocr_enabled = str(getattr(settings, "document_ocr_enabled", False)).lower() in {"1", "true", "yes", "on"}
+    ocr_enabled = str(getattr(settings, "document_ocr_enabled", False)).lower() in {
+        "1", "true", "yes", "on"
+    }
     ocr_languages = str(getattr(settings, "document_ocr_languages", "eng"))
+    extraction_failures: list[str] = []
+
     if fitz is not None:
         doc = fitz.open(stream=data, filetype="pdf")
         try:
@@ -268,15 +274,19 @@ def parse_pdf(data: bytes) -> list[DocBlock]:
                             ctx={"mode": "pymupdf"}))
                         idx += 1
                         page_blocks += 1
-                # OCR only pages without a usable text layer. Never overwrite a
-                # real text layer with OCR output, to avoid duplicate paragraphs.
-                if page_blocks == 0 and ocr_enabled:
+
+                # OCR only pages without a usable text layer; preserve page order.
+                if page_blocks == 0:
+                    if not ocr_enabled:
+                        continue
                     try:
                         import pytesseract
                         from PIL import Image
+
                         pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
                         image = Image.open(io.BytesIO(pix.tobytes("png")))
                         ocr_text = pytesseract.image_to_string(image, lang=ocr_languages)
+                        page_ocr_blocks = 0
                         for para in re.split(r"\n\s*\n", ocr_text):
                             para = para.strip()
                             if _is_translatable(para):
@@ -285,30 +295,49 @@ def parse_pdf(data: bytes) -> list[DocBlock]:
                                     ctx={"mode": "ocr", "ocr": True,
                                          "ocr_language": ocr_languages}))
                                 idx += 1
+                                page_ocr_blocks += 1
+                        if page_ocr_blocks == 0:
+                            extraction_failures.append(f"page {pno + 1}: OCR found no translatable text")
                     except Exception as exc:
-                        log.warning("PDF OCR unavailable page=%d error=%s", pno + 1, type(exc).__name__)
+                        extraction_failures.append(
+                            f"page {pno + 1}: OCR failed ({type(exc).__name__})")
         finally:
             doc.close()
+
+        if extraction_failures:
+            # Do not allow a mixed PDF to be marked ready while scanned pages
+            # have silently been omitted from the translated output.
+            summary = "; ".join(extraction_failures[:10])
+            raise DocumentProcessingError(
+                f"PDF extraction incomplete; enable a working OCR configuration or review {summary}")
+
         if blocks:
             return blocks
         if ocr_enabled:
             raise DocumentProcessingError(
-                "No PDF text could be extracted even with OCR enabled; verify Tesseract and OCR languages.")
+                "No PDF text could be extracted with OCR enabled; verify Tesseract and OCR languages.")
         return blocks
 
-    # Fallback: pypdf text extraction (no layout/OCR).
+    # Fallback: pypdf text extraction does not provide OCR/layout support.
     from pypdf import PdfReader
     reader = PdfReader(io.BytesIO(data))
+    empty_pages: list[int] = []
     for pno, page in enumerate(reader.pages):
         text = page.extract_text() or ""
+        page_blocks = 0
         for para in re.split(r"\n\s*\n", text):
             if _is_translatable(para):
                 blocks.append(DocBlock(idx, "text", pno, para, ctx={"mode": "pypdf"}))
                 idx += 1
-    if not blocks and ocr_enabled:
-        raise DocumentProcessingError("PDF OCR requires PyMuPDF, Pillow, and pytesseract.")
+                page_blocks += 1
+        if page_blocks == 0:
+            empty_pages.append(pno + 1)
+    if ocr_enabled and empty_pages:
+        raise DocumentProcessingError(
+            "PDF OCR requires PyMuPDF, Pillow, and pytesseract; pages without text layer: "
+            + ", ".join(map(str, empty_pages[:20]))
+        )
     return blocks
-
 
 def reconstruct_pdf(blocks: list[DocBlock], original: bytes) -> tuple[bytes, str]:
     try:
