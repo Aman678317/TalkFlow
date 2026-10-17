@@ -488,6 +488,8 @@ async def _run_pipeline(db: AsyncSession, doc: M.Document) -> None:
     parse_fn, reconstruct_fn = parser_for(doc.mime_type)
     try:
         blocks = await asyncio.to_thread(parse_fn, data)
+    except DocumentProcessingError:
+        raise
     except Exception as e:
         raise DocumentProcessingError(f"Parser failed: {e}") from e
     translatable = [b for b in blocks if b.kind != "non_translatable"]
