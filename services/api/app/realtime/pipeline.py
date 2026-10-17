@@ -482,36 +482,36 @@ class MeetingPipeline:
     # Barge-in (Phase 3): cancel one speaker's stale output, nobody else's
     # ------------------------------------------------------------------ #
     async def _handle_barge_in(self, p: RtParticipant) -> list[str]:
-        """The speaker started a new turn, so translated audio still in flight
-        for their earlier turns would talk over their own voice.
-
-        The scope is deliberate: cancellations are keyed per correlation and only
-        this speaker's correlations are touched, so a barge-in cannot silence
-        another speaker's audio. Returns the cancelled correlation ids; an empty
-        list means nothing was in flight, so nothing is announced — a flush the
-        browser cannot attribute to a speaker would only drop live audio.
-        """
+        """Cancel this speaker's active translation jobs and flush their playback."""
         pid = str(p.participant_id)
-        languages = self.supervisor.active_languages(pid)
+        languages = set(self.supervisor.active_languages(pid))
         cancelled = await self.supervisor.interrupt(pid, reason="barge_in")
-        if not cancelled:
+        # A segment can be between task creation and supervisor registration; task
+        # ownership by speaker is an independent cancellation source.
+        owner_tasks = [
+            (key, task) for key, task in list(self.translation_tasks.items())
+            if key[0] == pid and not task.done()
+        ]
+        for key, task in owner_tasks:
+            if not task.done():
+                languages.add(key[2])
+                task.cancel()
+        if not cancelled and not owner_tasks:
             return []
         for corr in cancelled:
             self._fanout_pending.pop(corr, None)
             self.listening.reset_utterance(corr)
             self.voice.forget_correlation(corr)
             met.STALE_AUDIO_DROPPED.labels(reason="barge_in").inc()
-        for (owner, _seq, _lang), task in list(self.translation_tasks.items()):
-            if owner == pid:
-                task.cancel()
         self._broadcast_diag(self._diag(
-            "barge_in", speaker=p.participant_id, cancelled=len(cancelled),
-            target_languages=languages))
+            "barge_in", speaker=p.participant_id,
+            cancelled=len(cancelled), cancelled_tasks=len(owner_tasks),
+            target_languages=sorted(languages)))
         await manager.broadcast(
             self.session, ServerEventType.PLAYBACK_FLUSH,
             {"speaker_id": pid, "speakerId": pid, "reason": "barge_in",
              "scope": "speaker", "recoverable": True,
-             "target_languages": languages, "correlation_ids": cancelled,
+             "target_languages": sorted(languages), "correlation_ids": cancelled,
              "message": "Translation of the interrupted turn was dropped."},
             speaker_id=pid)
         return cancelled
