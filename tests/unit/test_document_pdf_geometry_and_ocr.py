@@ -11,7 +11,10 @@ from __future__ import annotations
 
 import io
 import uuid
-import fitz
+try:
+    import fitz
+except ImportError:
+    fitz = None
 import pytest
 
 from app.services.document_service import (
@@ -21,6 +24,7 @@ from app.services.document_service import (
 )
 
 
+@pytest.mark.skipif(fitz is None, reason="PyMuPDF (fitz) is not installed in environment")
 def test_pdf_geometry_and_sentence_chunking():
     """Verify PyMuPDF extracts normalized bounding boxes and chunks long paragraphs on sentence boundaries."""
     doc = fitz.open()
@@ -58,6 +62,7 @@ def test_pdf_geometry_and_sentence_chunking():
         assert len(chunk.text) <= 950
 
 
+@pytest.mark.skipif(fitz is None, reason="PyMuPDF (fitz) is not installed in environment")
 def test_pdf_reconstruction_layout_fitting():
     """Verify reconstruct_pdf redacts original text and inserts translated text with font scaling."""
     doc = fitz.open()
@@ -83,6 +88,7 @@ def test_pdf_reconstruction_layout_fitting():
     assert "Original source document text." not in page_text
 
 
+@pytest.mark.skipif(fitz is None, reason="PyMuPDF (fitz) is not installed in environment")
 def test_scanned_image_page_warning_recording():
     """Verify that a page containing only an image without text records a non-fatal warning."""
     doc = fitz.open()
@@ -103,6 +109,24 @@ def test_scanned_image_page_warning_recording():
         scanned_blocks = [b for b in blocks if b.ctx.get("mode") == "scanned_no_ocr"]
         if scanned_blocks:
             assert "warning" in scanned_blocks[0].ctx
+
+
+def test_pdf_parsing_pypdf_fallback(monkeypatch):
+    """Verify that when fitz is unavailable or in pypdf fallback mode, parse_pdf extracts text blocks."""
+    import sys
+    monkeypatch.setitem(sys.modules, "fitz", None)
+
+    from fpdf import FPDF
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Helvetica", size=12)
+    pdf.cell(text="TalkFlow fallback translation test string for enterprise meetings.")
+    pdf_bytes = bytes(pdf.output())
+
+    blocks = parse_pdf(pdf_bytes)
+    assert len(blocks) >= 1
+    assert any("TalkFlow fallback translation" in b.text for b in blocks)
+    assert any(b.ctx.get("mode") == "pypdf" for b in blocks)
 
 
 def test_document_original_download_and_progress_endpoint(services_app_client, user):
