@@ -22,6 +22,21 @@ E2E_LATENCY = Histogram(
     "gt_e2e_latency_ms", "Speech end -> translated audio delivered (ms)",
     ["src", "tgt"], buckets=(500, 1000, 1500, 2000, 2500, 3500, 5000, 8000, 15000))
 
+REALTIME_STAGE_LATENCY = Histogram(
+    "gt_realtime_stage_duration_ms",
+    "Realtime stage duration in milliseconds; use histogram_quantile for p50/p95/p99.",
+    ["stage", "provider"],
+    buckets=(10, 25, 50, 100, 200, 300, 500, 750, 1000, 1500, 2500, 5000, 10000, 15000))
+REALTIME_STAGE_FAILURES = Counter(
+    "gt_realtime_stage_failures_total",
+    "Realtime speech pipeline stage failures (reason is a bounded code).",
+    ["stage", "provider", "reason"])
+LANGUAGE_DETECTION_CONFIDENCE = Histogram(
+    "gt_language_detection_confidence",
+    "Detected language confidence from source audio, when supplied by the STT provider.",
+    ["provider", "language"],
+    buckets=(0.1, 0.25, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 1.0))
+
 TRANSLATION_FAILURES = Counter(
     "gt_translation_failures_total", "Translation failures", ["src", "tgt", "provider", "reason"])
 STALE_AUDIO_DROPPED = Counter(
