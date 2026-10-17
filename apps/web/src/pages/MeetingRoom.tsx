@@ -92,6 +92,7 @@ export default function MeetingRoom() {
     audio_mode: "translated",
     caption_mode: "both",
     latency_mode: "balanced",
+    captions_enabled: true,
   });
   const [socketState, setSocketState] = React.useState<SocketState>("connecting");
   const [isOnline, setIsOnline] = React.useState(typeof navigator !== "undefined" ? navigator.onLine : true);
@@ -601,6 +602,7 @@ export default function MeetingRoom() {
       case "transcript.final": {
         const uid = evt.utterance_id as string;
         if (typeof uid === "string") utterLangRef.current.set(uid.slice(0, 16), evt.language as string);
+        if (prefsRef.current.captions_enabled === false) break;
         setCaptions((prev) => reduceCaptions(prev, evt, captionView()));
         break;
       }
@@ -611,7 +613,9 @@ export default function MeetingRoom() {
           setTranslationMessage(null);
         }
         if (isDegradedNetwork) setIsDegradedNetwork(false);
-        setCaptions((prev) => reduceCaptions(prev, evt, captionView()));
+        if (prefsRef.current.captions_enabled !== false) {
+          setCaptions((prev) => reduceCaptions(prev, evt, captionView()));
+        }
         break;
       }
       case "translation.failed": {
@@ -625,7 +629,9 @@ export default function MeetingRoom() {
         setTranslationStatus("unavailable");
         setTranslationMessage(`${why} Original audio is active.`);
         setNotice(why);
-        setCaptions((prev) => reduceCaptions(prev, evt, captionView()));
+        if (prefsRef.current.captions_enabled !== false) {
+          setCaptions((prev) => reduceCaptions(prev, evt, captionView()));
+        }
         break;
       }
       case "tts.chunk": {
@@ -688,7 +694,9 @@ export default function MeetingRoom() {
           setTranslationMessage(`High translation latency (~${Math.round(ms)}ms). Audio prioritized.`);
         }
         if (evt.target_language !== prefsRef.current.listening_language) break;
-        setCaptions((prev) => reduceCaptions(prev, evt, captionView()));
+        if (prefsRef.current.captions_enabled !== false) {
+          setCaptions((prev) => reduceCaptions(prev, evt, captionView()));
+        }
         break;
       }
       case "error": {
@@ -1121,6 +1129,23 @@ export default function MeetingRoom() {
   function updatePrefs(patch: Partial<Preferences>) {
     setPrefs((p) => ({ ...p, ...patch }));
     socketRef.current?.updatePreferences(patch);
+  }
+
+  const translationEnabled = prefs.audio_mode !== "original" || prefs.caption_mode !== "original";
+
+  function setTranslationEnabled(enabled: boolean) {
+    if (enabled) {
+      updatePrefs({
+        audio_mode: prefs.audio_mode === "original" ? "translated" : prefs.audio_mode,
+        caption_mode: prefs.caption_mode === "original" ? "translated" : prefs.caption_mode,
+        captions_enabled: true,
+      });
+      return;
+    }
+    updatePrefs({ audio_mode: "original", caption_mode: "original", captions_enabled: true });
+    setCaptions([]);
+    setTranslationStatus("normal");
+    setTranslationMessage(null);
   }
 
   function toggleDrawer(tabName: "info" | "people" | "chat" | "captions" | "summary") {
@@ -2383,9 +2408,9 @@ export default function MeetingRoom() {
       </div>
 
       {/* =========================================================================
-          BOTTOM FLOATING ACTION DOCK (Google Meet Signature Dock)
+          BOTTOM FLOATING ACTION DOCK (Apple HIG Liquid Glass Dock)
          ========================================================================= */}
-      <footer className="h-20 bg-[#1E1F22] border-t border-white/10 px-4 sm:px-6 flex items-center justify-between shrink-0 z-30">
+      <footer className="h-20 bg-slate-950/85 backdrop-blur-2xl border-t border-white/10 px-4 sm:px-6 flex items-center justify-between shrink-0 z-30">
         {/* Left: Meeting Code & Live Call Clock */}
         <div className="hidden md:flex items-center gap-3 text-xs text-slate-300">
           <span className="font-mono text-slate-200">{callTime}</span>
@@ -2407,9 +2432,9 @@ export default function MeetingRoom() {
           <button
             type="button"
             onClick={toggleMic}
-            className={`h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center transition-all duration-150 active:scale-95 ${micOn
-              ? "bg-[#3C4043] hover:bg-[#434649] text-white"
-              : "bg-red-600 hover:bg-red-700 text-white ring-2 ring-red-500/30"
+            className={`h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center transition-all duration-150 active:scale-95 border ${micOn
+              ? "bg-white/10 hover:bg-white/20 text-white border-white/15 backdrop-blur-md"
+              : "bg-[#FF3B30] hover:bg-[#D70015] text-white border-red-400/30 shadow-md shadow-red-500/25"
               }`}
             aria-label={micOn ? "Mute microphone" : "Start microphone"}
             title={micOn ? "Mute microphone" : "Start microphone"}
@@ -2421,11 +2446,11 @@ export default function MeetingRoom() {
           <button
             type="button"
             onClick={toggleCamera}
-            className={`h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center transition-all duration-150 active:scale-95 relative ${cameraOn
+            className={`h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center transition-all duration-150 active:scale-95 relative border ${cameraOn
               ? usingVirtualCamera
-                ? "bg-sky-600 hover:bg-sky-500 text-white ring-2 ring-sky-400/50 shadow-md shadow-sky-600/30"
-                : "bg-[#3C4043] hover:bg-[#434649] text-white"
-              : "bg-red-600 hover:bg-red-700 text-white ring-2 ring-red-500/30"
+                ? "bg-sky-600 hover:bg-sky-500 text-white border-sky-400/50 shadow-md shadow-sky-600/30"
+                : "bg-white/10 hover:bg-white/20 text-white border-white/15 backdrop-blur-md"
+              : "bg-[#FF3B30] hover:bg-[#D70015] text-white border-red-400/30 shadow-md shadow-red-500/25"
               }`}
             aria-label={cameraOn ? (usingVirtualCamera ? "Stop virtual camera" : "Stop camera") : "Start camera"}
             title={
@@ -2447,13 +2472,13 @@ export default function MeetingRoom() {
             )}
           </button>
 
-          {/* Captions Overlay Toggle (Google Meet CC Button) */}
+          {/* Captions Overlay Toggle */}
           <button
             type="button"
             onClick={() => setShowCaptionsOverlay((prev) => !prev)}
-            className={`h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center transition-all duration-150 active:scale-95 ${showCaptionsOverlay
-              ? "bg-dl-blue text-white shadow-md shadow-dl-blue/30"
-              : "bg-[#3C4043] hover:bg-[#434649] text-white"
+            className={`h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center transition-all duration-150 active:scale-95 border ${showCaptionsOverlay
+              ? "bg-[#007AFF] text-white border-blue-400/40 shadow-md shadow-blue-500/25"
+              : "bg-white/10 hover:bg-white/20 text-white border-white/15 backdrop-blur-md"
               }`}
             aria-label={showCaptionsOverlay ? "Turn off captions" : "Turn on captions"}
             title="Toggle live multilingual captions on screen"
@@ -2465,9 +2490,9 @@ export default function MeetingRoom() {
           <button
             type="button"
             onClick={toggleScreen}
-            className={`h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center transition-all duration-150 active:scale-95 ${screenOn
-              ? "bg-dl-blue text-white shadow-md shadow-dl-blue/30"
-              : "bg-[#3C4043] hover:bg-[#434649] text-white"
+            className={`h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center transition-all duration-150 active:scale-95 border ${screenOn
+              ? "bg-[#007AFF] text-white border-blue-400/40 shadow-md shadow-blue-500/25"
+              : "bg-white/10 hover:bg-white/20 text-white border-white/15 backdrop-blur-md"
               }`}
             aria-label={screenOn ? "Stop sharing" : "Share screen"}
             title="Share your screen"
@@ -2479,14 +2504,14 @@ export default function MeetingRoom() {
           <button
             type="button"
             onClick={() => setSettingsOpen(true)}
-            className="h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center bg-[#3C4043] hover:bg-[#434649] text-white transition-all duration-150 active:scale-95"
+            className="h-11 w-11 sm:h-12 sm:w-12 rounded-full flex items-center justify-center bg-white/10 hover:bg-white/20 text-white border border-white/15 backdrop-blur-md transition-all duration-150 active:scale-95"
             aria-label="Language & Audio settings"
             title="Language & Audio Translation preferences"
           >
             <Settings className="h-5 w-5" />
           </button>
 
-          {/* End Call / Leave Meeting (Red Pill) */}
+          {/* End Call / Leave Meeting (Apple System Red Pill) */}
           <button
             type="button"
             onClick={() => {
@@ -2496,7 +2521,7 @@ export default function MeetingRoom() {
               micRef.current?.stop();
               nav(`/meetings?end=${id}`);
             }}
-            className="h-11 px-5 sm:h-12 sm:px-6 rounded-full flex items-center justify-center gap-2 bg-[#EA4335] hover:bg-[#D93025] text-white font-medium shadow-md transition-all active:scale-95"
+            className="h-11 px-5 sm:h-12 sm:px-6 rounded-full flex items-center justify-center gap-2 bg-[#FF3B30] hover:bg-[#D70015] text-white font-medium shadow-md shadow-red-500/30 transition-all active:scale-95"
             aria-label="Leave call"
             title="Leave this meeting"
           >
@@ -2614,6 +2639,22 @@ export default function MeetingRoom() {
 
               {settingsTab === "translation" ? (
                 <div className="space-y-4 text-xs">
+                  {/* Translation master switch */}
+                  <div>
+                    <label className="block mb-1.5 font-semibold uppercase tracking-wider text-slate-300 text-[11px]">
+                      Live translation
+                    </label>
+                    <SegmentedControl
+                      ariaLabel="Live translation"
+                      value={translationEnabled ? "on" : "off"}
+                      onChange={(v) => setTranslationEnabled(v === "on")}
+                      options={[
+                        { value: "on", label: "On", title: "Translate incoming speech and keep live captions available" },
+                        { value: "off", label: "Off", title: "Use original audio and source captions only" },
+                      ]}
+                    />
+                  </div>
+
                   {/* I speak */}
                   <div>
                     <label className="block mb-1.5 font-semibold uppercase tracking-wider text-slate-300 text-[11px]">
@@ -2695,6 +2736,24 @@ export default function MeetingRoom() {
                       ]}
                     />
                   </div>
+
+                  <label className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/5 p-3 cursor-pointer">
+                    <span>
+                      <span className="block font-medium text-white">Receive live captions</span>
+                      <span className="mt-0.5 block text-[11px] text-slate-400">
+                        Disable this to stop caption fan-out while keeping your audio choice.
+                      </span>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={prefs.captions_enabled !== false}
+                      onChange={(e) => {
+                        updatePrefs({ captions_enabled: e.target.checked });
+                        if (!e.target.checked) setCaptions([]);
+                      }}
+                      className="h-4 w-4 rounded accent-dl-blue"
+                    />
+                  </label>
                 </div>
               ) : (
                 <div className="space-y-4 text-xs">

@@ -17,6 +17,15 @@ vi.mock("../api", () => ({
   api: vi.fn(),
   getAccessToken: () => "jwt",
   getApiBaseUrl: () => "",
+  resolveWsUrl: (path: string, params?: URLSearchParams) => {
+    const q = params ? `?${params.toString()}` : "";
+    return `ws://localhost:5173${path}${q}`;
+  },
+  ApiError: class ApiError extends Error {
+    constructor(public status: number, body?: any) {
+      super(body?.error?.message || "Api error");
+    }
+  },
 }));
 
 import { MeetingSocket, type SocketState } from "../ws";

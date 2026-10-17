@@ -114,6 +114,7 @@ class MeetingPipeline:
         # so (seq, target_lang) alone lets one speaker's turn overwrite another's
         # and leaves the overwritten task uncancellable.
         self.translation_tasks: dict[tuple[str, int, str], asyncio.Task] = {}
+        self._partial_tasks: dict[uuid.UUID, asyncio.Task] = {}
         self._fanout_pending: dict[str, int] = {}
         self._closed = False
         self._latest_final_seq: dict[uuid.UUID, int] = {}
@@ -204,6 +205,9 @@ class MeetingPipeline:
         announces ``audio.stopped``.
         """
         task = self.speaker_tasks.pop(participant_id, None)
+        ptask = self._partial_tasks.pop(participant_id, None)
+        if ptask and not ptask.done():
+            ptask.cancel()
         self.audio_queues.pop(participant_id, None)
         self.vads.pop(participant_id, None)
         utterance = self.utterances.get(participant_id)
@@ -241,6 +245,9 @@ class MeetingPipeline:
         self._closed = True
         for pid in list(self.speaker_tasks):
             self.stop_speaker(pid)
+        for pt in list(self._partial_tasks.values()):
+            pt.cancel()
+        self._partial_tasks.clear()
         for t in list(self.translation_tasks.values()):
             t.cancel()
         self.translation_tasks.clear()
@@ -252,12 +259,20 @@ class MeetingPipeline:
     # ------------------------------------------------------------------ #
     async def feed_audio(self, participant_id: uuid.UUID, pcm16: bytes) -> None:
         q = self.audio_queues.get(participant_id)
-        if q is None:
+        if q is None or not pcm16:
+            return
+        # PCM16 contract: 16-bit signed integer samples (even number of bytes)
+        if len(pcm16) % 2 != 0:
+            pcm16 = pcm16[:len(pcm16) - 1]
+        # Frame bounds: drop aberrant fragments (<160B) or gigantic bursts (>64KB)
+        if len(pcm16) < 160 or len(pcm16) > 64000:
+            met.DROPPED_AUDIO_FRAMES.labels(reason="invalid_contract").inc()
             return
         try:
             q.put_nowait(pcm16)
         except asyncio.QueueFull:
             # backpressure: drop oldest audio, warn clients (PDD §10)
+            met.DROPPED_AUDIO_FRAMES.labels(reason="audio_backpressure").inc()
             try:
                 q.get_nowait()
                 q.put_nowait(pcm16)
@@ -386,7 +401,13 @@ class MeetingPipeline:
                     elif (now - u.last_partial_at >= settings.vad_partial_interval_ms / 1000.0
                           and len(u.buffer) > 16000 * 2 * 0.8):
                         u.last_partial_at = now
-                        await self._emit_partial(p, u)
+                        prev_ptask = self._partial_tasks.get(p.participant_id)
+                        if prev_ptask and not prev_ptask.done():
+                            prev_ptask.cancel()
+                        self._partial_tasks[p.participant_id] = asyncio.create_task(
+                            self._emit_partial(p, u),
+                            name=f"partial-{p.participant_id}-{u.seq}"
+                        )
                         # Phrase break: a caption that ends on a clause boundary
                         # after `vad_phrase_commit_ms` of continuous speech is a
                         # complete thought, so commit it now. Waiting for the
@@ -474,6 +495,9 @@ class MeetingPipeline:
         browser cannot attribute to a speaker would only drop live audio.
         """
         pid = str(p.participant_id)
+        ptask = self._partial_tasks.pop(p.participant_id, None)
+        if ptask and not ptask.done():
+            ptask.cancel()
         languages = self.supervisor.active_languages(pid)
         cancelled = await self.supervisor.interrupt(pid, reason="barge_in")
         if not cancelled:
@@ -606,6 +630,9 @@ class MeetingPipeline:
         start_wall_ms = int(time.time() * 1000 - capture_ms)
         duration_ms = round(len(audio) / 32.0)  # 16 kHz mono PCM16
         started_at_ms = start_ms if start_ms is not None else u.started_at_ms
+        ptask = self._partial_tasks.pop(p.participant_id, None)
+        if ptask and not ptask.done():
+            ptask.cancel()
         corr = str(utterance_id or u.utterance_id)
         seq_num = seq if seq is not None else u.seq
         self._broadcast_diag(self._diag(

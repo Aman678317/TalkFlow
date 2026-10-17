@@ -255,7 +255,7 @@ export function Modal({ open, onClose, title, children, wide }:
       {open && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog"
              aria-modal="true" aria-label={typeof title === 'string' ? title : 'Dialog'}>
-           <motion.div className="absolute inset-0 bg-ink-950/65" onClick={onClose}
+           <motion.div className="absolute inset-0 bg-black/40 backdrop-blur-md" onClick={onClose}
                 initial={reducedMotion ? false : { opacity: 0 }} animate={{ opacity: 1 }}
                 exit={reducedMotion ? { opacity: 1 } : { opacity: 0 }}
                 transition={reducedMotion ? undefined : { duration: 0.2, ease: EASE_STANDARD }} />
@@ -264,9 +264,9 @@ export function Modal({ open, onClose, title, children, wide }:
                 animate={reducedMotion ? { opacity: 1 } : { opacity: 1, scale: 1, y: 0 }}
                 exit={reducedMotion ? { opacity: 1 } : { opacity: 0, scale: 0.97, y: 8, transition: { duration: 0.16, ease: 'easeIn' } }}
                 transition={reducedMotion ? undefined : springSheet}
-                className={cn('relative w-full rounded-2xl border border-border bg-surface-panel shadow-lift',
+                className={cn('relative w-full rounded-3xl border border-black/10 bg-surface-panel/95 backdrop-blur-2xl shadow-2xl',
                   wide ? 'max-w-3xl' : 'max-w-lg')}>
-             <div className="flex items-center justify-between border-b border-ink-100 px-5 py-4">
+             <div className="flex items-center justify-between border-b border-ink-100/80 px-6 py-4">
                <h2 className="text-base font-semibold tracking-title text-ink-950">{title}</h2>
               <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close dialog">✕</Button>
             </div>

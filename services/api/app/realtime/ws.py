@@ -24,7 +24,6 @@ from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from sqlalchemy import func, select
 
 from app import metrics as met
-from app.config import settings
 from app.db import models as M
 from app.db.session import db_session
 from app.errors import AuthenticationError
@@ -238,7 +237,6 @@ async def realtime_ws(
                                 if k != str(rp.participant_id)])
 
     # ---- receive loop ---------------------------------------------------- #
-    receive_task: asyncio.Task | None = None
     try:
         while True:
             try:
@@ -332,7 +330,8 @@ def _participant_snapshot(key: str, p: RtParticipant) -> dict:
     return {
         "participant_id": key, "display_name": p.display_name,
         "speak_lang": p.speak_lang, "hear_lang": p.hear_lang,
-        "audio_mode": p.audio_mode, "connected": p.connected,
+        "audio_mode": p.audio_mode, "captions_enabled": p.captions_enabled,
+        "connected": p.connected,
     }
 
 
@@ -370,6 +369,8 @@ async def _handle_event(ws: WebSocket, session, rp: RtParticipant, event) -> Non
             rp.hear_lang = data["hear_lang"]
         if "audio_mode" in data:
             rp.audio_mode = data["audio_mode"]
+        if "captions_enabled" in data:
+            rp.captions_enabled = bool(data["captions_enabled"])
         if "display_name" in data and data["display_name"]:
             rp.display_name = data["display_name"]
 
@@ -440,7 +441,7 @@ async def _handle_event(ws: WebSocket, session, rp: RtParticipant, event) -> Non
         captions = data.get("captions_enabled")
         previous_hear_lang = rp.hear_lang
         async with db_session() as db:
-            pref = await meeting_service.update_preference(
+            await meeting_service.update_preference(
                 db, rp.participant_id, speak_lang=speak, hear_lang=hear,
                 audio_mode=audio_mode, captions_enabled=captions)
         if speak:
@@ -462,7 +463,7 @@ async def _handle_event(ws: WebSocket, session, rp: RtParticipant, event) -> Non
             "participant_id": str(rp.participant_id),
             "display_name": rp.display_name,
             "speak_lang": rp.speak_lang, "hear_lang": rp.hear_lang,
-            "audio_mode": rp.audio_mode})
+            "audio_mode": rp.audio_mode, "captions_enabled": rp.captions_enabled})
 
     elif event.type == ClientEventType.CHAT_SEND:
         text = (data.get("text") or "").strip()

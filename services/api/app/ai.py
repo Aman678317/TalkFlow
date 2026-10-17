@@ -26,7 +26,7 @@ from gt_ai.base import BaseProvider
 from gt_ai.model_router.router import ModelRouter, ProviderSpec
 from gt_ai.registry import create
 from gt_ai.types import (
-    AudioChunk, DetectionResult, Intent, ProviderHealth, ProviderUnavailable,
+    AudioChunk, DetectionResult, ProviderUnavailable,
     RouteDecision, Task, TranslationRequest, TranslationResult, TranscriptChunk,
 )
 
@@ -58,6 +58,22 @@ class AIFacade:
         name = env_map.get(task, "auto") or "auto"
         if name != "auto":
             return name
+        # Prefer the managed Azure path when its server-side credentials are
+        # present. Without credentials, retain the existing local order.
+        azure_ready = {
+            Task.STT: bool(settings.azure_speech_key and settings.azure_speech_region),
+            Task.TTS: bool(settings.azure_speech_key and settings.azure_speech_region),
+            Task.MT: bool(
+                (settings.azure_translator_key or settings.azure_speech_key)
+                and (settings.azure_translator_region or settings.azure_speech_region)
+            ),
+        }
+        if azure_ready.get(task):
+            return {
+                Task.STT: "azure_speech",
+                Task.MT: "azure_translator",
+                Task.TTS: "azure_speech_tts",
+            }[task]
         # auto: prefer real providers that can healthcheck; dev fallback last
         order = {
             Task.MT: ["neural_online", "deepl", "airllm", "madlad400", "nllb_ct2", "argos", "mt_http", "dev_echo"],
@@ -93,11 +109,25 @@ class AIFacade:
             }
         elif task == Task.MT and name == "mt_http":
             kwargs = {"url": settings.mt_http_url, "style": settings.mt_http_style}
+        elif task == Task.MT and name in ("azure_translator", "azure_mt", "azure"):
+            kwargs = {
+                "key": settings.azure_translator_key or settings.azure_speech_key,
+                "region": settings.azure_translator_region or settings.azure_speech_region,
+                "endpoint": settings.azure_translator_endpoint,
+                "api_version": settings.azure_translator_api_version,
+            }
         elif task == Task.STT and name == "faster_whisper":
             kwargs = {"model_size": settings.stt_model, "device": settings.stt_device,
                       "compute_type": settings.stt_compute_type, "cache_dir": cache}
         elif task == Task.STT and name == "stt_http":
             kwargs = {"url": settings.stt_http_url}
+        elif task == Task.STT and name in ("azure_speech", "azure_stt", "azure_speech_stt"):
+            kwargs = {
+                "key": settings.azure_speech_key,
+                "region": settings.azure_speech_region,
+                "default_language": settings.azure_speech_language,
+                "auto_detect_languages": settings.azure_speech_auto_detect_languages,
+            }
         elif task == Task.TTS and name == "kokoro":
             kwargs = {"model_path": f"{cache}/kokoro-v1.0.onnx",
                       "voices_path": f"{cache}/kokoro-voices.json"}
@@ -105,6 +135,12 @@ class AIFacade:
             kwargs = {"model_dir": f"{cache}/piper"}
         elif task == Task.TTS and name == "tts_http":
             kwargs = {"url": settings.tts_http_url}
+        elif task == Task.TTS and name in ("azure_speech_tts", "azure_tts", "azure_speech"):
+            kwargs = {
+                "key": settings.azure_speech_key,
+                "region": settings.azure_speech_region,
+                "voice_map": settings.azure_speech_voice_map,
+            }
         elif task == Task.LANG_DETECT and name == "fasttext":
             kwargs = {"model_path": settings.fasttext_lid_model or f"{cache}/lid.176.ftz"}
         elif task == Task.SUMMARIZE and name == "llm_http":
@@ -389,6 +425,115 @@ class AIFacade:
                 ok = False
             out[task.value] = {"provider": name, "healthy": ok}
         return out
+
+    async def diagnostics(self) -> dict[str, Any]:
+        """Readiness diagnostics for configured providers, weights, voices, language pairs,
+        and OCR availability, strictly without exposing secrets."""
+        import os
+        import shutil
+        from app.realtime.voices import parse_voice_map
+
+        task_diags: dict[str, Any] = {}
+        cache = settings.model_cache_path
+
+        for task in TASKS:
+            cfg_name = self._configured_name(task)
+            provider = self.provider(task, cfg_name)
+            is_healthy = False
+            try:
+                # 1.5s deadline to avoid blocking on large on-demand model weight downloads
+                is_healthy = await asyncio.wait_for(provider.healthcheck(), timeout=1.5)
+            except Exception:
+                is_healthy = False
+
+            weights_loaded = True
+            if task == Task.STT and cfg_name == "faster_whisper":
+                weights_loaded = os.path.exists(cache)
+            elif task == Task.TTS and cfg_name == "kokoro":
+                weights_loaded = os.path.exists(f"{cache}/kokoro-v1.0.onnx")
+            elif task == Task.TTS and cfg_name == "piper":
+                weights_loaded = os.path.exists(f"{cache}/piper")
+            elif task == Task.LANG_DETECT and cfg_name == "fasttext":
+                weights_loaded = os.path.exists(settings.fasttext_lid_model or f"{cache}/lid.176.ftz")
+
+            fallbacks: list[str] = []
+            if self.router and task in self.router.providers:
+                fallbacks = [spec.name for spec in self.router.providers[task]]
+            if not fallbacks:
+                fallbacks = [cfg_name]
+
+            model_info = getattr(settings, f"{task.value.lower()}_model", "")
+            if not model_info:
+                if task == Task.MT:
+                    model_info = settings.translation_model or "google/madlad-400-3b-mt"
+                elif task == Task.STT:
+                    model_info = settings.stt_model
+                elif task == Task.TTS:
+                    model_info = settings.tts_model
+
+            task_diags[task.value] = {
+                "configured_provider": cfg_name,
+                "active_provider": cfg_name,
+                "model": model_info,
+                "healthy": is_healthy,
+                "weights_present": weights_loaded,
+                "fallback_chain": fallbacks,
+            }
+
+        voice_map = parse_voice_map(settings.tts_voice_map)
+        default_voices = {
+            "hi": voice_map.get("hi", "hi-IN-SwaraNeural" if "azure" in settings.tts_provider else "hf_alpha"),
+            "mr": voice_map.get("mr", "mr-IN-AarohiNeural" if "azure" in settings.tts_provider else "mr_female"),
+            "en": voice_map.get("en", "en-US-JennyNeural" if "azure" in settings.tts_provider else "af_heart"),
+            "es": voice_map.get("es", "es-ES-ElviraNeural" if "azure" in settings.tts_provider else "ef_dora"),
+            "fr": voice_map.get("fr", "fr-FR-DeniseNeural" if "azure" in settings.tts_provider else "ff_siwis"),
+        }
+
+        ocr_status = {"available": False, "engine": "none", "details": ""}
+        try:
+            import fitz
+            doc = fitz.open()
+            page = doc.new_page()
+            try:
+                _ = page.get_textpage_ocr(language="eng")
+                ocr_status["available"] = True
+                ocr_status["engine"] = "pymupdf_tesseract"
+                ocr_status["details"] = "PyMuPDF integrated Tesseract engine active"
+            except Exception as ocr_err:
+                tess_bin = shutil.which("tesseract")
+                if tess_bin:
+                    ocr_status["available"] = True
+                    ocr_status["engine"] = f"tesseract_cli:{tess_bin}"
+                    ocr_status["details"] = "Tesseract binary found on PATH"
+                else:
+                    ocr_status["details"] = f"Tesseract not available: {ocr_err}"
+            doc.close()
+        except Exception as e:
+            ocr_status["details"] = f"PyMuPDF not available: {e}"
+
+        core_pairs = [
+            ("en", "hi"), ("hi", "en"),
+            ("en", "mr"), ("mr", "en"),
+            ("en", "es"), ("es", "en"),
+            ("en", "fr"), ("fr", "en"),
+            ("en", "de"), ("de", "en"),
+            ("en", "ja"), ("ja", "en"),
+            ("en", "zh"), ("zh", "en"),
+        ]
+
+        return {
+            "status": "ready" if all(t["healthy"] for t in task_diags.values()) else "degraded",
+            "tasks": task_diags,
+            "voices": {
+                "voice_map": voice_map,
+                "supported_targets": default_voices,
+            },
+            "ocr": ocr_status,
+            "language_pairs": {
+                "supported_count": len(core_pairs),
+                "core_sample": [f"{s}->{t}" for s, t in core_pairs],
+            },
+        }
 
     def is_dev_mode(self, task: Task) -> bool:
         # `transcript.inject` etc. are dev affordances. The configured name is

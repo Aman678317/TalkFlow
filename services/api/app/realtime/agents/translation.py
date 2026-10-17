@@ -17,6 +17,7 @@ The rules this module enforces, all from the guide:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections import abc, defaultdict, deque
 from dataclasses import dataclass, field
@@ -178,12 +179,26 @@ class TranslationAgent:
         langs = sorted({lang for lang, recips in recipients_by_lang.items()
                         if recips and lang != segment.source_language})
         produced: list[TranslationSegment] = []
-        for target_lang in langs:
+
+        # Pin the context before scheduling the independent calls.  The source
+        # turn is recorded only after every target has finished, but keeping the
+        # snapshot explicit prevents a queued task from ever observing a later
+        # context update.
+        prior_context = self.context_for(segment.speaker_id)
+
+        async def translate_target(target_lang: str):
             recips = list(recipients_by_lang[target_lang])
             try:
-                one = await self.translate_one(segment, target_lang, recips)
+                one = await self.translate_one(
+                    segment, target_lang, recips, prior_context=prior_context)
             except Exception:
                 # Already reported as a stage event above; other languages continue.
+                return recips, None
+            return recips, one
+
+        results = await asyncio.gather(*(translate_target(lang) for lang in langs))
+        for recips, one in results:
+            if one is None:
                 continue
             # One provider result, one record per recipient: the copy that
             # reaches a listener has to name that listener.

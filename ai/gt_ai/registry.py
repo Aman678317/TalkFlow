@@ -53,8 +53,12 @@ def _import_adapters(task: str) -> None:
     import importlib
 
     modules = {
-        "stt": ["gt_ai.stt.faster_whisper", "gt_ai.stt.http", "gt_ai.stt.dev"],
+        "stt": [
+            "gt_ai.stt.azure_speech",
+            "gt_ai.stt.faster_whisper", "gt_ai.stt.http", "gt_ai.stt.dev",
+        ],
         "mt": [
+            "gt_ai.translation.azure_translator",
             "gt_ai.translation.neural_online",
             "gt_ai.translation.madlad400",
             "gt_ai.translation.nllb_ct2",
@@ -62,7 +66,10 @@ def _import_adapters(task: str) -> None:
             "gt_ai.translation.argos",
             "gt_ai.translation.dev_echo",
         ],
-        "tts": ["gt_ai.tts.kokoro", "gt_ai.tts.piper", "gt_ai.tts.http", "gt_ai.tts.dev_tone"],
+        "tts": [
+            "gt_ai.tts.azure_speech",
+            "gt_ai.tts.kokoro", "gt_ai.tts.piper", "gt_ai.tts.http", "gt_ai.tts.dev_tone",
+        ],
         "lang_detect": ["gt_ai.detection.fasttext", "gt_ai.detection.langdetect_p"],
         "summarize": ["gt_ai.summarize.extractive", "gt_ai.summarize.llm_http"],
         "embed": ["gt_ai.embeddings.hash_tfidf", "gt_ai.embeddings.st_embed"],

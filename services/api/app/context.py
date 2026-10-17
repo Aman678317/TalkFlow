@@ -31,6 +31,9 @@ def current() -> RequestCtx:
     return ctx
 
 
+get_ctx = current
+
+
 def set_ctx(ctx: RequestCtx) -> None:
     _ctx.set(ctx)
 
