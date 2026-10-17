@@ -256,8 +256,9 @@ def parse_pdf(data: bytes) -> list[DocBlock]:
 
     if fitz is not None:
         doc = fitz.open(stream=data, filetype="pdf")
+        page_total = len(doc)
         try:
-            for pno in range(len(doc)):
+            for pno in range(page_total):
                 page = doc[pno]
                 raw = page.get_text("blocks")
                 page_blocks = 0
