@@ -86,6 +86,7 @@ class Settings(BaseSettings):
     document_ocr_enabled: bool = False
     document_ocr_languages: str = "eng"
     document_translation_concurrency: int = Field(default=4, ge=1, le=5)
+    document_ocr_fail_on_unreadable_page: bool = True
 
     # --- livekit ---
     livekit_enabled: bool = False
