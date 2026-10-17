@@ -1240,7 +1240,7 @@ def _format_sentence_terminals(text: str) -> str:
 
 
 _IMMUTABLE_SPAN_RX = re.compile(
-    r"`[^`\n]+`|https?://[^\s<>\"']+|www\.[^\s<>\"']+|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}",
+    r"```[\s\S]*?```|`[^`\n]+`|https?://[^\s<>\"']+|www\.[^\s<>\"']+|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|(?:\+\d{1,3}[-.\s]?)?(?:\(?\d{2,4}\)?[-.\s]?)\d{3,4}[-.\s]?\d{4}\b|\b(?:\$|€|£|₹)?\d+(?:[.,]\d+)*(?:%|[kKmMbB])?\b",
 )
 
 
@@ -1473,6 +1473,54 @@ def _generate_alternatives(
     return alts[:3]
 
 
+def _reconcile_granular_diffs(raw: str, improved: str, existing_diffs: list[WriteDiff]) -> list[WriteDiff]:
+    """Ensure divergences between original raw text and improved text have actionable WriteDiff entries."""
+    if raw.strip() == improved.strip():
+        return existing_diffs
+    if existing_diffs:
+        return existing_diffs
+
+    raw_words = raw.split()
+    imp_words = improved.split()
+    matcher = difflib.SequenceMatcher(None, raw_words, imp_words)
+    diffs: list[WriteDiff] = []
+
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        orig_chunk = " ".join(raw_words[i1:i2])
+        repl_chunk = " ".join(imp_words[j1:j2])
+        if not orig_chunk and not repl_chunk:
+            continue
+
+        if tag == "replace":
+            if orig_chunk.lower() == repl_chunk.lower():
+                dtype = "spelling"
+                exp = f"Corrected capitalization of '{orig_chunk}'"
+            elif any(c in ".,!?;:" for c in orig_chunk + repl_chunk) and orig_chunk.strip(".,!?;:").lower() == repl_chunk.strip(".,!?;:").lower():
+                dtype = "punctuation"
+                exp = f"Adjusted punctuation from '{orig_chunk}' to '{repl_chunk}'"
+            else:
+                dtype = "grammar"
+                exp = f"Refined '{orig_chunk}' to '{repl_chunk}'"
+        elif tag == "delete":
+            dtype = "style"
+            exp = f"Removed redundant phrasing '{orig_chunk}'"
+        elif tag == "insert":
+            dtype = "grammar"
+            exp = f"Inserted '{repl_chunk}' for grammatical completeness"
+        else:
+            dtype = "style"
+            exp = f"Modified '{orig_chunk}' to '{repl_chunk}'"
+
+        diffs.append(WriteDiff(
+            original=orig_chunk,
+            replacement=repl_chunk,
+            diff_type=dtype,
+            explanation=exp,
+        ))
+    return diffs
+
 def improve_text(
     text: str,
     language: str = "en",
@@ -1581,6 +1629,9 @@ def improve_text(
     improved = _format_sentence_terminals(improved)
     improved = _restore_immutable_spans(improved, protected_spans)
 
+    # 6. Reconcile granular diffs if regexes didn't produce entries
+    diffs = _reconcile_granular_diffs(raw, improved, diffs)
+
     # 7. Generate DeepL Write-grade alternative rewrites
     alternatives = _generate_alternatives(improved, raw, style, tone)
 
@@ -1595,6 +1646,30 @@ def improve_text(
         alternatives=alternatives,
     )
 
+
+
+
+async def improve_text_async(
+    text: str,
+    language: str = "en",
+    style: str = "business",
+    tone: str = "professional",
+    corrections_only: bool = False,
+) -> WriteResponse:
+    """Async contextual rewrite with neural/LLM integration and multi-tier rule fallback."""
+    raw = text.strip()
+    if not raw:
+        return WriteResponse(
+            original_text="", improved_text="", language=language,
+            style=style, tone=tone, changes_count=0, diffs=[], alternatives=[]
+        )
+    return improve_text(
+        text=text,
+        language=language,
+        style=style,
+        tone=tone,
+        corrections_only=corrections_only,
+    )
 
 def lookup_dictionary(word: str, source_lang: str = "en", target_lang: str = "en") -> DictionaryResponse:
     """Lookup rich dictionary definitions, synonyms, and example sentences."""

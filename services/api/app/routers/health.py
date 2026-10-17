@@ -29,11 +29,12 @@ async def health():
 @router.get("/ready")
 @router.get("/readyz")
 @router.get("/api/v1/ready")
-async def ready():
+async def ready(diagnostics: bool = False):
     from app.cache import cache
     from app.db.session import healthcheck as db_health
     from app.queue import queue
     from app.storage import storage
+    from app.ai import ai
 
     checks = {
         "database": await db_health(),
@@ -46,10 +47,46 @@ async def ready():
         checks["livekit_configured"] = livekit_bridge.enabled()
 
     ok = all(checks.values())
+    diag_data = None
+    if diagnostics:
+        diag_data = await ai.diagnostics()
+
     from fastapi.responses import JSONResponse
+    resp = {"ready": ok, "checks": checks}
+    if diag_data:
+        resp["diagnostics"] = diag_data
     return JSONResponse(
         status_code=200 if ok else 503,
-        content={"ready": ok, "checks": checks})
+        content=resp)
+
+
+@router.get("/api/v1/system/diagnostics")
+async def system_diagnostics():
+    from app.cache import cache
+    from app.db.session import healthcheck as db_health
+    from app.queue import queue
+    from app.storage import storage
+    from app.ai import ai
+
+    infra = {
+        "database": await db_health(),
+        "cache": await cache().ping(),
+        "queue": await queue().ping(),
+        "storage": await storage().ping(),
+    }
+    ai_diag = await ai.diagnostics()
+    infra_ok = all(infra.values())
+    overall_status = "ready" if infra_ok and ai_diag.get("status") == "ready" else "degraded"
+
+    return {
+        "status": overall_status,
+        "ready": infra_ok,
+        "infrastructure": infra,
+        "ai": ai_diag,
+        "uptime_s": round(time.time() - START_TIME, 1),
+        "version": settings.version,
+        "environment": settings.app_env,
+    }
 
 
 @router.get("/version")

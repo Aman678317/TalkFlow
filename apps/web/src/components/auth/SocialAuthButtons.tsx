@@ -123,11 +123,22 @@ export function SocialAuthButtons({
 
   const providers = [
     {
+      id: "apple" as const,
+      name: "Apple",
+      icon: <AppleIcon className="h-4 w-4 shrink-0 fill-current text-white" />,
+      buttonClass:
+        "border-black bg-black text-white hover:bg-neutral-900 focus-visible:ring-black",
+      textClass: "text-white font-medium",
+      spinnerClass: "text-white",
+    },
+    {
       id: "google" as const,
       name: "Google",
       icon: <GoogleIcon className="h-4 w-4 shrink-0" />,
       buttonClass:
         "border-slate-200 bg-white text-slate-700 hover:bg-slate-50 hover:border-slate-300 focus-visible:ring-blue-500",
+      textClass: "text-slate-700 font-medium",
+      spinnerClass: "text-slate-600",
     },
     {
       id: "github" as const,
@@ -135,13 +146,8 @@ export function SocialAuthButtons({
       icon: <GitHubIcon className="h-4 w-4 shrink-0 text-slate-900" />,
       buttonClass:
         "border-slate-200 bg-white text-slate-800 hover:bg-slate-50 hover:border-slate-300 focus-visible:ring-slate-700",
-    },
-    {
-      id: "apple" as const,
-      name: "Apple",
-      icon: <AppleIcon className="h-4 w-4 shrink-0 text-slate-950" />,
-      buttonClass:
-        "border-slate-200 bg-white text-slate-900 hover:bg-slate-50 hover:border-slate-300 focus-visible:ring-black",
+      textClass: "text-slate-800 font-medium",
+      spinnerClass: "text-slate-600",
     },
   ];
 
@@ -157,12 +163,12 @@ export function SocialAuthButtons({
                 type="button"
                 disabled={disabled || activeProvider !== null}
                 onClick={() => handleProviderLogin(p.id)}
-                className={`relative flex h-10 items-center justify-center gap-2 rounded-xl border px-3 text-xs font-semibold shadow-xs transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${p.buttonClass}`}
+                className={`relative flex h-11 items-center justify-center gap-2 rounded-xl border px-3 text-xs font-semibold shadow-xs transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${p.buttonClass}`}
                 title={`${prefix} ${p.name}`}
                 aria-label={`${prefix} ${p.name}`}
               >
-                {isLoading ? <Spinner className="h-3.5 w-3.5" /> : p.icon}
-                <span className="truncate">{p.name}</span>
+                {isLoading ? <Spinner className={`h-3.5 w-3.5 ${p.spinnerClass}`} /> : p.icon}
+                <span className={`truncate ${p.textClass}`}>{p.name}</span>
               </button>
             );
           })}
@@ -181,11 +187,11 @@ export function SocialAuthButtons({
             type="button"
             disabled={disabled || activeProvider !== null}
             onClick={() => handleProviderLogin(p.id)}
-            className={`relative flex h-10 w-full items-center justify-center gap-3 rounded-xl border px-4 text-sm font-medium shadow-xs transition active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${p.buttonClass}`}
+            className={`relative flex h-11 w-full items-center justify-center gap-3 rounded-xl border px-4 text-sm font-medium shadow-xs transition active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${p.buttonClass}`}
             aria-label={`${prefix} ${p.name}`}
           >
-            {isLoading ? <Spinner className="h-4 w-4 text-slate-600" /> : p.icon}
-            <span className="text-slate-700">
+            {isLoading ? <Spinner className={`h-4 w-4 ${p.spinnerClass}`} /> : p.icon}
+            <span className={p.textClass}>
               {prefix} {p.name}
             </span>
           </button>

@@ -118,6 +118,18 @@ class Settings(BaseSettings):
     deepl_api_url: str = "https://api-free.deepl.com/v2/translate"
     mt_http_url: str = ""
     mt_http_style: str = "opennmt"
+    # Azure is optional and server-side only. Translator credentials may be
+    # separate; adapters fall back to the Speech key/region for multi-service
+    # Azure resources.
+    azure_speech_key: str = ""
+    azure_speech_region: str = ""
+    azure_speech_language: str = "en-US"
+    azure_speech_auto_detect_languages: str = ""
+    azure_speech_voice_map: str = ""
+    azure_translator_key: str = ""
+    azure_translator_region: str = ""
+    azure_translator_endpoint: str = "https://api.cognitive.microsofttranslator.com"
+    azure_translator_api_version: str = "3.0"
     stt_provider: str = "auto"
     stt_model: str = "small"
     stt_device: str = "auto"
@@ -140,6 +152,8 @@ class Settings(BaseSettings):
     embedding_model: str = ""
     model_cache_path: str = "/tmp/model_cache" if _is_serverless() else "./model_cache"
     vad_provider: str = "webrtc_energy"
+    document_translation_concurrency: int = 4
+    ocr_provider: str = "auto"
 
     # --- turn segmentation (Phase 3) --------------------------------------- #
     # One source of truth for when a turn ends. Before this the numbers lived in
@@ -213,6 +227,9 @@ class Settings(BaseSettings):
         return ["http://localhost:5173", "http://localhost:4173", "http://127.0.0.1:5173"]
 
     secure_cookies: bool = False
+    cookie_samesite: str = "lax"
+    cookie_domain: str | None = None
+    refresh_grace_seconds: int = 15
     csrf_enabled: bool = True
 
     # Phase 2 (docs/PRODUCTION_ROADMAP.md): real social authentication. Verification
@@ -287,6 +304,9 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "Production environment forbids wildcard '*' in 'cors_origins' when credentials are enabled."
                 )
+            if self.cookie_samesite.lower() not in ("lax", "strict", "none"):
+                raise ValueError("cookie_samesite must be 'lax', 'strict', or 'none'.")
+            self.secure_cookies = True
         return self
 
     @model_validator(mode="after")

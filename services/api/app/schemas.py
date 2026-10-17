@@ -416,6 +416,10 @@ class DocumentStatusOut(BaseModel):
     message: str
     error_code: str | None = None
     error_message: str | None = None
+    pages_total: int = 0
+    segments_total: int = 0
+    segments_done: int = 0
+    warnings: list[str] = []
 
 
 # --------------------------------------------------------------------------- #

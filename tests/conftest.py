@@ -17,7 +17,7 @@ sys.path.insert(0, str(REPO / "services" / "api"))
 _TMP = Path(tempfile.mkdtemp(prefix="gt_test_"))
 _raw_db = os.environ.get("DATABASE_URL", "")
 if not _raw_db or "sqlite" in _raw_db or "globaltalk.db" in _raw_db:
-    _db_url = f"sqlite+aiosqlite:///{_TMP}/services_test.db"
+    _db_url = f"sqlite+aiosqlite:///{_TMP}/services_test.db?timeout=60"
 else:
     _db_url = _raw_db
 
@@ -57,6 +57,7 @@ os.environ.update({
     "RATE_LIMIT_DEFAULT": "100000/minute",
     "FF_AGENT_BRIDGE": "true",
     "LOG_LEVEL": "WARNING",
+    "BCRYPT_ROUNDS": "4",
 })
 
 

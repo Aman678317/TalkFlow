@@ -18,7 +18,9 @@ from app.config import settings
 from app.db import models as M
 from app.db.base import utcnow
 from app.db.session import get_db
-from app.deps import Principal, client_ip_hash, get_principal, rl_auth
+from app.deps import (
+    Principal, client_ip_hash, get_principal, get_principal_optional, rl_auth,
+)
 from app.errors import AuthenticationError, AuthorizationError, NotFoundError, ValidationError
 from app.schemas import (
     ChangePasswordRequest, LoginRequest, OrganizationOut, RefreshRequest,
@@ -37,13 +39,18 @@ log = logging.getLogger("app.routers.auth")
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
 
+def _cookie_secure() -> bool:
+    return settings.secure_cookies or settings.app_env == "production" or settings.cookie_samesite.lower() == "none"
+
+
 def _set_refresh_cookie(response: Response, refresh_token: str) -> None:
     response.set_cookie(
         key="refresh_token",
         value=refresh_token,
         httponly=True,
-        secure=settings.secure_cookies or settings.app_env == "production",
-        samesite="lax",
+        secure=_cookie_secure(),
+        samesite=settings.cookie_samesite,
+        domain=settings.cookie_domain,
         path="/api/v1/auth",
         max_age=settings.jwt_refresh_ttl_days * 86400,
     )
@@ -53,9 +60,10 @@ def _clear_refresh_cookie(response: Response) -> None:
     response.delete_cookie(
         key="refresh_token",
         path="/api/v1/auth",
+        domain=settings.cookie_domain,
         httponly=True,
-        secure=settings.secure_cookies or settings.app_env == "production",
-        samesite="lax",
+        secure=_cookie_secure(),
+        samesite=settings.cookie_samesite,
     )
 
 
@@ -66,10 +74,22 @@ def _set_csrf_cookie(response: Response, csrf_token: str | None = None) -> None:
         key="csrf_token",
         value=csrf_token,
         httponly=False,
-        secure=settings.secure_cookies or settings.app_env == "production",
-        samesite="lax",
+        secure=_cookie_secure(),
+        samesite=settings.cookie_samesite,
+        domain=settings.cookie_domain,
         path="/",
         max_age=settings.jwt_refresh_ttl_days * 86400,
+    )
+
+
+def _clear_csrf_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key="csrf_token",
+        path="/",
+        domain=settings.cookie_domain,
+        httponly=False,
+        secure=_cookie_secure(),
+        samesite=settings.cookie_samesite,
     )
 
 
@@ -394,74 +414,161 @@ async def refresh(body: RefreshRequest, request: Request, response: Response,
     payload = decode_token(raw_token, "refresh")
     from app.security import hash_api_key
     token_hash = hash_api_key(raw_token)
-    row = (await db.execute(select(M.RefreshToken).where(
-        M.RefreshToken.jti == payload["jti"]))).scalars().first()
-    if row is not None and row.revoked_at is not None and row.token_hash == token_hash:
-        # Grace window for concurrent multi-tab requests / network retries (15 seconds)
+
+    query = select(M.RefreshToken).where(M.RefreshToken.jti == payload["jti"])
+    if db.bind and getattr(db.bind, "dialect", None) and db.bind.dialect.name == "postgresql":
+        query = query.with_for_update()
+    row = (await db.execute(query)).scalars().first()
+
+    if row is None:
+        _clear_refresh_cookie(response)
+        _clear_csrf_cookie(response)
+        raise AuthenticationError("Refresh token invalid or revoked. Sign in again.")
+
+    if row.token_hash != token_hash:
+        # Possible token forgery / tampering — revoke whole session
+        await db.execute(update(M.RefreshToken).where(
+            M.RefreshToken.session_id == row.session_id).values(revoked_at=utcnow()))
+        session = await db.get(M.Session, row.session_id)
+        if session:
+            session.revoked_at = utcnow()
+        await audit_service.record(db, action="auth.refresh_hash_mismatch",
+                                   actor_id=row.user_id, outcome="failure")
+        await db.commit()
+        _clear_refresh_cookie(response)
+        _clear_csrf_cookie(response)
+        raise AuthenticationError("Refresh token invalid or revoked. Sign in again.")
+
+    if row.revoked_at is not None:
         revoked_at = row.revoked_at
         if revoked_at.tzinfo is None:
             revoked_at = revoked_at.replace(tzinfo=timezone.utc)
-        if (utcnow() - revoked_at) <= timedelta(seconds=15) and row.replaced_by:
-            user = await db.get(M.User, row.user_id)
-            if user and user.status == "active":
-                log.info("Concurrent refresh within 15s grace window for user %s; issuing tokens", user.id)
-                tokens = await _issue_tokens(db, user, request,
-                                             uuid.UUID(payload["org_id"]) if payload.get("org_id") else None,
-                                             session_id=row.session_id)
-                _set_refresh_cookie(response, tokens.refresh_token)
-                await db.commit()
-                return _public_tokens(tokens)
+        grace_s = settings.refresh_grace_seconds
+        if (utcnow() - revoked_at) <= timedelta(seconds=grace_s) and row.replaced_by:
+            session = await db.get(M.Session, row.session_id)
+            if session and session.revoked_at is None and session.expires_at > utcnow():
+                user = await db.get(M.User, row.user_id)
+                if user and user.status == "active":
+                    log.info("Concurrent refresh within %ss grace window for user %s; issuing tokens", grace_s, user.id)
+                    org_id = uuid.UUID(payload["org_id"]) if payload.get("org_id") else None
+                    tokens = await _issue_tokens(db, user, request, org_id, session_id=row.session_id)
+                    _set_refresh_cookie(response, tokens.refresh_token)
+                    _set_csrf_cookie(response)
+                    await db.commit()
+                    return _public_tokens(tokens)
 
-    if row is None or row.revoked_at is not None or row.token_hash != token_hash:
-        # possible token reuse — revoke the whole session family
-        if row is not None:
-            await db.execute(update(M.RefreshToken).where(
-                M.RefreshToken.session_id == row.session_id)
-                .values(revoked_at=utcnow()))
-            await audit_service.record(db, action="auth.refresh_reuse_detected",
-                                       actor_id=row.user_id, outcome="failure")
-            await db.commit()
+        # Outside grace window or session already dead — replay attack detected!
+        await db.execute(update(M.RefreshToken).where(
+            M.RefreshToken.session_id == row.session_id,
+            M.RefreshToken.revoked_at.is_(None)
+        ).values(revoked_at=utcnow()))
+        session = await db.get(M.Session, row.session_id)
+        if session:
+            session.revoked_at = utcnow()
+        await audit_service.record(db, action="auth.refresh_reuse_detected",
+                                   actor_id=row.user_id, outcome="failure")
+        await db.commit()
+        _clear_refresh_cookie(response)
+        _clear_csrf_cookie(response)
         raise AuthenticationError("Refresh token invalid or revoked. Sign in again.")
+
     if row.expires_at < utcnow():
+        _clear_refresh_cookie(response)
+        _clear_csrf_cookie(response)
         raise AuthenticationError("Refresh token expired. Sign in again.")
+
+    session = await db.get(M.Session, row.session_id)
+    if session is None or session.revoked_at is not None:
+        _clear_refresh_cookie(response)
+        _clear_csrf_cookie(response)
+        raise AuthenticationError("Session revoked. Sign in again.")
+    if session.expires_at < utcnow():
+        _clear_refresh_cookie(response)
+        _clear_csrf_cookie(response)
+        raise AuthenticationError("Session expired. Sign in again.")
+
     user = await db.get(M.User, row.user_id)
     if user is None or user.status != "active":
+        _clear_refresh_cookie(response)
+        _clear_csrf_cookie(response)
         raise AuthenticationError("Account not found or inactive.")
-    # rotate
+
+    # Atomic rotation
     row.revoked_at = utcnow()
-    tokens = await _issue_tokens(db, user, request,
-                                 uuid.UUID(payload["org_id"]) if payload.get("org_id") else None,
-                                 session_id=row.session_id)
+    org_id = None
+    if payload.get("org_id"):
+        try:
+            org_id = uuid.UUID(payload["org_id"])
+        except ValueError:
+            org_id = None
+    tokens = await _issue_tokens(db, user, request, org_id, session_id=row.session_id)
     new_payload = decode_token(tokens.refresh_token, "refresh")
     row.replaced_by = new_payload.get("jti")
-    session = await db.get(M.Session, row.session_id)
-    if session:
-        session.last_seen_at = utcnow()
+    session.last_seen_at = utcnow()
     _set_refresh_cookie(response, tokens.refresh_token)
+    _set_csrf_cookie(response)
     await db.commit()
     return _public_tokens(tokens)
 
 
 @router.post("/logout", status_code=204)
 async def logout(request: Request, response: Response,
-                 principal: Principal = Depends(get_principal),
+                 principal: Principal | None = Depends(get_principal_optional),
                  db: AsyncSession = Depends(get_db)):
     _clear_refresh_cookie(response)
-    auth = request.headers.get("authorization", "")
-    if auth.startswith("Bearer "):
+    _clear_csrf_cookie(response)
+
+    # 1. Attempt targeted revocation of the active session via refresh body/cookie
+    raw_token = None
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            raw_token = (body.get("refresh_token") or "").strip()
+    except Exception:
+        pass
+    if not raw_token:
+        raw_token = request.cookies.get("refresh_token")
+
+    session_revoked = False
+    if raw_token:
         try:
-            payload = decode_token(auth[7:], "access")
-        except AuthenticationError:
-            payload = None
-        if payload and principal.user:
+            payload = decode_token(raw_token, "refresh")
+            jti = payload.get("jti")
+            if jti:
+                row = (await db.execute(select(M.RefreshToken).where(
+                    M.RefreshToken.jti == jti))).scalars().first()
+                if row:
+                    await db.execute(update(M.RefreshToken).where(
+                        M.RefreshToken.session_id == row.session_id,
+                        M.RefreshToken.revoked_at.is_(None)
+                    ).values(revoked_at=utcnow()))
+                    await db.execute(update(M.Session).where(
+                        M.Session.id == row.session_id,
+                        M.Session.revoked_at.is_(None)
+                    ).values(revoked_at=utcnow()))
+                    session_revoked = True
+        except Exception:
+            pass
+
+    # 2. Fallback to revoking the principal's most recent active session
+    if not session_revoked and principal and principal.user:
+        latest = (await db.execute(
+            select(M.Session)
+            .where(M.Session.user_id == principal.user.id, M.Session.revoked_at.is_(None))
+            .order_by(M.Session.last_seen_at.desc())
+        )).scalars().first()
+        if latest:
+            latest.revoked_at = utcnow()
             await db.execute(update(M.RefreshToken).where(
-                M.RefreshToken.user_id == principal.user.id,
-                M.RefreshToken.revoked_at.is_(None))
-                .values(revoked_at=utcnow()))
-            await audit_service.record(db, action="auth.logout",
-                                       actor_id=principal.user.id,
-                                       org_id=principal.org_id)
-            await db.commit()
+                M.RefreshToken.session_id == latest.id,
+                M.RefreshToken.revoked_at.is_(None)
+            ).values(revoked_at=utcnow()))
+
+    if principal and principal.user:
+        await audit_service.record(db, action="auth.logout",
+                                   actor_id=principal.user.id,
+                                   org_id=principal.org_id)
+    await db.commit()
 
 
 @router.post("/logout-all", status_code=204)
@@ -469,6 +576,7 @@ async def logout_all(response: Response,
                      principal: Principal = Depends(get_principal),
                      db: AsyncSession = Depends(get_db)):
     _clear_refresh_cookie(response)
+    _clear_csrf_cookie(response)
     if principal.user:
         await db.execute(update(M.RefreshToken).where(
             M.RefreshToken.user_id == principal.user.id,
@@ -568,6 +676,9 @@ async def change_password(body: ChangePasswordRequest,
     await db.execute(update(M.RefreshToken).where(
         M.RefreshToken.user_id == user.id, M.RefreshToken.revoked_at.is_(None))
         .values(revoked_at=utcnow()))
+    await db.execute(update(M.Session).where(
+        M.Session.user_id == user.id, M.Session.revoked_at.is_(None))
+        .values(revoked_at=utcnow()))
     await audit_service.record(db, action="auth.password_changed",
                                actor_id=user.id, org_id=principal.org_id)
     await db.commit()
@@ -602,6 +713,9 @@ async def password_reset_confirm(body: dict, db: AsyncSession = Depends(get_db))
     await cache().delete(f"pwreset:{token}")
     await db.execute(update(M.RefreshToken).where(
         M.RefreshToken.user_id == user.id, M.RefreshToken.revoked_at.is_(None))
+        .values(revoked_at=utcnow()))
+    await db.execute(update(M.Session).where(
+        M.Session.user_id == user.id, M.Session.revoked_at.is_(None))
         .values(revoked_at=utcnow()))
     await audit_service.record(db, action="auth.password_reset", actor_id=user.id)
     await db.commit()

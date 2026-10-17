@@ -13,6 +13,51 @@ docker compose -f infrastructure/docker/docker-compose.yml down
 The api container runs `alembic upgrade head` before serving (migration job inline;
 on k8s it's a separate Job).
 
+## Azure realtime speech translation
+
+The primary managed provider path is opt-in through server-side environment
+variables. It keeps the existing room WebSocket and VAD/agent pipeline: Azure
+Speech recognizes each finalized PCM16 utterance, Azure Translator handles the
+canonical text fan-out, and Azure Speech TTS returns target-language WAV audio.
+The adapters fail closed when credentials or a supported voice are missing; no
+Azure key is ever placed in `VITE_*` variables or sent to the browser.
+
+Install the normal API dependencies (the Speech SDK is included):
+
+```powershell
+python -m pip install -r services/api/requirements.txt
+```
+
+For a local PowerShell session, set the provider selection and server-only
+credentials before starting the canonical API:
+
+```powershell
+$env:STT_PROVIDER = "azure_speech"
+$env:TRANSLATION_PROVIDER = "azure_translator"
+$env:TTS_PROVIDER = "azure_speech_tts"
+$env:AZURE_SPEECH_KEY = "<server-only-key>"
+$env:AZURE_SPEECH_REGION = "<resource-region>"
+# Optional separate Translator resource; otherwise the Speech key/region is used.
+$env:AZURE_TRANSLATOR_KEY = ""
+$env:AZURE_TRANSLATOR_REGION = ""
+$env:AZURE_SPEECH_VOICE_MAP = "en=en-US-JennyNeural,hi=hi-IN-SwaraNeural"
+python run_api.py
+```
+
+`AZURE_SPEECH_AUTO_DETECT_LANGUAGES` may be set to a comma-separated list of
+BCP-47 candidates. When it is blank, the adapter uses its built-in English,
+Indic, Urdu, and Simplified Chinese candidate set. Add a voice to
+`AZURE_SPEECH_VOICE_MAP` before enabling a target language that has no safe
+default voice; the provider deliberately refuses to substitute an English voice
+silently.
+
+The current adapter uses the existing utterance boundaries for the canonical
+path and does not claim that a completed REST request is a continuous stream.
+Azure's Speech SDK continuous/intermediate events remain available for the next
+latency optimization after the segmented path is measured in a real account.
+See [`docs/REALTIME_PROVIDER_RESEARCH.md`](REALTIME_PROVIDER_RESEARCH.md) for
+the provider comparison and the lip-sync boundary.
+
 ## Optional AirLLM GPU worker
 
 AirLLM is intentionally not part of the normal API image. Build the optional

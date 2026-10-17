@@ -72,7 +72,26 @@ def _make_engine(url: str) -> AsyncEngine:
             kwargs.update(pool_size=settings.db_pool_size,
                           max_overflow=settings.db_max_overflow,
                           pool_pre_ping=True, pool_recycle=300)
-    return create_async_engine(url, **kwargs)
+    elif "sqlite" in url:
+        if settings.app_env == "test":
+            from sqlalchemy.pool import NullPool
+            kwargs.update(poolclass=NullPool)
+
+    engine = create_async_engine(url, **kwargs)
+    if "sqlite" in url:
+        from sqlalchemy import event
+
+        @event.listens_for(engine.sync_engine, "connect")
+        def _set_sqlite_pragma(dbapi_connection, connection_record):
+            try:
+                cursor = dbapi_connection.cursor()
+                cursor.execute("PRAGMA journal_mode=WAL")
+                cursor.execute("PRAGMA busy_timeout=60000")
+                cursor.close()
+            except Exception:
+                pass
+
+    return engine
 
 
 async def init_db() -> None:

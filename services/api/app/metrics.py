@@ -44,6 +44,31 @@ GPU_UTIL = Gauge("gt_gpu_utilization", "GPU utilization ratio (0..1)")
 USAGE_CHARS = Counter("gt_usage_characters_total", "Translated characters", ["product"])
 AUDIO_SECONDS = Counter("gt_usage_audio_seconds_total", "Audio seconds processed")
 
+STT_STAGE_LATENCY = Histogram(
+    "gt_stt_stage_latency_ms", "STT stage latency (ms)", ["provider", "stage"],
+    buckets=(50, 100, 250, 500, 1000, 2000, 3000, 5000))
+MT_STAGE_LATENCY = Histogram(
+    "gt_translation_stage_latency_ms", "MT stage latency (ms)", ["src", "tgt", "provider", "model"],
+    buckets=(25, 50, 100, 250, 500, 1000, 2500, 5000))
+TTS_STAGE_TTFB = Histogram(
+    "gt_tts_stage_ttfb_ms", "TTS time-to-first-audio (ms)", ["provider", "voice"],
+    buckets=(50, 100, 250, 500, 1000, 2000, 3000, 5000))
+DOC_BATCH_LATENCY = Histogram(
+    "gt_doc_batch_latency_ms", "Document batch translation latency (ms)", ["format"],
+    buckets=(100, 250, 500, 1000, 2500, 5000, 10000, 30000))
+
+STAGE_FAILURES = Counter(
+    "gt_stage_failures_total", "Stage failure counters", ["stage", "provider", "reason"])
+DROPPED_AUDIO_FRAMES = Counter(
+    "gt_dropped_audio_frames_total", "Dropped audio frames", ["reason"])
+DOC_COVERAGE_RATIO = Gauge(
+    "gt_doc_coverage_ratio", "Document translation coverage ratio (0..1)", ["document_id", "status"])
+LANG_DETECT_CONFIDENCE = Histogram(
+    "gt_lang_detect_confidence", "Language detection confidence score", ["language"],
+    buckets=(0.1, 0.3, 0.5, 0.7, 0.85, 0.95, 1.0))
+PROVIDER_RETRIES = Counter(
+    "gt_provider_retries_total", "Provider call retries", ["stage", "provider"])
+
 
 def metrics_response():
     from fastapi.responses import Response
