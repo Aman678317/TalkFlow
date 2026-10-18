@@ -14,7 +14,7 @@ from app.config import settings
 from app.db import models as M
 from app.db.session import db_session, get_db
 from app.deps import Principal, client_ip_hash, require_org_user
-from app.errors import NotFoundError, ValidationError
+from app.errors import AppError, NotFoundError, ValidationError
 from app.ratelimit import check_rate_limit
 from app.telephony.call_service import CallService
 from app.telephony.media_stream_service import MediaStreamService, TelephonyMediaStreamSession
@@ -132,8 +132,16 @@ async def initiate_call(
     req: Request,
     principal: Principal = Depends(require_org_user),
     db: AsyncSession = Depends(get_db),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
-    """Place an international phone call with real-time bidirectional translation."""
+    """Place an international phone call with real-time bidirectional translation.
+
+    Idempotency: when the ``Idempotency-Key`` header is present, the dial goes
+    through the call-job queue (org+key unique) — replaying the same key
+    returns the SAME call session instead of placing a second PSTN call.
+    AI-agent mode is intentionally rejected here: AI outbound exists only
+    through explicitly authorized campaigns (POST /contacts/{id}/call).
+    """
     # 1. Rate limiting check (Phase 12 & 13)
     await check_rate_limit(
         bucket="telephony:call",
@@ -146,7 +154,56 @@ async def initiate_call(
     if principal.org_id is None:
         raise ValidationError("Organization not found for this account. Please contact support.")
 
+    if body.mode == "ai_agent":
+        raise ValidationError(
+            "Direct AI-agent calls are not allowed. AI-agent outbound calling exists "
+            "only through authorized campaigns: create one via POST /api/v1/campaigns, "
+            "queue it with POST /api/v1/contacts/{id}/call (campaign_id).")
+
     cs = CallService(db)
+
+    if (idempotency_key or "").strip():
+        from app.services.contacts_service import ContactsService
+        from app.telephony.call_jobs import CallJobService
+        from app.telephony.phone_number_service import PhoneNumberService
+
+        jobs = CallJobService(db)
+        contacts = ContactsService(db)
+        e164 = PhoneNumberService.normalize_to_e164(body.to_number, default_country="US")
+        contact = None
+        from sqlalchemy import select as _select
+        res = await db.execute(
+            _select(M.Contact).where(M.Contact.org_id == principal.org_id,
+                                     M.Contact.phone_e164 == e164))
+        contact = res.scalars().first()
+        if contact is None:
+            contact = await contacts.create_contact(
+                org_id=principal.org_id, phone=body.to_number,
+                display_name=body.recipient_name or "",
+                language=body.receiver_language,
+                actor_id=principal.user_id)
+        job, _created = await jobs.schedule_job(
+            org_id=principal.org_id, contact_id=contact.id,
+            campaign_id=None, idempotency_key=idempotency_key,
+            actor_id=principal.user_id)
+        job = await jobs.execute_job(
+            principal.org_id, job.id, actor_id=principal.user_id,
+            claimed_by_name=principal.identity_for_rate_limit)
+        if job.status == "blocked":
+            raise AppError(
+                f"Call blocked by outbound gate: {job.blocked_reason}",
+                status=409, recoverable=True, details={"reason": job.blocked_reason})
+        if job.status == "failed":
+            raise AppError("Carrier call dispatch failed for this job (already "
+                           "attempted once); a new Idempotency-Key is required.",
+                           status=502, recoverable=True, details={"reason": "provider_failure"})
+        call_row = await db.get(M.CallSession, job.call_session_id) if job.call_session_id else None
+        if call_row is None:
+            raise AppError("Call job did not produce a call session.",
+                           status=502, recoverable=True)
+        await db.commit()
+        return _serialize_call(call_row)
+
     base_url = str(req.base_url).rstrip("/")
     try:
         call = await cs.create_outbound_call(
