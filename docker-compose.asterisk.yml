@@ -1,0 +1,28 @@
+# Optional Asterisk SIP lab for local development only.
+# Start alongside the main stack:
+#   docker compose -f docker-compose.yml -f docker-compose.asterisk.yml up -d
+# Stop:
+#   docker compose -f docker-compose.yml -f docker-compose.asterisk.yml down
+#
+# This provides a local SIP PBX. It does NOT provide public PSTN connectivity,
+# carrier numbers, or free calls to arbitrary mobile/landline destinations.
+# Do not expose SIP/AMI ports to the public Internet without hardening.
+
+services:
+  asterisk:
+    image: andrius/asterisk:18
+    profiles: ["asterisk"]
+    restart: unless-stopped
+    ports:
+      - "5060:5060/udp"
+      - "5060:5060/tcp"
+      - "10000-10020:10000-10020/udp"
+    volumes:
+      - ./infrastructure/asterisk/pjsip.conf:/etc/asterisk/pjsip.conf:ro
+      - ./infrastructure/asterisk/extensions.conf:/etc/asterisk/extensions.conf:ro
+      - ./infrastructure/asterisk/rtp.conf:/etc/asterisk/rtp.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "asterisk -rx 'core show version' >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
