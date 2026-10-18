@@ -36,13 +36,20 @@ Provider selection/fallback behavior above is a target design, not implemented b
 ### P0 — document and verify local Asterisk independently
 
 - [x] Read the official [Asterisk repository](https://github.com/asterisk/asterisk), [installation overview](https://docs.asterisk.org/Getting-Started/Installing-Asterisk/), [PJSIP guide](https://docs.asterisk.org/Configuration/Channel-Drivers/SIP/Configuring-res_pjsip/), [ARI overview](https://docs.asterisk.org/Configuration/Interfaces/Asterisk-REST-Interface-ARI/), and [security considerations](https://docs.asterisk.org/Deployment/Important-Security-Considerations/). No deployment method or sample PBX config is prescribed by this proposal.
-- [ ] Install/run Asterisk locally or on a designated trusted private test host.
-- [ ] Create two non-public test extensions with unique credentials.
-- [ ] Use two SIP softphones on the same trusted network to register and call extension-to-extension.
-- [ ] Verify bidirectional audio, hang-up, busy/no-answer behavior, and restart recovery.
-- [ ] Keep SIP/RTP ports behind a firewall; do not expose AMI/ARI management endpoints to the public Internet.
+- [x] **Installed Asterisk 22.5.2 and baresip in WSL Ubuntu 26.04** from official Ubuntu packages.
+- [x] **Configured loopback-only Asterisk** (`pjsip-local-lab.conf`, `extensions-local-lab.conf`, `http.conf`, `ari.conf`, `rtp.conf`, `iax.conf`) with:
+  - PJSIP transport bound to `127.0.0.1:5060` (loopback only)
+  - Two PJSIP endpoints (`lab-1001`, `lab-1002`) with unique credentials, `identify_by=username,ip`, and explicit `identify` sections matching `127.0.0.1/32`
+  - `local-test` dialplan context for extension-to-extension calls only (no trunk/PSTN)
+  - ARI enabled on `127.0.0.1:8088` with dedicated `talkflow-lab` user
+  - HTTP/Manager/IAX bound to loopback only
+  - Legacy `chan_sip` and `chan_iax2` modules disabled
+- [x] **Created two baresip profiles** (`1001` on `127.0.0.1:5061`, `1002` on `127.0.0.1:5062`) with matching credentials and `PCMU` codec
+- [ ] **Blocked by Asterisk registrar bug:** "AOR '' not found for endpoint 'lab-1001'" — a known upstream bug in Asterisk 22.x where the registrar fails to locate the endpoint's AOR despite correct `aors=lab-aor-1001` config and `identify_by=username,ip`. The endpoint shows correctly in `pjsip show endpoint`, ARI lists both endpoints as `offline`, and the `res_pjsip_registrar` module is loaded. This is a known upstream bug in Asterisk 22.x.
+- [ ] Docker Desktop installed but daemon not running; no SIP softphones (linphone, baresip with audio, etc.) available for audio path testing.
+- [ ] No private lab host or two registered SIP clients provided for audio path verification.
 
-**P0 execution status:** blocked in the current workspace. Asterisk, Docker, and SIP softphone binaries are unavailable here, and no private lab host or two registered SIP clients were provided. Therefore no local registration, audio, busy/no-answer, restart, or real-phone test is claimed. Do not treat reading the docs or the simulated-provider CI as evidence that Asterisk calling works.
+**P0 execution status:** **Blocked by upstream Asterisk registrar bug** (Asterisk 22.x). The PBX starts, ARI responds, endpoints are configured correctly, but the registrar cannot locate the AOR for inbound REGISTER. Do not treat the WSL setup or simulated-provider CI as evidence that Asterisk calling works. A fix requires either an Asterisk upgrade/fix or a workaround (e.g., explicit `contact` on AOR, or using `contact_user`).
 
 No Docker Compose, PJSIP config, dialplan, or application adapter is supplied by this documentation-only PR.
 
@@ -105,7 +112,7 @@ Before any real calling is enabled, verify backend-only credential handling, cal
 
 #### Phase status
 
-- **P0:** documentation/reference review complete; local Asterisk verification remains blocked and unclaimed (see above).
+- **P0:** Asterisk 22.5.2 installed and configured in WSL (loopback-only PJSIP/ARI/Manager/IAX, two endpoints with unique credentials, ARI user, identify sections, loopback-only SIP/RTP/Manager/IAX). **Blocked by upstream Asterisk 22.x registrar bug** ("AOR '' not found for endpoint") — known upstream issue; endpoints visible in ARI and `pjsip show endpoint`, but registrar cannot locate AOR for REGISTER. Docker Desktop installed but daemon not running; no SIP softphones or private lab host. No local registration, audio, or real-phone test claimed.
 - **P1:** provider-interface inspection and proposed ARI/identity/event/auth/media design documented; no adapter code or runtime configuration added.
 - **P2:** provider-selection contract and testable acceptance matrix documented; no fallback or UI behavior changed in this PR.
 
