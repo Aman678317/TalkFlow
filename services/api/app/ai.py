@@ -11,8 +11,10 @@ Responsibilities:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import time
+from collections.abc import AsyncIterator
 from typing import Any
 
 from sqlalchemy import select
@@ -33,6 +35,32 @@ from gt_ai.types import (
 log = logging.getLogger("app.ai")
 
 TASKS = (Task.STT, Task.MT, Task.TTS, Task.LANG_DETECT, Task.SUMMARIZE, Task.EMBED)
+
+
+async def _open_tts_stream(raw):
+    """Turn a provider's ``synthesize_stream`` result into an open stream.
+
+    Providers with missing model extras raise lazily at stream-start (e.g.
+    kokoro without ``pip install gt-ai[tts]``), so failover must verify the
+    stream OPENS and emits its first chunk, not merely that the provider
+    object exists. The first chunk is prefetched here and inlined into the
+    returned iterator so consumers see an unopened, ordinary stream. Fakes
+    and sync adapters that hand back a ready-made value (or a coroutine
+    yielding one) keep the historical pass-through contract.
+    """
+    stream = await raw if inspect.isawaitable(raw) else raw
+    if not isinstance(stream, AsyncIterator):
+        return stream
+    first = await stream.__anext__()
+
+    def _prefetched(first=first, stream=stream):
+        async def _it():
+            yield first
+            async for chunk in stream:
+                yield chunk
+        return _it()
+
+    return _prefetched()
 
 
 class AIFacade:
@@ -380,7 +408,8 @@ class AIFacade:
         if self.router is None:
             raise ProviderError("AI router not initialized")
         candidates = self._ordered_candidates(Task.TTS, {})
-        for name in candidates:
+        for decision in candidates:
+            name = decision.provider
             try:
                 provider = self.provider(Task.TTS, name)
                 if hasattr(provider, "healthcheck"):
@@ -388,8 +417,17 @@ class AIFacade:
                     if not ok:
                         continue
                 if hasattr(provider, "synthesize_stream"):
-                    decision = self.router.route(Task.TTS, force_provider=name)
-                    return provider.synthesize_stream(text, lang, voice), decision  # type: ignore[attr-defined]
+                    # `_ordered_candidates` already imposed routing order and
+                    # fallthrough (real providers first, dev stand-ins last,
+                    # never outside non-production) — route() is consulted
+                    # only as the last-resort decision below.
+                    stream = await _open_tts_stream(
+                        provider.synthesize_stream(text, lang, voice))
+                    if not isinstance(stream, AsyncIterator):
+                        # Ready-made value, not a stream (sync adapters and
+                        # fakes): keep the historical pass-through contract.
+                        return stream, decision  # type: ignore[attr-defined,return-value]
+                    return stream, decision  # type: ignore[attr-defined]
             except Exception:
                 continue
         # In production there is no test-tone stand-in: a generated beep must
@@ -397,13 +435,17 @@ class AIFacade:
         if not settings.is_production:
             try:
                 provider = self.provider(Task.TTS, "dev_tone")
-                decision = self.router.route(Task.TTS, force_provider="dev_tone")
-                return provider.synthesize_stream(text, lang, voice), decision  # type: ignore[attr-defined]
+                decision = RouteDecision(provider="dev_tone", model="dev_tone",
+                                         task=Task.TTS, reason="test-tone fallback")
+                stream = await _open_tts_stream(
+                    provider.synthesize_stream(text, lang, voice))
+                return stream, decision  # type: ignore[attr-defined,return-value]
             except Exception:
                 pass
         decision = self.router.route(Task.TTS)
         provider = self.provider(Task.TTS, decision.provider)
-        return provider.synthesize_stream(text, lang, voice), decision  # type: ignore[attr-defined]
+        stream = await _open_tts_stream(provider.synthesize_stream(text, lang, voice))
+        return stream, decision  # type: ignore[attr-defined,return-value]
 
     async def summarize(self, text: str, instruction: str = "",
                         max_length: int = 400, lang: str = "en") -> str:

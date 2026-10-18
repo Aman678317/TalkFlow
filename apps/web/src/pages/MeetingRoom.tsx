@@ -29,10 +29,21 @@ import { useLanguages, languageLabel } from "../hooks/useLanguages";
 import { useLiveKitRoom } from "../hooks/useLiveKitRoom";
 import { AudioPlayer, MicCapture, b64ToBytes } from "../lib/audio";
 import { MeetingSocket, normId, type SocketState } from "../lib/ws";
-import { WebRTCManager, type SignalMessage } from "../lib/webrtc";
+import { WebRTCManager, setIceServers, type SignalMessage } from "../lib/webrtc";
 import type { JoinMeetingResponse, Meeting, ParticipantInfo, Preferences, RealtimeEvent, TranscriptItem } from "../lib/types";
 import { Button, ErrorState, SegmentedControl, Select, Spinner } from "../components/ui";
 import { VideoTile } from "../components/meeting/VideoTile";
+import { StageStrip } from "../components/meeting/StageStrip";
+import {
+  applyAudioBlocked,
+  decayStageChips,
+  initialPipelineChips,
+  mediaChip,
+  micChip,
+  reduceStageChips,
+  type PipelineChips,
+  type StageEvent,
+} from "../lib/stageStatus";
 import { toast } from "../stores/toasts";
 import { useAuth } from "../stores/auth";
 import { friendlyMessage } from "../lib/api";
@@ -98,6 +109,9 @@ export default function MeetingRoom() {
   const [isOnline, setIsOnline] = React.useState(typeof navigator !== "undefined" ? navigator.onLine : true);
   const [isDegradedNetwork, setIsDegradedNetwork] = React.useState(false);
   const [translationStatus, setTranslationStatus] = React.useState<"normal" | "delayed" | "unavailable">("normal");
+  /** Per-stage truth chips (media/mic/STT/MT/TTS) fed independently by the
+   * room-scoped pipeline events; one banner cannot express all of these. */
+  const [stageChips, setStageChips] = React.useState<PipelineChips>(initialPipelineChips());
   const [translationMessage, setTranslationMessage] = React.useState<string | null>(null);
 
   const [micOn, setMicOn] = React.useState(false);
@@ -294,7 +308,36 @@ export default function MeetingRoom() {
     meetingId: id,
     participantId: myParticipantId,
     audioMode: prefs.audio_mode,
+    // The seat key is the guest's media credential (org users mint under
+    // their JWT); read freshly at each mint/connect attempt.
+    sessionKey: () => seatSessionKeyRef.current,
   });
+  const isLiveKitMedia = meetingQ.data?.transport === "livekit" && !!meetingQ.data.livekit_url;
+  const mediaRoomLeave = mediaRoom.leave;
+  const mediaRoomRetry = mediaRoom.retry;
+
+  // STUN/TURN for the P2P mesh: room members only, resolved by the backend.
+  // The guest must identify their seat (x-seat participants otherwise read
+  // as anonymous to the endpoint's allowlist and get a uniform 404).
+  const iceServersQ = useQuery({
+    queryKey: ["meeting", id, "ice-servers"],
+    queryFn: () => api<{ ice_servers: RTCIceServer[] }>(`/api/v1/meetings/${id}/ice-servers?participant_id=${myParticipantId}`),
+    enabled: phase === "in" || phase === "lobby",
+    staleTime: 5 * 60 * 1000,
+  });
+  React.useEffect(() => {
+    if (iceServersQ.data) setIceServers(iceServersQ.data.ice_servers);
+  }, [iceServersQ.data]);
+
+  // Speaker unlock is a browser permission, not a room failure: tell the user
+  // plainly when autoplay was blocked instead of looking "connected but silent".
+  React.useEffect(() => {
+    if (!mediaRoom.audioBlocked) return;
+    toast.warning(
+      "Speaker audio blocked",
+      "Your browser blocked autoplay. Click anywhere on the meeting page to hear the meeting.",
+    );
+  }, [mediaRoom.audioBlocked]);
 
   const socketRef = React.useRef<MeetingSocket | null>(null);
   const micRef = React.useRef<MicCapture | null>(null);
@@ -316,6 +359,31 @@ export default function MeetingRoom() {
     setCameraOn(self.cameraOn);
     setScreenOn(self.screenShareOn);
   }, [mediaRoom.peers]);
+
+  // A camera opened before/outside this LiveKit connection — lobby preview,
+  // permission granted late (`retryPhysicalCamera`), or the virtual-studio
+  // fallback — streams NOWHERE unless it is published once the room is up.
+  // This used to leave remote tiles black while the local tile looked live.
+  const lkCamPublishingRef = React.useRef(false);
+  React.useEffect(() => {
+    if (!isLiveKitMedia || mediaRoom.state !== "connected" || !cameraOn) return;
+    const track = localVideoStream?.getVideoTracks()[0];
+    if (!track || lkCamPublishingRef.current) return;
+    const self = mediaRoom.peers.find((peer) => peer.self);
+    if (self?.cameraOn) return; // LiveKit already owns a published camera track
+    lkCamPublishingRef.current = true;
+    mediaRoom.publishCameraTrack(track)
+      .then(() => { lkCamPublishingRef.current = false; })
+      .catch((cause) => {
+        lkCamPublishingRef.current = false;
+        // Honest failure: the room could not take the track (device vanished,
+        // room dropped mid-publish). The user still sees their own preview.
+        toast.warning(
+          "Camera could not join the room",
+          `Your video is on locally but the room could not publish it${cause?.message ? `: ${cause.message}` : ""}. Toggle the camera to retry.`,
+        );
+      });
+  }, [isLiveKitMedia, mediaRoom.state, mediaRoom.peers, cameraOn, localVideoStream]);
 
   useQuery({
     queryKey: ["meeting", id, "transcript"],
@@ -415,7 +483,6 @@ export default function MeetingRoom() {
   }, [meetingQ.data?.id, phase]);
 
   // ---------------- P2P video mesh (WS transport, signaling over the meeting socket) ----------------
-  const isLiveKitMedia = meetingQ.data?.transport === "livekit" && !!meetingQ.data.livekit_url;
 
   React.useEffect(() => {
     if (phase !== "in" || !myParticipantId || isLiveKitMedia) return;
@@ -497,6 +564,11 @@ export default function MeetingRoom() {
   }
 
   function handleEvent(evt: RealtimeEvent) {
+    // Feed every room event through the stage reducer first: it ignores what
+    // it does not know and only returns a new object when a chip truly moved.
+    setStageChips((prev) => reduceStageChips(prev, evt as StageEvent, {
+      listeningLang: prefsRef.current.listening_language,
+    }));
     const t = evt.type;
     switch (t) {
       case "session.created":
@@ -985,6 +1057,9 @@ export default function MeetingRoom() {
       }
       if (mediaRoom.state === "connected") {
         try {
+          // Unwind both publish paths: the follow-effect track (published via
+          // publishCameraTrack) and LiveKit's own acquired camera.
+          await mediaRoom.unpublishCameraTrackIfPublished().catch(() => { });
           await mediaRoom.setCameraEnabled(false);
         } catch { }
       }
@@ -1157,6 +1232,69 @@ export default function MeetingRoom() {
     }
   }
 
+  /** Meet-style hang-up: the whole meeting lifecycle unwinds together —
+   * transport media, capture, playback, mesh, socket, server seat — instead of
+   * just the local tracks. Skipping any of these strands the room: LiveKit
+   * kept streaming a phantom participant, the WS seat stayed joined (other
+   * users counted a ghost), and audio elements kept playing after navigation. */
+  // ---------------- per-stage truth chips ----------------
+  const mediaStageChip = mediaChip({
+    socketState,
+    isLiveKit: isLiveKitMedia,
+    roomState: isLiveKitMedia ? mediaRoom.state : null,
+    roomError: mediaRoom.error,
+  });
+  const micStageChip = micChip({ micOn, micLost, micPermissionBlocked });
+  const ttsStageChip = applyAudioBlocked(stageChips.tts, mediaRoom.audioBlocked);
+
+  // Activity chips age out on a quiet pass: an ok that stopped refreshing
+  // falls back to idle instead of silently claiming live progress.
+  React.useEffect(() => {
+    if (phase !== "in") return;
+    const timer = window.setInterval(
+      () => setStageChips((prev) => decayStageChips(prev)),
+      5000,
+    );
+    return () => window.clearInterval(timer);
+  }, [phase]);
+
+  async function homeFromMeeting() {
+    const failures: string[] = [];
+    // 1) LiveKit room: unpublish + disconnect (reconnect machinery suppressed).
+    try { await mediaRoomLeave(); } catch (cause) { failures.push(`media room: ${cause}`); }
+    // 2) Server seat: participant row reads "left" immediately, room notices.
+    try {
+      await api(`/api/v1/meetings/${id}/leave`, {
+        method: "POST",
+        body: myParticipantId ? { participant_id: myParticipantId } : undefined,
+      });
+    } catch (cause) { failures.push(`seat: ${cause}`); }
+    // 3) Socket + mesh + capture + playback.
+    socketRef.current?.sendJson({ type: "audio.stopped" });
+    socketRef.current?.close();
+    socketRef.current = null;
+    rtcRef.current?.dispose();
+    rtcRef.current = null;
+    micRef.current?.stop();
+    micRef.current = null;
+    if (localVideoStreamRef.current) {
+      localVideoStreamRef.current.getTracks().forEach((t) => t.stop());
+    }
+    if (virtualCameraCleanupRef.current) {
+      virtualCameraCleanupRef.current();
+      virtualCameraCleanupRef.current = null;
+    }
+    playerRef.current?.dispose();
+    playerRef.current = null;
+    setMicOn(false);
+    setCameraOn(false);
+    setScreenOn(false);
+    if (failures.length) {
+      console.warn("[leave] teardown had failures:", failures.join("; "));
+    }
+    nav(`/meetings?end=${id}`);
+  }
+
   const summaryMut = useMutation({
     mutationFn: () => api(`/api/v1/meetings/${id}/summary`, { method: "POST" }),
     onSuccess: (r) => setSummary(r),
@@ -1197,6 +1335,9 @@ export default function MeetingRoom() {
   }
 
   function backToLobby() {
+    // Stop the video room the same way a hang-up does: a deliberate leave that
+    // must not trigger the reconnect machinery while the user sits in the lobby.
+    void mediaRoomLeave();
     socketRef.current?.close();
     socketRef.current = null;
     rtcRef.current?.dispose();
@@ -1683,11 +1824,13 @@ export default function MeetingRoom() {
         </div>
       </div>
 
-      {/* Dev-only: inject a test transcript so the translation + TTS fan-out
-          can be verified end-to-end on environments without a real STT model
-          (e.g. Render where faster-whisper isn't installed). Stripped from
-          production builds via import.meta.env.DEV. */}
-      {import.meta.env.DEV && phase === "in" && (
+      {/* Dev / E2E-only: inject a test transcript so the translation + TTS
+          fan-out can be verified end-to-end on environments without a real
+          STT model (compose stack, Render where faster-whisper isn't installed).
+          Hidden from normal production builds; the server 403s injection unless
+          it is running a dev_* provider or a non-production APP_ENV, so an
+          accidentally-open build cannot mutate real rooms. */}
+      {(import.meta.env.DEV || import.meta.env.VITE_E2E_INJECT === "1") && phase === "in" && (
         <div className="flex items-center gap-2 border-b border-violet-500/30 bg-violet-950/40 px-4 py-1.5 text-[11px] text-violet-100 shrink-0">
           <span className="font-semibold uppercase tracking-wider text-violet-300">
             Dev
@@ -1743,13 +1886,34 @@ export default function MeetingRoom() {
             {connectionInfo.canRetry && (
               <button
                 type="button"
-                onClick={() => socketRef.current?.reconnectNow()}
+                onClick={() => {
+                  socketRef.current?.reconnectNow();
+                  // The video room is an independent transport: a WS reconnect
+                  // alone used to leave LiveKit stuck on 'error' forever.
+                  if (isLiveKitMedia) mediaRoomRetry();
+                }}
                 className="ml-1 text-xs font-semibold text-amber-300 hover:text-white underline"
               >
                 Reconnect
               </button>
             )}
           </div>
+
+          {/* Per-stage truth: media · mic · STT · MT · TTS, each independently
+              verified so one failing stage cannot fake "everything is broken" */}
+          {phase === "in" && (
+            <div className="mx-auto mb-3 flex justify-center">
+              <StageStrip
+                chips={{
+                  media: mediaStageChip,
+                  mic: micStageChip,
+                  stt: stageChips.stt,
+                  mt: stageChips.mt,
+                  tts: ttsStageChip,
+                }}
+              />
+            </div>
+          )}
 
           {/* Translation Delayed / Unavailable Degradation Banner */}
           {translationStatus !== "normal" && (
@@ -2012,7 +2176,7 @@ export default function MeetingRoom() {
 
           {/* Google Meet Live Multilingual Floating Subtitles Overlay */}
           {showCaptionsOverlay && latestCaption && (
-            <div className="pointer-events-none mt-2 w-full max-w-2xl mx-auto z-10 animate-fade-in">
+            <div className="pointer-events-none mt-2 w-full max-w-2xl mx-auto z-10 animate-fade-in" data-testid="caption-box">
               <div className="rounded-xl border border-white/15 bg-black/80 backdrop-blur-md px-4 py-2.5 text-center text-sm shadow-xl">
                 <div className="flex items-center justify-center gap-2 text-[11px] text-sky-300 font-medium mb-0.5">
                   <span>{latestCaption.speaker}</span>
@@ -2025,7 +2189,7 @@ export default function MeetingRoom() {
                     <span className="text-slate-400 text-[10px]">~{Math.round(latestCaption.latencyMs)}ms</span>
                   )}
                 </div>
-                <p className="text-white font-medium text-sm sm:text-base leading-snug">
+                <p className="text-white font-medium text-sm sm:text-base leading-snug" data-testid="caption-text">
                   {latestCaption.translated || latestCaption.original}
                 </p>
                 {latestCaption.translated && latestCaption.original && (
@@ -2514,13 +2678,7 @@ export default function MeetingRoom() {
           {/* End Call / Leave Meeting (Apple System Red Pill) */}
           <button
             type="button"
-            onClick={() => {
-              if (localVideoStream) {
-                localVideoStream.getTracks().forEach((t) => t.stop());
-              }
-              micRef.current?.stop();
-              nav(`/meetings?end=${id}`);
-            }}
+            onClick={() => void homeFromMeeting()}
             className="h-11 px-5 sm:h-12 sm:px-6 rounded-full flex items-center justify-center gap-2 bg-[#FF3B30] hover:bg-[#D70015] text-white font-medium shadow-md shadow-red-500/30 transition-all active:scale-95"
             aria-label="Leave call"
             title="Leave this meeting"

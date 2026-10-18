@@ -28,4 +28,9 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=40s \
   CMD curl -fsS http://localhost:8000/health || exit 1
 
 WORKDIR /app/services/api
-CMD ["sh", "-c", "python -m uvicorn ${APP_MODULE} --host 0.0.0.0 --port ${API_PORT:-8000} --workers 2"]
+# One uvicorn process, deliberately: the realtime routing tables
+# (app/realtime/session_manager.py) are in-memory, so anything above
+# --workers 1 silently splits a meeting's participants across processes and
+# listeners stop receiving captions/translation events (the E2E smoke caught
+# exactly this). Horizontal scaling needs the shared-registry milestone first.
+CMD ["sh", "-c", "python -m uvicorn ${APP_MODULE} --host 0.0.0.0 --port ${API_PORT:-8000} --workers 1"]

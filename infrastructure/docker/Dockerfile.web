@@ -4,6 +4,23 @@ WORKDIR /web
 COPY apps/web/package.json apps/web/package-lock.json* ./
 RUN npm ci --legacy-peer-deps --no-audit --no-fund
 COPY apps/web/ ./
+# VITE_E2E_INJECT=1 keeps the transcript-inject affordance in the built bundle
+# (compose dev stacks / E2E). The server still 403s injection unless the API is
+# running a dev_* provider or a non-production APP_ENV, so this cannot open
+# mutation of real production rooms.
+ARG VITE_E2E_INJECT=0
+ENV VITE_E2E_INJECT=$VITE_E2E_INJECT
+# Compose stacks must not inherit apps/web/.env.production (Vercel→Render
+# wiring): without explicit ARGs the baked Render URL shipped in every
+# locally-built bundle, which then silently talked to the hosted deployment.
+# Vite prefers real env vars over .env files, so declaring ARG+ENV here makes
+# the compose build args actually reach the build. NOTE: the value must be a
+# concrete origin (e.g. http://localhost:5173) — an empty string is treated as
+# "unset" and falls back to DEFAULT_PRODUCTION_API_BASE_URL in prod builds.
+ARG VITE_API_BASE_URL=""
+ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
+ARG VITE_COPILOTKIT_RUNTIME_URL=""
+ENV VITE_COPILOTKIT_RUNTIME_URL=$VITE_COPILOTKIT_RUNTIME_URL
 RUN npm run build
 
 FROM nginx:1.27-alpine

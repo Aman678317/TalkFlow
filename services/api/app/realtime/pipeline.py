@@ -311,6 +311,11 @@ class MeetingPipeline:
         """Fire-and-forget: push a diagnostic record to every connected
         participant. Never blocks the audio path on a slow socket."""
         try:
+            # Served from compose-api.log on CI failure: the loudest question
+            # about truth chips is "did the pipeline even emit this?" — answer
+            # it at the source instead of guessing from the DOM.
+            log.info("room_diag %s %s", record.get("stage"),
+                     {k: v for k, v in record.items() if k != "stage"})
             asyncio.create_task(
                 manager.broadcast(
                     self.session,
@@ -708,6 +713,15 @@ class MeetingPipeline:
         if not source_lang:
             det = await self.listening.detect_language(text)
             source_lang = det.language
+        # The injected line IS the transcript stage's output, so say so: this
+        # diag is what turns the room's STT truth chip on for an injected
+        # turn. Omitting it left every inject-driven room with an STT chip
+        # claiming "no signal yet" while the transcript was already live.
+        self._broadcast_diag(self._diag(
+            "stt_exit", utt=None, seq=None, speaker=p.participant_id,
+            provider="inject", model="host_injected", stt_ms=0.0,
+            text_len=len(text), text_preview=text[:80],
+            language=source_lang, confidence=1.0))
         await self._commit_segment(p, text=text, source_lang=source_lang,
                                    audio=b"", confidence=1.0,
                                    stt_model="injected", stt_provider="inject",
