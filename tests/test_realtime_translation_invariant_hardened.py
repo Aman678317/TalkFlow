@@ -36,7 +36,7 @@ from app.realtime.protocol import ServerEventType
 from app.realtime.session_manager import RtParticipant, manager
 from app.services.translation_service import TranslateOutput
 from gt_ai.model_router.router import ModelRouter, ProviderSpec
-from gt_ai.types import TranslationResult
+from gt_ai.types import ProviderUnavailable, TranslationResult
 
 
 def _facade(specs: dict) -> AIFacade:
@@ -127,6 +127,55 @@ async def test_streaming_synthesis_uses_the_test_tone_outside_production(monkeyp
     monkeypatch.setattr(facade, "provider", fake_provider)
     stream, _decision = await facade.synthesize_stream("hello", "de")
     assert stream == "tone:de"
+
+
+class _ExtrasMissingTts:
+    """The real-world lazy failure: the provider object constructs fine, its
+    healthcheck is green, and the missing dependency explodes at stream-start
+    (async generator body), i.e. at the first ``__anext__``."""
+
+    async def healthcheck(self) -> bool:
+        return True
+
+    async def synthesize_stream(self, text, lang, voice=None):  # noqa: ARG002
+        raise ProviderUnavailable("kokoro requires `pip install gt-ai[tts]`")
+        yield  # pragma: no cover - makes this an async generator function
+
+
+class _WorkingToneTts:
+    async def healthcheck(self) -> bool:
+        return True
+
+    async def synthesize_stream(self, text, lang, voice=None):  # noqa: ARG002
+        async def _gen():
+            yield "tone-1"
+            yield "tone-2"
+        return _gen()
+
+
+@pytest.mark.asyncio
+async def test_streaming_failover_survives_a_first_chunk_open_failure(monkeypatch):
+    """A TTS provider whose stream aborts lazily at first-chunk time (model
+    extras absent from the image) must route to the next candidate and deliver
+    its stream — not abort the listener fan-out. This is the exact shape that
+    made every realtime-listener caption/TTS delivery fail while the registry
+    still advertised kokoro."""
+    from gt_ai.types import Task
+    monkeypatch.setattr(settings, "app_env", "development")
+    requested: list[str] = []
+    facade = _facade({Task.TTS: [ProviderSpec(name="kokoro", task=Task.TTS),
+                                  ProviderSpec(name="dev_tone", task=Task.TTS)]})
+
+    def fake_provider(task, name):  # noqa: ARG001
+        requested.append(name)
+        return _ExtrasMissingTts() if name == "kokoro" else _WorkingToneTts()
+
+    monkeypatch.setattr(facade, "provider", fake_provider)
+    stream, decision = await facade.synthesize_stream("hello", "de")
+    assert decision.provider == "dev_tone"
+    assert requested == ["kokoro", "dev_tone"]
+    chunks = [chunk async for chunk in stream]
+    assert chunks == ["tone-1", "tone-2"]
 
 
 # --------------------------------------------------------------------------- #

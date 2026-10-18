@@ -91,6 +91,13 @@ class Settings(BaseSettings):
     livekit_api_key: str = ""
     livekit_api_secret: str = ""
 
+    # --- P2P WebRTC mesh ICE configuration (WS transport meetings) ---
+    # JSON list passed straight to RTCPeerConnection.iceServers for room members
+    # only. Deployments behind symmetric NAT/mobile carriers must host a TURN
+    # server; public STUN-only defaults stay when this is empty.
+    # e.g. '[{"urls":"turn:turn.example.com:3478?transport=udp","username":"tk","credential":"pw"}]'
+    webrtc_ice_servers_json: str = ""
+
     # --- telephony & international calling ---
     telephony_provider: str = "auto"  # auto | twilio | telnyx | livekit_sip | simulated
     twilio_account_sid: str = ""

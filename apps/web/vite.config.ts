@@ -95,6 +95,13 @@ export default defineConfig(async () => {
       environment: "jsdom",
       globals: true,
       setupFiles: ["./src/test-setup.ts"],
+      // Playwright owns e2e/*.spec.ts under its own runner; keep vitest on
+      // unit/component tests of src only.
+      exclude: [
+        "e2e/**",
+        "node_modules/**",
+        "dist/**",
+      ],
     },
   } as any;
 });

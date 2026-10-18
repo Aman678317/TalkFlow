@@ -2,6 +2,8 @@ name: globaltalk-ai
 # One command local dev stack:
 #   docker compose up -d          (postgres, redis, minio, livekit, api, worker, web)
 #   docker compose down
+# MinIO-free variant (minio/minio is no longer anonymously pullable from
+# Docker Hub): docker compose -f docker-compose.yml -f docker-compose.e2e.yml up -d --build
 # GPU inference workers: use docker-compose.gpu.yml override (see docs/DEPLOYMENT.md).
 
 x-api-env: &api-env
@@ -122,7 +124,15 @@ services:
       context: .
       dockerfile: infrastructure/docker/Dockerfile.web
       args:
-        VITE_API_BASE_URL: ""
+        # Same-origin through the SPA's nginx proxy (/api, /ws, /health all
+        # proxy to api:8000). An empty value would fall back to
+        # .env.production's Render URL in prod builds — never ship a compose
+        # bundle that dials the hosted deployment.
+        VITE_API_BASE_URL: "http://localhost:5173"
+        VITE_COPILOTKIT_RUNTIME_URL: "http://localhost:5173/api/copilotkit"
+        # Local compose is APP_ENV=development: keep the inject affordance
+        # available so the browser E2E can drive the pipeline without a model.
+        VITE_E2E_INJECT: "1"
     ports: ["5173:80"]
     depends_on: [api]
 
