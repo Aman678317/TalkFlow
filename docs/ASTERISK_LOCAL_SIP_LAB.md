@@ -35,12 +35,14 @@ Provider selection/fallback behavior above is a target design, not implemented b
 
 ### P0 — document and verify local Asterisk independently
 
-- Read the official [Asterisk repository](https://github.com/asterisk/asterisk) and official installation/configuration documentation before choosing a deployment method.
-- Install/run Asterisk locally or on a trusted private test host.
-- Create two non-public test extensions with unique credentials.
-- Use two SIP softphones on the same trusted network to register and call extension-to-extension.
-- Verify audio in both directions, hang-up, busy/no-answer behavior, and service restart recovery.
-- Keep SIP/RTP ports behind a firewall; do not expose AMI/ARI management endpoints to the public Internet.
+- [x] Read the official [Asterisk repository](https://github.com/asterisk/asterisk), [installation overview](https://docs.asterisk.org/Getting-Started/Installing-Asterisk/), [PJSIP guide](https://docs.asterisk.org/Configuration/Channel-Drivers/SIP/Configuring-res_pjsip/), [ARI overview](https://docs.asterisk.org/Configuration/Interfaces/Asterisk-REST-Interface-ARI/), and [security considerations](https://docs.asterisk.org/Deployment/Important-Security-Considerations/). No deployment method or sample PBX config is prescribed by this proposal.
+- [ ] Install/run Asterisk locally or on a designated trusted private test host.
+- [ ] Create two non-public test extensions with unique credentials.
+- [ ] Use two SIP softphones on the same trusted network to register and call extension-to-extension.
+- [ ] Verify bidirectional audio, hang-up, busy/no-answer behavior, and restart recovery.
+- [ ] Keep SIP/RTP ports behind a firewall; do not expose AMI/ARI management endpoints to the public Internet.
+
+**P0 execution status:** blocked in the current workspace. Asterisk, Docker, and SIP softphone binaries are unavailable here, and no private lab host or two registered SIP clients were provided. Therefore no local registration, audio, busy/no-answer, restart, or real-phone test is claimed. Do not treat reading the docs or the simulated-provider CI as evidence that Asterisk calling works.
 
 No Docker Compose, PJSIP config, dialplan, or application adapter is supplied by this documentation-only PR.
 
@@ -54,7 +56,7 @@ The current integration points were inspected for this proposal:
 
 #### Proposed control and identity mapping (design hypothesis; validate in P0 lab)
 
-ARI is the leading control-plane candidate for an application that needs asynchronous control of Asterisk channels and bridges. Asterisk documents ARI as REST operations plus JSON events over a WebSocket, with channels handed to the ARI application through Stasis. The eventual adapter should use a backend-only ARI client; browser code must never connect directly to ARI.
+**Design decision:** use ARI as the proposed control plane for an adapter prototype. Asterisk documents ARI as REST operations plus JSON events over a WebSocket, with channels handed to the ARI application through Stasis; that model fits asynchronous provider operations and lifecycle events better than trying to represent ARI events as carrier webhooks. This is a design decision only—not an adapter implementation or a claim that ARI has been tested here. Use a backend-only ARI client; browser code must never connect directly to ARI.
 
 | TalkFlow concept | Proposed Asterisk representation | Design notes |
 |---|---|---|
@@ -78,11 +80,34 @@ A separate implementation change should introduce the adapter behind an explicit
 
 ### P2 — define fallback and acceptance criteria
 
-- Asterisk is selected only when explicitly configured and healthy.
-- If Asterisk is absent or unhealthy, a real-call request must fail clearly or ask the user to select simulation; it must not pretend that a simulated call reached a phone.
-- Existing simulated tests must remain deterministic and independent of network/carrier credentials.
-- Integration tests should be opt-in and run only when a test Asterisk server is explicitly available.
-- Verify credential handling, call authorization, consent, destination restrictions, rate limits, and audit events before any real calling is enabled.
+#### Provider-selection contract for a future runtime change
+
+1. **Simulation:** selected explicitly by the operator/user or by the existing no-carrier default; UI and API must identify the result as simulated. It never means a phone rang.
+2. **Asterisk:** selected only by explicit backend configuration and an enabled local-SIP feature. It is healthy only when the backend can authenticate to ARI and complete a bounded health check. Destinations are configured local SIP extension IDs from an allowlist—not arbitrary user-entered E.164 numbers.
+3. **Asterisk unavailable/failing:** return a clear provider-unavailable or call-failed result and preserve provider=`asterisk` in diagnostics. Never retry the same real-call intent through `simulated`; simulation requires a separate explicit user/operator choice and a distinct idempotency intent.
+4. **Twilio/PSTN:** remain an explicit carrier path for permitted PSTN destinations, with backend-only credentials, verified Twilio signatures, consent/DNC checks, rate limits, and provider/cost disclosure. Do not route PSTN destinations through a local Asterisk adapter unless a separately reviewed SIP-trunk feature is configured.
+
+#### Acceptance matrix for a future adapter/runtime PR
+
+| Scenario | Required result | Evidence |
+|---|---|---|
+| No carrier configured; simulation chosen | Call is visibly labeled simulated; no claim that a phone was reached | Deterministic API/UI test with no carrier credentials |
+| Asterisk explicitly enabled, ARI healthy, allowlisted extension | Place a local extension call and report provider=`asterisk` with correlated TalkFlow/Asterisk identifiers | Opt-in integration test against an explicitly provisioned private Asterisk instance |
+| Unknown or public/PSTN destination sent to Asterisk adapter | Reject before originate; no ARI call action | Unit/API destination-allowlist test |
+| ARI unavailable before originate | Honest provider-unavailable response; no simulated call is created | Provider failure test asserting no simulated provider invocation |
+| ARI request times out after possible originate | Mark outcome unknown, reconcile by correlation ID before any retry; never duplicate by blind retry | Timeout/reconciliation test |
+| ARI event WebSocket disconnects or Asterisk restarts | Report degraded/unavailable, reconnect with bounded backoff, reconcile active resources; no fabricated connected state | Restart/reconnect test on opt-in lab |
+| Duplicate, late, busy, no-answer, canceled, and normal-clearing events | Normalize each to one correct lifecycle; terminal states remain terminal | Event-fixture tests plus live local lab checks |
+| Explicit Twilio selection | Existing Twilio request-signature verification and webhook behavior remain intact | Existing webhook security tests plus carrier sandbox drill |
+| Operator switches from real provider to simulation | Requires explicit new choice; real failure cannot silently become simulated success | API/UI state-transition test and audit event |
+
+Before any real calling is enabled, verify backend-only credential handling, call authorization, consent, Do-Not-Call, tenant isolation, destination restrictions, rate limits, audit events, and call-end controls. Keep Asterisk integration tests opt-in; CI without an explicitly provisioned test PBX must remain network-independent and deterministic.
+
+#### Phase status
+
+- **P0:** documentation/reference review complete; local Asterisk verification remains blocked and unclaimed (see above).
+- **P1:** provider-interface inspection and proposed ARI/identity/event/auth/media design documented; no adapter code or runtime configuration added.
+- **P2:** provider-selection contract and testable acceptance matrix documented; no fallback or UI behavior changed in this PR.
 
 ## Local-call vs public-call decision table
 
@@ -117,4 +142,4 @@ A separate implementation change should introduce the adapter behind an explicit
 
 ## Status
 
-**Proposal only — not implemented, not deployed, and not validated against a real phone call.** The existing simulated provider remains the reliable local/CI default until a separate, reviewed implementation is completed.
+**Documentation and design only — not implemented, not deployed, and not validated against an Asterisk host or real phone call.** The existing simulated provider remains the reliable local/CI default until a separate, reviewed implementation is completed. P0 local SIP lab validation still requires a trusted host and two SIP softphones.
