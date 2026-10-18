@@ -22,6 +22,22 @@ from app.telephony.base import (
 
 log = logging.getLogger("app.telephony.simulated")
 
+# Status vocabulary the sandbox drills send (Twilio-style words). Separate
+# copy from twilio_provider on purpose: carrier vocabularies differ and the
+# sandbox must keep validating drills without carrier modules installed.
+_SANDBOX_STATUS_MAP: dict[str, CallStatus] = {
+    "queued": CallStatus.INITIATING,
+    "initiated": CallStatus.CONNECTING,
+    "ringing": CallStatus.RINGING,
+    "in-progress": CallStatus.CONNECTED,
+    "completed": CallStatus.ENDED,
+    "busy": CallStatus.BUSY,
+    "no-answer": CallStatus.NO_ANSWER,
+    "canceled": CallStatus.DECLINED,
+    "cancelled": CallStatus.DECLINED,
+    "failed": CallStatus.FAILED,
+}
+
 
 class SimulatedProvider(BaseTelephonyProvider):
     provider_name = "simulated"
@@ -109,14 +125,20 @@ class SimulatedProvider(BaseTelephonyProvider):
             ET.SubElement(stream, "Parameter", {"name": str(k), "value": str(v)})
         return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding="unicode")
 
-    def parse_webhook(self, headers: dict[str, str], payload: dict[str, Any]) -> WebhookEvent:
+    def parse_webhook(self, headers: dict[str, Any] | dict[str, str], payload: dict[str, Any]) -> WebhookEvent:
         call_sid = payload.get("call_sid", payload.get("CallSid", "SIM_UNKNOWN"))
+        # The sandbox honors the carrier status vocabulary its drills send
+        # (Twilio-style words). Ignoring it used to hardcode CONNECTED, so
+        # terminal statuses (completed/failed/...) never reached the DB and
+        # sandbox validation could not observe call ends.
+        word = str(payload.get("CallStatus", payload.get("status", "in-progress"))).lower()
+        mapped_status = _SANDBOX_STATUS_MAP.get(word, CallStatus.CONNECTED)
         return WebhookEvent(
             event_type="call_status",
             call_sid=call_sid,
             from_number=payload.get("from", self.default_from_number),
             to_number=payload.get("to", ""),
-            status=CallStatus.CONNECTED,
+            status=mapped_status,
             raw_data=payload,
         )
 
