@@ -326,27 +326,12 @@ on the configured deployment (real PSTN drills included), and CI
 (simulated-provider) tests prove contracts, not carrier connectivity.
 
 
-## 13. P0 recommendation — free local SIP testing with Asterisk
+## 13. P0 recommendation — Asterisk local SIP calling (documentation only)
 
-**Recommendation:** Keep `simulated` as the default CI provider and introduce
-Asterisk as an optional self-hosted SIP lab. Asterisk is free/open-source
-software; local extension-to-extension SIP calls can validate signaling and
-media without PSTN carrier credentials. This is not a replacement for a real
-carrier sandbox and does not make calls to arbitrary mobile/landline numbers
-free.
+The open-source [Asterisk project](https://github.com/asterisk/asterisk) may be used in a future phase to test SIP calls between local SIP extensions without a PSTN carrier. It does not provide free calls to arbitrary mobile or landline numbers. Public telephone-network access requires an authorized SIP trunk/carrier and may incur charges.
 
-See [`docs/ASTERISK_LOCAL_SIP_LAB.md`](ASTERISK_LOCAL_SIP_LAB.md) and the
-optional `docker-compose.asterisk.yml` profile.
+See [Asterisk local SIP calling — documentation and integration plan](ASTERISK_LOCAL_SIP_LAB.md) for the proposed phases, honest UI states, fallback rules, security requirements, and acceptance criteria.
 
-Acceptance boundaries:
-- Automated CI remains deterministic on the simulated provider.
-- The Asterisk lab is manually verified for local registration, extension call,
-  RTP audio, hang-up, and service restart recovery.
-- Production carrier callback verification stays provider-specific. Asterisk
-  ARI/AMI events must not be treated as Twilio webhooks and must not bypass
-  existing signature checks.
-- A production-capable Asterisk adapter is a separate phase, requiring a
-  reviewed ARI/AMI event/control design, credential handling, call-id mapping,
-  RTP/media integration, event normalization, and automated tests.
-- Public PSTN calls still require an authorized SIP trunk or PSTN provider;
-  any hosting/network/carrier charges must be documented before production use.
+**Current behavior must remain unchanged:** when no real carrier is configured, display **“No carrier configured — calls are simulated.”** Keep the simulated provider as the deterministic default. A future Asterisk adapter must be explicitly configured; if unavailable, it must report the failure and must never present a simulated call as a real call. Switching between Asterisk, simulation, and Twilio must be explicit and provider status must be visible to the user.
+
+This PR is documentation only. It does not add a Docker setup, Asterisk configuration, provider adapter, automatic fallback, or production calling feature.
