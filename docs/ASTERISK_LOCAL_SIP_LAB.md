@@ -1,78 +1,85 @@
-# Asterisk local SIP lab (P0 recommendation)
+# Asterisk local SIP calling — documentation and integration plan
 
-## Purpose
+## Goal
 
-Asterisk is the recommended open-source PBX for adding a no-carrier-cost local
-SIP integration test path to TalkFlow. It complements — and does not replace —
-the existing simulated, Twilio, or Telnyx provider implementations.
+TalkFlow currently displays **“No carrier configured — calls are simulated”** when no real telephony carrier is configured. The goal is to document an optional self-hosted, open-source [Asterisk](https://github.com/asterisk/asterisk) backend for testing local SIP calls, while preserving safe existing behavior.
 
-- Simulated provider: deterministic CI tests for call-state transitions,
-  webhook idempotency, CRM consent gates, and provider-independent behavior.
-- Asterisk: optional local SIP signaling/media smoke tests between SIP clients.
-- Twilio sandbox: separate credentialed manual drill for real PSTN and
-  cryptographically signed carrier callbacks.
+This PR is **documentation only**. It does not implement or configure an Asterisk adapter, change runtime behavior, or deploy a calling service.
 
-A local SIP test does **not** prove public mobile/landline connectivity. Asterisk
-software is free/open source; hosting, public networking, SIP trunks, and PSTN
-termination may cost money.
+## What Asterisk can and cannot provide
 
-## Start the lab
+- **Can:** run a local PBX and let SIP clients call other SIP extensions on your own Asterisk server, without a paid PSTN carrier.
+- **Can:** help test SIP signaling, media/RTP, busy/no-answer cases, and call lifecycle behavior once an adapter is implemented.
+- **Cannot by itself:** call arbitrary mobile or landline numbers for free. Public telephone-network connectivity normally requires a SIP trunk/carrier and may incur fees.
+- **Important:** a free/open-source server does not make hosting, public networking, or PSTN termination free.
 
-From the repository root, after Docker is installed:
+A local Asterisk test is different from a Twilio trial. Twilio provides a carrier route for permitted trial calls subject to trial restrictions; Asterisk provides the local PBX software.
 
-```powershell
-docker compose -f docker-compose.yml -f docker-compose.asterisk.yml --profile asterisk up -d asterisk
-docker compose -f docker-compose.yml -f docker-compose.asterisk.yml logs -f asterisk
-```
+## Desired provider behavior
 
-Configure two SIP softphones on the same trusted LAN:
-- Extension/user: `7001`, password: `CHANGE-ME-7001`
-- Extension/user: `7002`, password: `CHANGE-ME-7002`
-- SIP server/domain: the host running Docker
-- Transport: UDP, port 5060
+Keep the current user-visible behavior and make provider state explicit:
 
-Call extension `7002` from `7001` (or call echo extension `7999` to check RTP
-audio). Change the example passwords before use. The provided credentials are
-deliberate placeholders; do not expose this service to the Internet.
+1. **No provider configured:** keep calls simulated and show “No carrier configured — calls are simulated.”
+2. **Asterisk available and configured:** in a future implementation, permit only explicitly enabled local SIP extension calls through the Asterisk adapter.
+3. **Asterisk unavailable or local SIP call fails:** surface an honest provider-unavailable/failure state and allow the user to return to simulated calls. Do not silently claim a real call connected.
+4. **Twilio configured:** retain the existing Twilio path as an explicit provider option for calls that require the PSTN, using verified credentials, approved destinations, and Twilio's rules.
+5. **Never silently switch a requested real call to a simulated call.** Simulation must be clearly identified to the user so they do not mistake it for a real call.
 
-Stop the lab:
+Provider selection/fallback behavior above is a target design, not implemented by this documentation change.
 
-```powershell
-docker compose -f docker-compose.yml -f docker-compose.asterisk.yml --profile asterisk down
-```
+## Proposed phased work
 
-## TalkFlow integration phases
+### P0 — document and verify local Asterisk independently
 
-### P0-A: Safe local SIP lab (this addition)
-- Keep Asterisk optional; the standard compose stack and CI remain unchanged.
-- Validate a local SIP registration, extension-to-extension call, RTP audio,
-  hang-up, and Asterisk restart recovery manually.
-- Keep carrier webhooks and their verification paths unchanged.
+- Read the official [Asterisk repository](https://github.com/asterisk/asterisk) and official installation/configuration documentation before choosing a deployment method.
+- Install/run Asterisk locally or on a trusted private test host.
+- Create two non-public test extensions with unique credentials.
+- Use two SIP softphones on the same trusted network to register and call extension-to-extension.
+- Verify audio in both directions, hang-up, busy/no-answer behavior, and service restart recovery.
+- Keep SIP/RTP ports behind a firewall; do not expose AMI/ARI management endpoints to the public Internet.
 
-### P0-B: Provider-neutral adapter design (next code phase)
-Before implementing an Asterisk adapter, inspect how `CallService`,
-`TelephonyService`, `WebhookService`, `media_stream_service.py`, and the
-current provider abstraction represent call identifiers, call control, event
-delivery, and audio transport. Asterisk uses SIP/PJSIP and RTP/ARI or AMI
-control; it does not natively implement Twilio REST calls, TwiML, or Twilio's
-webhook-signature contract. Avoid pretending an ARI event is a carrier callback.
-Add an adapter only after defining the actual ARI/AMI interface, secure
-credentials, event normalization, and media bridge contract.
+No Docker Compose, PJSIP config, dialplan, or application adapter is supplied by this documentation-only PR.
 
-### P0-C: Automated acceptance
-- Preserve all existing P0/P1 tests and migration state.
-- Add optional integration tests gated by an explicit Asterisk test profile.
-- Test valid and invalid SIP authentication, call setup, busy/no-answer,
-  remote hang-up, duplicate/out-of-order event delivery, API/provider timeout,
-  and restart recovery.
-- Keep the deterministic simulated provider as the default CI acceptance lane.
-- Do not mark real-PSTN validation complete unless a real carrier drill passes.
+### P1 — design the TalkFlow adapter before implementation
 
-## Security checklist
-- Bind SIP/RTP ports only on trusted local networks or firewall them.
-- Replace placeholder endpoint passwords; never commit real credentials.
-- Do not publish AMI/ARI control interfaces to the Internet.
-- Keep API/provider secrets backend-only.
-- Production carrier webhooks must fail closed on invalid/missing signatures.
-- No direct dialing to public numbers from this local lab without an authorized
-  SIP trunk and the same TalkFlow consent/DNC/campaign controls.
+Before writing code, inspect the current provider interface and call service. Document the planned mapping between TalkFlow call IDs and Asterisk channels/bridges, the selected control interface (for example, ARI where appropriate), event normalization, authentication, timeout behavior, and media transport. Do not treat Asterisk events as Twilio webhooks or bypass existing Twilio signature validation.
+
+A separate implementation change should introduce the adapter behind an explicit feature flag, tests for provider failure/restart, and an operator-controlled configuration path. Keep the simulated provider as the CI default.
+
+### P2 — define fallback and acceptance criteria
+
+- Asterisk is selected only when explicitly configured and healthy.
+- If Asterisk is absent or unhealthy, a real-call request must fail clearly or ask the user to select simulation; it must not pretend that a simulated call reached a phone.
+- Existing simulated tests must remain deterministic and independent of network/carrier credentials.
+- Integration tests should be opt-in and run only when a test Asterisk server is explicitly available.
+- Verify credential handling, call authorization, consent, destination restrictions, rate limits, and audit events before any real calling is enabled.
+
+## Local-call vs public-call decision table
+
+| User's goal | Appropriate path | Carrier cost? |
+|---|---|---|
+| Test UI and call lifecycle without network telephony | Existing simulated provider | No carrier cost; call is not real |
+| Call another SIP extension on a private Asterisk lab | Asterisk local SIP | No PSTN carrier fee; hosting/network may cost |
+| Call an actual mobile or landline number | Authorized SIP trunk/provider such as the existing Twilio path | Usually carrier fees or trial restrictions apply |
+| Asterisk is down and the user requested a real call | Show failure/provider unavailable; offer explicit simulated mode | Never mislabel simulation as a real call |
+
+## Security and product requirements
+
+- Never commit API tokens, Twilio Auth Tokens, SIP passwords, or production configuration.
+- Store secrets server-side only; rotate any credentials exposed accidentally.
+- Restrict SIP/RTP access to trusted networks and use firewall rules.
+- Do not enable international/public dialing by default.
+- Preserve consent, Do-Not-Call, tenant isolation, rate-limit, audit-log, and call-end controls.
+- Asterisk availability does not imply that the app can call external phone numbers.
+- Document any hosting, SIP trunk, and PSTN charges before users enable a real-call provider.
+
+## References
+
+- [Asterisk source repository](https://github.com/asterisk/asterisk)
+- [Asterisk official documentation](https://docs.asterisk.org/)
+- [Twilio Console](https://console.twilio.com/)
+- [Twilio phone-number search](https://console.twilio.com/us1/develop/phone-numbers/search)
+
+## Status
+
+**Proposal only — not implemented, not deployed, and not validated against a real phone call.** The existing simulated provider remains the reliable local/CI default until a separate, reviewed implementation is completed.
