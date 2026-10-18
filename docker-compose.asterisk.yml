@@ -1,8 +1,8 @@
 # Optional Asterisk SIP lab for local development only.
 # Start alongside the main stack:
-#   docker compose -f docker-compose.yml -f docker-compose.asterisk.yml up -d
+#   docker compose -f docker-compose.yml -f docker-compose.asterisk.yml --profile asterisk up -d asterisk
 # Stop:
-#   docker compose -f docker-compose.yml -f docker-compose.asterisk.yml down
+#   docker compose -f docker-compose.yml -f docker-compose.asterisk.yml --profile asterisk down
 #
 # This provides a local SIP PBX. It does NOT provide public PSTN connectivity,
 # carrier numbers, or free calls to arbitrary mobile/landline destinations.
