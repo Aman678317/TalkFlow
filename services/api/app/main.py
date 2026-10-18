@@ -77,7 +77,7 @@ def create_app() -> FastAPI:
     from app.realtime.ws import router as ws_router
     from app.routers import (
         assistant as assistant_routers,
-        auth, documents, health, meetings, orgs, platform, translate,
+        auth, contacts, documents, health, meetings, orgs, platform, translate,
         customization, write, v2_v3, telephony, agent_studio,
     )
     app.include_router(v2_v3.router)
@@ -95,6 +95,8 @@ def create_app() -> FastAPI:
     app.include_router(assistant_routers.agent_router)
     app.include_router(agent_studio.router)
     app.include_router(telephony.router)
+    app.include_router(contacts.router)
+    app.include_router(contacts.campaign_router)
     # Technical specification alias: /api/voice/* endpoints
     voice_alias_router = APIRouter(prefix="/api/voice", tags=["voice-aliases"])
     voice_alias_router.add_api_route("/token", telephony.get_voice_access_token, methods=["GET"])

@@ -20,6 +20,12 @@ from app.telephony.service import get_telephony_service
 
 log = logging.getLogger("app.telephony.call_service")
 
+# Carrier retry idempotency: statuses a call can never leave again.
+_TERMINAL_STATUSES = frozenset({
+    "ended", "failed", "busy", "no_answer", "declined",
+    "timeout", "invalid_number", "unsupported_country",
+})
+
 
 class CallService:
     def __init__(self, db: AsyncSession) -> None:
@@ -212,6 +218,21 @@ class CallService:
             return None
 
         status_val = new_status.value if isinstance(new_status, CallStatus) else new_status
+
+        # Carrier retries re-deliver identical status callbacks; the transition
+        # must be idempotent: a same-status callback (without new details) adds
+        # no state change, no duplicate CallEvent, and no second usage record.
+        if status_val == call.status:
+            if not (error_message and error_message != call.error_message):
+                log.debug("Status webhook retry for %s: %s unchanged, ignoring", call_sid, status_val)
+                return call
+
+        # A terminal state is absorbing: late out-of-order retries (e.g.
+        # "in-progress" after "completed") must not roll a call back.
+        if call.status in _TERMINAL_STATUSES and status_val not in _TERMINAL_STATUSES:
+            log.info("Ignoring late carrier transition to %r for terminal call %s", status_val, call_sid)
+            return call
+
         call.status = status_val
 
         if status_val in ("connected", "translating") and not call.connected_at:

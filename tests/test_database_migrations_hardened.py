@@ -184,7 +184,13 @@ async def test_fresh_database_alembic_upgrade_and_drift_check(migration_url):
 
 @pytest.mark.asyncio
 async def test_migration_downgrade_and_reupgrade_cycle(migration_url):
-    """Verify rollback (downgrade -1) and re-upgrade execute reliably."""
+    """Verify rollback (downgrade -1) and re-upgrade execute reliably.
+
+    The assertions derive from the actual chain instead of assuming what the
+    parent revision contains: the head revision's tables must be dropped by
+    the downgrade and restored by the re-upgrade, and the parent revision's
+    tables must stay put.
+    """
     cfg = get_alembic_config(migration_url)
     script = ScriptDirectory.from_config(cfg)
     head = script.get_current_head()
@@ -192,6 +198,13 @@ async def test_migration_downgrade_and_reupgrade_cycle(migration_url):
 
     # Upgrade to head
     await asyncio.to_thread(command.upgrade, cfg, "head")
+
+    eng = _connect(migration_url)
+    try:
+        with eng.connect() as conn:
+            tables_at_head = set(inspect(conn).get_table_names())
+    finally:
+        eng.dispose()
 
     # Downgrade one revision (apps/api keeps more than two, so name the parent)
     await asyncio.to_thread(command.downgrade, cfg, previous)
@@ -202,11 +215,17 @@ async def test_migration_downgrade_and_reupgrade_cycle(migration_url):
             assert conn.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one_or_none() == previous
-            tables = set(inspect(conn).get_table_names())
-        assert "user_identities" not in tables
-        assert "phone_numbers" not in tables
+            tables_after_downgrade = set(inspect(conn).get_table_names())
     finally:
         eng.dispose()
+
+    dropped = tables_at_head - tables_after_downgrade
+    resurrected = tables_after_downgrade - tables_at_head
+    assert dropped, "downgrading one revision must drop the head revision's tables"
+    assert not resurrected, f"downgrade resurrected tables: {sorted(resurrected)}"
+    # The -1 parent (harmonize) owns the P0 telephony tables; they must survive
+    # the downgrade to it.
+    assert {"user_identities", "phone_numbers"} <= tables_after_downgrade
 
     # Re-upgrade to head
     await asyncio.to_thread(command.upgrade, cfg, "head")
@@ -217,11 +236,15 @@ async def test_migration_downgrade_and_reupgrade_cycle(migration_url):
             assert conn.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one_or_none() == head
-            tables = set(inspect(conn).get_table_names())
-        assert "user_identities" in tables
-        assert "phone_numbers" in tables
+            tables_after_reupgrade = set(inspect(conn).get_table_names())
     finally:
         eng.dispose()
+
+    assert dropped <= tables_after_reupgrade, (
+        f"re-upgrade failed to restore all of the downgraded tables: "
+        f"{sorted(dropped - tables_after_reupgrade)}")
+    assert "user_identities" in tables_after_reupgrade
+    assert "phone_numbers" in tables_after_reupgrade
 
 
 
