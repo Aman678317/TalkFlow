@@ -273,12 +273,25 @@ behind secrets.
 
 ## 11. Milestone resequencing (fitting what exists)
 
-- **P0 — prove provider + call loop** *(mostly built; needs validation)*:
-  this milestone's remaining work = webhook/provider tests (§10 #2) +
-  sandbox drill doc; recommended: Twilio first (current provider code most
-  complete), Telnyx secondary.
-- **P1 — data model + permissions**: §2 models, §3 endpoints, §4 gate,
-  migration + tenant tests.
+- **P0 — prove provider + call loop** ✅ **shipped on this branch (PR #61)**:
+  webhook/provider security tests (§10 #2) + provider-event idempotency
+  (retry + out-of-order absorption) + fixed the sandbox provider so
+  status callbacks actually terminate calls. Webhook signature
+  enforcement is real production logic; the *simulated* provider lane is
+  what CI exercises. Remaining P0 residue: manual real-PSTN sandbox
+  drill (needs live credentials — see §9).
+- **P1 — data model + permissions** ✅ **shipped on this branch (PR #61)**:
+  §2 models (contacts / consent ledger / contact documents / campaigns /
+  call jobs) + migration `b4e8f1c2d7a9` on head `2202ca7dc080` (drift-gate
+  verified), §4 gate as a pure + unit-tested decision function enforced in
+  call-job execution, §3 contact/campaign/call-job endpoints
+  (`/api/v1/contacts*`, `/api/v1/campaigns*`), `Idempotency-Key` honored on
+  `POST /api/v1/telephony/calls` (direct `ai_agent` dials rejected — AI
+  outbound exists only through authorized campaigns), RBAC
+  (`manage_contacts`/`view_contacts`/`manage_campaigns`), tenant-isolation
+  tests. Explicitly NOT built: the P4 auto-dial worker that consumes queued
+  jobs (jobs stay `pending` until claimed by a worker or an operator
+  action).
 - **P2 — media bridge hygiene**: codec contract, DTMF, leg-loss/reconnects,
   per-leg status events.
 - **P3 — translated calls parity**: per-language fan-out on 3+ participants
