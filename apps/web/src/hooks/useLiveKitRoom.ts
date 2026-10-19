@@ -111,6 +111,16 @@ export function useLiveKitRoom({
   /** Tracks this hook published itself (camera follow, below) for symmetric unpublish. */
   const publishedCameraSidRef = useRef<string | null>(null);
 
+  /** Persists across effect re-runs (e.g., when participantId goes undefined→set).
+   * Only reset when participantId actually changes to a different value. */
+  const reconnectAttemptRef = useRef(0);
+  const connectedSinceRef = useRef<number | null>(null);
+  const activeParticipantIdRef = useRef<string | undefined>(undefined);
+  /** Mutable state that must survive effect re-runs and be visible to async callbacks. */
+  const cancelledRef = useRef(false);
+  const connectingRef = useRef(false);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   audioModeRef.current = audioMode;
 
   useEffect(() => {
@@ -120,16 +130,14 @@ export function useLiveKitRoom({
       return;
     }
 
+    // Reset counters only when participantId CHANGES (not on first set from undefined)
+    if (activeParticipantIdRef.current !== undefined &&
+        activeParticipantIdRef.current !== participantId) {
+      reconnectAttemptRef.current = 0;
+      connectedSinceRef.current = null;
+    }
+    activeParticipantIdRef.current = participantId;
     const activeParticipantId = participantId;
-    let cancelled = false;
-    let reconnectAttempt = 0;
-    /** When the room last reached Connected (null while down). The bounded
-     * attempt counter is only reset — and only at the disconnect boundary —
-     * once a spell has held for RECOVERY_CONFIRM_MS (lib/mediaRecovery);
-     * sub-window blips stay part of the outage still in progress. */
-    let connectedSince: number | null = null;
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-    let connecting = false;
     const room = new Room({
       adaptiveStream: true,
       dynacast: true,
@@ -173,7 +181,7 @@ export function useLiveKitRoom({
         // die milliseconds later (hostile network / outage drill) must not
         // restart the bounded retry loop. The counter is reset at the
         // disconnect boundary only when the spell proved itself (window).
-        connectedSince = Date.now();
+        connectedSinceRef.current = Date.now();
         setAudioBlocked(false);
         setState('connected');
       } else if (connectionState === ConnectionState.Reconnecting) {
@@ -195,8 +203,8 @@ export function useLiveKitRoom({
     room.on(RoomEvent.ConnectionStateChanged, onConnectionState);
 
     async function connect(): Promise<void> {
-      if (connecting || cancelled || leftOnPurposeRef.current) return;
-      connecting = true;
+      if (connectingRef.current || cancelledRef.current || leftOnPurposeRef.current) return;
+      connectingRef.current = true;
       setState((current) => (current === 'connected' ? 'reconnecting' : 'connecting'));
       try {
         // Every attempt mints a fresh single-use token: a media-server outage
@@ -210,35 +218,40 @@ export function useLiveKitRoom({
             body: sessionKey?.() ? { session_key: sessionKey?.() } : undefined,
           },
         );
-        if (cancelled) return;
-        await room.connect(data.url, data.token);
-        if (cancelled) {
+        if (cancelledRef.current) return;
+        await room.connect(data.url, data.token, {
+          autoSubscribe: true,
+          maxRetries: 0,
+          websocketTimeout: 3000,
+          peerConnectionTimeout: 5000,
+        });
+        if (cancelledRef.current) {
           room.disconnect();
           return;
         }
-        connectedSince = Date.now();
+        connectedSinceRef.current = Date.now();
         setState('connected');
         refreshPeers();
       } catch (cause) {
-        if (cancelled) return;
+        if (cancelledRef.current) return;
         scheduleReconnect(
           cause instanceof Error ? cause.message : 'Could not connect to the video room');
       } finally {
-        connecting = false;
+        connectingRef.current = false;
       }
     }
 
     function scheduleReconnect(reason: string) {
-      if (cancelled) return;
+      if (cancelledRef.current) return;
       // A connection that proved itself (held through the confirm window) and
       // THEN died starts a genuinely fresh outage: reset the counter before
       // accounting this failure. A blip that never held keeps accruing.
-      if (isConfirmedRecovery(connectedSince, Date.now())) {
-        reconnectAttempt = 0;
+      if (isConfirmedRecovery(connectedSinceRef.current, Date.now())) {
+        reconnectAttemptRef.current = 0;
       }
-      connectedSince = null;
-      reconnectAttempt += 1;
-      if (reconnectAttempt > RECONNECT_MAX_ATTEMPTS) {
+      connectedSinceRef.current = null;
+      reconnectAttemptRef.current += 1;
+      if (reconnectAttemptRef.current > RECONNECT_MAX_ATTEMPTS) {
         // Honest failure: the video room is DOWN, not "reconnecting".
         setError(reason);
         setState('error');
@@ -246,23 +259,26 @@ export function useLiveKitRoom({
       }
       const jitter = Math.random() * RECONNECT_BASE_DELAY_MS;
       const delay = Math.min(
-        RECONNECT_BASE_DELAY_MS * Math.pow(2, reconnectAttempt - 1),
+        RECONNECT_BASE_DELAY_MS * Math.pow(2, reconnectAttemptRef.current - 1),
         RECONNECT_MAX_DELAY_MS,
       ) + jitter;
       setState('reconnecting');
-      reconnectTimer = setTimeout(() => {
-        reconnectTimer = null;
+      if (reconnectTimerRef.current !== null) clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = setTimeout(() => {
+        reconnectTimerRef.current = null;
         void connect();
       }, delay);
     }
 
     const onDisconnected = () => {
-      if (cancelled) return;
+      if (cancelledRef.current) return;
       // A deliberate hang-up (Leave button) must not trigger retries.
       if (leftOnPurposeRef.current) {
         setState('unavailable');
         return;
       }
+      // If connect() is currently in-flight, its catch block will handle the failure.
+      if (connectingRef.current) return;
       // A disconnect is not "reconnecting forever": retry a bounded number of
       // times with fresh credentials, then report an actionable error.
       scheduleReconnect('Video connection lost — tap Reconnect to join the room again.');
@@ -272,9 +288,9 @@ export function useLiveKitRoom({
 
     void connect();
     return () => {
-      cancelled = true;
-      if (reconnectTimer !== null) clearTimeout(reconnectTimer);
-      reconnectTimer = null;
+      cancelledRef.current = true;
+      if (reconnectTimerRef.current !== null) clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
       room.removeAllListeners();
       room.disconnect();
       if (roomRef.current === room) roomRef.current = null;
