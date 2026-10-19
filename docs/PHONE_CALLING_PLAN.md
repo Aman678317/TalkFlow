@@ -163,6 +163,15 @@ Adopt the *meeting* pipeline's proven invariants (PR #60
 - Provider disconnects: leg loss ≠ MERGE failure; per-leg reconnects bounded
   (same policy as `useLiveKitRoom`), honest leg status surfaced in UI.
 
+**Transport decision (recorded 2026-10-19):** ARI `externalMedia` over the
+**websocket** transport (`chan_websocket`), backend as WS media server;
+`UnicastRTP` is the designated fallback. Codec = `slin16` (the PCM16 16 kHz
+invariant above). Full rationale, alternative comparison, spike acceptance
+criteria, and the inbound Stasis-leg design live in
+[`ASTERISK_LOCAL_SIP_LAB.md`](ASTERISK_LOCAL_SIP_LAB.md) §"P3 — media
+transport + inbound leg decision". Implementation and any audio claim remain
+pending until the spike proves those criteria live.
+
 ---
 
 ## 6. AI voice agent — deterministic state graph (P4)
