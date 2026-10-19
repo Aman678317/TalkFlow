@@ -129,5 +129,5 @@ async def test_paced_sender_respects_interval() -> None:
     await asyncio.wait_for(runner, timeout=2)
     assert pacer.sent_count == 3
     deltas = [round(b[0] - a[0], 4) for a, b in zip(received, received[1:])]
-    assert all(d >= 0.015 for d in deltas), deltas  # ptime floor honored (20ms ±loop slop)
-    assert all(d <= 0.2 for d in deltas), deltas
+    assert all(0.015 <= d <= 0.1 for d in deltas), deltas  # post-send sleep pacing
+

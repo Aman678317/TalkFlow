@@ -151,9 +151,15 @@ class WSMediaConnection:
 
     def _schedule_hook(self, hook: Callable[..., Any] | None, *args: Any) -> None:
         """Hooks spawned from the receive loop never block or kill audio flow."""
+        background_tasks = self._bg_tasks
         task = asyncio.create_task(_invoke_hook(hook, *args))
-        task.add_done_callback(_swallow_task_exception)
-        self._bg_tasks.add(task)
+
+        def _done(finished: asyncio.Task[None]) -> None:
+            _swallow_task_exception(finished)
+            background_tasks.discard(finished)
+
+        task.add_done_callback(_done)
+        background_tasks.add(task)
 
     async def _on_binary(self, message: bytes) -> None:
         if self._slicer is None:
@@ -211,26 +217,24 @@ class WSMediaServer:
 
 
 class PacedAudioSender:
-    """Drain a frame queue at a fixed inter-send interval (bounded catch-up).
+    """Drain a frame queue at a constant inter-send interval.
 
-    Contract: at steady state sends are spaced ``interval_seconds`` apart. If
-    the producer runs behind and piles up ≥ ``catchup_limit`` frames, the
-    sender skips the sleep to drain the backlog at wire speed, but never
-    artificially delays a burst.
+    Contract: each send is FOLLOWED by ``interval_seconds`` of sleep, so the
+    wire cadence is a clean ptime stream. There is no burst catch-up on
+    purpose — bursting 150×640 B frames into one socket message defeats the
+    20 ms contract the bridge expects (loopback can deliver faster than the
+    channel core drains).
     """
 
     def __init__(
         self,
         send: Callable[[bytes], Awaitable[Any]],
         interval_seconds: float,
-        *,
-        catchup_limit: int = 4,
     ) -> None:
         if interval_seconds <= 0:
             raise ValueError("interval_seconds must be positive")
         self._send = send
         self._interval = interval_seconds
-        self._catchup_limit = catchup_limit
         self._queue: asyncio.Queue[bytes] = asyncio.Queue()
         self._stop = asyncio.Event()
         #: number of frames actually flushed to the wire
@@ -246,21 +250,24 @@ class PacedAudioSender:
         self._stop.set()
 
     async def run(self) -> None:
+        """Deadline-paced sends: cadence is driven by the interval, and send
+        latency never accumulates (each deadline is absolute, not shifted)."""
         loop = asyncio.get_running_loop()
+        next_deadline: float | None = None
         while not self._stop.is_set():
             try:
                 frame = await asyncio.wait_for(self._queue.get(), timeout=self._interval)
             except TimeoutError:
+                if next_deadline is not None and loop.time() > next_deadline:
+                    next_deadline = loop.time()  # queue is drained; reset phase
                 continue
             if self._stop.is_set():
                 break
-            started = loop.time()
+            if next_deadline is not None:
+                await asyncio.sleep(max(0.0, next_deadline - loop.time()))
             await self._send(frame)
             self.sent_count += 1
-        # pace only when the queue is nearly drained; a burst must not lag behind
-            backlog = self._queue.qsize()
-            if backlog < self._catchup_limit:
-                target = started + self._interval
-                now = loop.time()
-                if now < target:
-                    await asyncio.sleep(target - now)
+            now = loop.time()
+            next_deadline = (next_deadline if next_deadline is not None else now) + self._interval
+            if now - next_deadline > self._interval:  # we slipped a whole period
+                next_deadline = now + self._interval
