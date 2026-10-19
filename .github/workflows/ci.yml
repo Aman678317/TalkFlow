@@ -66,6 +66,7 @@ jobs:
           RATE_LIMIT_TRANSLATE: 100000/minute
         run: |
           python -m pytest \
+            tests/test_asterisk_ari_adapter.py \
             tests/test_auth_hardened.py \
             tests/test_call_gate.py \
             tests/test_contacts_api.py \
