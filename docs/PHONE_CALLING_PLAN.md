@@ -324,3 +324,14 @@ Final note: this plan follows the same honesty gate used for the call-tab
 remediation — features are "working" only when their acceptance tests pass
 on the configured deployment (real PSTN drills included), and CI
 (simulated-provider) tests prove contracts, not carrier connectivity.
+
+
+## 13. P0 recommendation — Asterisk local SIP calling (documentation only)
+
+The open-source [Asterisk project](https://github.com/asterisk/asterisk) may be used in a future phase to test SIP calls between local SIP extensions without a PSTN carrier. It does not provide free calls to arbitrary mobile or landline numbers. Public telephone-network access requires an authorized SIP trunk/carrier and may incur charges.
+
+See [Asterisk local SIP calling — documentation and integration plan](ASTERISK_LOCAL_SIP_LAB.md) for the proposed phases, honest UI states, fallback rules, security requirements, and acceptance criteria.
+
+**Current behavior must remain unchanged:** when no real carrier is configured, display **“No carrier configured — calls are simulated.”** Keep the simulated provider as the deterministic default. A future Asterisk adapter must be explicitly configured; if unavailable, it must report the failure and must never present a simulated call as a real call. Switching between Asterisk, simulation, and Twilio must be explicit and provider status must be visible to the user.
+
+This PR is documentation only. It does not add a Docker setup, Asterisk configuration, provider adapter, automatic fallback, or production calling feature.
