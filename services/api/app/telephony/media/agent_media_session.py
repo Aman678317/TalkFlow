@@ -480,6 +480,58 @@ class AgentMediaSession:
         self._gone.set()
         self.speaker.stop()
 
+    # -- leg loss / reconnect ------------------------------------------------- #
+
+    async def handle_leg_loss(self, reason: str) -> None:
+        """Called when the media leg is lost (WS closed, channel gone).
+
+        Emits media_leg_lost, then attempts reconnect if the call is still active.
+        """
+        if self._torn_down:
+            return
+        log.warning("Media leg lost for call %s: %s", self.call_sid, reason)
+        await safe_record(self._sink, "media_leg_lost", {
+            "call_sid": self.call_sid,
+            "media_channel_id": self.media_channel_id,
+            "bridge_id": self.bridge_id,
+            "reason": reason,
+            "frames_before_loss": self.frames_in,
+        })
+        # Attempt reconnect only if call is still in progress (not torn down)
+        if not self._torn_down and not self._gone.is_set():
+            asyncio.create_task(self._attempt_reconnect())
+
+    async def _attempt_reconnect(self) -> None:
+        """Re-create media channel, re-bridge, and emit media_leg_restored."""
+        try:
+            log.info("Attempting media reconnect for call %s", self.call_sid)
+            # Create new media channel
+            self.media_info = await self.external.create()
+            self.media_channel_id = self.external.channel_id
+            self._registry[self.media_channel_id] = self
+
+            # Re-bridge: add new media channel to existing bridge
+            if self.bridge_id:
+                await self.external.add_channel_to_bridge(
+                    self.bridge_id, self.media_channel_id)
+                await self.external.add_channel_to_bridge(
+                    self.bridge_id, self.caller_channel_id)
+
+            await safe_record(self._sink, "media_leg_restored", {
+                "call_sid": self.call_sid,
+                "old_media_channel_id": self.media_channel_id,
+                "new_media_channel_id": self.media_channel_id,
+                "bridge_id": self.bridge_id,
+                "codec": self.external.options.format,
+                "gap_seconds": 0,  # could track actual gap if needed
+            })
+            log.info("Media leg restored for call %s (new channel %s)",
+                     self.call_sid, self.media_channel_id)
+        except Exception:  # noqa: BLE001
+            log.exception("Media reconnect failed for call %s", self.call_sid)
+            # Don't tear down the whole call — let the turn loop continue
+            # with whatever media path remains (or none)
+
     # -- teardown (lab §P3 ordering: channels BEFORE the audit) -------------- #
 
     async def _teardown(self, outcome: TurnLoopOutcome) -> dict[str, Any]:
@@ -700,3 +752,4 @@ class AsteriskAgentMediaRuntime:
         session = self._conns.pop(id(conn), None)
         if session is not None:
             session.mark_closed(reason)
+            await session.handle_leg_loss(reason)
