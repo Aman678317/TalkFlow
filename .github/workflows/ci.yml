@@ -66,6 +66,8 @@ jobs:
           RATE_LIMIT_TRANSLATE: 100000/minute
         run: |
           python -m pytest \
+            tests/test_agent_media_session.py \
+            tests/test_agent_turn_loop.py \
             tests/test_asterisk_ari_adapter.py \
             tests/test_auth_hardened.py \
             tests/test_call_gate.py \

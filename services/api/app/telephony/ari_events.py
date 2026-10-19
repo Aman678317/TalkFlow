@@ -131,11 +131,24 @@ def normalize_ari_event(payload: dict[str, Any]) -> ARIEventFrame | None:
 # and transitioned; False ⇒ session not visible yet (commit race) or unknown.
 DispatchFn = Callable[[str, CallStatus, str], Awaitable[bool]]
 
+# CONNECTED-side media hook: (call_sid, caller_channel_id). Failures inside the
+# hook are contained by the dispatch wrapper (they never break call state).
+ConnectedHook = Callable[[str, str], Awaitable[None]]
+
 StreamFactory = Callable[[], Any]  # awaited → async iterator of raw frames
 
 
-def build_call_service_dispatch() -> DispatchFn:
-    """Default dispatch: apply the status through ``CallService.transition_status``."""
+def build_call_service_dispatch(
+    on_connected: ConnectedHook | None = None,
+) -> DispatchFn:
+    """Default dispatch: apply the status through ``CallService.transition_status``.
+
+    With ``on_connected`` armed, a successfully applied CONNECTED transition
+    additionally raises the agent-media attach hook (see
+    ``media.agent_media_session``; media runtime wiring for ``ai_agent`` calls).
+    Hook failures are contained — call-state truth is never hostage to the
+    media lane.
+    """
 
     async def _dispatch(call_sid: str, status: CallStatus, channel_id: str) -> bool:
         from app.db.session import db_session
@@ -147,7 +160,15 @@ def build_call_service_dispatch() -> DispatchFn:
                 status,
                 extra_data={"source": "asterisk_ari", "channel": channel_id},
             )
-            return call is not None
+            connected = bool(
+                call is not None and status is CallStatus.CONNECTED
+            )
+        if connected and on_connected is not None:
+            try:
+                await on_connected(call_sid, channel_id)
+            except Exception:  # noqa: BLE001 — media attach never breaks state
+                log.exception("on_connected media hook failed (call %s)", call_sid)
+        return call is not None
 
     return _dispatch
 
@@ -182,18 +203,20 @@ class AsteriskARIEventConsumer:
     # ------------------------------------------------------------------ #
     @classmethod
     def from_settings(
-        cls, *, provider: Any = None
+        cls, *, provider: Any = None, on_connected: ConnectedHook | None = None
     ) -> "AsteriskARIEventConsumer":
         """Build the production consumer from pydantic-settings.
 
         ``provider`` is the registered :class:`AsteriskARIProvider` instance;
         its channel map (seeded on originate) is shared with this consumer.
+        ``on_connected`` (optional) arms the agent-media attach hook for
+        CONNECTED transitions — default off preserves signaling-only behavior.
         """
         from app.config import settings
 
         return cls(
             ARIConfig.from_settings(),
-            dispatch=build_call_service_dispatch(),
+            dispatch=build_call_service_dispatch(on_connected=on_connected),
             channel_map=router_channel_map(provider),
             retry_grace_seconds=settings.asterisk_event_retry_seconds,
             reconnect_delay_seconds=settings.asterisk_ws_reconnect_seconds,

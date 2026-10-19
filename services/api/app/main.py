@@ -201,7 +201,33 @@ async def _lifespan_startup(app: FastAPI) -> None:
             from app.telephony.service import get_telephony_service
 
             asterisk = get_telephony_service().get_registered_provider("asterisk")
-            consumer = AsteriskARIEventConsumer.from_settings(provider=asterisk)
+            # P3 marathon follow-up (opt-in): the agent media runtime binds the
+            # WS media server Asterisk dials per externalMedia channel and
+            # drives the AI-agent turn loop for connected ai_agent calls.
+            on_connected = None
+            if settings.asterisk_media_enabled:
+                try:
+                    from app.telephony.media.agent_media_session import (
+                        AsteriskAgentMediaRuntime,
+                    )
+
+                    media_runtime = AsteriskAgentMediaRuntime.from_settings(
+                        provider=asterisk)
+                    await media_runtime.start()
+                    app.state.asterisk_media_runtime = media_runtime
+                    on_connected = media_runtime.on_call_connected
+                    log.info(
+                        "agent media runtime started on %s:%s "
+                        "(turn loop armed for ai_agent calls)",
+                        settings.asterisk_media_bind_host,
+                        settings.asterisk_media_bind_port,
+                    )
+                except Exception:  # noqa: BLE001 — media lane is opt-in; startup must not fail
+                    log.exception(
+                        "failed to start agent media runtime (non-fatal); "
+                        "calls keep working signaling-only")
+            consumer = AsteriskARIEventConsumer.from_settings(
+                provider=asterisk, on_connected=on_connected)
             app.state.asterisk_ari_task = consumer.start()
             log.info("Asterisk ARI event consumer started (feature flag enabled)")
         except Exception:  # noqa: BLE001 — adapter is opt-in; startup must not fail
@@ -284,6 +310,10 @@ async def _ensure_schema() -> None:
 
 async def _lifespan_shutdown(app: FastAPI) -> None:
     log.info("shutting down")
+    media_runtime = getattr(app.state, "asterisk_media_runtime", None)
+    if media_runtime is not None:
+        with contextlib.suppress(Exception):
+            await media_runtime.stop()
     for w in getattr(app.state, "workers", []):
         await w.stop()
     for t in (getattr(app.state, "sweeper", None),

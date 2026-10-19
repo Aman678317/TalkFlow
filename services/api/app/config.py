@@ -133,6 +133,19 @@ class Settings(BaseSettings):
     call_worker_interval_seconds: float = 2.0  # due-scan tick interval
     call_worker_batch_size: int = 16  # max jobs enqueued per tick
 
+    # --- agent media runtime (P3 marathon follow-up; explicit opt-in, default off) ---
+    # Bridges the validated externalMedia runtime to the AI-agent turn loop for
+    # connected outbound calls. Requires `asterisk_telephony_enabled`. Without a
+    # wired STT the agent fail-closes (graph's own low-confidence escalation);
+    # without a wired TTS the lines are decided and audited but no frames are
+    # sent. No PSTN or human-audio claim: lab-local lane only.
+    asterisk_media_enabled: bool = False
+    asterisk_media_bind_host: str = "0.0.0.0"
+    asterisk_media_bind_port: int = 8787  # the port Asterisk's dials per call
+    asterisk_media_external_host: str = "talkflow-media-cfg"  # websocket-client object
+    asterisk_agent_permitted_documents: str = ""  # comma-separated doc ids
+    asterisk_agent_segment_wait_seconds: float = 2.0  # recognizer-path wait
+
     # --- AI providers ---
     translation_provider: str = "auto"
     translation_model: str = ""
