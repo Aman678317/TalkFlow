@@ -43,6 +43,30 @@ CALL_ID = "3f2d9a1e-0000-4a9f-8c6b-1234abcd5678"
 CID = f"talkflow-{CALL_ID}"
 
 
+def _force_settings(monkeypatch, **values: Any) -> None:
+    """Force settings values on EVERY binding product code may read.
+
+    The ``app`` session fixture (tests/conftest.py) runs
+    ``importlib.reload(app.config)`` the first time an app-fixture suite
+    requests it. Any suite before us can therefore fork the settings story
+    mid-session: function-level ``from app.config import settings`` reads the
+    reloaded singleton while module-owned bindings (service.py, routers)
+    keep the pre-reload object. Ordering must never change outcomes, so the
+    same values are forced on all of them (same convention as the note in
+    tests/test_telephony_webhook_security.py).
+    """
+    import app.config as cfg
+    import app.routers.telephony as tele_router
+    import app.telephony.service as svc
+
+    holders = {id(cfg.settings): cfg.settings,
+               id(svc.settings): svc.settings,
+               id(tele_router.settings): tele_router.settings}
+    for holder in holders.values():
+        for name, value in values.items():
+            monkeypatch.setattr(holder, name, value, raising=False)
+
+
 # ---------------------------------------------------------------------- #
 # fakes
 # ---------------------------------------------------------------------- #
@@ -524,10 +548,11 @@ async def test_consume_forever_gives_up_after_bounded_attempts():
 # provider selection (operator-controlled, simulated stays default)
 # ---------------------------------------------------------------------- #
 def test_default_provider_stays_simulated_and_selection_fails_loudly(monkeypatch):
-    monkeypatch.setattr(settings, "asterisk_telephony_enabled", False)
-    monkeypatch.setattr(settings, "twilio_account_sid", "")
-    monkeypatch.setattr(settings, "twilio_auth_token", "")
-    monkeypatch.setattr(settings, "telnyx_api_key", "")
+    _force_settings(monkeypatch,
+                    asterisk_telephony_enabled=False,
+                    twilio_account_sid="",
+                    twilio_auth_token="",
+                    telnyx_api_key="")
     service = TelephonyService()
 
     assert service.get_provider().provider_name == "simulated"  # auto mode
@@ -537,13 +562,14 @@ def test_default_provider_stays_simulated_and_selection_fails_loudly(monkeypatch
 
 
 def test_explicit_asterisk_selection_when_fully_configured(monkeypatch):
-    monkeypatch.setattr(settings, "asterisk_telephony_enabled", True)
-    monkeypatch.setattr(settings, "asterisk_ari_base_url", "http://127.0.0.1:8088")
-    monkeypatch.setattr(settings, "asterisk_ari_username", "talkflow-lab")
-    monkeypatch.setattr(settings, "asterisk_ari_password", "local-lab-pw")
-    monkeypatch.setattr(settings, "asterisk_allowed_extensions", "1001,1002")
-    monkeypatch.setattr(settings, "twilio_account_sid", "")
-    monkeypatch.setattr(settings, "telnyx_api_key", "")
+    _force_settings(monkeypatch,
+                    asterisk_telephony_enabled=True,
+                    asterisk_ari_base_url="http://127.0.0.1:8088",
+                    asterisk_ari_username="talkflow-lab",
+                    asterisk_ari_password="local-lab-pw",
+                    asterisk_allowed_extensions="1001,1002",
+                    twilio_account_sid="",
+                    telnyx_api_key="")
     service = TelephonyService()
 
     assert service.get_provider("asterisk").provider_name == "asterisk"
@@ -567,7 +593,7 @@ def test_provider_status_reflects_explicit_asterisk_selection(monkeypatch):
         def get_registered_provider(self, name: str):
             return _FakeProvider() if name == "asterisk" else None
 
-    monkeypatch.setattr(settings, "telephony_provider", "asterisk")
+    _force_settings(monkeypatch, telephony_provider="asterisk")
     monkeypatch.setattr(tele_service, "get_telephony_service", lambda: _FakeService())
     result = asyncio.run(tele_router.get_provider_status())
 

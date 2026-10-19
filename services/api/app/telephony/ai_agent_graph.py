@@ -25,9 +25,10 @@ Hard guards (all enforced here, all unit-tested):
 - a stop interrupt ends the graph within the same turn.
 
 Scope honesty: this module contains the deterministic core only — no LLM, no
-DB, no audio. Integration (driving it from the bridge turn handler, writing
-CallEvents, creating the inbound-queue handoff) lands as the follow-up; the
-audit hooks below are the contract that integration will fulfill.
+DB, no audio. Driving it from the media turn loop + ``call_events``
+persistence lives in :mod:`app.telephony.media.agent_media_session` (the
+inbound-queue handoff remains the parked follow-up); the audit hooks below
+are exactly the contract that integration fulfills.
 """
 from __future__ import annotations
 
@@ -211,6 +212,21 @@ class AgentGraph:
     async def stop(self) -> None:
         """Stop interrupt: the CURRENT turn may finish; the next advance ends."""
         self._stopped = True
+
+    def attach_audit(self, hook: AuditHook | None) -> None:
+        """Integration seam: route node/transitions through an external sink.
+
+        A previously attached hook is NOT silently replaced (an already-wired
+        graph keeps its audit): explicit ``None`` clears nothing but silence.
+        """
+        if self._audit is not None:
+            past = getattr(self._audit, "__name__", repr(self._audit))
+            raise RuntimeError(f"audit hook already attached ({past})")
+        self._audit = hook
+
+    @property
+    def audit_hook(self) -> AuditHook | None:
+        return self._audit
 
     # -- transitions ------------------------------------------------------- #
 
