@@ -113,6 +113,21 @@ class Settings(BaseSettings):
     telephony_webhook_base_url: str = ""
     telephony_sample_rate: int = 8000
 
+    # --- Asterisk local SIP adapter (P1 design; opt-in, operator-controlled) ---
+    # The adapter places calls ONLY into allowlisted local SIP extensions; all
+    # credentials stay backend-only. A real call is never silently substituted:
+    # selecting the provider while disabled/config-less fails loudly instead of
+    # falling back to simulated. See docs/ASTERISK_LOCAL_SIP_LAB.md.
+    asterisk_telephony_enabled: bool = False
+    asterisk_ari_base_url: str = ""  # e.g. http://127.0.0.1:8088 (lab default)
+    asterisk_ari_username: str = ""  # dedicated least-privilege ARI user
+    asterisk_ari_password: str = ""
+    asterisk_ari_app_name: str = "talkflow"  # Stasis application name
+    asterisk_allowed_extensions: str = ""  # comma-separated, e.g. "1001,1002"
+    asterisk_request_timeout_seconds: float = 10.0
+    asterisk_event_retry_seconds: float = 2.0  # grace for originate-commit races
+    asterisk_ws_reconnect_seconds: float = 5.0  # WS reconnect backoff cap
+
     # --- AI providers ---
     translation_provider: str = "auto"
     translation_model: str = ""

@@ -191,6 +191,22 @@ async def _lifespan_startup(app: FastAPI) -> None:
     default_worker.start()
     app.state.workers.append(default_worker)
 
+    # Asterisk ARI events (P4 adapter; opt-in): the consumer reads the
+    # authenticated ARI WebSocket — NOT an HTTP webhook — and maps events onto
+    # call states (see app/telephony/ari_events.py). Best effort: a consumer
+    # failure must never block startup, and nothing here fabricates call state.
+    if settings.asterisk_telephony_enabled:
+        try:
+            from app.telephony.ari_events import AsteriskARIEventConsumer
+            from app.telephony.service import get_telephony_service
+
+            asterisk = get_telephony_service().get_registered_provider("asterisk")
+            consumer = AsteriskARIEventConsumer.from_settings(provider=asterisk)
+            app.state.asterisk_ari_task = consumer.start()
+            log.info("Asterisk ARI event consumer started (feature flag enabled)")
+        except Exception:  # noqa: BLE001 — adapter is opt-in; startup must not fail
+            log.exception("failed to start Asterisk ARI event consumer (non-fatal)")
+
     # periodic: retention sweep hourly, usage-threshold checks every 10m
     from app.realtime.ws import session_sweeper
     app.state.sweeper = asyncio.create_task(session_sweeper())
@@ -252,7 +268,8 @@ async def _lifespan_shutdown(app: FastAPI) -> None:
     for w in getattr(app.state, "workers", []):
         await w.stop()
     for t in (getattr(app.state, "sweeper", None),
-              getattr(app.state, "retention_task", None)):
+              getattr(app.state, "retention_task", None),
+              getattr(app.state, "asterisk_ari_task", None)):
         if t:
             t.cancel()
             with contextlib.suppress(asyncio.CancelledError):
