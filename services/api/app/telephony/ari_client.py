@@ -182,6 +182,10 @@ class ARIClient:
         """POST /ari/channels/{id}/dial — start dialing the created channel."""
         await self.request_json("POST", f"/ari/channels/{channel_id}/dial")
 
+    async def answer(self, channel_id: str) -> None:
+        """POST /ari/channels/{id}/answer — answer an inbound Stasis leg."""
+        await self.request_json("POST", f"/ari/channels/{channel_id}/answer")
+
     async def get_channel(self, channel_id: str) -> dict[str, Any]:
         """GET /ari/channels/{id} — raises ARINotFound when the channel is gone."""
         return await self.request_json("GET", f"/ari/channels/{channel_id}")

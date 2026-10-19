@@ -137,6 +137,11 @@ ConnectedHook = Callable[[str, str], Awaitable[None]]
 
 StreamFactory = Callable[[], Any]  # awaited → async iterator of raw frames
 
+# StasisStart intake for inbound legs (see ari_inbound): (payload, frame) →
+# True when the event was consumed (accepted leg or an explicit rejection).
+# Failures inside the intake are contained by the consumer.
+InboundIntakeFn = Callable[[dict[str, Any], ARIEventFrame], Awaitable[bool]]
+
 
 def build_call_service_dispatch(
     on_connected: ConnectedHook | None = None,
@@ -187,6 +192,7 @@ class AsteriskARIEventConsumer:
         reconnect_initial_seconds: float = 1.0,
         reconnect_delay_seconds: float = 5.0,
         max_attempts: int | None = None,
+        inbound_intake: InboundIntakeFn | None = None,
     ) -> None:
         self._config = config
         self._dispatch = dispatch
@@ -197,6 +203,7 @@ class AsteriskARIEventConsumer:
         self._reconnect_delay_seconds = max(0.0, reconnect_delay_seconds)
         self._max_attempts = max_attempts
         self._terminal_channels: set[str] = set()
+        self._inbound_intake = inbound_intake
 
     # ------------------------------------------------------------------ #
     # wiring helpers
@@ -211,13 +218,30 @@ class AsteriskARIEventConsumer:
         its channel map (seeded on originate) is shared with this consumer.
         ``on_connected`` (optional) arms the agent-media attach hook for
         CONNECTED transitions — default off preserves signaling-only behavior.
+        When ``asterisk_inbound_enabled``, inbound Stasis legs are also
+        intaked (caller/destination allowlist + operator org, fail closed;
+        see ``ari_inbound``) and share this consumer's channel map.
         """
         from app.config import settings
 
+        dispatch = build_call_service_dispatch(on_connected=on_connected)
+        channel_map = router_channel_map(provider)
+        inbound_intake = None
+        if settings.asterisk_inbound_enabled:
+            from app.telephony.ari_inbound import build_inbound_intake
+
+            ari = getattr(provider, "ari", None)
+            inbound_intake = build_inbound_intake(
+                dispatch=dispatch,
+                channel_map=channel_map,
+                answer=getattr(ari, "answer", None),
+                hangup=getattr(ari, "hangup", None),
+            )
         return cls(
             ARIConfig.from_settings(),
-            dispatch=build_call_service_dispatch(on_connected=on_connected),
-            channel_map=router_channel_map(provider),
+            dispatch=dispatch,
+            channel_map=channel_map,
+            inbound_intake=inbound_intake,
             retry_grace_seconds=settings.asterisk_event_retry_seconds,
             reconnect_delay_seconds=settings.asterisk_ws_reconnect_seconds,
         )
@@ -225,6 +249,11 @@ class AsteriskARIEventConsumer:
     @property
     def channel_map(self) -> dict[str, str]:
         return self._channel_map
+
+    @property
+    def inbound_intake(self) -> InboundIntakeFn | None:
+        """The armed inbound-leg intake (None ⇒ inbound legs stay ignored)."""
+        return self._inbound_intake
 
     def start(self) -> "asyncio.Task[None]":
         """Run :meth:`consume_forever` as a background task."""
@@ -298,8 +327,21 @@ class AsteriskARIEventConsumer:
 
     async def process_ari_payload(self, payload: dict[str, Any]) -> None:
         frame = normalize_ari_event(payload)
-        if frame is None or frame.status is None:
-            return  # unmapped or purely informational event
+        if frame is None:
+            return  # unmapped event type
+
+        if self._inbound_intake is not None:
+            try:
+                if await self._inbound_intake(payload, frame):
+                    return  # consumed: accepted leg (map seeded) or rejected
+            except Exception:  # noqa: BLE001 — intake must not break dispatch
+                log.exception(
+                    "inbound intake failed for event %s (channel %s)",
+                    frame.event_type, frame.channel_id,
+                )
+
+        if frame.status is None:
+            return  # purely informational event
 
         if frame.channel_id in self._terminal_channels:
             log.debug(
