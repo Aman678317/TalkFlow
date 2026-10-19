@@ -130,6 +130,11 @@ export function useLiveKitRoom({
       return;
     }
 
+    // Fresh effect run: clear the cancellation flag so connect() can proceed.
+    cancelledRef.current = false;
+    connectingRef.current = false;
+    reconnectTimerRef.current = null;
+
     // Reset counters only when participantId CHANGES (not on first set from undefined)
     if (activeParticipantIdRef.current !== undefined &&
         activeParticipantIdRef.current !== participantId) {
