@@ -73,6 +73,7 @@ jobs:
             tests/test_contacts_api.py \
             tests/test_database_migrations_hardened.py \
             tests/test_developer_platform_hardened.py \
+            tests/test_external_media.py \
             tests/test_full_qa_and_e2e_hardened.py \
             tests/test_observability_and_metrics_hardened.py \
             tests/test_outbound_idempotency.py \
@@ -84,7 +85,9 @@ jobs:
             tests/test_realtime_translation_invariant_hardened.py \
             tests/test_social_auth_hardened.py \
             tests/test_telemetry_tracing_hardened.py \
-            tests/test_telephony_webhook_security.py -q
+            tests/test_telephony_webhook_security.py \
+            tests/test_ws_media_protocol.py \
+            tests/test_ws_media_server.py -q
       - name: Integration tests (PostgreSQL + Redis + pgvector)
         env:
           APP_ENV: test
