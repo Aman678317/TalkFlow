@@ -549,3 +549,29 @@ def test_explicit_asterisk_selection_when_fully_configured(monkeypatch):
     assert service.get_provider("asterisk").provider_name == "asterisk"
     # Auto mode never selects Asterisk — even when explicitly enabled.
     assert service.get_provider().provider_name == "simulated"
+
+
+def test_provider_status_reflects_explicit_asterisk_selection(monkeypatch):
+    """Provider visibility requirement: explicit selection must show honestly,
+    and local SIP never advertises PSTN availability."""
+    import asyncio
+
+    import app.routers.telephony as tele_router
+    import app.telephony.service as tele_service
+
+    class _FakeProvider:
+        def is_ready(self) -> bool:
+            return True
+
+    class _FakeService:
+        def get_registered_provider(self, name: str):
+            return _FakeProvider() if name == "asterisk" else None
+
+    monkeypatch.setattr(settings, "telephony_provider", "asterisk")
+    monkeypatch.setattr(tele_service, "get_telephony_service", lambda: _FakeService())
+    result = asyncio.run(tele_router.get_provider_status())
+
+    assert result["active_provider"] == "asterisk"
+    assert result["real_pstn_available"] is False  # local SIP is NOT PSTN
+    assert result["setup_required"] is False  # reflects readiness, not heuristic
+    assert "asterisk" in result["setup_guide"]

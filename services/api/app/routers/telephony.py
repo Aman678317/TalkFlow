@@ -283,6 +283,32 @@ async def get_provider_status() -> dict[str, Any]:
     has_twilio = bool(settings.twilio_account_sid and settings.twilio_auth_token and settings.twilio_phone_number)
     has_telnyx = bool(getattr(settings, "telnyx_api_key", None))
 
+    # Explicit operator selection wins over credential heuristics. Local SIP is
+    # NOT PSTN: never advertise real-PSTN availability on the Asterisk lane,
+    # and make unready configuration visible instead of silent downgrade.
+    if settings.telephony_provider == "asterisk":
+        from app.telephony.service import get_telephony_service
+
+        registered = get_telephony_service().get_registered_provider("asterisk")
+        ready = registered is not None and registered.is_ready()
+        return {
+            "active_provider": "asterisk",
+            "real_pstn_available": False,  # local SIP extension dialing only
+            "caller_number": "",  # SIP caller ID is cosmetic; no PSTN number
+            "peer_webrtc_available": True,  # always available (browser-to-browser)
+            "setup_required": not ready,
+            "setup_guide": {
+                "asterisk": {
+                    "step_1": "Set ASTERISK_TELEPHONY_ENABLED=true",
+                    "step_2": "Set ASTERISK_ARI_BASE_URL / USERNAME / PASSWORD "
+                              "(dedicated least-privilege ARI user)",
+                    "step_3": "Set ASTERISK_ALLOWED_EXTENSIONS (comma-separated local "
+                              "SIP extensions; public/E.164 dialing is rejected)",
+                    "step_4": "Restart backend",
+                }
+            },
+        }
+
     if has_twilio:
         active_provider = "twilio"
         real_pstn_available = True
