@@ -12,13 +12,19 @@ components:
   - name: livekit-server
     repository: https://github.com/livekit/livekit
     purpose: realtime media SFU (production voice/video transport)
-    version: v1.7.2
+    version: v1.13.10 (root docker-compose pin, 2026-10-19; digest 89ca9ce0… is the
+      image this repo's e2e stack validated all along — previously the root
+      compose floated `latest` against this manifest's "pinned versions only"
+      policy); infrastructure lane keeps v1.7.2 (not in use)
     install_method: official docker image
     runtime: go binary
     gpu_required: false
     license: Apache-2.0
-    license_review: APPROVED_COMMERCIAL
-    status_in_sandbox: NOT_CONFIGURED (WebSocket PCM transport used instead)
+    license_review: APPROVED_COMMERCIAL (license unchanged at v1.13.10; re-review
+      recorded 2026-10-19 when pinning — code-purpose identical, Apache-2.0
+      license file verified on the release)
+    status_in_sandbox: ACTIVE in the root dev/e2e compose stack (browser WebRTC
+      smoke in CI); the older WebSocket-PCM-only note is superseded
 
   - name: livekit-agents
     repository: https://github.com/livekit/agents

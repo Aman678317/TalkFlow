@@ -9,7 +9,7 @@ business layer.
 
 | Component | Role | Version (pin) | License | Review | Sandbox status |
 |---|---|---|---|---|---|
-| LiveKit server | Realtime SFU (prod media) | v1.7.2 image | Apache-2.0 | ✅ approved | NOT_CONFIGURED (WS transport) |
+| LiveKit server | Realtime SFU (prod media) | v1.13.10 image (root compose pin 2026-10-19; infra lane v1.7.2, not in use) | Apache-2.0 | ✅ approved — re-review recorded 2026-10-19 at v1.13.10 (license file at the tag verified Apache-2.0) | ACTIVE in the dev/e2e compose stack (browser WebRTC smoke) |
 | LiveKit Agents | Agent runtime | 0.11.x | Apache-2.0 | ✅ approved | OPTIONAL |
 | faster-whisper | Primary STT + audio LID | pkg 1.2.1; weights `Systran/faster-whisper-tiny|base|small|large-v3` | MIT (code+weights) | ✅ approved | **ACTIVE (PASS)** |
 | Argos Translate | Offline NMT (primary CPU MT) | pkg 1.9.6; packages from official index | MIT code; **per-package model licenses vary (NLLB-derived often CC-BY-NC)** | ⚠ per-package review required before commercial routing | **ACTIVE (PASS)** en↔hi/ja/zh/es |
