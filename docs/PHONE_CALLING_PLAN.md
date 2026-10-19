@@ -332,6 +332,8 @@ The open-source [Asterisk project](https://github.com/asterisk/asterisk) may be 
 
 See [Asterisk local SIP calling — documentation and integration plan](ASTERISK_LOCAL_SIP_LAB.md) for the proposed phases, honest UI states, fallback rules, security requirements, and acceptance criteria.
 
-**Current behavior must remain unchanged:** when no real carrier is configured, display **“No carrier configured — calls are simulated.”** Keep the simulated provider as the deterministic default. A future Asterisk adapter must be explicitly configured; if unavailable, it must report the failure and must never present a simulated call as a real call. Switching between Asterisk, simulation, and Twilio must be explicit and provider status must be visible to the user.
+**Current behavior must remain unchanged:** when no real carrier is configured, display **“No carrier configured — calls are simulated.”** Keep the simulated provider as the deterministic default. The Asterisk adapter (PRs #64/#65/#66) must be explicitly configured; if unavailable, it must report the failure and must never present a simulated call as a real call. Switching between Asterisk, simulation, and Twilio must be explicit and provider status must be visible to the user.
 
-This PR is documentation only. It does not add a Docker setup, Asterisk configuration, provider adapter, automatic fallback, or production calling feature.
+**Status note (2026-10-19):** the ARI adapter described in [ASTERISK_LOCAL_SIP_LAB.md](ASTERISK_LOCAL_SIP_LAB.md) is now implemented (PRs #64/#65/#66) behind `ASTERISK_TELEPHONY_ENABLED` (default off), with live lab evidence for both the adapter-level and full product-path drives. The P4 auto-dial worker and the AI-agent state graph (§6) remain unbuilt; local-SIP media translation (ExternalMedia) and inbound Stasis legs remain parked by design.
+
+Note: the original PR added documentation only — no Docker setup, Asterisk configuration, provider adapter, automatic fallback, or production calling feature. The adapter runtime itself, when it landed (PRs #64/#65/#66), is separately gated and does not change any of the constraints above.
