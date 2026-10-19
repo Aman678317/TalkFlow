@@ -156,7 +156,7 @@ class AsteriskARIProvider(BaseTelephonyProvider):
         )
 
         try:
-            await self.ari.create_channel(
+            chan = await self.ari.create_channel(
                 channel_id=channel_id,
                 endpoint=f"PJSIP/{dest}",
                 app=self.ari.config.app_name,
@@ -167,10 +167,10 @@ class AsteriskARIProvider(BaseTelephonyProvider):
                 },
             )
         except ARITimeout:
-            # Unknown outcome — the create may have taken effect server-side.
+            # Unknown outcome — the originate may have taken effect server-side.
             # Reconcile via the deterministic channel ID; NEVER blind-retry.
-            return await self._reconcile_after_create_timeout(
-                channel_id, dest, from_, call_id
+            return await self._reconcile_after_originate_timeout(
+                channel_id, dest, from_
             )
         except ARIUnavailable as exc:
             return self._failed_result(
@@ -183,52 +183,30 @@ class AsteriskARIProvider(BaseTelephonyProvider):
             return self._failed_result(
                 dest, from_,
                 status=CallStatus.FAILED,
-                error_code="ARI_REQUEST_REJECTED",
+                error_code="ORIGINATE_REJECTED",
                 message=str(exc),
             )
 
+        # POST /ari/channels with app+endpoint dials IMMEDIATELY on Asterisk
+        # (verified live: a follow-up POST /dial is rejected with 409 "Channel
+        # is not in the 'Down' state" because the channel is already past
+        # Down). The response state can already be past Down; map it, and let
+        # the WS events carry ringing/connected to the state machine.
         self.channel_map[channel_id] = channel_id
-        return await self._dial(channel_id, dest, from_)
-
-    async def _dial(
-        self, channel_id: str, dest: str, from_: str
-    ) -> TelephonyCallResult:
-        """Start dialing a channel already in the Stasis app (bounded, no loops)."""
-        try:
-            await self.ari.dial(channel_id)
-        except ARITimeout:
-            # Dial outcome unknown; the ask is not "did the request land?" but
-            # "what does the channel look like now?". One bounded reconcile +
-            # a single re-dial is allowed ONLY when the channel is provably
-            # still Down (meaning dial never fired).
-            return await self._recover_dial_timeout(channel_id, dest, from_)
-        except ARIUnavailable as exc:
-            return self._failed_result(
-                dest, from_,
-                status=CallStatus.FAILED,
-                error_code="ARI_UNAVAILABLE",
-                message=f"Channel created but dial dispatch failed: {exc}",
-            )
-        except ARIRequestFailed as exc:
-            return self._failed_result(
-                dest, from_,
-                status=CallStatus.FAILED,
-                error_code="DIAL_REJECTED",
-                message=str(exc),
-            )
-
+        response_state = str(chan.get("state") or "Down")
+        status = _ARI_STATE_MAP.get(response_state.lower(), CallStatus.CONNECTING)
         return TelephonyCallResult(
             call_sid=channel_id,
-            status=CallStatus.CONNECTING,
+            status=status,
             direction=CallDirection.OUTBOUND,
             from_number=from_ or self._default_caller_id,
             to_number=dest,
             provider=self.provider_name,
-            raw_response={"channel": channel_id, "endpoint": f"PJSIP/{dest}"},
+            raw_response={"channel": chan, "endpoint": f"PJSIP/{dest}"},
         )
 
-    async def _reconcile_after_create_timeout(
-        self, channel_id: str, dest: str, from_: str, call_id: str
+    async def _reconcile_after_originate_timeout(
+        self, channel_id: str, dest: str, from_: str
     ) -> TelephonyCallResult:
         try:
             chan = await self.ari.get_channel(channel_id)
@@ -259,14 +237,6 @@ class AsteriskARIProvider(BaseTelephonyProvider):
 
         self.channel_map[channel_id] = channel_id
         state = str(chan.get("state") or "Down")
-        if state.lower() == "down":
-            # Channel exists but provably never dialed: dial it once now.
-            result = await self._dial(channel_id, dest, from_)
-            log.info(
-                "Originate reconcile for %s: channel existed in Down state — dialed once",
-                channel_id,
-            )
-            return result
         status = _ARI_STATE_MAP.get(state.lower(), CallStatus.CONNECTING)
         log.info("Originate reconcile for %s: found channel in state %s", channel_id, state)
         return TelephonyCallResult(
@@ -276,43 +246,7 @@ class AsteriskARIProvider(BaseTelephonyProvider):
             from_number=from_ or self._default_caller_id,
             to_number=dest,
             provider=self.provider_name,
-            raw_response={"reconciled_after": "create_timeout", "ari_state": state},
-        )
-
-    async def _recover_dial_timeout(
-        self, channel_id: str, dest: str, from_: str
-    ) -> TelephonyCallResult:
-        try:
-            chan = await self.ari.get_channel(channel_id)
-        except (ARINotFound, ARITimeout, ARIUnavailable) as exc:
-            return self._failed_result(
-                dest, from_,
-                status=CallStatus.FAILED,
-                error_code="ARI_UNAVAILABLE",
-                message=f"Dial timed out and reconcile failed — outcome unverified: {exc}",
-            )
-        state = str(chan.get("state") or "Down").lower()
-        if state == "down":
-            try:
-                await self.ari.dial(channel_id)
-            except (ARITimeout, ARIUnavailable, ARIRequestFailed) as exc:
-                return self._failed_result(
-                    dest, from_,
-                    status=CallStatus.FAILED,
-                    error_code="ARI_UNAVAILABLE",
-                    message=f"Bounded re-dial after timeout failed — outcome unverified: {exc}",
-                )
-            status = CallStatus.CONNECTING
-        else:
-            status = _ARI_STATE_MAP.get(state, CallStatus.CONNECTING)
-        return TelephonyCallResult(
-            call_sid=channel_id,
-            status=status,
-            direction=CallDirection.OUTBOUND,
-            from_number=from_ or self._default_caller_id,
-            to_number=dest,
-            provider=self.provider_name,
-            raw_response={"reconciled_after": "dial_timeout", "ari_state": state},
+            raw_response={"reconciled_after": "originate_timeout", "ari_state": state},
         )
 
     # ------------------------------------------------------------------ #
