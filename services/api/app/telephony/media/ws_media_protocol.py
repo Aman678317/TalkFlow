@@ -71,13 +71,13 @@ QUEUE_LENGTH_MAX = 1000
 QUEUE_LENGTH_XOFF_LEVEL = 900
 QUEUE_LENGTH_XON_LEVEL = 800
 
+EVENT_DTMF_END = "DTMF_END"
 EVENT_MEDIA_START = "MEDIA_START"
 EVENT_MEDIA_XON = "MEDIA_XON"
 EVENT_MEDIA_XOFF = "MEDIA_XOFF"
 EVENT_QUEUE_DRAINED = "QUEUE_DRAINED"
 EVENT_MEDIA_BUFFERING_COMPLETED = "MEDIA_BUFFERING_COMPLETED"
 EVENT_MEDIA_MARK_PROCESSED = "MEDIA_MARK_PROCESSED"
-EVENT_DTMF_END = "DTMF_END"
 EVENT_STATUS = "STATUS"
 EVENT_ERROR = "ERROR"
 
@@ -223,6 +223,13 @@ def build_command(command: str, argument: str = "") -> str:
             f"command exceeds the {MAX_CONTROL_MESSAGE_BYTES}-byte cap: {len(payload)} bytes"
         )
     return payload
+
+
+def build_dtmf_command(digit: str) -> str:
+    """Build a SEND_DTMF command for a single digit (0-9,*,#,A-D)."""
+    if not digit or len(digit) != 1:
+        raise WSMediaProtocolError(f"DTMF digit must be a single character, got {digit!r}")
+    return build_command("SEND_DTMF", digit)
 
 
 def build_json_command(command: str, **extra: Any) -> str:
