@@ -146,6 +146,14 @@ class Settings(BaseSettings):
     asterisk_agent_permitted_documents: str = ""  # comma-separated doc ids
     asterisk_agent_segment_wait_seconds: float = 2.0  # recognizer-path wait
 
+    # Inbound Stasis legs (P3 lab decision): accept a call only when the
+    # dialplan shape is `Stasis(talkflow,inbound)`, the caller AND dialed
+    # extension are both operator-allowlisted local extensions, and the
+    # owning organization is explicitly configured (empty = fail closed —
+    # multi-tenant ownership is never guessed from an ARI event).
+    asterisk_inbound_enabled: bool = False
+    asterisk_inbound_org_id: str = ""
+
     # --- AI providers ---
     translation_provider: str = "auto"
     translation_model: str = ""
