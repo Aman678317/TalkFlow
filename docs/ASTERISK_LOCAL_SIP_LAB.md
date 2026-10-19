@@ -129,9 +129,9 @@ A separate implementation change should introduce the adapter behind an explicit
 
 Before any real calling is enabled, verify backend-only credential handling, call authorization, consent, Do-Not-Call, tenant isolation, destination restrictions, rate limits, audit events, and call-end controls. Keep Asterisk integration tests opt-in; CI without an explicitly provisioned test PBX must remain network-independent and deterministic.
 
-### P3 — media transport + inbound leg decision (recorded 2026-10-19; not yet implemented)
+### P3 — media transport + inbound leg decision (recorded 2026-10-19; spike live-verified same day)
 
-The previously parked pre-implementation decision is now resolved against the deployed lab build. This record contains **no implementation and no audio claim** — the media spike and runtime code follow as separate gated changes.
+The pre-implementation decision was resolved against the deployed lab build, then the runtime media primitives (commit `cbdfd45`: `ws_media_protocol.py`, `external_media.py`, `ws_media_server.py`, ARI client additions, 34 deterministic tests in the CI hardened lane) and the live acceptance spike followed. The spike verdict is in **"Live evidence"** below; **no PSTN/audio-translation product claim** is made beyond the local lane.
 
 #### Decision — translation media transport: ARI `externalMedia` over the websocket transport (`chan_websocket`)
 
@@ -151,19 +151,42 @@ Why websocket wins over the classic RTP relay for this codebase:
 | Correlation | deterministic child channel id `talkflow-<call uuid>-media` | same |
 | Cleanup | hangup/destroy both channels + bridge; converges with the adapter's residual-zero guarantee | same |
 
-Mechanism chosen: **backend runs the WS media server** (Asterisk dials in; `external_host` empty, `connection_type=server`). WS **client** mode (backend→Asterisk via `res_websocket_client`, `external_host` = connection ID, `transport_data` appended to dialstring) is documented as the alternative deployment topology for PBXes that cannot reach the backend.
+Mechanism chosen and **live-validated**: **backend runs the WS media server and Asterisk dials OUT to it** — a named `websocket_client.conf` connection object (`[talkflow-media-cfg]`, `uri=ws://<backend-ip>:8787`, `protocols=media`, `connection_type=per_call_config`, `reconnect_attempts=0`) serves as the dial target; the originate dialstring is `WebSocket/talkflow-media-cfg/d(both)` (options encoded per the shipped `external_media.py` builder: `encapsulation=none` is implied by the websocket transport, `connection_type=client` requires the named client connection id, and `d(both)` sets bidirectional media from the application's perspective). The backend stays the single media authority; no per-call UDP relay exists. WS **server** mode (Asterisk accepts an inbound WSS from the backend, `external_host` empty) and WS client mode with `transport_data` remain documented alternatives for topologies where the PBX cannot initiate connections.
 
 Designated fallback if the spike shows throughput/latency limits: `UnicastRTP` (mature, lab-verified driver). Second fallback: `AudioSocket` (simple TCP framing; needs its own socket worker). Neither is chosen today.
 
 #### Spike acceptance criteria (must ALL be proven live before any translation claim)
 
-1. **Frame layout**: capture the WS frame for a `slin16` payload; confirm the 3-byte header semantics (flags/direction/length) and payload alignment against the deployed build.
+1. **Frame layout**: capture the WS frame for a `slin16` payload; characterize the wire framing against the deployed build. **Corrected before the spike ran, from the shipped `chan_websocket.c` source:** binary media frames carry the **raw codec payload with no header** — `process_binary_message` → `queue_frame_from_buffer` treats each binary WebSocket message as codec bytes and emits one frame per `optimal_frame_size` bytes. A 640 B binary message **is** one 20 ms `slin16` frame. Control traffic is TEXT only: the server sends `MEDIA_START` with `connection_id`, `channel`, `channel_id`, `format`, `optimal_frame_size`, `ptime`; client→server commands and back events use ≤128-byte text (`MEDIA_XOFF`/`MEDIA_XON`, `QUEUE_DRAINED`, `STATUS`, `ERROR`; `SetMediaDirection` is JSON-only).
 2. **Format + packetization**: `format=slin16` accepted; 20 ms packet cadence observed end-to-end.
 3. **Inbound leg audio**: mixing bridge (`PJSIP/1001` ⇄ externalMedia channel) delivers real audio from a live baresip call to the backend (decoded, e.g. RMS above noise floor).
 4. **Outbound leg audio**: backend-written `slin16` frames (TTS tone or recorded voice) are audible/rendered at the PBX side, or observed as RTP on the PJSIP leg with expected ptime.
 5. **`direction` semantics** in this build (duplex vs single-arm) and silence behavior when the backend sends nothing (Stasis/MoH default) are documented.
 6. **Cleanup**: call end → both channels + bridge gone (adapter's residual-zero check extended to media channels).
 7. **Latency budget**: measured P50/P95 leg RTT added by STT/MT/TTS through the WS path; recorded next to `StageTiming` targets (§7 reliability rules).
+
+#### Live evidence — chan_websocket media spike (2026-10-19; all 7 criteria PASS in one run)
+
+Topology driven by an untracked lab script (`asterisk/labs/22-11-wsl/scripts/media_spike_drive.py`; isolation probes `media_ab_probe.py`, `media_tone_probe.py`). Backend = runtime `WSMediaServer` on `0.0.0.0:8787` (subprotocol `media`); WSL Asterisk 22.11.0 dials `ws://<win-host>:8787` via the named client object; mixing bridge joins the `externalMedia` channel and a one-shot originate to `PJSIP/1001` (auto-answering baresip). Endpoint-side witness for criterion 4 is baresip's `aufile` audio-player dump (received RTP → mono/S16/8 kHz WAV, removed before each run so the file is a single-call recording).
+
+| # | Criterion | Live result (final instrumented run) | Verdict |
+|---|---|---|---|
+| 1 | MEDIA_START handshake | `format=slin16 frame=640B ptime=20ms subproto=media` (channel `WebSocket/talkflow-media-cfg/0x…`) | PASS |
+| 2 | Packetization | inbound sizes exactly `[640]`; delivery rate 53.3 fps (target 50); arrival p95 21.7 ms | PASS |
+| 3 | Inbound leg audio | media-channel playback → 550 speech frames over WS, RMS p50 2278 / max 10168; bridge-mixed 440 Hz baseline at RMS ~8501 during the silent gate | PASS |
+| 4 | Outbound leg audio | 150 deadline-paced frames, send p50 19.5 ms (target 20), span 2.98 s, zero `MEDIA_XOFF`; endpoint witness 800 Hz Goertzel ratio **0.482** (pure-sine reference ≈ 0.50), RMS 6151, 1551 zero-crossings/s | PASS |
+| 5 | `direction` semantics | `d(both)` duplex proven operationally: 1300 inbound frames received, 150 paced outbound delivered | PASS |
+| 6 | Cleanup / residual zero | after hanging up both channels: bridge 404, frames stop, WS closed **by Asterisk** (peer close), zero residual channels | PASS |
+| 7 | Latency budget | inbound delivery p50/p95 = 19.5/21.7 ms — in the 20 ms `StageTiming` class | PASS |
+
+Isolation evidence (why the tone path is trusted beyond the single run): an A/B probe bridged **two** `externalMedia` websocket channels (no SIP at all) — all 150 frames returned on the second connection, exactly 640 B, p50/p95 20.0/20.6 ms, RMS 6364 (pure amp-9000 sine); a tone-only probe (WS channel + SIP leg, zero playbacks) recorded 3.9 s of pure 800 Hz at RMS 6261 with zeros elsewhere. `core set debug 5` audits confirmed per-run: 150× `Queued 640 byte frame` + 150× `Dequeued` at realtime cadence on the media channel.
+
+Qualifications recorded with the evidence:
+
+- **Streamfile playbacks vs bridge streaming (lab warning):** `POST /channels/{id}/play` (`ast_streamfile`) on any bridged member pauses bridge delivery toward the other members for the file's lifetime (during a SIP-leg playback window the WS member received **zero** writes while baresip RTP and codec translation kept running at 50 pps), and a playback on the WS member reaches **both** endpoints (its own tech write + the bridge). The product turn loop streams paced frames (the validated path), so per-turn audio must use frame streaming — any scripted ARI playback must be sequenced outside streaming windows. Not a product defect: no playback coexistence is exercised by the runtime today.
+- **WSL2 NAT batching:** the Windows↔WSL vSwitch coalesces WS frames into ~3-frame bursts (arrival p50 ≈ 0 ms with p95 ≈ 21.8 ms); cadence gates therefore use delivery rate + p95, not the median gap. Production connections (no NAT hop) should not exhibit this.
+- **Teardown ordering:** while an `externalMedia` channel exists, the bridge keeps delivering zero-frames (partner-gone silence); frames only stop once that channel is destroyed, and then Asterisk closes the WS with the correct subprotocol termination. The residual-zero audit must delete both channels before measuring, which the runtime's `ExternalMediaSession.teardown()` does.
+- **No header on the wire** (criterion 1 correction): framing assumptions changed implementation-side before any mis-framed byte was ever shipped — the correction is recorded here to keep the doc honest.
 
 #### Inbound Stasis legs (decision + acceptance, separate from media spike)
 
@@ -183,7 +206,7 @@ Designated fallback if the spike shows throughput/latency limits: `UnicastRTP` (
   | Adapter-level | `scripts/adapter_live_call.py` | `create_call` → `ringing → connected → ended` on one deterministic channel; exactly **1** terminal claim (late/duplicates absorbed); **0** residual ARI channels; baresip log: answered `200`, `Call established`, `duration: 4 secs`, `63978/0 bit/s` endpoint→Asterisk RTP |
   | Product-path | `scripts/adapter_api_drive.py` | Real API (SQLite) with the `ASTERISK_*` operator block; seeded login; `POST /telephony/calls` → `201` `provider=asterisk`, `sid=talkflow-<uuid>`, `to=1001`; the WS consumer inside the API lifespan wrote `status_change:ringing/connected/ended` rows stamped `source=asterisk_ari` into `call_events`; final row `ended`, `ended_at` set, clean hangup → **PRODUCT-PATH LIVE CALL: PASS** |
 
-  Honest boundaries unchanged for all of the above: signaling control plane only; endpoint→PBX RTP reached Asterisk; media translation and inbound Stasis legs have their transport **decision recorded (P3 above)** with the implementation spike pending. Provider-status visibility shipped alongside (`telephony/provider-status` reports an explicit asterisk selection honestly and never claims PSTN on the local-SIP lane).
+  Honest boundaries unchanged for all of the above: signaling control plane only; endpoint→PBX RTP reached Asterisk; media translation has since been **live-verified in the P3 spike below**, while inbound Stasis legs remain follow-up work in the same P3 decision. Provider-status visibility shipped alongside (`telephony/provider-status` reports an explicit asterisk selection honestly and never claims PSTN on the local-SIP lane).
 
 ## Local-call vs public-call decision table
 
@@ -219,4 +242,4 @@ Designated fallback if the spike shows throughput/latency limits: `UnicastRTP` (
 
 ## Status
 
-**Documentation and design only — not implemented, not deployed.** The existing simulated provider remains the reliable local/CI default until a separate, reviewed implementation is completed. P0 remains accepted as blocked by upstream [asterisk/asterisk #1398](https://github.com/asterisk/asterisk/issues/1398) (registrar `AOR '' not found`, fixed in Asterisk 22.11.0): the local 22.5.2 lab is loopback-hardened and ARI-verified, but registration could not be demonstrated — neither on 22.5.2 (registrar bug), in upgrade containers (startup failed on the partial `/etc/asterisk` mount), nor from a local 22.11.0 source build (mixed Ubuntu/source module trees). Resuming P0 requires a clean Asterisk 22.11+ runtime (dedicated prefix or merge-config container) and two SIP softphones on a trusted host; no real phone call is claimed.
+**Design + local-lane implementation; simulated provider remains the default provider until a reviewed production runtime change.** P0 is complete at the lab level (Asterisk 22.11.0 with a dedicated source-built WSL prefix, loopback PJSIP/ARI, two baresip endpoints; the historic "AOR '' not found" blocker was resolved by PJSIP object naming, superseding the [asterisk/asterisk #1398](https://github.com/asterisk/asterisk/issues/1398) attribution). P1/P2 shipped the ARI adapter and validated its acceptance matrix live (see phase status). P3's media transport decision is recorded above and its `chan_websocket` media spike **passed all seven acceptance criteria live on 2026-10-19** with the runtime primitives committed; inbound Stasis legs and the agent-graph Turn-loop integration remain follow-up work. No PSTN route, external call, or human-audio claim is made anywhere in this document.
