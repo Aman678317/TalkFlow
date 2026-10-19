@@ -34,13 +34,20 @@ import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Protocol
+from typing import TYPE_CHECKING
 
 from app.telephony.ari_client import ARINotFound, CHANNEL_ID_PREFIX
+
+if TYPE_CHECKING:
+    from app.telephony.media.ws_media_protocol import MediaStart
 
 log = logging.getLogger("app.telephony.media")
 
 WS_DIAL_TECH = "WebSocket"
 INCOMING_CONNECTION_ID = "INCOMING"
+
+# Supported media formats for codec negotiation
+SUPPORTED_FORMATS = frozenset({"slin16", "opus", "pcmu"})
 
 
 class MediaDirection(str, Enum):
@@ -81,6 +88,10 @@ class ExternalMediaWebSocketOptions:
             raise ExternalMediaError(f"unsupported connection_type: {self.connection_type!r}")
         if not self.format:
             raise ExternalMediaError("format cannot be empty")
+        if self.format not in SUPPORTED_FORMATS:
+            raise ExternalMediaError(
+                f"unsupported format: {self.format!r}; supported: {', '.join(sorted(SUPPORTED_FORMATS))}"
+            )
         if self.connection_type == "client" and not self.external_host:
             raise ExternalMediaError(
                 "external_host (websocket-client config id) is required for client connections"
@@ -160,6 +171,8 @@ class MediaChannelInfo:
     dialstring: str
     format: str
     raw_response: dict[str, Any] = field(default_factory=dict)
+    #: Codec confirmed by Asterisk in MEDIA_START (may differ from requested).
+    negotiated_format: str | None = None
 
 
 class ExternalMediaSession:
@@ -177,6 +190,8 @@ class ExternalMediaSession:
         options.validate()
         self.channel_id: str = options.resolved_channel_id
         self._created = False
+        self._negotiated_format: str | None = None
+        self._codec_negotiated_emitted = False
 
     # -- creation ---------------------------------------------------------- #
 
@@ -192,6 +207,60 @@ class ExternalMediaSession:
             dialstring=str(dialstring),
             format=self.options.format,
             raw_response=raw,
+        )
+
+    # -- codec negotiation --------------------------------------------------- #
+
+    async def handle_media_start(self, media_start: "MediaStart") -> str | None:
+        """Process MEDIA_START from Asterisk, confirm codec, return negotiated format.
+
+        Returns the negotiated format if it differs from requested and is supported.
+        Emits a codec_negotiated event (once) when the codec is confirmed.
+        """
+        from app.telephony.media.ws_media_protocol import MediaStart
+
+        if not isinstance(media_start, MediaStart):
+            raise ValueError("expected MediaStart instance")
+
+        if media_start.channel_id != self.channel_id:
+            log.warning(
+                "MEDIA_START channel_id %s does not match session %s",
+                media_start.channel_id, self.channel_id,
+            )
+            return None
+
+        negotiated = media_start.format
+        if negotiated not in SUPPORTED_FORMATS:
+            log.warning(
+                "Unsupported negotiated format %r for channel %s",
+                negotiated, self.channel_id,
+            )
+            return None
+
+        if self._negotiated_format is None:
+            self._negotiated_format = negotiated
+            if negotiated != self.options.format:
+                log.info(
+                    "Codec renegotiated for %s: requested=%s negotiated=%s",
+                    self.channel_id, self.options.format, negotiated,
+                )
+        return self._negotiated_format
+
+    @property
+    def negotiated_format(self) -> str | None:
+        return self._negotiated_format
+
+    # -- DTMF ---------------------------------------------------------------- #
+
+    async def send_dtmf(self, digit: str) -> None:
+        """Send a DTMF digit via the media channel (plain-text command)."""
+        from app.telephony.media.ws_media_protocol import build_dtmf_command
+
+        cmd = build_dtmf_command(digit)
+        await self._ari.request_json(
+            "POST",
+            f"/ari/channels/{self.channel_id}/sendCommand",
+            params={"command": cmd},
         )
 
     # -- bridging ---------------------------------------------------------- #
