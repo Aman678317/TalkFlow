@@ -128,6 +128,11 @@ class Settings(BaseSettings):
     asterisk_event_retry_seconds: float = 2.0  # grace for originate-commit races
     asterisk_ws_reconnect_seconds: float = 5.0  # WS reconnect backoff cap
 
+    # --- P4 auto-dial worker (explicit operator opt-in, default off) ---
+    call_worker_enabled: bool = False
+    call_worker_interval_seconds: float = 2.0  # due-scan tick interval
+    call_worker_batch_size: int = 16  # max jobs enqueued per tick
+
     # --- AI providers ---
     translation_provider: str = "auto"
     translation_model: str = ""

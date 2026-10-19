@@ -16,7 +16,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import models as M
@@ -215,10 +215,30 @@ class CallJobService:
                 details={"reason": decision.reason, "detail": decision.detail})
             return job
 
-        job.status = "placing"
-        job.claimed_at = utcnow()
-        job.claimed_by = (claimed_by_name or str(actor_id or ""))[:120]
-        await self.db.flush()
+        # Atomic claim: flip 'pending' -> 'placing' only from 'pending'. Racing
+        # executors (operator + auto-dial worker, or several workers) resolve to
+        # exactly one winner; the loser re-reads the live state and no-ops. This
+        # keeps at-least-once queue delivery from double-dialing one job.
+        claim = await self.db.execute(
+            update(M.CallJob)
+            .where(M.CallJob.id == job.id, M.CallJob.status == "pending")
+            .values(
+                status="placing",
+                claimed_at=utcnow(),
+                claimed_by=(claimed_by_name or str(actor_id or ""))[:120],
+            )
+            .execution_options(synchronize_session="fetch"))
+        if claim.rowcount == 0:
+            await self.db.refresh(job)
+            log.info("call job %s already claimed (status=%s); skipping",
+                     job.id, job.status)
+            return job
+        # Commit the claim BEFORE the (potentially slow) provider dial: the
+        # row flips to 'placing' durably so competing executors see it, and we
+        # never hold a DB write transaction across a provider round-trip
+        # (SQLite/Postgres lock-friendliness). A mid-dial crash can only leave
+        # the job in 'placing' — which still cannot double-dial.
+        await self.db.commit()
 
         if contact is None:
             job.status = "blocked"

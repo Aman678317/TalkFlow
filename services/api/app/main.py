@@ -207,6 +207,25 @@ async def _lifespan_startup(app: FastAPI) -> None:
         except Exception:  # noqa: BLE001 — adapter is opt-in; startup must not fail
             log.exception("failed to start Asterisk ARI event consumer (non-fatal)")
 
+    # P4 auto-dial worker (opt-in): due pending call jobs are executed
+    # automatically through the same consent/DNC/window gate as operator
+    # claims. At-least-once queue delivery is made safe by execute_job's
+    # atomic pending->placing claim (one winner per job).
+    if settings.call_worker_enabled:
+        from app.telephony.call_worker import (
+            JOB_TYPE,
+            QUEUE_NAME,
+            CallJobTicker,
+            handle_calljob_execute,
+        )
+
+        call_wr = WorkerRunner(queue(), QUEUE_NAME)
+        call_wr.register(JOB_TYPE, handle_calljob_execute)
+        call_wr.start()
+        app.state.workers.append(call_wr)
+        app.state.call_job_ticker_task = CallJobTicker().start()
+        log.info("call-job auto-dial worker started (feature flag enabled)")
+
     # periodic: retention sweep hourly, usage-threshold checks every 10m
     from app.realtime.ws import session_sweeper
     app.state.sweeper = asyncio.create_task(session_sweeper())
@@ -269,7 +288,8 @@ async def _lifespan_shutdown(app: FastAPI) -> None:
         await w.stop()
     for t in (getattr(app.state, "sweeper", None),
               getattr(app.state, "retention_task", None),
-              getattr(app.state, "asterisk_ari_task", None)):
+              getattr(app.state, "asterisk_ari_task", None),
+              getattr(app.state, "call_job_ticker_task", None)):
         if t:
             t.cancel()
             with contextlib.suppress(asyncio.CancelledError):
