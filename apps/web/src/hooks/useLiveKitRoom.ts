@@ -4,6 +4,7 @@ import {
   type Participant, type ReconnectContext, type ReconnectPolicy,
 } from 'livekit-client';
 import { api } from '../lib/api';
+import { isConfirmedRecovery } from '../lib/mediaRecovery';
 import type { AudioMode } from '../lib/types';
 
 export type MediaRoomState = 'unavailable' | 'connecting' | 'connected' | 'reconnecting' | 'error';
@@ -32,6 +33,17 @@ interface MediaCredentials {
 const RECONNECT_MAX_ATTEMPTS = 3;
 const RECONNECT_BASE_DELAY_MS = 1200;
 const RECONNECT_MAX_DELAY_MS = 6000;
+
+/**
+ * Recovery is confirmed by PERSISTENCE, not by a Connected blip: the signal
+ * handshake can complete in the same instant the socket is cut, so a
+ * Connected state that dies within RECOVERY_CONFIRM_MS
+ * (lib/mediaRecovery) must not reset the attempt counter — otherwise a
+ * hostile network blinking at connect time loops Connected → Disconnected
+ * forever and the seat never reaches the honest error state. The counter is
+ * only reset at the disconnect boundary, and only after a connected spell
+ * has held for the confirm window.
+ */
 
 /**
  * LiveKit's own auto-reconnect used to hold the room in an amber
@@ -111,6 +123,11 @@ export function useLiveKitRoom({
     const activeParticipantId = participantId;
     let cancelled = false;
     let reconnectAttempt = 0;
+    /** When the room last reached Connected (null while down). The bounded
+     * attempt counter is only reset — and only at the disconnect boundary —
+     * once a spell has held for RECOVERY_CONFIRM_MS (lib/mediaRecovery);
+     * sub-window blips stay part of the outage still in progress. */
+    let connectedSince: number | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let connecting = false;
     const room = new Room({
@@ -152,7 +169,11 @@ export function useLiveKitRoom({
 
     const onConnectionState = (connectionState: ConnectionState) => {
       if (connectionState === ConnectionState.Connected) {
-        reconnectAttempt = 0;
+        // NOT an immediate reset: see lib/mediaRecovery — a Connected that may
+        // die milliseconds later (hostile network / outage drill) must not
+        // restart the bounded retry loop. The counter is reset at the
+        // disconnect boundary only when the spell proved itself (window).
+        connectedSince = Date.now();
         setAudioBlocked(false);
         setState('connected');
       } else if (connectionState === ConnectionState.Reconnecting) {
@@ -195,7 +216,7 @@ export function useLiveKitRoom({
           room.disconnect();
           return;
         }
-        reconnectAttempt = 0;
+        connectedSince = Date.now();
         setState('connected');
         refreshPeers();
       } catch (cause) {
@@ -209,6 +230,13 @@ export function useLiveKitRoom({
 
     function scheduleReconnect(reason: string) {
       if (cancelled) return;
+      // A connection that proved itself (held through the confirm window) and
+      // THEN died starts a genuinely fresh outage: reset the counter before
+      // accounting this failure. A blip that never held keeps accruing.
+      if (isConfirmedRecovery(connectedSince, Date.now())) {
+        reconnectAttempt = 0;
+      }
+      connectedSince = null;
       reconnectAttempt += 1;
       if (reconnectAttempt > RECONNECT_MAX_ATTEMPTS) {
         // Honest failure: the video room is DOWN, not "reconnecting".

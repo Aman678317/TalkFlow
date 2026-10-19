@@ -79,7 +79,12 @@ services:
       "
 
   livekit:
-    image: livekit/livekit-server:latest
+    # Pinned per third_party_components.yaml ("pinned versions only"): v1.13.10
+    # is the exact image this repo's e2e stack has validated all along (digest
+    # 89ca9ce0…, identical to what `latest` resolved to through the 2026-10-19
+    # runs). Floating `latest` here made an unreviewed server release able to
+    # silently change CI behavior; bumps go through the manifest re-review.
+    image: livekit/livekit-server:v1.13.10
     command: ["--dev", "--bind", "0.0.0.0", "--keys", "devkey: devsecret-at-least-32-chars-long!!"]
     ports: ["7880:7880", "7881:7881", "7882:7882/udp"]
     healthcheck:
