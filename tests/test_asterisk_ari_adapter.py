@@ -229,20 +229,22 @@ def test_normalize_destination_trims_allowlisted_and_rejects_the_rest():
 # origination + unknown-outcome reconciliation
 # ---------------------------------------------------------------------- #
 @pytest.mark.asyncio
-async def test_originate_dials_allowlisted_extension_with_correlation():
+async def test_originate_is_immediate_dial_with_correlation():
+    """POST /ari/channels with app+endpoint dials immediately (verified on the
+    live lab): exactly one ARI call, no eager follow-up dial."""
     provider = _provider()
     result = await _create(provider)
-    assert result.status is CallStatus.CONNECTING
+    assert result.status is CallStatus.CONNECTING  # ARI response state Down
     assert result.call_sid == CID
-    calls = provider.ari.calls
-    assert calls[0] == (
-        "create",
-        CID,
-        "PJSIP/1001",
-        "talkflow",
-        {"TALKFLOW_CALL_ID": CALL_ID, "TALKFLOW_DESTINATION": "1001"},
-    )
-    assert calls[1] == ("dial", CID)
+    assert provider.ari.calls == [
+        (
+            "create",
+            CID,
+            "PJSIP/1001",
+            "talkflow",
+            {"TALKFLOW_CALL_ID": CALL_ID, "TALKFLOW_DESTINATION": "1001"},
+        ),
+    ]
 
 
 @pytest.mark.asyncio
@@ -265,7 +267,7 @@ async def test_unreachable_ari_reports_provider_unavailable():
 
 
 @pytest.mark.asyncio
-async def test_create_timeout_reconciles_existing_channel_and_dials_once():
+async def test_originate_timeout_reconciles_existing_channel():
     """Timeout ≠ proof of failure: the channel may exist server-side."""
     fake = FakeARIClient()
     fake.timeout_but_created = {CID}
@@ -279,8 +281,9 @@ async def test_create_timeout_reconciles_existing_channel_and_dials_once():
     creates = [c for c in fake.calls if c[0] == "create"]
     gets = [c for c in fake.calls if c[0] == "get"]
     dials = [c for c in fake.calls if c[0] == "dial"]
-    # Exactly one originate attempt (no blind retry) + one reconcile + one dial.
-    assert len(creates) == 1 and len(gets) == 1 and len(dials) == 1
+    # Exactly one originate attempt (no blind retry) + one reconcile.
+    # No dial: POST /ari/channels dialls immediately on its own.
+    assert len(creates) == 1 and len(gets) == 1 and dials == []
 
 
 @pytest.mark.asyncio
@@ -299,46 +302,26 @@ async def test_create_timeout_without_channel_never_retries():
 
 
 @pytest.mark.asyncio
-async def test_dial_timeout_recovers_only_when_provably_undialed():
-    """Re-dial is allowed only after reconcile proves the channel is still Down."""
+async def test_originate_response_past_down_is_mapped_not_fabricated():
+    """A slow response can carry an already-ringing channel; honor its state."""
     fake = FakeARIClient()
-    state = {"n": 0}
-
-    def first_dial_only_times_out(channel_id: str) -> None:
-        state["n"] += 1
-        if state["n"] == 1:
-            raise ARITimeout("first dial timed out; outcome unknown")
-
-    fake.dial_side_effect = first_dial_only_times_out
+    # Pre-seed the channel the originate returns: response says Ringing.
+    fake.channels[CID] = {"id": CID, "state": "Ringing"}
     provider = _provider(fake)
 
     result = await _create(provider)
 
-    assert result.status is CallStatus.CONNECTING
-    assert len([c for c in fake.calls if c[0] == "dial"]) == 2
-    assert len([c for c in fake.calls if c[0] == "get"]) == 1
+    assert result.status is CallStatus.RINGING
+    assert [c for c in provider.ari.calls if c[0] == "dial"] == []
 
 
 @pytest.mark.asyncio
-async def test_dial_timeout_when_channel_advanced_reports_progress():
+async def test_originate_rejected_is_honest_failure():
     fake = FakeARIClient()
-    fake.dial_error = ARITimeout("dial response lost")
-    fake.channels[CID] = {"id": CID, "state": "Up"}  # already answered
-    provider = _provider(fake)
-
-    result = await _create(provider)
-
-    assert result.status is CallStatus.CONNECTED
-    assert [c for c in fake.calls if c[0] == "dial"] == [("dial", CID)]
-
-
-@pytest.mark.asyncio
-async def test_dial_rejected_is_honest_failure():
-    fake = FakeARIClient()
-    fake.dial_error = ARIRequestFailed("dial refused", 400)
+    fake.create_error = ARIRequestFailed("originate refused", 400)
     result = await _create(_provider(fake))
     assert result.status is CallStatus.FAILED
-    assert result.error_code == "DIAL_REJECTED"
+    assert result.error_code == "ORIGINATE_REJECTED"
 
 
 # ---------------------------------------------------------------------- #
