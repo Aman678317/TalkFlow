@@ -99,7 +99,7 @@ Initial event mapping to validate: originate accepted → `INITIATING`/`CONNECTI
 
 - Keep ARI HTTP and WebSocket credentials server-side; use a dedicated least-privilege ARI user, a private/trusted network, firewall ACLs, and TLS where the deployment supports it. Do not expose ARI, AMI, SIP, or RTP management/listener ports to the public Internet by default. Apply unique strong credentials and endpoint ACLs to both SIP extensions.
 - Put bounded timeouts around ARI control requests. A timeout after originate is an **unknown outcome**, not proof that no channel exists: reconcile channels by the TalkFlow correlation ID before retrying, to avoid duplicate local calls. On ARI WebSocket loss, mark provider health unavailable, reconnect with bounded backoff, reconcile active channels/bridges, and process events idempotently. Asterisk restart or unavailable ARI must produce a clear provider failure for a requested real call, never a simulated success.
-- The current Twilio media contract asks the provider for a WebSocket stream URL/TwiML response. ARI control does not automatically implement that contract. Evaluate ARI `ExternalMedia` (RTP) or another supported Asterisk media interface in the lab and explicitly decide codec, packetization, NAT/firewall, bidirectional audio, and cleanup behavior before implementing translation media. A local SIP signaling call by itself does not prove TalkFlow's media/translation path works.
+- The current Twilio media contract asks the provider for a WebSocket stream URL/TwiML response. ARI control does not automatically implement that contract. Evaluate ARI `ExternalMedia` (RTP) or another supported Asterisk media interface in the lab and explicitly decide codec, packetization, NAT/firewall, bidirectional audio, and cleanup behavior before implementing translation media. A local SIP signaling call by itself does not prove TalkFlow's media/translation path works. **Decision made (2026-10-19): ARI `externalMedia` over the websocket transport (`chan_websocket`) — see P3 below.**
 - Preserve existing Twilio request verification unchanged for Twilio callbacks. ARI events should use the authenticated ARI transport and their own identity/correlation rules; do not imitate a Twilio webhook or disable signature checks to make an Asterisk event pass.
 
 A separate implementation change should introduce the adapter behind an explicit feature flag, tests for provider failure/restart, and an operator-controlled configuration path. Keep the simulated provider as the CI default.
@@ -129,6 +129,49 @@ A separate implementation change should introduce the adapter behind an explicit
 
 Before any real calling is enabled, verify backend-only credential handling, call authorization, consent, Do-Not-Call, tenant isolation, destination restrictions, rate limits, audit events, and call-end controls. Keep Asterisk integration tests opt-in; CI without an explicitly provisioned test PBX must remain network-independent and deterministic.
 
+### P3 — media transport + inbound leg decision (recorded 2026-10-19; not yet implemented)
+
+The previously parked pre-implementation decision is now resolved against the deployed lab build. This record contains **no implementation and no audio claim** — the media spike and runtime code follow as separate gated changes.
+
+#### Decision — translation media transport: ARI `externalMedia` over the websocket transport (`chan_websocket`)
+
+Verified on the lab's own Asterisk 22.11.0 build today:
+
+- `core show channeltypes` lists **`WebSocket — Media over WebSocket Channel Driver`** (`chan_websocket.so`: core, Running), plus `UnicastRTP` and `AudioSocket` as alternatives; `res_http_websocket.so` and `res_websocket_client.so` are loaded.
+- The build's own ARI schema (`GET /ari/api-docs/channels.json`) defines `POST /channels/externalMedia` with `transport`, `connection_type` ("'server' is only valid for the websocket transport"), `encapsulation` ("must be `'none'` for the websocket transport"), `external_host` ("hostname/ip:port **or websocket_client connection ID**; may be empty for a websocket **server** connection"), `format`, `direction`, and `transport_data`.
+
+Why websocket wins over the classic RTP relay for this codebase:
+
+| Criterion | websocket (`chan_websocket`) | UnicastRTP |
+|---|---|---|
+| Data plane | single authenticated TCP/WSS stream from the same backend that already consumes ARI events | dedicated UDP relay process + local port per call |
+| Packet pacing / repacketization | handled inside Asterisk (Appl: frames on WS) | backend must pace/split/merge RTP; any hiccup shows to the 2-leg path |
+| NAT / firewall | one outbound-ish connection; no per-call UDP hole | RTP pinholes per call, symmetric-NAT pain in production |
+| Canonical frame format | `slin16` = PCM16 16 kHz mono (the §5 pipeline invariant) | same via `format=slin16` |
+| Correlation | deterministic child channel id `talkflow-<call uuid>-media` | same |
+| Cleanup | hangup/destroy both channels + bridge; converges with the adapter's residual-zero guarantee | same |
+
+Mechanism chosen: **backend runs the WS media server** (Asterisk dials in; `external_host` empty, `connection_type=server`). WS **client** mode (backend→Asterisk via `res_websocket_client`, `external_host` = connection ID, `transport_data` appended to dialstring) is documented as the alternative deployment topology for PBXes that cannot reach the backend.
+
+Designated fallback if the spike shows throughput/latency limits: `UnicastRTP` (mature, lab-verified driver). Second fallback: `AudioSocket` (simple TCP framing; needs its own socket worker). Neither is chosen today.
+
+#### Spike acceptance criteria (must ALL be proven live before any translation claim)
+
+1. **Frame layout**: capture the WS frame for a `slin16` payload; confirm the 3-byte header semantics (flags/direction/length) and payload alignment against the deployed build.
+2. **Format + packetization**: `format=slin16` accepted; 20 ms packet cadence observed end-to-end.
+3. **Inbound leg audio**: mixing bridge (`PJSIP/1001` ⇄ externalMedia channel) delivers real audio from a live baresip call to the backend (decoded, e.g. RMS above noise floor).
+4. **Outbound leg audio**: backend-written `slin16` frames (TTS tone or recorded voice) are audible/rendered at the PBX side, or observed as RTP on the PJSIP leg with expected ptime.
+5. **`direction` semantics** in this build (duplex vs single-arm) and silence behavior when the backend sends nothing (Stasis/MoH default) are documented.
+6. **Cleanup**: call end → both channels + bridge gone (adapter's residual-zero check extended to media channels).
+7. **Latency budget**: measured P50/P95 leg RTT added by STT/MT/TTS through the WS path; recorded next to `StageTiming` targets (§7 reliability rules).
+
+#### Inbound Stasis legs (decision + acceptance, separate from media spike)
+
+- **Dialplan**: private context `[talkflow-inbound]` bound in `pjsip.conf` to the two lab endpoints via `context=talkflow-inbound`; each inbound extension resolves to `Stasis(talkflow,<route-arg>)` so arriving channels enter the **existing authenticated WS application** — no new event transport.
+- **Identity/allowlist**: only outbound-meta reconciled legs and allowlisted local AORs are accepted; unauthenticated inbound from unknown AOR/trunks is rejected before session creation. PSTN/trunk contexts are explicitly never configured in this phase.
+- **Session mapping**: first `StasisStart` (with route args) creates an inbound `CallSession` (distinct inbound mode marker) whose lifecycle flows through the existing event normalizer: exactly one terminal state, terminal-claim idempotency stretched to inbound legs (restart/reconnect-safe).
+- **Acceptance**: a baresip extension dials the lab extension wired to Stasis; TalkFlow records the inbound session `ringing → connected → ended` from StasisStart/ChannelStateChange/Hangup; no residual channels; documented route-arg policy.
+
 #### Phase status
 
 - **P0:** **Complete at the lab level.** Asterisk 22.11.0 runs in WSL from a dedicated source-built prefix (`/opt/asterisk-22.11`), loopback-only PJSIP/HTTP/ARI/Manager/IAX, two endpoints named after their extension numbers (`1001`, `1002`) with unique credentials, and baresip 1.1.0 as both SIP clients (headless, `aufile` tone media). Registration, extension-to-extension call through `local-test`, bidirectional RTP (0% loss, both directions), hang-up, and Asterisk-restart recovery are all verified (evidence table above). The historic "AOR '' not found" blocker was root-cased to the PJSIP default identification/AOR naming rules and resolved by renaming the objects to `1001`/`1002`; the earlier [asterisk/asterisk #1398](https://github.com/asterisk/asterisk/issues/1398) attribution is superseded and kept for history. Not claimed: subjective human audio and any PSTN route (the adapter runtime path that drives this lab is implemented — see P1/P2 status below).
@@ -140,7 +183,7 @@ Before any real calling is enabled, verify backend-only credential handling, cal
   | Adapter-level | `scripts/adapter_live_call.py` | `create_call` → `ringing → connected → ended` on one deterministic channel; exactly **1** terminal claim (late/duplicates absorbed); **0** residual ARI channels; baresip log: answered `200`, `Call established`, `duration: 4 secs`, `63978/0 bit/s` endpoint→Asterisk RTP |
   | Product-path | `scripts/adapter_api_drive.py` | Real API (SQLite) with the `ASTERISK_*` operator block; seeded login; `POST /telephony/calls` → `201` `provider=asterisk`, `sid=talkflow-<uuid>`, `to=1001`; the WS consumer inside the API lifespan wrote `status_change:ringing/connected/ended` rows stamped `source=asterisk_ari` into `call_events`; final row `ended`, `ended_at` set, clean hangup → **PRODUCT-PATH LIVE CALL: PASS** |
 
-  Honest boundaries unchanged for all of the above: signaling control plane only; endpoint→PBX RTP reached Asterisk; PBX-side media translation (ExternalMedia) and inbound Stasis legs remain parked. Provider-status visibility shipped alongside (`telephony/provider-status` reports an explicit asterisk selection honestly and never claims PSTN on the local-SIP lane).
+  Honest boundaries unchanged for all of the above: signaling control plane only; endpoint→PBX RTP reached Asterisk; media translation and inbound Stasis legs have their transport **decision recorded (P3 above)** with the implementation spike pending. Provider-status visibility shipped alongside (`telephony/provider-status` reports an explicit asterisk selection honestly and never claims PSTN on the local-SIP lane).
 
 ## Local-call vs public-call decision table
 
