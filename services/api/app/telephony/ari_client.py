@@ -199,3 +199,51 @@ class ARIClient:
     async def hangup(self, channel_id: str) -> None:
         """DELETE /ari/channels/{id} — terminate a channel (idempotent-ish)."""
         await self.request_json("DELETE", f"/ari/channels/{channel_id}")
+
+    # ------------------------------------------------------------------ #
+    # externalMedia + bridging surface (P3 media spike)
+    # ------------------------------------------------------------------ #
+
+    async def external_media(self, *, params: dict[str, Any]) -> dict[str, Any]:
+        """POST /ari/channels/externalMedia (websocket transport, see media pkg)."""
+        return await self.request_json(
+            "POST", "/ari/channels/externalMedia", params=params
+        )
+
+    async def list_channels(self) -> list[dict[str, Any]]:
+        """GET /ari/channels — raw listing (residual audits)."""
+        resp = await self._request("GET", "/ari/channels")
+        if resp.status_code == 404:
+            raise ARINotFound("ARI resource not found: /ari/channels")
+        if resp.status_code >= 400:
+            raise ARIRequestFailed(
+                f"ARI request rejected ({resp.status_code})", resp.status_code
+            )
+        try:
+            data = resp.json()
+        except Exception:
+            return []
+        return data if isinstance(data, list) else []
+
+    async def create_bridge(
+        self, *, bridge_id: str, type: str = "mixing", name: str = ""
+    ) -> dict[str, Any]:
+        """POST /ari/bridges with a client-chosen bridge ID."""
+        params: dict[str, Any] = {"type": type, "bridgeId": bridge_id}
+        if name:
+            params["name"] = name
+        return await self.request_json("POST", "/ari/bridges", params=params)
+
+    async def get_bridge(self, bridge_id: str) -> dict[str, Any]:
+        """GET /ari/bridges/{id} — raises ARINotFound when it no longer exists."""
+        return await self.request_json("GET", f"/ari/bridges/{bridge_id}")
+
+    async def delete_bridge(self, bridge_id: str) -> None:
+        """DELETE /ari/bridges/{id} (404 absorbed by caller policy)."""
+        await self.request_json("DELETE", f"/ari/bridges/{bridge_id}")
+
+    async def add_channel_to_bridge(self, bridge_id: str, channel_id: str) -> None:
+        """POST /ari/bridges/{id}/addChannel."""
+        await self.request_json(
+            "POST", f"/ari/bridges/{bridge_id}/addChannel", params={"channel": channel_id}
+        )
