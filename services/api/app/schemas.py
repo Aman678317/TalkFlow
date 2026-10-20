@@ -200,6 +200,8 @@ class TranslationOut(BaseModel):
     tm_match: str | None = None
     domain: str = "general"
     alternatives: list[str] = Field(default_factory=list)
+    #: set only when a REQUESTED glossary was NOT applied (honest reason)
+    glossary_note: str | None = None
 
 
 class TranslateResponse(BaseModel):

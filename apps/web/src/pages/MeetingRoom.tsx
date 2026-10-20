@@ -30,6 +30,7 @@ import { useLiveKitRoom } from "../hooks/useLiveKitRoom";
 import { AudioPlayer, MicCapture, b64ToBytes } from "../lib/audio";
 import { MeetingSocket, normId, type SocketState } from "../lib/ws";
 import { WebRTCManager, setIceServers, type SignalMessage } from "../lib/webrtc";
+import { iceQueryEnabled, iceQueryKey, iceQueryUrl } from "../lib/meetingRoomIce";
 import type { JoinMeetingResponse, Meeting, ParticipantInfo, Preferences, RealtimeEvent, TranscriptItem } from "../lib/types";
 import { Button, ErrorState, SegmentedControl, Select, Spinner } from "../components/ui";
 import { VideoTile } from "../components/meeting/VideoTile";
@@ -319,10 +320,11 @@ export default function MeetingRoom() {
   // STUN/TURN for the P2P mesh: room members only, resolved by the backend.
   // The guest must identify their seat (x-seat participants otherwise read
   // as anonymous to the endpoint's allowlist and get a uniform 404).
+  // Seat id lands asynchronously ⇒ the query waits for it and caches per seat.
   const iceServersQ = useQuery({
-    queryKey: ["meeting", id, "ice-servers"],
-    queryFn: () => api<{ ice_servers: RTCIceServer[] }>(`/api/v1/meetings/${id}/ice-servers?participant_id=${myParticipantId}`),
-    enabled: phase === "in" || phase === "lobby",
+    queryKey: iceQueryKey(id, myParticipantId),
+    queryFn: () => api<{ ice_servers: RTCIceServer[] }>(iceQueryUrl(id, myParticipantId)),
+    enabled: iceQueryEnabled(phase, myParticipantId),
     staleTime: 5 * 60 * 1000,
   });
   React.useEffect(() => {

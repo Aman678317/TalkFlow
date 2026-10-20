@@ -26,12 +26,21 @@ describe("canonical translation client", () => {
         latency_ms: 12,
         quality_flags: [],
         alternatives: ["Guten Tag"],
+        glossary_note: "glossary not applied: language pair mismatch (en→hi vs en→de)",
       }],
     });
 
     expect(response.translation_id).toBe("translation-1");
     expect(response.translated_text).toBe("Hallo");
     expect(response.alternatives).toEqual(["Guten Tag"]);
+    // The backend's honest glossary accounting survives normalization…
+    expect(response.glossary_note).toBe(
+      "glossary not applied: language pair mismatch (en→hi vs en→de)",
+    );
+    expect(
+      normalizeTranslationResponse({ translations: [{ translation_id: "x" }] })
+        .glossary_note,
+    ).toBeNull();
   });
 
   it("uses backend language detection before translating AUTO input", async () => {

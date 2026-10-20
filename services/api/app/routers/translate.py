@@ -89,6 +89,7 @@ async def translate(body: TranslateRequest,
             tm_match=out.tm_match,
             domain=body.domain,
             alternatives=getattr(out.result, "alternatives", []),
+            glossary_note=out.glossary_note,
         ))
     from app import context
     return TranslateResponse(translations=outputs,

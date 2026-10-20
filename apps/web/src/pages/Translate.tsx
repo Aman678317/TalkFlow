@@ -1005,6 +1005,9 @@ export default function TranslatePage() {
                       {f.replace(/_/g, " ")}
                     </Badge>
                   ))}
+                {result.glossary_note && (
+                  <Badge tone="warn">{result.glossary_note}</Badge>
+                )}
               </div>
             )}
           </div>
