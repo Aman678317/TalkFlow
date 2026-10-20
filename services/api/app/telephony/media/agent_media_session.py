@@ -40,6 +40,7 @@ from sqlalchemy import select
 from app.telephony.ai_agent_graph import GraphConfig, build_graph
 from app.telephony.media.agent_turn_loop import (
     EVENT_OUTCOME,
+    TERMINAL_ESCALATED,
     TERMINAL_FAILED,
     TERMINAL_STOPPED,
     AgentTurnLoop,
@@ -383,6 +384,7 @@ class AgentMediaSession:
         spec: AgentMediaSpec,
         sink: TurnEventSink,
         registry: dict[str, "AgentMediaSession"],
+        escalation: Any | None = None,
     ) -> None:
         self.call_sid = call_sid
         self.caller_channel_id = caller_channel_id
@@ -426,6 +428,8 @@ class AgentMediaSession:
 
         self._loop: AgentTurnLoop | None = None
         self._task: asyncio.Task[None] | None = None
+        #: P4 escalation hook (plan §C1) — default None = pure no-op
+        self.escalation = escalation
 
     # -- lifecycle ---------------------------------------------------------- #
 
@@ -493,6 +497,18 @@ class AgentMediaSession:
         )
         outcome = await self._loop.run()
         self.outcome = outcome
+        # P4 §C1: an escalated outcome routes to the live-agent queue (best
+        # effort — the dispatcher never breaks the call; a None hook is a
+        # deliberate no-op, and dispatch itself guards non-escalated
+        # outcomes). Fires BEFORE teardown so the audit rows stay on the
+        # same call.
+        if outcome.terminal == TERMINAL_ESCALATED and self.escalation is not None:
+            try:
+                await self.escalation.dispatch(self.call_sid, outcome, self._sink)
+            except Exception:  # noqa: BLE001 — escalation must never kill a call
+                log.exception(
+                    "escalation dispatch failed for call %s (continuing)",
+                    self.call_sid)
         return await self._teardown(outcome)
 
     def request_stop(self, reason: str = "operator") -> None:
@@ -692,12 +708,15 @@ class AsteriskAgentMediaRuntime:
         bind_port: int,
         spec_builder: Callable[[str, str], AgentMediaSpec] | None = None,
         sink_factory: Callable[[str], TurnEventSink] | None = None,
+        escalation: Any | None = None,
     ) -> None:
         self._ari = ari
         self._host = bind_host
         self._port = bind_port
         self._spec_builder = spec_builder or self.build_spec
         self._sink_factory = sink_factory or MediaCallEventSink
+        #: P4 §C1: one process-wide live-agent escalation dispatcher
+        self._escalation = escalation
         self._registry_by_channel: dict[str, AgentMediaSession] = {}
         self.sessions_by_call: dict[str, AgentMediaSession] = {}
         self._conns: dict[int, AgentMediaSession] = {}  # id(conn) → session
@@ -802,6 +821,7 @@ class AsteriskAgentMediaRuntime:
             spec=self._spec_builder(call_sid, channel_id),
             sink=self._sink_factory(call_sid),
             registry=self._registry_by_channel,
+            escalation=self._escalation,
         )
         self.sessions_by_call[call_sid] = session
         task = session.start_task()
