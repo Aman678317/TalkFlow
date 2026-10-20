@@ -73,6 +73,7 @@ jobs:
             tests/test_auth_hardened.py \
             tests/test_bridge_seat_routing.py \
             tests/test_call_gate.py \
+            tests/test_call_transcript_api.py \
             tests/test_call_worker.py \
             tests/test_contacts_api.py \
             tests/test_database_migrations_hardened.py \
