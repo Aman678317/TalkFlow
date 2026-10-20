@@ -2,20 +2,13 @@ import React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Upload, FileText, Trash2, Download } from "lucide-react";
 import { api, ApiError } from "../lib/api";
-import { documentsPollingMs } from "../lib/adaptivePolling";
+import { useDocumentsQuery, type DocRow } from "../hooks/useDocumentsQuery";
 import { useLanguages } from "../hooks/useLanguages";
 import { Button, Select } from "../components/ui";
 import { toast } from "../stores/toasts";
 
 const MAX_MB = 50;
 const ACCEPT = ".pdf,.docx,.pptx,.xlsx,.txt,.html,.htm";
-
-interface DocRow {
-  id: string; filename: string; status: string; source_language: string; target_language: string;
-  detected_language: string; pages: number; segments_total: number; segments_done: number;
-  warnings?: string[];
-  error?: string | null; created_at: string; size_bytes: number; mime_type: string;
-}
 
 export default function Documents() {
   const qc = useQueryClient();
@@ -39,15 +32,11 @@ export default function Documents() {
     return () => document.removeEventListener("visibilitychange", sync);
   }, []);
 
-  const docsQ = useQuery({
-    queryKey: ["documents"],
-    queryFn: () => api<DocRow[]>("/api/v1/documents"),
-    // Adaptive polling (2026-10-20 audit round 2): the fixed 3 s list poll ran
-    // forever even when every row was settled. Poll only while a row is inside
-    // the processing pipeline, and never poll a hidden page — the visibility
-    // listener re-renders on tab show/hide so the interval flips accordingly.
-    refetchInterval: (q) => documentsPollingMs((q.state.data ?? []).map((d) => d.status), pageHidden),
-  });
+  // Adaptive polling (2026-10-20 audit round 2): the fixed 3 s list poll ran
+  // forever even when every row was settled. The hook polls only while a row is
+  // inside the processing pipeline, and never polls a hidden page — the
+  // visibility listener re-renders on tab show/hide so the interval flips.
+  const docsQ = useDocumentsQuery(pageHidden);
   const glossQ = useQuery({ queryKey: ["glossaries"], queryFn: () => api<any[]>("/api/v1/glossaries") });
   const styleQ = useQuery({ queryKey: ["styles"], queryFn: () => api<any[]>("/api/v1/style-profiles") });
 

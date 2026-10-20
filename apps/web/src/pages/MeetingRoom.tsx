@@ -31,8 +31,8 @@ import { AudioPlayer, MicCapture, b64ToBytes } from "../lib/audio";
 import { MeetingSocket, normId, type SocketState } from "../lib/ws";
 import { WebRTCManager, setIceServers, type SignalMessage } from "../lib/webrtc";
 import { iceQueryEnabled, iceQueryKey, iceQueryUrl } from "../lib/meetingRoomIce";
-import { rosterPollingMs } from "../lib/adaptivePolling";
-import type { JoinMeetingResponse, Meeting, ParticipantInfo, Preferences, RealtimeEvent, TranscriptItem } from "../lib/types";
+import { useRosterQuery } from "../hooks/useRosterQuery";
+import type { JoinMeetingResponse, Meeting, Preferences, RealtimeEvent, TranscriptItem } from "../lib/types";
 import { Button, ErrorState, SegmentedControl, Select, Spinner } from "../components/ui";
 import { VideoTile } from "../components/meeting/VideoTile";
 import { StageStrip } from "../components/meeting/StageStrip";
@@ -98,15 +98,13 @@ export default function MeetingRoom() {
   const [pageHidden, setPageHidden] = React.useState<boolean>(
     () => typeof document !== "undefined" && document.visibilityState === "hidden",
   );
+  // Declared BEFORE the roster query on purpose: react-query evaluates the
+  // query's refetchInterval callback during the first render, so anything the
+  // callback reads must already be initialized.
+  const [socketState, setSocketState] = React.useState<SocketState>("connecting");
 
   const meetingQ = useQuery({ queryKey: ["meeting", id], queryFn: () => api<Meeting>(`/api/v1/meetings/${id}`) });
-  const participantsQ = useQuery({
-    queryKey: ["meeting", id, "participants", myParticipantId],
-    queryFn: () =>
-      api<ParticipantInfo[]>(`/api/v1/meetings/${id}/participants?participant_id=${myParticipantId}`),
-    enabled: !!myParticipantId,
-    refetchInterval: () => rosterPollingMs(socketState, pageHidden),
-  });
+  const participantsQ = useRosterQuery(id, myParticipantId, socketState, pageHidden);
 
   // ---------------- local state ----------------
   const [prefs, setPrefs] = React.useState<Preferences>({
@@ -117,7 +115,6 @@ export default function MeetingRoom() {
     latency_mode: "balanced",
     captions_enabled: true,
   });
-  const [socketState, setSocketState] = React.useState<SocketState>("connecting");
   const [isOnline, setIsOnline] = React.useState(typeof navigator !== "undefined" ? navigator.onLine : true);
   const [isDegradedNetwork, setIsDegradedNetwork] = React.useState(false);
   const [translationStatus, setTranslationStatus] = React.useState<"normal" | "delayed" | "unavailable">("normal");
