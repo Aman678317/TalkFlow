@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Upload, FileText, Trash2, Download } from "lucide-react";
 import { api, ApiError } from "../lib/api";
 import { useDocumentsQuery, type DocRow } from "../hooks/useDocumentsQuery";
+import { documentErrorText, documentMetaLine } from "../lib/documentMeta";
 import { useLanguages } from "../hooks/useLanguages";
 import { Button, Select } from "../components/ui";
 import { toast } from "../stores/toasts";
@@ -262,7 +263,7 @@ export default function Documents() {
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-sm font-semibold text-slate-900">{d.filename}</p>
                           <p className="text-[11px] text-slate-500">
-                            {(d.size_bytes / 1024).toFixed(0)} KB · {d.detected_language || d.source_language} → {d.target_language} · {d.pages} pages · {new Date(d.created_at).toLocaleString()}
+                            {documentMetaLine(d)}
                           </p>
                         </div>
                       </div>
@@ -340,20 +341,15 @@ export default function Documents() {
                           <div className="h-full rounded-full bg-dl-blue transition-all duration-300" style={{ width: `${stageProgress(d)}%` }} />
                         </div>
                         <p className="text-[11px] text-slate-400">
-                          {d.status}… {d.segments_total > 0 && `(${d.segments_done}/${d.segments_total} segments)`}
+                          {d.status}… {d.char_count > 0 && `${d.char_count} chars`}
                         </p>
                       </div>
                     )}
-                    {d.warnings && d.warnings.length > 0 && (
-                      <div className="mt-2 flex flex-wrap gap-1.5">
-                        {d.warnings.map((w, idx) => (
-                          <span key={idx} className="rounded-md bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-800 border border-amber-200">
-                            ⚠️ {w}
-                          </span>
-                        ))}
-                      </div>
+                    {documentErrorText(d) && (
+                      <p className="mt-2 rounded-lg bg-rose-50 px-2.5 py-1 text-xs text-rose-700">
+                        {documentErrorText(d)}
+                      </p>
                     )}
-                    {d.error && <p className="mt-2 rounded-lg bg-rose-50 px-2.5 py-1 text-xs text-rose-700">{d.error}</p>}
                   </div>
                 ))}
               </div>

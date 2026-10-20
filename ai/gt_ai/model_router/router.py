@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass, field
 
 from gt_ai.capabilities import LanguageCapability
-from gt_ai.types import Intent, ProviderHealth, RouteDecision, Task
+from gt_ai.types import Intent, NoPrivateProviderAvailable, ProviderHealth, RouteDecision, Task
 
 log = logging.getLogger("gt_ai.router")
 
@@ -95,6 +95,17 @@ class ModelRouter:
             return True
 
         filtered = [p for p in candidates if keep(p)]
+        if not filtered and intent == Intent.PRIVATE_ONLY:
+            # "Private only" is a promise, not a preference: when no private
+            # provider can serve the request we fail honestly instead of
+            # quietly routing the caller's content to a cloud provider.
+            # (Observed 2026-10-20: a private_only translation fell through to
+            # the online provider.)
+            raise NoPrivateProviderAvailable(
+                f"no private provider available for task={task} "
+                f"pair={source_lang}->{target_lang} domain={domain}; "
+                f"refusing to send the content to a non-private provider"
+            )
         if not filtered:
             # degrade: allow GPU-less fallback only for quality/cost intents
             filtered = [
