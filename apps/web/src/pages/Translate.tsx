@@ -10,6 +10,7 @@ import {
   Copy,
   Download,
   FileText,
+  Globe,
   Mic,
   Sparkles,
   Trash2,
@@ -684,11 +685,13 @@ export default function TranslatePage() {
           onChange={(v) => {
             if (v === "file") navigate("/documents");
             if (v === "write") navigate("/write");
+            if (v === "page") navigate("/translate/page");
           }}
           tabs={[
             { value: "text",  label: "Translate text",  icon: <FileText  className="h-4 w-4" /> },
             { value: "file",  label: "Translate files", icon: <Upload    className="h-4 w-4" />,
               badge: <span className="ml-1 rounded-full bg-dl-blue-light px-2 py-0.5 text-[10px] font-bold text-dl-blue">PDF · DOCX</span> },
+            { value: "page",  label: "Web page",       icon: <Globe     className="h-4 w-4 text-emerald-600" /> },
             { value: "write", label: "AI Write",        icon: <Sparkles  className="h-4 w-4 text-amber-500" /> },
           ]}
         />

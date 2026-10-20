@@ -17,6 +17,7 @@ import Signup from './pages/Signup';
 // shell plus the page being opened.
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Translate = lazy(() => import('./pages/Translate'));
+const TranslateWebPage = lazy(() => import('./pages/TranslateWebPage'));
 const WritePage = lazy(() => import('./pages/Write'));
 const Documents = lazy(() => import('./pages/Documents'));
 const Voice = lazy(() => import('./pages/Voice'));
@@ -84,6 +85,7 @@ export default function App() {
 
           <Route element={<AppShell />}>
             <Route path="/translate" element={<Translate />} />
+            <Route path="/translate/page" element={<TranslateWebPage />} />
             <Route path="/write" element={<WritePage />} />
             <Route path="/agents" element={<AgentStudio />} />
             <Route path="/agent-studio" element={<AgentStudio />} />

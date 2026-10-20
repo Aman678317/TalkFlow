@@ -35,6 +35,25 @@ export interface TranslateResponse {
   alternatives?: string[];
 }
 
+/** Result of translating the readable text of a public web page. */
+export interface PageTranslateResponse {
+  url: string;
+  final_url: string;
+  title: string;
+  source_text: string;
+  translated_text: string;
+  source_language: string;
+  target_language: string;
+  model: string;
+  provider: string;
+  latency_ms: number;
+  quality_flags: string[];
+  /** The page text was longer than the character budget. */
+  truncated: boolean;
+  /** Set only when a REQUESTED glossary was NOT applied (honest reason). */
+  glossary_note?: string | null;
+}
+
 export interface Meeting {
   id: string;
   title: string;

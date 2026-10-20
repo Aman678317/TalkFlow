@@ -209,6 +209,38 @@ class TranslateResponse(BaseModel):
     request_id: str
 
 
+class PageTranslateRequest(BaseModel):
+    """Translate the readable text of a public web page."""
+
+    url: str = Field(min_length=8, max_length=2_000)
+    target_language: str = Field(min_length=2, max_length=8)
+    source_language: str = "AUTO"
+    glossary_id: uuid.UUID | None = None
+    style_profile_id: uuid.UUID | None = None
+    translation_memory_id: uuid.UUID | None = None
+    domain: str = "general"
+    intent: ModelIntent = "quality_optimized"
+    formality: Literal["default", "formal", "informal"] = "default"
+
+
+class PageTranslateResponse(BaseModel):
+    url: str
+    final_url: str
+    title: str
+    source_text: str
+    translated_text: str
+    source_language: str
+    target_language: str
+    model: str
+    provider: str
+    latency_ms: float
+    quality_flags: list[str] = Field(default_factory=list)
+    #: the page text was longer than the per-request character budget
+    truncated: bool = False
+    #: set only when a REQUESTED glossary was NOT applied (honest reason)
+    glossary_note: str | None = None
+
+
 class DetectRequest(BaseModel):
     text: str = Field(min_length=1, max_length=10_000)
 
