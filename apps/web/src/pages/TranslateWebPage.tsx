@@ -13,6 +13,7 @@ import { useLanguages } from "../hooks/useLanguages";
 import { normalizePageUrl, pageUrlProblem } from "../lib/pageUrl";
 import type { PageTranslateResponse } from "../lib/types";
 import { Button } from "../components/ui";
+import { LanguagePicker } from "../components/LanguagePicker";
 import { toast } from "../stores/toasts";
 
 export default function TranslateWebPage() {
@@ -79,18 +80,13 @@ export default function TranslateWebPage() {
               className="h-10 w-full rounded-xl border border-slate-200 bg-white pl-9 pr-3 text-sm outline-none focus:border-dl-blue focus:ring-2 focus:ring-dl-blue/20"
             />
           </div>
-          <select
-            aria-label="Target language"
+          <LanguagePicker
+            languages={(langs ?? []).filter((l) => l.translation_supported)}
             value={target}
-            onChange={(e) => setTarget(e.target.value)}
+            onSelect={setTarget}
+            ariaLabel="Target language"
             className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm"
-          >
-            {(langs ?? []).map((l) => (
-              <option key={l.code} value={l.code}>
-                {l.name}
-              </option>
-            ))}
-          </select>
+          />
           <Button onClick={() => void run()} disabled={busy} className="h-10 gap-2">
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Globe className="h-4 w-4" />}
             {busy ? "Fetching…" : "Translate page"}

@@ -17,12 +17,12 @@ import {
   Volume2,
   X,
   Upload,
-  ChevronDown,
 } from "lucide-react";
 import { api, friendlyMessage } from "../lib/api";
 import type { TranslateResponse } from "../lib/types";
 import { translateCanonical } from "../lib/translation";
 import { useShortcuts } from "../lib/shortcuts";
+import { LanguagePicker } from "../components/LanguagePicker";
 import { useLanguages } from "../hooks/useLanguages";
 import { Badge, ErrorState } from "../components/ui";
 import { toast } from "../stores/toasts";
@@ -156,24 +156,13 @@ function LangBar({
             {ql.name}
           </button>
         ))}
-        <div className="relative">
-          <select
-            aria-label="More languages"
-            value={!showAuto && !QUICK_LANGS.slice(0, 4).find((q) => q.code === selected) ? selected : ""}
-            onChange={(e) => e.target.value && onSelect(e.target.value)}
-            className="appearance-none h-8 rounded-lg border border-dl-border bg-white pl-3 pr-8 text-xs font-medium text-dl-muted hover:border-dl-blue/40 focus:outline-none focus:ring-2 focus:ring-dl-blue/20 cursor-pointer"
-          >
-            <option value="">More ▾</option>
-            {langs
-              .filter((c: any) => c.translation_supported || c.code === "en")
-              .map((c: any) => (
-                <option key={c.code} value={c.code}>
-                  {c.name}{c.native_name ? ` (${c.native_name})` : ""}
-                </option>
-              ))}
-          </select>
-          <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-dl-faint" />
-        </div>
+        <LanguagePicker
+          languages={langs.filter((c: any) => c.translation_supported || c.code === "en")}
+          value={selected}
+          onSelect={onSelect}
+          ariaLabel={showAuto ? "More source languages" : "More target languages"}
+          triggerLabel="More ▾"
+        />
         {detected && (
           <>
             <Badge tone="info" title="Auto-detected language">
