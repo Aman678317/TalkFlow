@@ -71,6 +71,7 @@ jobs:
             tests/test_asterisk_ari_adapter.py \
             tests/test_asterisk_ari_inbound.py \
             tests/test_auth_hardened.py \
+            tests/test_bridge_seat_routing.py \
             tests/test_call_gate.py \
             tests/test_call_worker.py \
             tests/test_contacts_api.py \
