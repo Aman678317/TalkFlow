@@ -33,6 +33,9 @@ export function normalizeTranslationResponse(res: any): TranslateResponse {
     from_translation_memory: Boolean(item?.from_translation_memory || item?.tm_match),
     detected_confidence: Number(item?.detected_confidence ?? 1.0),
     alternatives: Array.isArray(item?.alternatives) ? item.alternatives : [],
+    // Honest glossary accounting: keep the backend's "not applied (reason)"
+    // note so the UI can surface it (absent = applied or no glossary asked).
+    glossary_note: typeof item?.glossary_note === "string" ? item.glossary_note : null,
   };
 }
 

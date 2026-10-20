@@ -30,6 +30,8 @@ export interface TranslateResponse {
   quality_flags: string[];
   from_translation_memory: boolean;
   detected_confidence: number;
+  /** Set only when a REQUESTED glossary was NOT applied (honest reason). */
+  glossary_note?: string | null;
   alternatives?: string[];
 }
 

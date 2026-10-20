@@ -119,6 +119,13 @@ SPELLING_RULES: list[tuple[re.Pattern, str, str, str]] = [
     (re.compile(r"\baswell\b", re.I), "as well", "grammar", "Split 'aswell' into 'as well'"),
     (re.compile(r"\bnoone\b", re.I), "no one", "grammar", "Split 'noone' into 'no one'"),
 
+    # Business-email blunders (2026-10-20 localhost audit: missed corrections)
+    (re.compile(r"\bacceppt\b", re.I), "accept", "spelling", "Fixed misspelled word 'accept'"),
+    (re.compile(r"\bcompnay\b", re.I), "company", "spelling", "Fixed transposed typo in 'company'"),
+    (re.compile(r"\bcompny\b", re.I), "company", "spelling", "Fixed misspelled word 'company'"),
+    (re.compile(r"\brecieved\b", re.I), "received", "spelling", "Fixed the i-before-e misspelling of 'received'"),
+    (re.compile(r"\badress\b", re.I), "address", "spelling", "Fixed misspelled word 'address' (double d)"),
+
     # Contractions & Homophones
     (re.compile(r"\bthats\b", re.I), "that's", "spelling", "Added missing apostrophe in 'that\'s'"),
     (re.compile(r"\bwhats\b", re.I), "what's", "spelling", "Added missing apostrophe in 'what\'s'"),
@@ -295,6 +302,26 @@ GRAMMAR_SYNTAX_RULES: list[tuple[re.Pattern, str, str, str]] = [
         "really good",
         "grammar",
         "Used adverb 'really' before adjective 'good'",
+    ),
+    # 'to {adjective/noun-quantity}' is the adverb 'too' (2026-10-20 audit:
+    # 'because it to expensive' was not corrected)
+    (
+        re.compile(r"\bto\s+(expensive|cheap|small|big|large|high|low|long|short|costly|risky|slow|fast|late)\b", re.I),
+        r"too \1",
+        "grammar",
+        "Used adverb 'too' before an adjective ('to expensive' → 'too expensive')",
+    ),
+    (
+        re.compile(r"\bto\s+(much|many)\b", re.I),
+        r"too \1",
+        "grammar",
+        "Used adverb 'too' before a quantity noun",
+    ),
+    (
+        re.compile(r"\bsenda\b", re.I),
+        "send a",
+        "grammar",
+        "Split missing space between 'send' and 'a'",
     ),
     (
         re.compile(r"\bquick\s+done\b", re.I),
