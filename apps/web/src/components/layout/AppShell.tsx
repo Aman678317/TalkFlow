@@ -2,7 +2,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { AnimatePresence } from 'motion/react';
 import {
   BookOpen, Bot, CreditCard, FileText, Files, Gauge, History, KeyRound, Languages,
-  LayoutDashboard, Mic, MessageSquare, Phone, Settings as SettingsIcon,
+  LayoutDashboard, Mic, MessageSquare, Phone, PhoneCall, Settings as SettingsIcon,
   ShieldCheck, Sparkles, Users, Video,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -15,6 +15,7 @@ const NAV = [
   { to: '/translate', label: 'Translate', icon: Languages },
   { to: '/write', label: 'Write', icon: Sparkles },
   { to: '/agents', label: 'Agent Studio', icon: Bot },
+  { to: '/agent/calls', label: 'Agent Calls', icon: PhoneCall },
   { to: '/voice', label: 'Live Voice', icon: Mic },
   { to: '/voice?tab=phone', label: 'Global Call', icon: Phone },
   { to: '/meetings', label: 'Meetings', icon: Video },

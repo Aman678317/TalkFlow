@@ -28,6 +28,7 @@ import Billing from "./pages/Billing";
 import Team from "./pages/Team";
 import SettingsPage from "./pages/Settings";
 import Admin from "./pages/Admin";
+import AgentCalls from "./pages/AgentCalls";
 import JoinCall from "./pages/JoinCall";
 import AuthCallback from "./pages/AuthCallback";
 import AgentStudio from "./pages/AgentStudio";
@@ -112,6 +113,7 @@ export default function App() {
               <Route path="/team" element={<Team />} />
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/admin" element={<Admin />} />
+              <Route path="/agent/calls" element={<AgentCalls />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

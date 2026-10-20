@@ -78,6 +78,7 @@ jobs:
             tests/test_contacts_api.py \
             tests/test_database_migrations_hardened.py \
             tests/test_developer_platform_hardened.py \
+            tests/test_escalation_board_api.py \
             tests/test_escalation_hooks.py \
             tests/test_external_media.py \
             tests/test_full_qa_and_e2e_hardened.py \

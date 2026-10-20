@@ -727,12 +727,16 @@ class AsteriskAgentMediaRuntime:
     def from_settings(cls, *, provider: Any = None) -> "AsteriskAgentMediaRuntime":
         from app.config import settings
         from app.telephony.ari_client import ARIConfig, ARIClient
+        from app.telephony.escalation import shared_dispatcher
 
         ari = getattr(provider, "ari", None) or ARIClient(ARIConfig.from_settings())
         return cls(
             ari,
             bind_host=settings.asterisk_media_bind_host,
             bind_port=settings.asterisk_media_bind_port,
+            # §D1: the runtime dispatches escalations into the process-wide
+            # board the operator console API reads (single-process lane).
+            escalation=shared_dispatcher(),
         )
 
     # -- server assembly ------------------------------------------------------ #

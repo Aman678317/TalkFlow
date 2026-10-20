@@ -9,7 +9,7 @@ import {
   LayoutDashboard, ArrowLeftRight, PenLine, Mic2, FileText,
   Video, MessageSquare, Clock, BookOpen, Database, Sliders,
   KeyRound, BarChart2, CreditCard, Users, Settings, Shield,
-  ChevronDown, LogOut, ExternalLink,
+  ChevronDown, LogOut, ExternalLink, PhoneCall,
 } from "lucide-react";
 
 export function Logo({ className = "h-8 w-8" }: { className?: string }) {
@@ -24,6 +24,7 @@ const NAV = [
   { to: "/documents",          label: "Documents",          Icon: FileText },
   { to: "/meetings",           label: "Meetings",           Icon: Video },
   { to: "/chat",               label: "Chat rooms",         Icon: MessageSquare },
+  { to: "/agent/calls",        label: "Agent calls",        Icon: PhoneCall },
   { to: "/history",            label: "History",            Icon: Clock },
   { to: "/glossaries",         label: "Glossaries",         Icon: BookOpen },
   { to: "/translation-memory", label: "Translation memory", Icon: Database },
@@ -43,7 +44,7 @@ const NAV_GROUPS = [
   },
   {
     label: "Communication",
-    items: ["/voice", "/meetings", "/chat"],
+    items: ["/voice", "/meetings", "/chat", "/agent/calls"],
   },
   {
     label: "Tools",
