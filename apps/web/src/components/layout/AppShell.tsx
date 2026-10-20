@@ -2,7 +2,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { AnimatePresence } from 'motion/react';
 import {
   BookOpen, Bot, CreditCard, FileText, Files, Gauge, History, KeyRound, Languages,
-  LayoutDashboard, Mic, MessageSquare, Phone, PhoneCall, Settings as SettingsIcon,
+  LayoutDashboard, Mic, MessageSquare, Phone, PhoneCall, PhoneIncoming, Settings as SettingsIcon,
   ShieldCheck, Sparkles, Users, Video,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -68,7 +68,10 @@ export default function AppShell() {
           <NavSection title="Customize" items={CUSTOMIZE} />
           <NavSection title="Platform" items={[
             ...PLATFORM,
-            ...(isAdmin ? [{ to: '/admin', label: 'Admin', icon: ShieldCheck }] : []),
+            ...(isAdmin ? [
+              { to: '/admin', label: 'Admin', icon: ShieldCheck },
+              { to: '/admin/telephony', label: 'Telephony ops', icon: PhoneIncoming },
+            ] : []),
           ]} />
         </nav>
         <div className="border-t border-black/[0.06] p-3">

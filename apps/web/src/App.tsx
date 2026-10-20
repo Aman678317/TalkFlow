@@ -26,6 +26,7 @@ import Billing from './pages/Billing';
 import Settings from './pages/Settings';
 import Team from './pages/Team';
 import Admin from './pages/Admin';
+import AdminTelephony from './pages/AdminTelephony';
 import AgentCalls from './pages/AgentCalls';
 import JoinCall from './pages/JoinCall';
 import DocsPage from './pages/DocsPage';
@@ -89,6 +90,7 @@ export default function App() {
             <Route path="/settings" element={<Settings />} />
             <Route path="/team" element={<Team />} />
             <Route path="/admin" element={<Admin />} />
+            <Route path="/admin/telephony" element={<AdminTelephony />} />
             <Route path="/agent/calls" element={<AgentCalls />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
