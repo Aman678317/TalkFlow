@@ -95,14 +95,27 @@ class TelephonySecurity:
         url: str,
         raw_body: bytes = b"",
     ) -> tuple[bool, str]:
-        """Unified validation for inbound carrier webhook requests."""
+        """Unified validation for inbound carrier webhook requests.
+
+        §E1 production discipline: dev escape hatches (missing token, missing
+        signature, disabled verification) exist ONLY outside production. In
+        production EVERY path either cryptographically verifies or refuses —
+        a "no token ⇒ accept" shortcut is a fail-open hole, not a mode.
+        """
+        production = settings.is_production
         if not settings.telephony_verify_webhook_signatures:
+            if production:
+                return False, "verification_disabled_in_production"
             return True, "verification_disabled"
 
         # Check for Twilio signature
         twilio_sig = headers.get("x-twilio-signature") or headers.get("X-Twilio-Signature")
         if twilio_sig:
             if not settings.twilio_auth_token:
+                if production:
+                    # A signature without a token cannot be verified: refusing
+                    # beats pretending (fail-closed, plan §7).
+                    return False, "twilio_verification_unconfigured"
                 # Running without Twilio auth token in dev
                 return True, "twilio_dev_mode"
             is_valid = cls.verify_twilio_signature(url, payload, twilio_sig)
@@ -122,8 +135,10 @@ class TelephonySecurity:
             return True, "telnyx_verified"
 
         # If neither carrier signature is present:
-        # If in dev or using simulated provider, allow
-        if settings.app_env in ("development", "test") or not settings.twilio_auth_token:
+        # dev/test (or simulated lanes with no token) may pass; production
+        # never accepts unauthenticated carrier traffic.
+        if not production and (settings.app_env in ("development", "test")
+                               or not settings.twilio_auth_token):
             return True, "unauthenticated_dev_pass"
 
         return False, "missing_carrier_signature"

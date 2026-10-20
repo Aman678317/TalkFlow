@@ -365,6 +365,94 @@ class Settings(BaseSettings):
             if self.cookie_samesite.lower() not in ("lax", "strict", "none"):
                 raise ValueError("cookie_samesite must be 'lax', 'strict', or 'none'.")
             self.secure_cookies = True
+            # --- §E1 production telephony gates (fail-closed at boot) --------- #
+            # 0. An explicit provider choice is mandatory the moment carrier
+            #    credentials exist: "auto" silently resolves at runtime and can
+            #    pick a carrier WITHOUT passing that carrier's production gates
+            #    below — that is exactly how a half-configured lane boots.
+            carrier_creds_present = any((
+                self.twilio_account_sid,
+                self.twilio_auth_token,
+                self.telnyx_api_key,
+            ))
+            if self.telephony_provider == "auto" and carrier_creds_present:
+                raise ValueError(
+                    "Production requires an explicit 'telephony_provider' "
+                    "when carrier credentials are configured — 'auto' "
+                    "resolves silently and can bypass this environment's "
+                    "lane gates."
+                )
+            # 1. Signed carrier webhooks can never be disabled in production;
+            #    anti-replay + HMAC are silent safety nets otherwise.
+            if not self.telephony_verify_webhook_signatures:
+                raise ValueError(
+                    "Production environment must not disable "
+                    "'telephony_verify_webhook_signatures' (signed webhooks, "
+                    "anti-replay). Verification is compile-safety, not optional."
+                )
+            # 2. A selected CARRIER lane must bring its full secret set AND a
+            #    TLS-terminating webhook base URL — carrier callbacks carry
+            #    signed requests; a signed webhook over http:// is worthless.
+            expected_https = "https://"
+            if self.telephony_provider == "twilio":
+                missing = [name for name, value in (
+                    ("TWILIO_ACCOUNT_SID", self.twilio_account_sid),
+                    ("TWILIO_AUTH_TOKEN", self.twilio_auth_token),
+                    ("TWILIO_PHONE_NUMBER", self.twilio_phone_number),
+                ) if not value]
+                if missing:
+                    raise ValueError(
+                        "Production twilio provider requires " + ", ".join(missing))
+            elif self.telephony_provider == "telnyx":
+                if not self.telnyx_api_key:
+                    raise ValueError(
+                        "Production telnyx provider requires 'TELNYX_API_KEY'.")
+            elif self.telephony_provider == "livekit_sip":
+                if not (self.livekit_enabled and self.livekit_url
+                        and self.livekit_api_key and self.livekit_api_secret):
+                    raise ValueError(
+                        "Production livekit_sip provider requires 'LIVEKIT_ENABLED' "
+                        "plus LIVEKIT_URL / API key / API secret.")
+            elif self.telephony_provider == "asterisk":
+                if not (self.asterisk_telephony_enabled and self.asterisk_ari_base_url
+                        and self.asterisk_ari_username and self.asterisk_ari_password
+                        and self.asterisk_allowed_extensions):
+                    raise ValueError(
+                        "Production asterisk (local SIP) lane requires "
+                        "'ASTERISK_TELEPHONY_ENABLED' plus ARI base URL, "
+                        "least-privilege credentials and an explicit extension "
+                        "allowlist (public dialing is rejected by design).")
+            if self.telephony_provider in ("twilio", "telnyx", "livekit_sip"):
+                if not self.telephony_webhook_base_url.startswith(expected_https):
+                    raise ValueError(
+                        "Production carrier telephony requires an HTTPS "
+                        "'telephony_webhook_base_url' (signed carrier callbacks "
+                        "arrive there; http:// or empty is not acceptable).")
+            # 3. LiveKit SFU configured in production must be fully specified —
+            #    half-configured media = silent failure of real traffic.
+            if self.livekit_enabled:
+                if not self.livekit_url or not self.livekit_api_key \
+                        or not self.livekit_api_secret:
+                    raise ValueError(
+                        "Production LIVEKIT_ENABLED requires LIVEKIT_URL, "
+                        "LIVEKIT_API_KEY and LIVEKIT_API_SECRET.")
+                if not self.livekit_public_url.startswith("wss://"):
+                    raise ValueError(
+                        "Production requires a browser-reachable wss:// "
+                        "'livekit_public_url' (TLS media path).")
+                if self.webrtc_ice_servers_json.strip():
+                    import json as _json
+                    try:
+                        ice = _json.loads(self.webrtc_ice_servers_json)
+                    except _json.JSONDecodeError:
+                        raise ValueError(
+                            "'webrtc_ice_servers_json' must be a JSON list of "
+                            "{urls, username, credential} TURN objects.") from None
+                    if not (isinstance(ice, list) and len(ice) > 0 and all(
+                            isinstance(s, dict) and s.get("urls") for s in ice)):
+                        raise ValueError(
+                            "'webrtc_ice_servers_json' must be a JSON list of "
+                            "{urls, username, credential} TURN objects.")
         return self
 
     @model_validator(mode="after")
