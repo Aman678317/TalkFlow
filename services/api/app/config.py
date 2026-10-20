@@ -313,6 +313,9 @@ class Settings(BaseSettings):
     retention_transcript_days: int = 365
     retention_document_days: int = 90
     retention_usage_days: int = 730
+    # resolved escalate-ticket audit rows (§E2 durable transport). The
+    # resolution itself outlives the row on the call's own event ledger.
+    retention_escalation_days: int = 30
 
     # --- workers ---
     worker_inproc: bool = True  # run job worker loop inside API process (dev)
