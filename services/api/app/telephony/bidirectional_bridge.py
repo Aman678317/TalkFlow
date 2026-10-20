@@ -21,6 +21,12 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Coroutine
 
+from app.realtime.agents.translation import ProviderTranslation
+from app.realtime.translation_fanout import (
+    CanonicalSegment,
+    FanOutRecipient,
+    TranslationFanOut,
+)
 from app.ai import ai
 from app.config import settings
 from app.db import models as M
@@ -112,6 +118,33 @@ class LegState:
     is_playing_tts: bool = False
 
 
+#: Primary legs get per-sentence audio streaming (unchanged legacy behavior).
+#: Everything else on the bridge is a §306 caption seat — it joins through the
+#: :class:`TranslationFanOut` router until a real carrier media channel exists
+#: for it, at which point its audio delivery can be wired (documented next).
+PRIMARY_LEG_NAMES = ("caller", "receiver")
+
+
+@dataclass
+class BridgeLegSpec:
+    """Routing-table entry for a bridge leg (plan §306 seat parity).
+
+    ``caller``/``receiver`` names are reserved for the primary audio legs;
+    extra legs are caption-seat participants serviced by the fan-out core.
+    """
+
+    name: str
+    hear_lang: str = "en"
+    mode: str = "translated"
+
+    def __post_init__(self) -> None:
+        if self.mode not in ("translated", "original"):
+            raise ValueError(
+                f"leg mode must be 'translated' or 'original', got {self.mode!r}")
+        if not self.name.strip():
+            raise ValueError("leg name must be non-empty")
+
+
 class BidirectionalTranslationBridge:
     """Manages full-duplex simultaneous speech translation between two participants."""
 
@@ -125,6 +158,8 @@ class BidirectionalTranslationBridge:
         on_event: Callable[[str, dict[str, Any]], Coroutine[Any, Any, None]] | None = None,
         on_audio_out: Callable[[str, bytes], Coroutine[Any, Any, None]] | None = None,
         on_barge_in: Callable[[str], Coroutine[Any, Any, None]] | None = None,
+        extra_legs: list[BridgeLegSpec] | None = None,
+        caption_sink: Any | None = None,
     ) -> None:
         self.call_id = call_id
         self.caller_lang = caller_language
@@ -134,6 +169,25 @@ class BidirectionalTranslationBridge:
         self.on_event = on_event
         self.on_audio_out = on_audio_out
         self.on_barge_in = on_barge_in
+        self.caption_sink = caption_sink
+
+        # §306 routing table: primary legs are implicit `translated` seats, so
+        # the legacy two-leg behavior is byte-identical; extra legs opt into the
+        # fan-out router (captions-only until carrier media exists).
+        self._legs: dict[str, BridgeLegSpec] = {
+            "caller": BridgeLegSpec("caller", caller_language, "translated"),
+            "receiver": BridgeLegSpec("receiver", receiver_language, "translated"),
+        }
+        self.extra_legs: list[BridgeLegSpec] = []
+        for spec in (extra_legs or []):
+            if spec.name in PRIMARY_LEG_NAMES:
+                raise ValueError(
+                    f"{spec.name!r} is a primary leg name — use "
+                    "caller_language/receiver_language instead")
+            if spec.name in self._legs:
+                raise ValueError(f"duplicate bridge leg name {spec.name!r}")
+            self._legs[spec.name] = spec
+            self.extra_legs.append(spec)
 
         # Audio Queues (16kHz PCM16 linear audio)
         self.caller_in_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=300)
@@ -154,6 +208,107 @@ class BidirectionalTranslationBridge:
 
         # Non-blocking degradation tracker
         self.translation_degraded: bool = False
+
+        # §306 fan-out core: the ONLY place extra legs may be translated from.
+        self._fanout = TranslationFanOut(self._fanout_translate)
+
+    # ----------------------------------------------------------------------- #
+    # §306 per-leg routing (fan-out adapter)
+    # ----------------------------------------------------------------------- #
+
+    async def _fanout_translate(
+        self, text: str, source_lang: str, target_lang: str, *,
+        segment_id: str | None = None, speaker_id: str | None = None,
+    ) -> ProviderTranslation:
+        """Bridge adapter onto ``ai.translate`` for the fan-out router.
+
+        The provider is handed the canonical segment text only — never a
+        partial and never a translation of a translation (rule §16).
+        """
+        req = TranslationRequest(
+            text=text,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            domain="conversational",
+            intent=Intent.LATENCY_OPTIMIZED,
+        )
+        res, _decision = await ai.translate(req)
+        translated = res.text if hasattr(res, "text") else getattr(
+            res, "translated_text", str(res))
+        return ProviderTranslation(
+            text=(translated or "").strip(),
+            provider=getattr(res, "provider", "unknown") or "unknown",
+            model=getattr(res, "model", "unknown") or "unknown",
+        )
+
+    async def _fan_out_to_extra_legs(
+        self, turn_id: str, speaker_leg_name: str,
+        speaker_lang: str, recognized_text: str,
+    ) -> None:
+        """Route one canonical caller turn to every caption-only extra leg.
+
+        Non-blocking: called outside the per-sentence audio path; failures are
+        reported per-seat and never touch the primary two-leg flow.
+        """
+        recipients = [
+            FanOutRecipient(seat_id=spec.name, hear_lang=spec.hear_lang,
+                            mode=spec.mode)
+            for name, spec in self._legs.items()
+            if name not in PRIMARY_LEG_NAMES
+        ]
+        if not recipients:
+            return
+        segment = CanonicalSegment(
+            segment_id=turn_id,
+            speaker_seat_id=speaker_leg_name,
+            speaker_lang=speaker_lang,
+            text=recognized_text,
+        )
+        result = await self._fanout.run(segment, recipients)
+
+        for delivery in result.deliveries:
+            payload = {
+                "turn_id": turn_id,
+                "seat": delivery.seat_id,
+                "lang": delivery.lang,
+                "text": delivery.text,
+                "origin": delivery.origin,
+                "provider": delivery.provider,
+                "model": delivery.model,
+                # honest boundary: extra legs have no carrier media channel yet
+                "audio": False,
+            }
+            await self._emit_event("call.caption_delivered", payload)
+            await self._persist_caption(turn_id, delivery)
+
+        for failure in result.failures:
+            for seat_id in failure.seat_ids:
+                await self._emit_event("call.caption_unavailable", {
+                    "turn_id": turn_id,
+                    "seat": seat_id,
+                    "target_lang": failure.target_lang,
+                    "reason": failure.error,
+                    "call_unaffected": True,
+                })
+
+    async def _persist_caption(self, turn_id: str, delivery: Any) -> None:
+        """Best-effort ``call_events`` row for a routed caption (audit only)."""
+        if self.caption_sink is None:
+            return
+        try:
+            await self.caption_sink.record("bridge_caption_delivered", {
+                "call_id": str(self.call_id),
+                "turn_id": turn_id,
+                "seat": delivery.seat_id,
+                "lang": delivery.lang,
+                "text": delivery.text,
+                "origin": delivery.origin,
+                "provider": delivery.provider,
+                "model": delivery.model,
+                "audio": False,
+            })
+        except Exception as exc:  # noqa: BLE001 — audit is best-effort (plan §7)
+            log.debug("caption sink error: %s", exc)
 
     async def start(self) -> None:
         """Spawn the concurrent dual workers."""
@@ -380,6 +535,17 @@ class BidirectionalTranslationBridge:
             "latency_ms": round(timing.speech_to_stt_ms, 1),
         })
 
+        # §306 parity: route the canonical turn to caption-only extra legs.
+        # Never in ai_agent mode (agent replies route separately when wired).
+        # Non-blocking: a fan-out failure never breaks the two-leg flow.
+        if self.extra_legs and self.mode != "ai_agent":
+            try:
+                await self._fan_out_to_extra_legs(
+                    turn_id, src_state.name, detected_lang, recognized_text)
+            except Exception as e:
+                await self._handle_error(
+                    "fanout_error", f"Extra-leg fan-out delayed: {e}")
+
         # 2. Check for AI Voice Agent Mode
         if self.mode == "ai_agent" and src_state.name == "caller":
             await self._handle_ai_agent_turn(
@@ -429,9 +595,9 @@ class BidirectionalTranslationBridge:
         # 1. Translate
         try:
             req = TranslationRequest(
+                text=sentence,
                 source_lang=source_lang,
                 target_lang=target_lang,
-                source_text=sentence,
                 domain="conversational",
                 intent=Intent.LATENCY_OPTIMIZED,
             )
