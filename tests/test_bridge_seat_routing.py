@@ -60,9 +60,11 @@ class FakeAI:
         self.translate_calls: list[tuple[str, str, str]] = []  # src,tgt,text
         self.tts_legs: list[tuple[str, str]] = []             # (leg, text)
         self.fail_langs = fail_langs or set()
+        #: language the fake STT reports for recognized speech (default hi)
+        self.stt_lang = "hi"
 
     async def transcribe(self, audio: bytes, rate: int, lang_hint=None):
-        return _Chunk("hello there everyone", "hi"), None
+        return _Chunk("hello there everyone", self.stt_lang), None
 
     async def detect_language(self, text: str):
         class _Det:  # only reached on 'auto' hints — tested path avoids it
@@ -105,7 +107,8 @@ class RecordingSink:
 
 
 def make_bridge(fake_ai: FakeAI, *, extra_legs=None, sink=None,
-                mode: str = "human_to_human") -> tuple[Any, list, list]:
+                mode: str = "human_to_human", caller_lang: str = "hi",
+                receiver_lang: str = "ja") -> tuple[Any, list, list]:
     events: list[tuple[str, dict[str, Any]]] = []
     audio: list[tuple[str, bytes]] = []
 
@@ -116,7 +119,8 @@ def make_bridge(fake_ai: FakeAI, *, extra_legs=None, sink=None,
         audio.append((leg, bytes(pcm)))
 
     bridge = BidirectionalTranslationBridge(
-        uuid.uuid4(), caller_language="hi", receiver_language="ja",
+        uuid.uuid4(), caller_language=caller_lang,
+        receiver_language=receiver_lang,
         mode=mode, on_event=on_event, on_audio_out=on_audio_out,
         extra_legs=extra_legs, caption_sink=sink,
     )
@@ -315,3 +319,90 @@ async def test_ai_agent_mode_skips_extra_leg_fanout(fake_ai: FakeAI):
 
     delivered = [d for e, d in events if e == "call.caption_delivered"]
     assert delivered == []
+
+
+# --------------------------------------------------------------------------- #
+# §306 close-out: 3-way golden routing + mid-call mode switch
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_three_way_en_speaker_routes_hi_and_ja_off_one_canonical_segment(
+        fake_ai: FakeAI):
+    """EN speaker → HI + JA seats: both serviced from ONE canonical turn."""
+    extra = [
+        BridgeLegSpec("seat-hi", "hi"),
+        BridgeLegSpec("seat-ja", "ja"),
+    ]
+    fake_ai.stt_lang = "en"
+    bridge, events, audio = make_bridge(
+        fake_ai, extra_legs=extra, caller_lang="en", receiver_lang="en")
+
+    await run_caller_turn(bridge)
+
+    delivered = [d for e, d in events if e == "call.caption_delivered"]
+    assert [(d["seat"], d["lang"]) for d in delivered] == [
+        ("seat-hi", "hi"), ("seat-ja", "ja")]
+    assert all(d["origin"] == "translated" for d in delivered)
+    assert all("hello there everyone" in d["text"] for d in delivered)
+
+    # one provider request per distinct target, fingerprinted by the seam
+    fanout_targets = [(s, t) for s, t, x in fake_ai.translate_calls
+                      if t in ("hi", "ja") and x == "hello there everyone"]
+    assert sorted(fanout_targets) == [("en", "hi"), ("en", "ja")]
+
+    # the receiver hears the primary audio path (receiver lang == en here, so
+    # the per-sentence path still streams; extras stay caption-only)
+    assert audio and all(leg == "receiver" for leg, _p in audio)
+
+
+@pytest.mark.asyncio
+async def test_mid_call_mode_switch_flips_seat_routing(fake_ai: FakeAI):
+    """A seat flips original→translated→original across turns, live."""
+    extra = [BridgeLegSpec("seat-ja", "ja", mode="original")]
+    bridge, events, _audio = make_bridge(fake_ai, extra_legs=extra)
+
+    # turn 1: original mode ⇒ silent
+    await run_caller_turn(bridge)
+    turn1 = [d for e, d in events if e == "call.caption_delivered"]
+    assert turn1 == []
+
+    # switch mid-call …
+    bridge.set_leg_mode("seat-ja", "translated")
+
+    # turn 2: translated ⇒ caption delivered
+    await run_caller_turn(bridge)
+    turn2 = [d for e, d in events if e == "call.caption_delivered"]
+    assert [(d["seat"], d["lang"], d["origin"]) for d in turn2] == [
+        ("seat-ja", "ja", "translated")]
+
+    # … and back mid-call
+    bridge.set_leg_mode("seat-ja", "original")
+
+    # turn 3: silent again
+    before = len(turn2)
+    await run_caller_turn(bridge)
+    now = [d for e, d in events if e == "call.caption_delivered"]
+    assert len(now) == before
+
+
+def test_set_leg_mode_rejects_unknown_legs_and_modes(fake_ai: FakeAI):
+    bridge, _events, _audio = make_bridge(fake_ai)
+
+    with pytest.raises(KeyError):
+        bridge.set_leg_mode("ghost", "translated")
+    with pytest.raises(ValueError):
+        bridge.set_leg_mode("receiver", "auto")
+    with pytest.raises(ValueError):
+        bridge.set_leg_mode("caller", "listen_only")
+
+
+def test_set_leg_mode_keeps_registry_coherent(fake_ai: FakeAI):
+    extra = BridgeLegSpec("seat-ja", "ja", mode="original")
+    bridge, _events, _audio = make_bridge(fake_ai, extra_legs=[extra])
+
+    bridge.set_leg_mode("seat-ja", "translated")
+
+    assert bridge.extra_legs[0].mode == "translated"
+    assert bridge._legs["seat-ja"].mode == "translated"
+    assert bridge._legs["seat-ja"].hear_lang == "ja"   # language preserved
