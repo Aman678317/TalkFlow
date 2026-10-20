@@ -75,6 +75,7 @@ class EscalationQueue:
     maxsize: int = 100
     _pending: list[EscalationTicket] = field(default_factory=list)
     _by_call: dict[str, EscalationTicket] = field(default_factory=dict)
+    _tickets: dict[str, EscalationTicket] = field(default_factory=dict)  # id → ticket (board view)
     _claimed: dict[str, tuple[str, float]] = field(default_factory=dict)  # ticket -> (worker, at)
     _resolved: dict[str, tuple[str, float]] = field(default_factory=dict)  # ticket -> (resolution, at)
 
@@ -114,16 +115,34 @@ class EscalationQueue:
         if self.pending_count() >= self.maxsize:
             raise EscalationQueueFull()
         self._by_call[ticket.call_sid] = ticket
+        self._tickets[ticket.ticket_id] = ticket
         self._pending.append(ticket)
         return True
 
-    def claim(self, worker: str) -> EscalationTicket | None:
-        """Oldest pending ticket → this worker (single claim, bounded bookkeeping)."""
-        if not self._pending:
+    def claim(self, worker: str, ticket_id: str | None = None) -> EscalationTicket | None:
+        """Move a PENDING ticket to ``worker`` (single claim, bounded bookkeeping).
+
+        ``ticket_id=None`` = FIFO (oldest pending); a specific id claims THAT
+        ticket (used by the operator console); claiming an already-claimed or
+        unknown ticket returns ``None`` — callers translate that to 404/409.
+        """
+        if ticket_id is None:
+            if not self._pending:
+                return None
+            ticket = self._pending.pop(0)
+            self._claimed[ticket.ticket_id] = (worker, time.monotonic())
+            return ticket
+        existing = self._claimed.get(ticket_id)
+        if existing is not None:
+            return None                      # claimed once; no work-stealing
+        if ticket_id in self._resolved:
             return None
-        ticket = self._pending.pop(0)
-        self._claimed[ticket.ticket_id] = (worker, time.monotonic())
-        return ticket
+        for index, pending in enumerate(self._pending):
+            if pending.ticket_id == ticket_id:
+                self._pending.pop(index)
+                self._claimed[ticket_id] = (worker, time.monotonic())
+                return pending
+        return None
 
     def complete(self, ticket_id: str, resolution: str) -> bool:
         """Mark a CLAIMED ticket resolved. Bookkeeping rows persist for the
@@ -132,6 +151,17 @@ class EscalationQueue:
             return False
         self._resolved[ticket_id] = (resolution, time.monotonic())
         return True
+
+    # -- board view (operator console read model) ----------------------------- #
+
+    def ticket_by_id(self, ticket_id: str) -> EscalationTicket | None:
+        return self._tickets.get(ticket_id)
+
+    def claimed_ticket_ids(self) -> list[str]:
+        return list(self._claimed)
+
+    def resolved_ticket_ids(self) -> list[str]:
+        return list(self._resolved)
 
 
 class EscalationQueueFull(Exception):
@@ -227,3 +257,27 @@ class EscalationDispatcher:
             "resolution": resolution,
         })
         return True
+
+
+# --------------------------------------------------------------------------- #
+# the shared process-level dispatcher (runtime + API router converge here)
+# --------------------------------------------------------------------------- #
+
+_shared: EscalationDispatcher | None = None
+
+
+def shared_dispatcher() -> EscalationDispatcher:
+    """The ONE dispatcher this process uses: the media runtime dispatches
+    into it and the telephony router reads/claims from it (single process
+    lane — the production transport swaps behind the same seams).
+    """
+    global _shared
+    if _shared is None:
+        _shared = EscalationDispatcher()
+    return _shared
+
+
+def rewire_shared_dispatcher(dispatcher: EscalationDispatcher | None) -> None:
+    """Test/reset seam; ``None`` ⇒ the next build is fresh."""
+    global _shared
+    _shared = dispatcher
