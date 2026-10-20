@@ -21,6 +21,7 @@ import {
 import { api, friendlyMessage } from "../lib/api";
 import type { TranslateResponse } from "../lib/types";
 import { translateCanonical } from "../lib/translation";
+import { useShortcuts } from "../lib/shortcuts";
 import { useLanguages } from "../hooks/useLanguages";
 import { Badge, ErrorState } from "../components/ui";
 import { toast } from "../stores/toasts";
@@ -658,29 +659,17 @@ export default function TranslatePage() {
     return () => window.clearTimeout(t);
   }, [result]);
 
-  // DeepL-style keyboard shortcuts: swap languages, copy translation, clear.
-  React.useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      const mod = e.metaKey || e.ctrlKey;
-      if (mod && e.shiftKey && e.key.toLowerCase() === "k") {
-        e.preventDefault();
-        swap();
-      } else if (mod && e.shiftKey && e.key.toLowerCase() === "c") {
-        e.preventDefault();
-        copyOut();
-      } else if (e.key === "Escape") {
-        const el = document.activeElement as HTMLElement | null;
-        if (el && el.getAttribute("aria-label") === "Source text" && source) {
-          e.preventDefault();
-          clearAll();
-          el.blur();
-        }
-      }
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source, result, srcLang, tgtLang]);
+  // DeepL-style keyboard shortcuts (shared matcher, 2026-10-21): swap
+  // languages, copy translation, clear, and submit with Ctrl/Cmd+Enter.
+  useShortcuts(
+    {
+      submit: () => { if (source.trim()) translate.mutate(source); },
+      swap: () => { swap(); },
+      copy: () => { copyOut(); },
+      clear: () => { clearAll(); },
+    },
+    { clearTargetLabel: "Source text" },
+  );
 
   const activeGlossaries = (glossaries ?? []).filter((g) => g.status === "active");
   const caps = langs ?? [];
