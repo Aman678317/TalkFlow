@@ -33,6 +33,7 @@ import { api, friendlyMessage } from '@/lib/api';
 import { Badge, Button, Card, Spinner } from '@/components/ui';
 import { toast } from '@/stores/toasts';
 import { cn } from '@/lib/utils';
+import { wordDiffPercent } from '@/lib/writeDiff';
 
 /* ─────────────────────────── Types ──────────────────────────────────── */
 
@@ -2343,7 +2344,7 @@ export default function WritePage() {
               )}
               {result && (
                 <span className="text-xs text-slate-400">
-                  {impWords} words ({Math.round(((impWords - origWords) / (origWords || 1)) * 100)}% word diff)
+                  {impWords} words ({wordDiffPercent(sourceText, result?.improved_text || "")}% of words changed)
                 </span>
               )}
             </div>

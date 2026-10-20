@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import models as M
 from app.db.session import get_db
 from app.deps import Principal, require_org_user
-from app.errors import AppError, ValidationError
+from app.errors import AppError, GateBlockedError, ValidationError
 from app.services.contacts_service import ContactsService
 from app.telephony.call_jobs import CallJobService, _dump_job
 
@@ -351,9 +351,9 @@ async def call_contact(
         claimed_by_name=principal.identity_for_rate_limit)
     if job.status == "blocked":
         # synchronous dial: surface the gate block instead of hiding it in a 201
-        raise AppError(
+        raise GateBlockedError(
             f"Call blocked by outbound gate: {job.blocked_reason}",
-            status=409, recoverable=True,
+            recoverable=True,
             details={"reason": job.blocked_reason, "job_id": str(job.id)})
     if job.status == "failed":
         raise AppError(

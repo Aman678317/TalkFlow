@@ -123,6 +123,7 @@ SPELLING_RULES: list[tuple[re.Pattern, str, str, str]] = [
     (re.compile(r"\bacceppt\b", re.I), "accept", "spelling", "Fixed misspelled word 'accept'"),
     (re.compile(r"\bcompnay\b", re.I), "company", "spelling", "Fixed transposed typo in 'company'"),
     (re.compile(r"\bcompny\b", re.I), "company", "spelling", "Fixed misspelled word 'company'"),
+    (re.compile(r"\bcomponay\b", re.I), "company", "spelling", "Fixed transposed typo in 'company'"),
     (re.compile(r"\brecieved\b", re.I), "received", "spelling", "Fixed the i-before-e misspelling of 'received'"),
     (re.compile(r"\badress\b", re.I), "address", "spelling", "Fixed misspelled word 'address' (double d)"),
 

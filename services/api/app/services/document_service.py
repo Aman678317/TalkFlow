@@ -509,6 +509,24 @@ async def process_document_job(payload: dict) -> None:
             raise
 
 
+def no_translatable_text_message(warnings: list[str]) -> str:
+    """Honest reason a document carried no translatable text.
+
+    The parser records WHY a block has no text (e.g. "scanned/image-only
+    without OCR"). Those warnings used to be dropped exactly where they were
+    needed, leaving the user with a bare "No translatable text found in
+    document." and no way to act on it (2026-10-20 localhost audit).
+    """
+    if warnings:
+        return (
+            "No translatable text found: "
+            + "; ".join(warnings)
+            + ". The document has no text layer and no OCR engine was available; "
+            "install Tesseract (OCR) or upload a document with selectable text."
+        )
+    return "No translatable text found: the document contains no extractable text."
+
+
 async def _run_pipeline(db: AsyncSession, doc: M.Document, resume: bool = False) -> None:
     t_start = time.perf_counter()
     # --- scanning (already scanned at upload; re-verify checksum) ---------- #
@@ -525,11 +543,14 @@ async def _run_pipeline(db: AsyncSession, doc: M.Document, resume: bool = False)
     except Exception as e:
         raise DocumentProcessingError(f"Parser failed: {e}") from e
     translatable = [b for b in blocks if b.kind != "non_translatable"]
+    # The parser records WHY a block carries no text (e.g. "scanned/image-only
+    # without OCR"). Collect those warnings BEFORE the translatable check:
+    # they are the reason a document can have no translatable text at all, and
+    # dropping them left the user with a bare "No translatable text found"
+    # and no way to act on it (2026-10-20 localhost audit).
+    warnings = [b.ctx.get("warning") for b in blocks if b.ctx.get("warning")]
     if not translatable:
-        raise DocumentProcessingError("No translatable text found in document.")
-
-    # Check for layout or OCR warnings
-    warnings = [b.ctx["warning"] for b in blocks if b.ctx.get("warning")]
+        raise DocumentProcessingError(no_translatable_text_message(warnings))
 
     # persist canonical segments
     db_where = select(M.DocumentSegment).where(M.DocumentSegment.document_id == doc.id)

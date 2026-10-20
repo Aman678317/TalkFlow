@@ -15,11 +15,30 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { documentsPollingMs } from "../lib/adaptivePolling";
 
+/**
+ * A document row exactly as the API returns it.
+ *
+ * Field names mirror `DocumentOut` in the API schemas — the earlier
+ * `source_language` / `target_language` / `detected_language` / `pages` /
+ * `error` names never existed on the wire, so the page rendered a blank
+ * language pair, a blank page count and NO failure reason for a document
+ * that failed to process (2026-10-20 localhost audit).
+ */
 export interface DocRow {
-  id: string; filename: string; status: string; source_language: string; target_language: string;
-  detected_language: string; pages: number; segments_total: number; segments_done: number;
-  warnings?: string[];
-  error?: string | null; created_at: string; size_bytes: number; mime_type: string;
+  id: string;
+  filename: string;
+  status: string;
+  progress: number;
+  source_lang: string;
+  target_lang: string;
+  detected_lang: string;
+  page_count: number;
+  char_count: number;
+  error_code: string | null;
+  error_message: string | null;
+  created_at: string;
+  size_bytes: number;
+  mime_type: string;
 }
 
 export function useDocumentsQuery(pageHidden: boolean) {
