@@ -228,6 +228,11 @@ async def _lifespan_startup(app: FastAPI) -> None:
                         "calls keep working signaling-only")
             consumer = AsteriskARIEventConsumer.from_settings(
                 provider=asterisk, on_connected=on_connected)
+            # D3 ops honesty: the consumer OBJECT is stashed next to its
+            # task so /admin/telephony-ops can report whether the inbound
+            # intake hook was really attached (configured-vs-armed) and
+            # whether the consumer task died after startup.
+            app.state.asterisk_ari_consumer = consumer
             app.state.asterisk_ari_task = consumer.start()
             log.info("Asterisk ARI event consumer started (feature flag enabled)")
         except Exception:  # noqa: BLE001 — adapter is opt-in; startup must not fail

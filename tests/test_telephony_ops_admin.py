@@ -70,3 +70,92 @@ async def test_telephony_ops_report_is_honest(services_app_client, user):
     # live queue depth is a real number
     assert isinstance(body["queues"]["telephony"], int)
     assert body["queues"]["telephony"] >= 0
+
+    # §D3: inbound intake — configured flag is False here, and the process
+    # block must never call it armed nor report a dead consumer task.
+    assert body["inbound_intake"]["configured"] is False
+    assert body["inbound_intake"]["armed"] is False
+    assert body["inbound_intake"]["consumer_task_dead"] is False
+
+    # §D3: the in-process escalation transport starts empty in a fresh
+    # lane — real numbers, never None, no agent-staffing claim implied.
+    assert body["escalations"]["pending"] == 0
+    assert body["escalations"]["claimed_open"] == 0
+
+
+async def test_telephony_ops_reports_armed_intake_and_live_escalation_depths(
+        services_app_client, user):
+    """§D3 truth reporting — armed-vs-configured for intake, live depth for
+    escalations, dead-consumer detection, with FULL state restoration so
+    other suites never see this test's fakes:
+    - an ARI consumer with an attached intake hook reports ``armed=True``
+      even while the settings flag stays False (a contradiction surfaced,
+      not hidden);
+    - escalation depths mirror exactly this process's shared queue after
+      two pushes and one claim;
+    - a consumer task that has finished reports ``consumer_task_dead``.
+    """
+    import asyncio
+    from types import SimpleNamespace
+
+    from app.telephony import escalation as esc_mod
+    from app.telephony.escalation import (
+        EscalationDispatcher,
+        EscalationQueue,
+        EscalationTicket,
+        rewire_shared_dispatcher,
+    )
+
+    admin = await _make_platform_admin(services_app_client, user)
+    app_state = services_app_client.app.state
+    original_dispatcher = esc_mod._shared
+
+    rewire_shared_dispatcher(EscalationDispatcher(
+        queue=EscalationQueue(maxsize=10)))
+    q = esc_mod.shared_dispatcher().queue
+    assert q.push(EscalationTicket(
+        ticket_id="t-a", call_sid="CA-A", reason="caller_opt_out",
+        summary=None, turns=2, created_at=1.0)) is True
+    assert q.push(EscalationTicket(
+        ticket_id="t-b", call_sid="CA-B", reason="budget",
+        summary=None, turns=4, created_at=2.0)) is True
+    assert q.claim("agent-1", "t-a") is not None      # t-a: claimed, unresolved
+
+    consumer = SimpleNamespace(inbound_intake=lambda payload, frame: True)
+
+    async def _noop() -> None:
+        return None
+
+    app_state.asterisk_ari_consumer = consumer
+    live_task = asyncio.ensure_future(_noop())        # not finished yet
+    app_state.asterisk_ari_task = live_task
+    try:
+        r = services_app_client.get("/api/v1/admin/telephony-ops",
+                                    headers=admin["headers"])
+        assert r.status_code == 200, r.text
+        body = r.json()
+
+        # configured stays False (settings lane), but the REAL intake hook is
+        # attached — armed=True is reported, contradiction made visible.
+        assert body["inbound_intake"]["configured"] is False
+        assert body["inbound_intake"]["armed"] is True
+        assert body["inbound_intake"]["consumer_task_dead"] is False
+
+        # escalation depths mirror this process's shared queue exactly
+        assert body["escalations"]["pending"] == 1          # t-b still waiting
+        assert body["escalations"]["claimed_open"] == 1     # t-a in-flight
+
+        # the consumer task finishing must show up as dead, not silently
+        # "still running"
+        await asyncio.sleep(0)
+        assert live_task.done() is True
+        r2 = services_app_client.get("/api/v1/admin/telephony-ops",
+                                     headers=admin["headers"])
+        assert r2.status_code == 200, r2.text
+        assert r2.json()["inbound_intake"]["consumer_task_dead"] is True
+    finally:
+        if hasattr(app_state, "asterisk_ari_consumer"):
+            del app_state.asterisk_ari_consumer
+        if hasattr(app_state, "asterisk_ari_task"):
+            del app_state.asterisk_ari_task
+        rewire_shared_dispatcher(original_dispatcher)
