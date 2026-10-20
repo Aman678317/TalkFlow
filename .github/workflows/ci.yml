@@ -88,6 +88,7 @@ jobs:
             tests/test_media_bridge_hygiene.py \
             tests/test_observability_and_metrics_hardened.py \
             tests/test_outbound_idempotency.py \
+            tests/test_page_translation_hardened.py \
             tests/test_performance_and_load_hardened.py \
             tests/test_production_readiness_hardened.py \
             tests/test_production_security_hardened.py \

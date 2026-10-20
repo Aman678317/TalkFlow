@@ -20,6 +20,7 @@ import AppShell from "./components/layout/AppShell";
 // being opened. Landing/Login/Signup stay eager: they are the first paint.
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 const TranslatePage = lazy(() => import("./pages/Translate"));
+const TranslateWebPage = lazy(() => import("./pages/TranslateWebPage"));
 const WritePage = lazy(() => import("./pages/Write"));
 const Voice = lazy(() => import("./pages/Voice"));
 const Documents = lazy(() => import("./pages/Documents"));
@@ -117,6 +118,7 @@ export default function App() {
             <Route element={<RequireAuth><Layout /></RequireAuth>}>
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/translate" element={<TranslatePage />} />
+              <Route path="/translate/page" element={<TranslateWebPage />} />
               <Route path="/write" element={<WritePage />} />
               <Route path="/voice" element={<Voice />} />
               <Route path="/documents" element={<Documents />} />

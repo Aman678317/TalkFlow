@@ -16,10 +16,11 @@ from app.db.session import get_db
 from app.deps import Principal, require_permission, require_scope, rl_translate
 from app.errors import AuthenticationError, AuthorizationError, NotFoundError, ProviderError, ValidationError
 from app.schemas import (
-    DetectRequest, DetectResponse, LanguageOut, TranslateRequest,
-    TranslateResponse, TranslationOut,
+    DetectRequest, DetectResponse, LanguageOut, PageTranslateRequest,
+    PageTranslateResponse, TranslateRequest, TranslateResponse, TranslationOut,
 )
 from app.services import audit_service
+from app.services.page_fetch import PageFetchError, fetch_page
 from app.services.translation_service import TranslateContext, translate_text
 
 log = logging.getLogger("app.routers.translate")
@@ -94,6 +95,56 @@ async def translate(body: TranslateRequest,
     from app import context
     return TranslateResponse(translations=outputs,
                              request_id=context.current().request_id)
+
+
+@router.post("/translate/page", response_model=PageTranslateResponse)
+async def translate_page(body: PageTranslateRequest,
+                         principal: Principal | None = Depends(rl_translate),
+                         db: AsyncSession = Depends(get_db)):
+    """Translate the readable text of a public web page.
+
+    The page is fetched server-side with strict guards (public addresses only,
+    size cap, timeout, content-type check) — see `app.services.page_fetch`.
+    The result is the **text** of the page, not a mirrored page: images,
+    layout and scripts are not reproduced.
+    """
+    if principal is None:
+        raise AuthenticationError("Authentication required.")
+    if principal.kind == "api_key" and principal.api_key is not None:
+        scopes = principal.api_key.scopes or []
+        if "translate" not in scopes and "*" not in scopes:
+            raise AuthorizationError("API key lacks scope 'translate'.")
+    principal.require("use_translate")
+
+    try:
+        page = await fetch_page(body.url)
+    except PageFetchError as exc:
+        raise ValidationError(str(exc)) from exc
+
+    if principal and principal.org_id:
+        from app.services import usage_service
+        await usage_service.check_quota(
+            db, principal.org_id, "characters", len(page.text))
+
+    ctx = _ctx(principal, body, product="page")
+    out = await translate_text(db, page.text, body.source_language,
+                               body.target_language, ctx)
+    from app import context
+    return PageTranslateResponse(
+        url=page.url,
+        final_url=page.final_url,
+        title=page.title,
+        source_text=page.text,
+        translated_text=out.result.text,
+        source_language=out.result.source_lang,
+        target_language=out.result.target_lang,
+        model=out.result.model,
+        provider=out.result.provider,
+        latency_ms=round(out.result.latency_ms, 1),
+        quality_flags=out.result.quality_flags,
+        truncated=page.truncated,
+        glossary_note=out.glossary_note,
+    )
 
 
 @router.post("/detect-language", response_model=DetectResponse)
