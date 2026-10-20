@@ -90,6 +90,7 @@ jobs:
             tests/test_social_auth_hardened.py \
             tests/test_telemetry_tracing_hardened.py \
             tests/test_telephony_webhook_security.py \
+            tests/test_translation_fanout.py \
             tests/test_ws_media_protocol.py \
             tests/test_ws_media_server.py -q
       - name: Integration tests (PostgreSQL + Redis + pgvector)
