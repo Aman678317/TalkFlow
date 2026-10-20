@@ -24,6 +24,8 @@ exports) reuse the exact same contract.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Iterable, Sequence
 from datetime import datetime
 from typing import Any
@@ -53,6 +55,117 @@ def _ordered(events: Iterable[CallEvent]) -> list[CallEvent]:
 def _blank_turn(at: datetime | None) -> dict[str, Any]:
     return {"turn": 0, "at": _iso(at), "caller": {}, "agent_lines": [],
             "citations": []}
+
+
+def _citation_sha256(obj: Any) -> str:
+    """Canonical citation digest.
+
+    BYTE-IDENTICAL CONTRACT with ``ai_agent_graph._sha256``:
+    ``json.dumps(obj, sort_keys=True, default=str).encode()`` → sha256.
+    The real-graph re-derivation test drives the actual graph and re-computes
+    its digests with THIS helper, so any drift between the two serializations
+    fails the suite instead of silently voiding citations.
+    """
+    return hashlib.sha256(
+        json.dumps(obj, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def verify_citations(events: Sequence[CallEvent]) -> dict[str, Any]:
+    """§C4 — re-derive the transcript's sha256 citations from stored ledger
+    material, and report honestly what cannot be re-derived.
+
+    What a verifier CAN recompute post-hoc, bucket by bucket:
+
+    - **verbatim say digests** bind ``{"say": <line>}`` at transition time;
+      the turn loop stores the spoken line verbatim in ``agent_turn_said`` —
+      the digest re-derives against the ledger's set of verbatim lines. A
+      tampered line (or an edited digest) stops re-deriving and lands in
+      ``mismatches``;
+    - **escalation digests** bind ``{"escalation_reason": <reason>}``, which
+      the citation itself carries — re-derivable directly;
+    - **scaffolding say digests** bind the EMPTY say: pre-speech transitions
+      (``ask_purpose`` hand-offs) never speak and the loop records no empty
+      speech — such a digest equals ``sha256({"say": ""})`` and re-derives
+      from the graph's own await-contract, cryptographically distinct from a
+      lost line (which would bind non-empty text);
+    - **input digests bind caller speech the ledger never stores**
+      (fingerprint-only privacy invariant). They are COUNTED, never
+      re-computed — pretending to verify them would fabricate trust.
+
+    Pure: same ordering contract as the assembler
+    (``(created_at, id)`` deterministic sort). Healthy stream invariant:
+    ``verified == checked`` and ``mismatches == []``.
+    """
+    ordered_ev = _ordered(events)
+    empty_say_digest = _citation_sha256({"say": ""})
+
+    # the ledger's verbatim evidence: every distinct spoken line
+    line_digests: set[str] = set()
+    for event in ordered_ev:
+        if event.event_type != SAID_EVENT:
+            continue
+        text = (dict(event.payload_json or {}).get("text") or "").strip()
+        if text:
+            line_digests.add(_citation_sha256({"say": text}))
+
+    checked = verified = 0
+    verbatim_say = reason_bound = empty_say = 0
+    inputs_not_rederivable = 0
+    mismatches: list[dict[str, Any]] = []
+
+    for event in ordered_ev:
+        if event.event_type != NODE_EVENT:
+            continue
+        payload = dict(event.payload_json or {})
+        if payload.get("inputs_sha256"):
+            # caller speech never entered the ledger: presence is all the
+            # ledger can honestly attest
+            inputs_not_rederivable += 1
+        digest = payload.get("output_sha256")
+        if not digest:
+            continue
+        checked += 1
+        if payload.get("escalation_reason") is not None:
+            expected = _citation_sha256(
+                {"escalation_reason": payload["escalation_reason"]})
+            if expected == digest:
+                verified += 1
+                reason_bound += 1
+            else:
+                mismatches.append({
+                    "node": payload.get("to"), "kind": "escalation_reason",
+                    "expected": expected, "found": digest,
+                })
+        elif digest == empty_say_digest:
+            # the graph's await-scaffolding binds "" at transition time; a
+            # lost line would bind non-empty text instead
+            verified += 1
+            empty_say += 1
+        elif digest in line_digests:
+            verified += 1
+            verbatim_say += 1
+        else:
+            mismatches.append({
+                "node": payload.get("to"), "kind": "say_line",
+                "expected": None, "found": digest,
+            })
+
+    return {
+        "checked": checked,
+        "verified": verified,
+        "rederived": {
+            "verbatim_say": verbatim_say,
+            "escalation_reason": reason_bound,
+            "scaffolding_empty_say": empty_say,
+        },
+        "mismatches": mismatches,
+        "inputs_not_rederivable": inputs_not_rederivable,
+        "note": "input digests bind caller speech that the ledger never "
+                "stores (fingerprint-only privacy) — counted, not "
+                "re-computed; output digests re-derive from the verbatim "
+                "said rows, the citations' own escalation reasons, or the "
+                "graph's empty-say scaffolding binding",
+    }
 
 
 def assemble_transcript(call: CallSession, events: Sequence[CallEvent]) -> dict[str, Any]:
@@ -136,14 +249,17 @@ def assemble_transcript(call: CallSession, events: Sequence[CallEvent]) -> dict[
         "outcome": outcome,
         "escalations": escalations,
         "media_timeline": media_timeline,
+        "citation_integrity": verify_citations(events),
         "unsurfaced_events": unsurfaced,
         "meta": {
             "privacy": {
                 "caller_speech": "fingerprints only (text_len + text_sha256) — "
                                  "raw caller text never enters the ledger",
                 "agent_lines": "verbatim (org-authored content)",
-                "citations": "ai_agent.node sha256 digests, resolved against "
-                             "call_events rows",
+                "citations": "ai_agent.node sha256 digests; output digests "
+                             "re-derive from the verbatim said rows, input "
+                             "digests are counted but never re-computed "
+                             "(caller speech is not stored)",
             },
             "turns": len(turns),
             "events_total": len(events),
