@@ -343,3 +343,288 @@ async def test_transcript_api_resolves_by_id_and_records_escalation_rows(
     tickets = [e for e in body["escalations"]
                if e["event"] == "agent_escalation_enqueued"]
     assert tickets and tickets[0]["payload"]["ticket_id"] == "esc-x"
+
+
+# --------------------------------------------------------------------------- #
+# queue C4 — citation re-derivation (verify_citations)
+# --------------------------------------------------------------------------- #
+# The transcript exposes input/output sha256 digests per graph transition.
+# This section makes those digests EARN their keep: what can be re-derived
+# from stored ledger content MUST re-derive; what cannot (caller speech,
+# fingerprint-only) is counted and never faked. The canonical serialization
+# contract with ai_agent_graph._sha256 is guarded by the real-graph drive.
+
+
+def _said(ev, node: str, text: str):
+    return _ev(ev, "agent_turn_said",
+               {"node": node, "action": "speak", "text": text,
+                "frames_rendered": 12, "tts": "wired"}, _ts(T0, 100))
+
+
+def _node_row(ev, to_node: str, *, say: str | None = None,
+              reason: str | None = None, inputs: str = "in-digest"):
+    from app.telephony.call_transcript import _citation_sha256
+
+    out = (_citation_sha256({"escalation_reason": reason}) if reason is not None
+           else _citation_sha256({"say": say}))
+    payload = {"node": to_node, "from": "disclose", "to": to_node,
+               "inputs_sha256": inputs, "output_sha256": out}
+    if reason is not None:
+        payload["escalation_reason"] = reason
+    return _ev(ev, "ai_agent.node", payload, _ts(T0, 90))
+
+
+def test_say_bound_citation_rederives_from_the_verbatim_line():
+    from app.telephony.call_transcript import _citation_sha256, verify_citations
+
+    call = _call()
+    line = "Happy to help with your balance."
+    events = [_node_row(call.id, "respond", say=line),
+              _said(call.id, "respond", line)]
+
+    report = verify_citations(events)
+    assert report["checked"] == 1 and report["verified"] == 1
+    assert report["mismatches"] == []
+    assert report["inputs_not_rederivable"] == 1        # counted, not faked
+
+    # TAMPER: the verbatim line is altered after the fact — the citation no
+    # longer re-derives against the ledger's verbatim evidence set: the
+    # mismatch carries the on-ledger digest and names no invented line
+    tampered = [_node_row(call.id, "respond", say=line),
+                _said(call.id, "respond", "totally different words")]
+    bad = verify_citations(tampered)
+    assert bad["verified"] == 0 and bad["checked"] == 1
+    assert len(bad["mismatches"]) == 1
+    m = bad["mismatches"][0]
+    assert m["node"] == "respond" and m["kind"] == "say_line"
+    assert m["expected"] is None
+    assert m["found"] == _citation_sha256({"say": line})
+
+
+def test_escalation_citation_rederives_from_its_own_reason():
+    from app.telephony.call_transcript import verify_citations
+
+    call = _call()
+    events = [_node_row(call.id, "escalate", reason="human_request")]
+    report = verify_citations(events)
+    assert report["checked"] == 1 and report["verified"] == 1
+    assert report["mismatches"] == []
+
+    # a rewritten reason breaks the binding exactly like edited speech:
+    # the reason is edited AFTER the digest was minted, not re-minted
+    tampered_row = _node_row(call.id, "escalate", reason="human_request")
+    tampered_row.payload_json["escalation_reason"] = "opt_out"
+    bad = verify_citations([tampered_row])
+    assert bad["verified"] == 0
+    assert bad["mismatches"][0]["kind"] == "escalation_reason"
+
+
+def test_scaffolding_transitions_bind_empty_say_and_still_rederive():
+    """Pre-speech hand-offs (ask_purpose et al.) bind ``{"say": ""}`` and the
+    loop records no empty speech — the digest must re-derive from that
+    binding, WITHOUT being mascaraed as a lost line."""
+    from app.telephony.call_transcript import _citation_sha256, verify_citations
+
+    call = _call()
+    events = [_ev(call.id, "ai_agent.node",
+                  {"node": "ask_purpose", "from": "verify_identity",
+                   "to": "ask_purpose", "inputs_sha256": "in-z",
+                   "output_sha256": _citation_sha256({"say": ""})},
+                  _ts(T0, 90))]
+    report = verify_citations(events)
+    assert report["checked"] == 1 and report["verified"] == 1
+    assert report["mismatches"] == []
+    assert report["rederived"]["scaffolding_empty_say"] == 1
+    assert report["rederived"]["verbatim_say"] == 0
+
+
+def test_line_bound_digest_without_stored_speech_is_reported_not_fabricated():
+    from app.telephony.call_transcript import verify_citations
+
+    call = _call()
+    events = [_node_row(call.id, "respond", say="words that never got written")]
+    report = verify_citations(events)
+    assert report["checked"] == 1 and report["verified"] == 0
+    assert report["mismatches"][0]["kind"] == "say_line"
+
+
+def test_verifier_is_honest_on_empty_and_citation_free_streams():
+    from app.telephony.call_transcript import verify_citations
+
+    report = verify_citations([])
+    assert report["checked"] == 0 and report["verified"] == 0
+    assert report["mismatches"] == [] and report["inputs_not_rederivable"] == 0
+
+    call = _call()
+    said_only = [_said(call.id, "respond", "a line with no transition")]
+    report = verify_citations(said_only)
+    assert report["checked"] == 0                      # nothing to verify
+
+
+async def _drive_real_agent_session(services_app_client, user) -> str:
+    """Full production write path (frames → segmenter → transcribe → loop →
+    MediaCallEventSink → call_events), then the sid whose ledger to verify."""
+    import asyncio
+
+    from test_agent_media_session import (
+        FakeARI,
+        _create_call_session,
+        dial_asterisk_like_client,
+        make_runtime,
+        media_start_text,
+    )
+
+    sid = f"talkflow-{uuid.uuid4()}"
+    await _create_call_session(user["org_id"], user["user_id"], sid, "ai_agent")
+
+    from app.telephony.media.agent_media_session import MediaCallEventSink
+
+    sink = MediaCallEventSink(sid)
+
+    async def known_transcribe(segment: list[bytes]) -> str:
+        return "what is my remaining balance today"
+
+    from app.telephony.ai_agent_graph import GraphConfig
+
+    runtime = make_runtime(FakeARI(), sink, spec_overrides={
+        "transcribe": known_transcribe,
+        "segment_wait_seconds": 0.15,
+        "graph_config": GraphConfig(verify_identity=False),
+    })
+    port = await runtime.start()
+    try:
+        session = runtime.start_for_call(sid, "caller-cite")
+        client = await dial_asterisk_like_client(port)
+        await client.send(media_start_text(session.media_channel_id))
+        for _ in range(100):
+            if session.conn is not None:
+                break
+            await asyncio.sleep(0.01)
+        assert session.conn is not None, "MEDIA_START never attached"
+
+        await client.send("MEDIA_XON")
+        for _ in range(8):
+            await client.send(b"\xff\x7f" * 320)      # real speech
+        for _ in range(30):                            # 25+ finalize the segment
+            await client.send(b"\x00" * 640)
+        await asyncio.sleep(0.6)
+        for _ in range(60):                            # bounded fail-closed tail
+            if session.finished.is_set():
+                break
+            await client.send(b"\x00" * 640)
+            await asyncio.sleep(0.05)
+        await asyncio.wait_for(session.finished.wait(), timeout=10.0)
+        await client.close()
+    finally:
+        await runtime.stop()
+    return sid
+
+
+async def test_real_production_stream_rederives_every_citation(
+        services_app_client, user):
+    """THE contract test: the actual graph's digests re-derive from the
+    actual stored ledger — coupling between the two serializers guarded."""
+    from sqlalchemy import select
+
+    from app.db import models as M
+    from app.db.session import db_session
+    from app.telephony.call_transcript import verify_citations
+
+    sid = await _drive_real_agent_session(services_app_client, user)
+
+    async with db_session() as db:
+        res = await db.execute(
+            select(M.CallSession.id).where(M.CallSession.call_sid == sid))
+        call_id = res.scalars().one()
+        res = await db.execute(
+            select(M.CallEvent).where(M.CallEvent.call_id == call_id))
+        rows = list(res.scalars().all())
+
+    transitions = [r for r in rows if r.event_type == "ai_agent.node"]
+    assert any(r.payload_json.get("output_sha256") for r in transitions), \
+        "vacuous drive: no hash-bearing transitions recorded"
+
+    report = verify_citations(rows)
+    assert report["mismatches"] == [], report["mismatches"]
+    assert report["verified"] == report["checked"]
+    assert report["checked"] >= 2                      # disclose + (respond|escalate)
+    assert report["inputs_not_rederivable"] == report["checked"]
+    # arithmetic holds and the re-derivation paths that the REAL graph emits
+    # all fire: reason-bound escalation digests, and say-bound transitions —
+    # which in the current graph bind the EMPTY say (the loop's payload
+    # policy stages the spoken line on AgentStep.say AFTER the transition and
+    # stores it verbatim in the said rows), so the verbatim bucket stays 0
+    # here while the pure tests exercise it directly
+    rederived = report["rederived"]
+    assert (rederived["verbatim_say"] + rederived["escalation_reason"]
+            + rederived["scaffolding_empty_say"]) == report["verified"]
+    assert rederived["scaffolding_empty_say"] >= 1
+    assert rederived["escalation_reason"] >= 1
+
+    # the escalation leg re-derives from its own reason, end to end
+    escalate = [r for r in transitions
+                if r.payload_json.get("escalation_reason")]
+    if escalate:
+        assert all(m["node"] != "escalate" for m in report["mismatches"])
+
+
+async def test_transcript_api_publishes_citation_integrity(
+        services_app_client, user):
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import select
+
+    from app.db import models as M
+    from app.db.session import db_session
+    from app.telephony.call_transcript import _citation_sha256
+
+    sid = f"talkflow-{uuid.uuid4()}"
+    disclosed = "This is an automated AI assistant."
+    async with db_session() as db:
+        res = await db.execute(select(M.CallSession).where(
+            M.CallSession.call_sid == sid))
+        row = res.scalars().first()
+        if row is None:
+            row = M.CallSession(
+                org_id=uuid.UUID(user["org_id"]),
+                created_by=uuid.UUID(user["user_id"]),
+                call_sid=sid, from_number="1001", to_number="1002",
+                mode="ai_agent", provider="asterisk", status="connected")
+            db.add(row)
+        await db.flush()
+        base = datetime.now(timezone.utc)
+        db.add(M.CallEvent(
+            call_id=row.id, event_type="ai_agent.node",
+            payload_json={"node": "disclose", "from": "disclose",
+                          "to": "disclose", "inputs_sha256": "in-x",
+                          "output_sha256": _citation_sha256({"say": disclosed})},
+            created_at=base))
+        db.add(M.CallEvent(
+            call_id=row.id, event_type="agent_turn_said",
+            payload_json={"node": "disclose", "action": "speak",
+                          "text": disclosed, "frames_rendered": 0,
+                          "tts": "absent"},
+            created_at=base + timedelta(milliseconds=10)))
+        db.add(M.CallEvent(
+            call_id=row.id, event_type="ai_agent.node",
+            payload_json={"node": "escalate", "from": "disclose",
+                          "to": "escalate", "inputs_sha256": "in-y",
+                          "output_sha256": _citation_sha256(
+                              {"escalation_reason": "low_stt_confidence"}),
+                          "escalation_reason": "low_stt_confidence"},
+            created_at=base + timedelta(milliseconds=20)))
+        await db.commit()
+
+    r = services_app_client.get(f"/api/v1/telephony/calls/{sid}/transcript",
+                                headers=user["headers"])
+    assert r.status_code == 200, r.text
+    body = r.json()
+
+    integrity = body["citation_integrity"]
+    assert integrity["checked"] == 2
+    assert integrity["verified"] == 2
+    assert integrity["mismatches"] == []
+    assert integrity["inputs_not_rederivable"] == 2
+    assert "counted, not re-computed" in integrity["note"]
+    assert "re-derive" in body["meta"]["privacy"]["citations"]
+
