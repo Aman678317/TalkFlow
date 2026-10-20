@@ -257,6 +257,26 @@ async def _lifespan_startup(app: FastAPI) -> None:
         app.state.call_job_ticker_task = CallJobTicker().start()
         log.info("call-job auto-dial worker started (feature flag enabled)")
 
+    # §E2 durable escalation transport: the shared dispatcher gains a
+    # best-effort DB store and unresolved tickets rehydrate at boot, so a
+    # process restart doesn't strand escalated calls. Both steps are
+    # best-effort — a DB problem logs an honest persist-failed ledger event
+    # and the live queue remains the working view (never blocks startup).
+    try:
+        from app.telephony.escalation import EscalationDispatcher, rewire_shared_dispatcher
+        from app.telephony.escalation_store import (
+            DBEscalationStore,
+            rehydrate_shared_dispatcher,
+        )
+
+        rewire_shared_dispatcher(EscalationDispatcher(store=DBEscalationStore()))
+        restored = await rehydrate_shared_dispatcher()
+        if restored:
+            log.info("escalation transport rehydrated %d unresolved ticket(s)",
+                     restored)
+    except Exception:  # noqa: BLE001 — transport is opt-in durability; startup must not fail
+        log.exception("escalation transport init failed (non-fatal)")
+
     # periodic: retention sweep hourly, usage-threshold checks every 10m
     from app.realtime.ws import session_sweeper
     app.state.sweeper = asyncio.create_task(session_sweeper())

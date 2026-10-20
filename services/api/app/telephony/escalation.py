@@ -33,7 +33,7 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Iterable
 
 from app.telephony.media.agent_turn_loop import (
     TERMINAL_ESCALATED,
@@ -50,6 +50,7 @@ EVENT_ESCALATION_DUPLICATE = "agent_escalation_duplicate"
 EVENT_ESCALATION_DROPPED = "agent_escalation_dropped"
 EVENT_ESCALATION_CLAIMED = "agent_escalation_claimed"
 EVENT_ESCALATION_RESOLVED = "agent_escalation_resolved"
+EVENT_ESCALATION_PERSIST_FAILED = "agent_escalation_persist_failed"
 
 
 @dataclass(frozen=True)
@@ -167,6 +168,60 @@ class EscalationQueue:
     def resolved_ticket_ids(self) -> list[str]:
         return list(self._resolved)
 
+    # -- restart rehydrate (§E2 transport) ------------------------------------ #
+
+    def rehydrate(self, rows: Iterable["EscalationRestoreRow"]) -> int:
+        """Restore unresolved durable rows into this live queue.
+
+        Called at process boot from the durable store (DB today) so a
+        restart does not strand escalated calls:
+
+        - rows without a worker are restored PENDING;
+        - rows with ``claimed_by`` keep their single claim (no winning
+          worker could lose its claim to a rehydrate race — the claimed
+          row is removed from the pending scan so a FIFO ``claim(None)``
+          can never re-claim someone else's ticket);
+        - resolved rows are skipped (they stay in the durable audit);
+        - duplicate ``call_sid`` rows are ignored, same as a live push;
+        - bounded by ``maxsize``: an overloaded backlog restores what
+          fits; the caller logs the skipped remainder honestly.
+        """
+        restored = 0
+        now = time.monotonic()          # per-boot rebase of the age counter
+        for row in rows:
+            if row.call_sid in self._by_call:
+                continue
+            if row.claimed_by is None and self.pending_count() >= self.maxsize:
+                break
+            ticket = EscalationTicket(
+                ticket_id=row.ticket_id,
+                call_sid=row.call_sid,
+                reason=row.reason,
+                summary=row.summary,
+                turns=row.turns,
+                created_at=now,
+            )
+            self._by_call[row.call_sid] = ticket
+            self._tickets[ticket.ticket_id] = ticket
+            if row.claimed_by is None:
+                self._pending.append(ticket)
+            else:
+                self._claimed[ticket.ticket_id] = (row.claimed_by, now)
+            restored += 1
+        return restored
+
+
+@dataclass(frozen=True)
+class EscalationRestoreRow:
+    """One unresolved durable ticket row handed to ``EscalationQueue.rehydrate``."""
+
+    ticket_id: str
+    call_sid: str
+    reason: str | None
+    summary: str | None
+    turns: int
+    claimed_by: str | None = None       # None ⇒ restore as pending
+
 
 class EscalationQueueFull(Exception):
     """Raised when the queue is at its bounded capacity (dropped, not lied)."""
@@ -175,8 +230,13 @@ class EscalationQueueFull(Exception):
 class EscalationDispatcher:
     """Turn-loop ⇒ queue ⇒ claim seam, driven by the escalated outcome."""
 
-    def __init__(self, queue: EscalationQueue | None = None) -> None:
+    def __init__(self, queue: EscalationQueue | None = None,
+                 store: Any | None = None) -> None:
         self.queue = queue if queue is not None else EscalationQueue()
+        # §E2 durable transport: an async ``persist(action, ticket, worker=…,
+        # resolution=…) -> bool`` store (None = ephemeral, pure mode). The
+        # queue itself stays pure; only the dispatcher persists.
+        self.store = store
 
     async def dispatch(
         self, call_sid: str, outcome: TurnLoopOutcome, sink: Any,
@@ -231,6 +291,13 @@ class EscalationDispatcher:
             "summary": ticket.summary,
             "turns": ticket.turns,
         })
+        if self.store is not None and not await self.store.persist(
+                "enqueued", ticket):
+            await safe_record(sink, EVENT_ESCALATION_PERSIST_FAILED, {
+                "call_sid": call_sid,
+                "ticket_id": ticket.ticket_id,
+                "action": "enqueued",
+            })
         log.info("escalation enqueued for call %s (ticket %s)",
                  call_sid, ticket.ticket_id)
         return ticket
@@ -242,6 +309,13 @@ class EscalationDispatcher:
         claimed = self.queue._claimed.get(ticket.ticket_id)
         if claimed is None:
             return  # not claimed by this path; the agent never lies about it
+        if self.store is not None and not await self.store.persist(
+                "claimed", ticket, worker=worker):
+            await safe_record(sink, EVENT_ESCALATION_PERSIST_FAILED, {
+                "call_sid": ticket.call_sid,
+                "ticket_id": ticket.ticket_id,
+                "action": "claimed",
+            })
         await safe_record(sink, EVENT_ESCALATION_CLAIMED, {
             "call_sid": ticket.call_sid,
             "ticket_id": ticket.ticket_id,
@@ -255,6 +329,15 @@ class EscalationDispatcher:
         completed = self.queue.complete(ticket.ticket_id, resolution)
         if not completed:
             return False
+        if self.store is not None and not await self.store.persist(
+                "resolved", ticket,
+                worker=self.queue.claimed_by(ticket.ticket_id),
+                resolution=resolution):
+            await safe_record(sink, EVENT_ESCALATION_PERSIST_FAILED, {
+                "call_sid": ticket.call_sid,
+                "ticket_id": ticket.ticket_id,
+                "action": "resolved",
+            })
         await safe_record(sink, EVENT_ESCALATION_RESOLVED, {
             "call_sid": ticket.call_sid,
             "ticket_id": ticket.ticket_id,

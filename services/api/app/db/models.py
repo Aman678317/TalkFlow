@@ -1096,3 +1096,32 @@ class CallJob(Base, UUIDPkMixin, TimestampMixin):
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+
+
+class AgentEscalation(Base, UUIDPkMixin, TimestampMixin):
+    """Durable copy of one escalation ticket (§E2 transport).
+
+    The in-process FIFO stays the live authority inside this process; this
+    row is what survives a restart (the queue rehydrates unresolved rows at
+    boot). Push is idempotent on ``call_sid`` — exactly the queue's own
+    dedupe contract — so a replay of the same escalation never writes a
+    second ticket.
+    """
+    __tablename__ = "agent_escalations"
+    __table_args__ = (
+        UniqueConstraint("call_sid", name="uq_agent_escalation_call"),
+        UniqueConstraint("ticket_id", name="uq_agent_escalation_ticket"),
+    )
+
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), index=True, nullable=False)
+    ticket_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    call_sid: Mapped[str] = mapped_column(String(64), nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    turns: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    claimed_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
+    resolved_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
+    resolution: Mapped[str | None] = mapped_column(String(120), nullable=True)
