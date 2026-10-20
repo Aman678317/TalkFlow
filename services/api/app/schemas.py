@@ -382,6 +382,23 @@ class TMEntryIn(BaseModel):
     domain: str = "general"
 
 
+class TMEntryCreate(BaseModel):
+    """Add an entry to a named memory."""
+
+    tm_id: uuid.UUID | None = None
+    source_text: str = Field(min_length=1)
+    target_text: str = Field(min_length=1)
+    approved: bool = False
+    domain: str = "general"
+
+
+class TMEntryUpdate(BaseModel):
+    """Edit a stored pair (the reference product lets a reviewer fix a target)."""
+
+    target_text: str | None = Field(default=None, min_length=1)
+    approved: bool | None = None
+
+
 class TMOut(ORMModel):
     id: uuid.UUID
     name: str
@@ -400,6 +417,19 @@ class TMEntryOut(ORMModel):
     approved: bool
     confidence: float
     usage_count: int
+
+
+class TMEntryDetail(TMEntryOut):
+    """An entry as the editor shows it: the memory it belongs to, the pair's
+    languages and the version (every edit bumps the version)."""
+
+    tm_id: uuid.UUID
+    tm_name: str
+    source_language: str
+    target_language: str
+    domain: str
+    version: int
+    created_at: datetime
 
 
 class StyleProfileCreate(BaseModel):
