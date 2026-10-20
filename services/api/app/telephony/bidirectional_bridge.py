@@ -18,6 +18,7 @@ import base64
 import logging
 import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Callable, Coroutine
 
@@ -145,6 +146,13 @@ class BridgeLegSpec:
             raise ValueError("leg name must be non-empty")
 
 
+#: LRU bound for the shared translation seam's memoization — an audio bridge
+#: is a bounded conversation; once the cache is full the OLDEST distinct
+#: request is evicted and its repeat honestly re-asks the provider. Small by
+#: design: per-bridge memory, never a cross-call cache.
+TRANSLATION_CACHE_MAXSIZE = 64
+
+
 class BidirectionalTranslationBridge:
     """Manages full-duplex simultaneous speech translation between two participants."""
 
@@ -209,37 +217,70 @@ class BidirectionalTranslationBridge:
         # Non-blocking degradation tracker
         self.translation_degraded: bool = False
 
-        # §306 fan-out core: the ONLY place extra legs may be translated from.
-        self._fanout = TranslationFanOut(self._fanout_translate)
+        # Translation seam (§306 + §B1): the ONE place the bridge may request
+        # a provider translation — the fan-out router first, and (same slice)
+        # the per-sentence primary audio path through the same method.
+        self._fanout = TranslationFanOut(self._bridge_translate)
+        # The seam's memo: one provider call per DISTINCT
+        # (source_lang, target_lang, text) for this bridge's lifetime,
+        # LRU-bounded; a FAILED request is never cached, so the next
+        # identical request honestly retries the provider.
+        self._translation_cache: OrderedDict[
+            tuple[str, str, str], ProviderTranslation] = OrderedDict()
+        self._translation_seam_lock = asyncio.Lock()
 
     # ----------------------------------------------------------------------- #
-    # §306 per-leg routing (fan-out adapter)
+    # Shared translation seam (fan-out router + per-sentence audio path)
     # ----------------------------------------------------------------------- #
 
-    async def _fanout_translate(
+    async def _bridge_translate(
         self, text: str, source_lang: str, target_lang: str, *,
         segment_id: str | None = None, speaker_id: str | None = None,
     ) -> ProviderTranslation:
-        """Bridge adapter onto ``ai.translate`` for the fan-out router.
+        """The ONE translation seam of the bridge.
+
+        Both the fan-out router and the per-sentence primary audio path
+        request provider translation through this single seam, so the
+        whole bridge satisfies one guarantee: exactly one provider call
+        per DISTINCT ``(source_lang, target_lang, text)`` — a receiver
+        and a caption seat wanting the same translation share one
+        provider result verbatim (plan §5/§306 cross-path dedupe).
 
         The provider is handed the canonical segment text only — never a
         partial and never a translation of a translation (rule §16).
+        ``segment_id``/``speaker_id`` ride along for the router's
+        contract; they never key and never alter the translation. The
+        memo is LRU-bounded (``TRANSLATION_CACHE_MAXSIZE``) and holds
+        only this bridge's successful results.
         """
-        req = TranslationRequest(
-            text=text,
-            source_lang=source_lang,
-            target_lang=target_lang,
-            domain="conversational",
-            intent=Intent.LATENCY_OPTIMIZED,
-        )
-        res, _decision = await ai.translate(req)
-        translated = res.text if hasattr(res, "text") else getattr(
-            res, "translated_text", str(res))
-        return ProviderTranslation(
-            text=(translated or "").strip(),
-            provider=getattr(res, "provider", "unknown") or "unknown",
-            model=getattr(res, "model", "unknown") or "unknown",
-        )
+        key = (source_lang, target_lang, text)
+        async with self._translation_seam_lock:
+            cached = self._translation_cache.get(key)
+            if cached is not None:
+                self._translation_cache.move_to_end(key)
+                return cached
+            req = TranslationRequest(
+                text=text,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                domain="conversational",
+                intent=Intent.LATENCY_OPTIMIZED,
+            )
+            # Provider call under the seam lock: concurrent identical
+            # requests serialize onto the ONE call instead of racing to
+            # emit two.
+            res, _decision = await ai.translate(req)
+            translated = res.text if hasattr(res, "text") else getattr(
+                res, "translated_text", str(res))
+            out = ProviderTranslation(
+                text=(translated or "").strip(),
+                provider=getattr(res, "provider", "unknown") or "unknown",
+                model=getattr(res, "model", "unknown") or "unknown",
+            )
+            self._translation_cache[key] = out
+            while len(self._translation_cache) > TRANSLATION_CACHE_MAXSIZE:
+                self._translation_cache.popitem(last=False)
+            return out
 
     async def _fan_out_to_extra_legs(
         self, turn_id: str, speaker_leg_name: str,
@@ -613,18 +654,15 @@ class BidirectionalTranslationBridge:
         timing: StageTiming,
     ) -> None:
         """Translate a single sentence chunk and stream its audio to the destination leg."""
-        # 1. Translate
+        # 1. Translate — through the ONE shared seam: the same request shape
+        # as the fan-out router, and if a caption seat already fetched this
+        # (source, target, text) the receiver rides the cached result.
         try:
-            req = TranslationRequest(
-                text=sentence,
-                source_lang=source_lang,
-                target_lang=target_lang,
-                domain="conversational",
-                intent=Intent.LATENCY_OPTIMIZED,
-            )
-            res, _decision = await ai.translate(req)
+            out = await self._bridge_translate(
+                sentence, source_lang, target_lang,
+                segment_id=turn_id, speaker_id=src_state.name)
             timing.mt_end_time = time.perf_counter()
-            translated_text = res.text if hasattr(res, "text") else getattr(res, "translated_text", str(res))
+            translated_text = out.text
         except Exception as e:
             await self._handle_error(
                 "translation_error",

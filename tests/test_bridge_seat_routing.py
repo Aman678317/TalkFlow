@@ -62,9 +62,11 @@ class FakeAI:
         self.fail_langs = fail_langs or set()
         #: language the fake STT reports for recognized speech (default hi)
         self.stt_lang = "hi"
+        #: canonical text the fake STT returns for a speech turn
+        self.stt_text = "hello there everyone"
 
     async def transcribe(self, audio: bytes, rate: int, lang_hint=None):
-        return _Chunk("hello there everyone", self.stt_lang), None
+        return _Chunk(self.stt_text, self.stt_lang), None
 
     async def detect_language(self, text: str):
         class _Det:  # only reached on 'auto' hints — tested path avoids it
@@ -190,11 +192,11 @@ async def test_extra_leg_receives_caption_from_canonical_turn(fake_ai: FakeAI):
     extra = BridgeLegSpec("obs-ja", "ja")
     bridge, events, audio = make_bridge(fake_ai, extra_legs=[extra])
 
-    # count FAN-OUT seam invocations separately from the legacy per-sentence
-    # audio path (cross-path dedupe moves the primary legs onto the router in
-    # a later slice — the B1 guarantee holds within the fan-out itself)
+    # count SEAM provider requests on the FAN-OUT side only — the primary
+    # per-sentence audio path now shares the same seam, so the whole bridge
+    # satisfies one-provider-call-per-distinct (asserted below)
     fanout_calls: list[tuple[str, str, str]] = []
-    original_adapter = bridge._fanout_translate
+    original_adapter = bridge._bridge_translate
 
     async def counting(text: str, src: str, tgt: str, **kw):
         fanout_calls.append((src, tgt, text))
@@ -215,12 +217,14 @@ async def test_extra_leg_receives_caption_from_canonical_turn(fake_ai: FakeAI):
     assert cap["provider"] == "simulated"
     assert cap["text"].startswith("ja: ")
 
-    # exactly ONE fan-out provider request for this distinct target
+    # exactly ONE fan-out side seam request for this distinct target …
     assert fanout_calls == [("hi", "ja", "hello there everyone")]
+    # … and the primary path rode the shared seam memo: the WHOLE bridge
+    # made exactly one provider call for this (src, tgt, text) request
+    assert fake.translate_calls == [("hi", "ja", "hello there everyone")]
 
-    # legacy per-sentence path still streams TTS audio to the receiver leg only
+    # the per-sentence audio path still streams TTS to the receiver leg only
     assert audio and all(leg == "receiver" for leg, _p in audio)
-    assert fake.translate_calls[-1][0] == "hi"
 
 
 @pytest.mark.asyncio
@@ -406,3 +410,85 @@ def test_set_leg_mode_keeps_registry_coherent(fake_ai: FakeAI):
     assert bridge.extra_legs[0].mode == "translated"
     assert bridge._legs["seat-ja"].mode == "translated"
     assert bridge._legs["seat-ja"].hear_lang == "ja"   # language preserved
+
+
+# --------------------------------------------------------------------------- #
+# one translation seam: the per-sentence audio path + the fan-out share it
+# (§B1 across the WHOLE bridge — one provider call per distinct request)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_receiver_and_same_lang_extra_leg_share_one_provider_call(
+        fake_ai: FakeAI):
+    extra = BridgeLegSpec("obs-ja", "ja")
+    bridge, events, audio = make_bridge(fake_ai, extra_legs=[extra])
+
+    await run_caller_turn(bridge)
+
+    # the primary path (caller→receiver: hi→ja) and the caption seat both
+    # want the same (source, target, text) — exactly ONE provider call
+    assert fake_ai.translate_calls == [("hi", "ja", "hello there everyone")]
+    delivered = [d for e, d in events if e == "call.caption_delivered"]
+    assert [d["seat"] for d in delivered] == ["obs-ja"]
+    assert audio and all(leg == "receiver" for leg, _p in audio)
+    # the latency report still covers the (cache-hit) primary seam call
+    assert [e for e, _d in events if e == "call.latency_report"]
+
+
+@pytest.mark.asyncio
+async def test_distinct_text_still_gets_its_own_provider_call(fake_ai: FakeAI):
+    extra = BridgeLegSpec("obs-ja", "ja")
+    bridge, _events, _audio = make_bridge(fake_ai, extra_legs=[extra])
+
+    await run_caller_turn(bridge)
+    fake_ai.stt_text = "changes please"
+    await run_caller_turn(bridge)
+
+    calls = fake_ai.translate_calls
+    assert set(calls) == {("hi", "ja", "hello there everyone"),
+                          ("hi", "ja", "changes please")}
+    assert len(calls) == 2                       # one per DISTINCT request
+
+
+@pytest.mark.asyncio
+async def test_provider_failure_is_not_cached_and_retries(fake_ai: FakeAI):
+    fake_ai.fail_langs = {"ja"}
+    extra = BridgeLegSpec("obs-ja", "ja")
+    bridge, events, _audio = make_bridge(fake_ai, extra_legs=[extra])
+
+    await run_caller_turn(bridge)
+    unavailable = [d for e, d in events if e == "call.caption_unavailable"]
+    assert [d["seat"] for d in unavailable] == ["obs-ja"]
+    # the failed request was reached twice on this turn (fan-out, then the
+    # per-sentence path) and NEITHER failure was cached
+    failed_calls = len(fake_ai.translate_calls)
+    assert failed_calls == 2
+
+    fake_ai.fail_langs = set()
+    await run_caller_turn(bridge)
+    delivered = [d for e, d in events if e == "call.caption_delivered"]
+    assert [d["seat"] for d in delivered] == ["obs-ja"]
+    # the retry reaches the provider exactly once (the fan-out request);
+    # the per-sentence path rides the now-successful memo
+    assert len(fake_ai.translate_calls) == failed_calls + 1
+
+
+@pytest.mark.asyncio
+async def test_translation_cache_is_lru_bounded(fake_ai: FakeAI):
+    from app.telephony.bidirectional_bridge import TRANSLATION_CACHE_MAXSIZE
+
+    bridge, _events, _audio = make_bridge(fake_ai)
+
+    texts = [f"sentence-{i}" for i in range(TRANSLATION_CACHE_MAXSIZE + 1)]
+    for text in texts:
+        await bridge._bridge_translate(text, "hi", "ja")
+    assert len(fake_ai.translate_calls) == TRANSLATION_CACHE_MAXSIZE + 1
+
+    # the oldest request was evicted — its repeat honestly re-asks the provider
+    await bridge._bridge_translate(texts[0], "hi", "ja")
+    assert len(fake_ai.translate_calls) == TRANSLATION_CACHE_MAXSIZE + 2
+
+    # the most recent request is still cached — its repeat rides the memo
+    await bridge._bridge_translate(texts[-1], "hi", "ja")
+    assert len(fake_ai.translate_calls) == TRANSLATION_CACHE_MAXSIZE + 2
