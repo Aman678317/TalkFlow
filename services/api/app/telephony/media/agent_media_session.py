@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
@@ -53,7 +54,12 @@ from app.telephony.media.external_media import (
     MediaChannelInfo,
     MediaDirection,
 )
-from app.telephony.media.ws_media_protocol import ControlMessage, MediaStart
+from app.telephony.media.ws_media_protocol import (
+    EVENT_MEDIA_XON,
+    EVENT_MEDIA_XOFF,
+    ControlMessage,
+    MediaStart,
+)
 from app.telephony.media.ws_media_server import (
     MediaConnectionHooks,
     PacedAudioSender,
@@ -287,6 +293,18 @@ class PaceSpeaker:
         self._pacer = None
         self._pacer_task = None
 
+    # -- flow control passthrough (MEDIA_XOFF / MEDIA_XON, plan §P2) --------- #
+
+    def pause(self) -> None:
+        """Hold the outbound audio stream; the pacer keeps its queue order."""
+        if self._pacer is not None:
+            self._pacer.pause()
+
+    def resume(self) -> None:
+        """Resume the outbound stream at the ptime cadence (no catch-up)."""
+        if self._pacer is not None:
+            self._pacer.resume()
+
 
 # --------------------------------------------------------------------------- #
 # call_events persistence
@@ -400,6 +418,11 @@ class AgentMediaSession:
         self.controls: dict[str, int] = {}
         self.ws_closed_reason: str | None = None
         self.outcome: TurnLoopOutcome | None = None
+        #: monotonic timestamp of bridge membership — feeds media_bridge_left
+        self._joined_at: float | None = None
+        #: ``media_codec_negotiated`` is emitted once per session
+        self._codec_negotiated_emitted = False
+        self._codec_negotiated_task: asyncio.Task[None] | None = None
 
         self._loop: AgentTurnLoop | None = None
         self._task: asyncio.Task[None] | None = None
@@ -434,6 +457,26 @@ class AgentMediaSession:
         self.bridge_id = await self.external.create_bridge()
         await self.external.add_channel_to_bridge(
             self.bridge_id, self.caller_channel_id)
+        joined_members = [self.caller_channel_id]
+        try:
+            await self.external.add_channel_to_bridge(
+                self.bridge_id, self.media_channel_id)
+            joined_members.append(self.media_channel_id)
+        except Exception:  # noqa: BLE001 — membership failure degrades audio, not the call
+            log.exception(
+                "media channel %s could not join bridge %s (call %s)",
+                self.media_channel_id, self.bridge_id, self.call_sid)
+        self._joined_at = time.monotonic()
+        await safe_record(self._sink, "media_bridge_joined", {
+            "leg_id": self.media_channel_id,
+            "call_sid": self.call_sid,
+            "codec": self._spec.media_format,
+            "direction": self._spec.direction,
+            "caller_channel_id": self.caller_channel_id,
+            "media_channel_id": self.media_channel_id,
+            "bridge_id": self.bridge_id,
+            "members": joined_members,
+        })
         await safe_record(self._sink, "agent_media_session_started", {
             "call_sid": self.call_sid,
             "caller_channel_id": self.caller_channel_id,
@@ -466,6 +509,23 @@ class AgentMediaSession:
         self.conn = conn
         self.media_start = media_start
         self.speaker.attach(conn, media_start.ptime_ms)
+        if not self._codec_negotiated_emitted:
+            self._codec_negotiated_emitted = True
+            self._codec_negotiated_task = asyncio.create_task(
+                self._emit_codec_negotiated(media_start),
+                name=f"codec-event-{self.call_sid}",
+            )
+
+    async def _emit_codec_negotiated(self, media_start: MediaStart) -> None:
+        """Persist the wire-negotiated codec once (best-effort, ledger only)."""
+        await safe_record(self._sink, "media_codec_negotiated", {
+            "leg_id": self.media_channel_id,
+            "call_sid": self.call_sid,
+            "codec": media_start.format,
+            "direction": self._spec.direction,
+            "frame_size": media_start.optimal_frame_size,
+            "ptime_ms": media_start.ptime_ms,
+        })
 
     def route_frames(self, frames: list[bytes]) -> None:
         self.frames_in += len(frames)
@@ -474,6 +534,12 @@ class AgentMediaSession:
     def note_control(self, message: ControlMessage) -> None:
         key = message.event
         self.controls[key] = self.controls.get(key, 0) + 1
+        # P2 flow control: Asterisk says who may send. XOFF holds the outbound
+        # stream (queued frames keep order); XON resumes the ptime cadence.
+        if key == EVENT_MEDIA_XOFF:
+            self.speaker.pause()
+        elif key == EVENT_MEDIA_XON:
+            self.speaker.resume()
 
     def mark_closed(self, reason: str) -> None:
         self.ws_closed_reason = reason
@@ -514,8 +580,26 @@ class AgentMediaSession:
             if self.bridge_id:
                 await self.external.add_channel_to_bridge(
                     self.bridge_id, self.media_channel_id)
-                await self.external.add_channel_to_bridge(
-                    self.bridge_id, self.caller_channel_id)
+                joined_members = [self.media_channel_id]
+                try:
+                    # the caller is normally still a member — tolerate Asterisk
+                    # rejecting a duplicate add (409) without failing reconnect
+                    await self.external.add_channel_to_bridge(
+                        self.bridge_id, self.caller_channel_id)
+                    joined_members.append(self.caller_channel_id)
+                except Exception:  # noqa: BLE001 — the caller leg already bridges
+                    log.info(
+                        "caller %s re-add skipped during reconnect (call %s)",
+                        self.caller_channel_id, self.call_sid)
+                await safe_record(self._sink, "media_bridge_joined", {
+                    "leg_id": self.media_channel_id,
+                    "call_sid": self.call_sid,
+                    "codec": self._spec.media_format,
+                    "direction": self._spec.direction,
+                    "bridge_id": self.bridge_id,
+                    "members": joined_members,
+                    "reason": "rejoin",
+                })
 
             await safe_record(self._sink, "media_leg_restored", {
                 "call_sid": self.call_sid,
@@ -560,6 +644,17 @@ class AgentMediaSession:
             "ws_closed_reason": self.ws_closed_reason,
             "residual": audit,
         }
+        duration = (
+            round(time.monotonic() - self._joined_at, 3)
+            if self._joined_at is not None else 0.0
+        )
+        await safe_record(self._sink, "media_bridge_left", {
+            "leg_id": self.media_channel_id,
+            "call_sid": self.call_sid,
+            "reason": outcome.terminal,
+            "duration_seconds": duration,
+            "bridge_id": self.bridge_id,
+        })
         await safe_record(self._sink, "agent_media_session_ended", payload)
         self._registry.pop(self.media_channel_id, None)
         self._gone.set()

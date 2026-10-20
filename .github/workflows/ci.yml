@@ -78,6 +78,7 @@ jobs:
             tests/test_developer_platform_hardened.py \
             tests/test_external_media.py \
             tests/test_full_qa_and_e2e_hardened.py \
+            tests/test_media_bridge_hygiene.py \
             tests/test_observability_and_metrics_hardened.py \
             tests/test_outbound_idempotency.py \
             tests/test_performance_and_load_hardened.py \
