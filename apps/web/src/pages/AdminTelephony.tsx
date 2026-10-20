@@ -24,6 +24,13 @@ interface TelephonyOps {
     call_worker_ticker_running: boolean;
     asterisk_media_runtime_armed: boolean;
   };
+  /** §D3: present on current backends; unknown on old ones → rendered as "—". */
+  inbound_intake?: {
+    configured: boolean;
+    armed: boolean;
+    consumer_task_dead?: boolean;
+  };
+  escalations?: { pending: number; claimed_open: number };
   queues: { telephony: number };
 }
 
@@ -99,15 +106,35 @@ export default function AdminTelephony() {
                     armed={null} />
                   <FlagRow label="asterisk inbound intake"
                     configured={ops.flags.asterisk_inbound_enabled}
-                    armed={null} />
+                    armed={ops.inbound_intake ? (ops.inbound_intake.armed ? true : false) : null} />
                   <FlagRow label="AI-agent media runtime"
                     configured={ops.flags.asterisk_media_enabled}
                     armed={ops.process.asterisk_media_runtime_armed} />
                 </tbody>
               </table>
+              {ops.inbound_intake?.consumer_task_dead && (
+                <p className="mt-2 text-[11px] text-ink-500" data-testid="ari-consumer-dead">
+                  <Badge tone="bad">ARI consumer task dead</Badge>{" "}
+                  the ARI WebSocket consumer stopped in this process; inbound
+                  intake is not receiving events until the process restarts.
+                </p>
+              )}
               <p className="mt-2 text-[11px] text-ink-400">
                 telephony queue depth: <strong data-testid="queue-depth">{ops.queues.telephony}</strong>
               </p>
+              {ops.escalations && (
+                <p className="mt-1 text-[11px] text-ink-400">
+                  <Badge tone={ops.escalations.pending > 0 ? "warn" : "info"}>
+                    in-process escalation queue
+                  </Badge>{" "}
+                  <strong data-testid="escalation-pending">{ops.escalations.pending}</strong>{" "}
+                  pending ·{" "}
+                  <strong data-testid="escalation-claimed">{ops.escalations.claimed_open}</strong>{" "}
+                  claimed (unresolved). Depth is what this process can
+                  honestly see; a Redis/DB transport replaces it behind the
+                  same claim seam.
+                </p>
+              )}
             </Card>
           </div>
 

@@ -92,6 +92,10 @@ class EscalationQueue:
     def pending_count(self) -> int:
         return len(self._pending)
 
+    def claimed_open_count(self) -> int:
+        """Claimed but not yet resolved — the operator's live in-flight load."""
+        return sum(1 for ticket_id in self._claimed if ticket_id not in self._resolved)
+
     def claimed_by(self, ticket_id: str) -> str | None:
         entry = self._claimed.get(ticket_id)
         return entry[0] if entry else None
