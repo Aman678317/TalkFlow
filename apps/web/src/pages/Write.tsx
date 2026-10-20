@@ -34,6 +34,7 @@ import { Badge, Button, Card, Spinner } from '@/components/ui';
 import { toast } from '@/stores/toasts';
 import { cn } from '@/lib/utils';
 import { wordDiffPercent } from '@/lib/writeDiff';
+import { useShortcuts } from '@/lib/shortcuts';
 
 /* ─────────────────────────── Types ──────────────────────────────────── */
 
@@ -1651,6 +1652,18 @@ export default function WritePage() {
       toast.error('Copy failed');
     }
   };
+
+  // Keyboard shortcuts (reference parity, 2026-10-21 benchmark): Ctrl/Cmd+Enter
+  // improves the draft, Ctrl/Cmd+Shift+C copies the improved text, Escape
+  // clears the draft. The Write page had no shortcuts at all before.
+  useShortcuts(
+    {
+      submit: () => { void runRewrite(sourceText); },
+      copy: () => { void handleCopy(result?.improved_text || sourceText); },
+      clear: () => { setSourceText(''); },
+    },
+    { clearTargetLabel: 'Input draft text' },
+  );
 
   const handleDownload = () => {
     if (!result?.improved_text) return;

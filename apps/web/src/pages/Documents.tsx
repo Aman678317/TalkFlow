@@ -252,9 +252,9 @@ export default function Documents() {
                   : "No documents uploaded yet. Drop a file above to begin."}
               </div>
             ) : (
-              <div className="space-y-3">
+              <div className="space-y-3 stagger">
                 {filteredDocs.map((d) => (
-                  <div key={d.id} className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs space-y-2.5">
+                  <div key={d.id} className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs space-y-2.5 motion-interactive">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="flex items-center gap-3 min-w-0 flex-1">
                         <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-50 text-dl-blue shrink-0">
