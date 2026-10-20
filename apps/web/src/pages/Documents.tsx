@@ -2,6 +2,7 @@ import React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Upload, FileText, Trash2, Download } from "lucide-react";
 import { api, ApiError } from "../lib/api";
+import { documentsPollingMs } from "../lib/adaptivePolling";
 import { useLanguages } from "../hooks/useLanguages";
 import { Button, Select } from "../components/ui";
 import { toast } from "../stores/toasts";
@@ -27,7 +28,26 @@ export default function Documents() {
   const [statusFilter, setStatusFilter] = React.useState<"all" | "active" | "completed">("all");
   const inputRef = React.useRef<HTMLInputElement>(null);
 
-  const docsQ = useQuery({ queryKey: ["documents"], queryFn: () => api<DocRow[]>("/api/v1/documents"), refetchInterval: 3000 });
+  // Page-visibility state for the adaptive list poll above (lazy-init covers a
+  // mount that already starts hidden; the listener covers every later change).
+  const [pageHidden, setPageHidden] = React.useState<boolean>(
+    () => typeof document !== "undefined" && document.visibilityState === "hidden",
+  );
+  React.useEffect(() => {
+    const sync = () => setPageHidden(document.visibilityState === "hidden");
+    document.addEventListener("visibilitychange", sync);
+    return () => document.removeEventListener("visibilitychange", sync);
+  }, []);
+
+  const docsQ = useQuery({
+    queryKey: ["documents"],
+    queryFn: () => api<DocRow[]>("/api/v1/documents"),
+    // Adaptive polling (2026-10-20 audit round 2): the fixed 3 s list poll ran
+    // forever even when every row was settled. Poll only while a row is inside
+    // the processing pipeline, and never poll a hidden page — the visibility
+    // listener re-renders on tab show/hide so the interval flips accordingly.
+    refetchInterval: (q) => documentsPollingMs((q.state.data ?? []).map((d) => d.status), pageHidden),
+  });
   const glossQ = useQuery({ queryKey: ["glossaries"], queryFn: () => api<any[]>("/api/v1/glossaries") });
   const styleQ = useQuery({ queryKey: ["styles"], queryFn: () => api<any[]>("/api/v1/style-profiles") });
 
