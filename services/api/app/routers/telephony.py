@@ -17,6 +17,7 @@ from app.deps import Principal, client_ip_hash, require_org_user
 from app.errors import AppError, NotFoundError, ValidationError
 from app.ratelimit import check_rate_limit
 from app.telephony.call_service import CallService
+from app.telephony.call_transcript import assemble_transcript
 from app.telephony.media_stream_service import MediaStreamService, TelephonyMediaStreamSession
 from app.telephony.phone_number_service import PhoneNumberService
 from app.telephony.webhook_service import TelephonyWebhookService
@@ -660,6 +661,39 @@ async def get_call(
     cs = CallService(db)
     call = await cs.get_call_by_id(call_id, _org_id(principal))
     return _serialize_call(call)
+
+
+@router.get("/calls/{ref}/transcript")
+async def get_call_transcript(
+    ref: str,
+    principal: Principal = Depends(require_org_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Per-turn transcript + sha256 citations, assembled from the call's ledger.
+
+    ``ref`` resolves deterministically: a bare UUID matches the session id,
+    anything else matches ``call_sid`` — both org-scoped, both fail closed
+    with 404 (foreign-org/unknown lookups are indistinguishable).
+
+    Caller speech is exposed as fingerprints only (sha256), the agent's own
+    lines verbatim, ``ai_agent.node`` transitions as citations, plus the
+    escalation trail and media timeline. See ``app.telephony.call_transcript``.
+    """
+    ref_stripped = (ref or "").strip()
+    if not ref_stripped:
+        raise ValidationError("Call reference is required.")
+    criteria: list[Any] = [M.CallSession.org_id == _org_id(principal)]
+    try:
+        criteria.append(M.CallSession.id == uuid.UUID(ref_stripped))
+    except ValueError:
+        criteria.append(M.CallSession.call_sid == ref_stripped)
+    res = await db.execute(select(M.CallSession).where(*criteria))
+    call = res.scalars().first()
+    if call is None:
+        raise NotFoundError("Call session not found.")
+    res = await db.execute(
+        select(M.CallEvent).where(M.CallEvent.call_id == call.id))
+    return assemble_transcript(call, list(res.scalars().all()))
 
 
 @router.post("/calls/{call_id}/end", response_model=CallSessionOut)
