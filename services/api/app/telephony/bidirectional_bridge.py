@@ -310,6 +310,27 @@ class BidirectionalTranslationBridge:
         except Exception as exc:  # noqa: BLE001 — audit is best-effort (plan §7)
             log.debug("caption sink error: %s", exc)
 
+    def set_leg_mode(self, leg_name: str, mode: str) -> None:
+        """Mid-call seat mode switch (plan §306: original ↔ translated live).
+
+        The next fan-out turn honors the flip — no dialect re-negotiation, no
+        provider change: only the routing decision changes. Unknown legs and
+        unknown modes are rejected explicitly (fail closed).
+        """
+        if leg_name not in self._legs:
+            raise KeyError(f"unknown bridge leg {leg_name!r}")
+        if mode not in ("translated", "original"):
+            raise ValueError(
+                f"leg mode must be 'translated' or 'original', got {mode!r}")
+        old = self._legs[leg_name]
+        self._legs[leg_name] = BridgeLegSpec(
+            name=old.name, hear_lang=old.hear_lang, mode=mode)
+        if leg_name not in PRIMARY_LEG_NAMES:
+            self.extra_legs = [
+                spec if spec.name != leg_name else self._legs[leg_name]
+                for spec in self.extra_legs
+            ]
+
     async def start(self) -> None:
         """Spawn the concurrent dual workers."""
         if self.is_running:
