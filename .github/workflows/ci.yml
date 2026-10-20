@@ -93,6 +93,7 @@ jobs:
             tests/test_queue_and_workers_hardened.py \
             tests/test_realtime_pipeline_hardened.py \
             tests/test_realtime_translation_invariant_hardened.py \
+            tests/test_retention_escalations.py \
             tests/test_social_auth_hardened.py \
             tests/test_telemetry_tracing_hardened.py \
             tests/test_telephony_ops_admin.py \

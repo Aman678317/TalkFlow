@@ -34,7 +34,8 @@ def policy_for(org: M.Organization | None) -> dict:
 
 async def sweep(db: AsyncSession) -> dict:
     """Run one cleanup pass. Returns counts for observability."""
-    counts = {"audio_objects": 0, "documents": 0, "usage": 0, "expired_tokens": 0}
+    counts = {"audio_objects": 0, "documents": 0, "usage": 0, "expired_tokens": 0,
+              "escalations": 0}
 
     # 1) audio objects past retention (audio_sessions rows keep metadata)
     cutoff_audio = utcnow() - timedelta(days=max(0, settings.retention_audio_days))
@@ -77,6 +78,18 @@ async def sweep(db: AsyncSession) -> dict:
     counts["expired_tokens"] += r.rowcount or 0
     r = await db.execute(delete(M.MemoryItem).where(
         M.MemoryItem.expires_at.is_not(None), M.MemoryItem.expires_at < utcnow()))
+
+    # 5) resolved escalation tickets past retention (queue E2 durable
+    # transport audit rows — §P4 ops honesty). Only RESOLVED rows are swept
+    # and only after their own resolution aged out: an unresolved row is the
+    # restart-rehydrate working set and is never touched. The resolution
+    # itself outlives the row on the call's own event ledger.
+    if settings.retention_escalation_days:
+        cutoff_esc = utcnow() - timedelta(days=settings.retention_escalation_days)
+        r = await db.execute(delete(M.AgentEscalation).where(
+            M.AgentEscalation.resolved_at.is_not(None),
+            M.AgentEscalation.resolved_at < cutoff_esc))
+        counts["escalations"] = r.rowcount or 0
 
     await db.commit()
     log.info("retention sweep: %s", counts)
