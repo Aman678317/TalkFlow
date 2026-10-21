@@ -65,14 +65,22 @@ def mount_copilotkit_agent(app: FastAPI, path: str = "/api/copilotkit") -> None:
     @app.post(f"{path}/info")
     @app.get(path)
     async def get_copilotkit_info():
+        # The CopilotKit client asks for an agent literally named "default"
+        # (the v2 provider's `agentId` is not applied to the sidebar's own
+        # chat), and refuses to start when the runtime does not publish that
+        # name — it threw "Agent 'default' not found ... Known agents:
+        # [globaltalk_agent]" and took the whole page down with it. The run
+        # endpoint accepts any agent name, so publishing the alias is enough.
+        agent = {
+            "name": "globaltalk_agent",
+            "description": "GlobalTalk AI assistant for translation, voice, and meetings",
+            "className": "LangGraphAGUIAgent",
+        }
         return {
             "version": "1.77.0",
             "agents": {
-                "globaltalk_agent": {
-                    "name": "globaltalk_agent",
-                    "description": "GlobalTalk AI assistant for translation, voice, and meetings",
-                    "className": "LangGraphAGUIAgent",
-                }
+                "globaltalk_agent": agent,
+                "default": {**agent, "name": "default"},
             },
             "mode": "intelligence",
             "intelligence": {
