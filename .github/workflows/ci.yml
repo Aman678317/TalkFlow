@@ -85,6 +85,7 @@ jobs:
             tests/test_escalation_transport.py \
             tests/test_external_media.py \
             tests/test_full_qa_and_e2e_hardened.py \
+            tests/test_frontend_api_contract_shapes.py \
             tests/test_glossary_mismatch_note_hardened.py \
             tests/test_history_filters_hardened.py \
             tests/test_media_bridge_hygiene.py \
