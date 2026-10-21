@@ -73,6 +73,10 @@ export default function Documents() {
   const STAGE_ORDER = ["uploaded", "queued", "scanning", "parsing", "translating", "reconstructing", "quality_check", "ready"];
   function stageProgress(d: DocRow): number {
     if (d.status === "failed") return 100;
+    // The API reports the real progress (5 / 15 / 25 / 90 / 95 / 100). The
+    // old implementation derived a percentage from a hard-coded stage list
+    // instead, so a document that was 90% done ("reconstructing") showed 71%.
+    if (typeof d.progress === "number" && d.progress > 0) return Math.min(100, Math.round(d.progress));
     const idx = Math.max(0, STAGE_ORDER.indexOf(d.status));
     return Math.round((idx / (STAGE_ORDER.length - 1)) * 100);
   }

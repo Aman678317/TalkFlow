@@ -553,8 +553,11 @@ export default function TranslatePage() {
         method: "POST",
         body: {
           word: query.trim(),
-          source_language: srcLang === "AUTO" ? (detectedLanguage || result?.source_language || "") : srcLang,
-          target_language: tgtLang,
+          // The dictionary endpoint takes `source_lang`/`target_lang`; the
+          // `source_language`/`target_language` names were dropped by
+          // pydantic, so every lookup silently ran en->en.
+          source_lang: srcLang === "AUTO" ? (detectedLanguage || result?.source_language || "") : srcLang,
+          target_lang: tgtLang,
         },
       });
       setDictData(data);
