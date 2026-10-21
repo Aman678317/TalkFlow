@@ -23,6 +23,7 @@ import type { TranslateResponse } from "../lib/types";
 import { translateCanonical } from "../lib/translation";
 import { useShortcuts } from "../lib/shortcuts";
 import { LanguagePicker } from "../components/LanguagePicker";
+import { SelectionTranslate } from "../components/SelectionTranslate";
 import { useLanguages } from "../hooks/useLanguages";
 import { Badge, ErrorState } from "../components/ui";
 import { toast } from "../stores/toasts";
@@ -426,6 +427,7 @@ export default function TranslatePage() {
   });
 
   const [source, setSource] = React.useState("");
+  const sourceRef = React.useRef<HTMLTextAreaElement | null>(null);
   const [srcLang, setSrcLang] = React.useState("AUTO");
   const [tgtLang, setTgtLang] = React.useState("de");
   const [detectedLanguage, setDetectedLanguage] = React.useState("");
@@ -759,6 +761,7 @@ export default function TranslatePage() {
           {/* Textarea */}
           <div className="relative flex-1 p-5">
             <textarea
+              ref={sourceRef}
               className="w-full h-full min-h-[200px] resize-none border-0 bg-transparent p-0 text-[15px] leading-relaxed text-dl-navy focus:outline-none focus:ring-0 placeholder:text-dl-faint"
               placeholder="Type or paste text…"
               value={source}
@@ -770,6 +773,13 @@ export default function TranslatePage() {
                 const text = e.dataTransfer.getData("text/plain");
                 if (text) setSource(text);
               }}
+            />
+
+            {/* Translate just the selected phrase (reference parity, 2026-10-21). */}
+            <SelectionTranslate
+              editorRef={sourceRef}
+              sourceLanguage={srcLang}
+              targetLanguage={tgtLang}
             />
 
             {/* Clear button */}
