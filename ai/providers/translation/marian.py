@@ -2,7 +2,9 @@
 
 Role in the router: fills language pairs the offline Argos index does not cover
 (notably Marathi en↔mr), giving direct models instead of pivots wherever possible.
-Weights download lazily into MODEL_CACHE_PATH/hf on first use (never committed).
+Weights are served from the local HF cache under MODEL_CACHE_PATH/hf (never
+committed, never downloaded behind a user request — issue #109 class 2; set
+GT_ALLOW_MODEL_DOWNLOAD=1 for the operator-approved download path).
 
 hi↔mr has no direct opus model; the adapter performs an engine-internal pivot through
 English and marks pivoted=True + quality flag, per routing policy (section 77.10).
@@ -10,6 +12,7 @@ Business logic above never chains translations itself.
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 
@@ -17,6 +20,15 @@ from ai.interfaces import ProviderUnavailable, TranslationResult
 
 _lock = threading.Lock()
 _models: dict[str, tuple] = {}
+
+
+def _downloads_allowed() -> bool:
+    """Operator opt-in for on-demand model downloads (same policy as
+    gt_ai.translation.model_fetch.downloads_allowed, self-contained here so
+    the legacy lane does not import the canonical package)."""
+    v = os.environ.get("GT_ALLOW_MODEL_DOWNLOAD",
+                       os.environ.get("GT_MT_ALLOW_MODEL_DOWNLOAD", ""))
+    return v.strip().lower() in ("1", "true", "yes", "on")
 
 DIRECT_PAIRS = {("en", "mr"), ("mr", "en")}
 PIVOT_ALLOWED = {("hi", "mr"), ("mr", "hi"), ("ja", "mr"), ("mr", "ja"),
@@ -37,16 +49,25 @@ def _load(src: str, tgt: str):
         except ImportError as exc:
             raise ProviderUnavailable("marian", f"transformers not installed: {exc}")
         from globaltalk.core.config import settings
-        import os
         os.environ.setdefault("HF_HOME",
                               str(settings.resolve(settings.model_cache_path) / "hf"))
-        os.environ.setdefault("TRANSFORMERS_OFFLINE", "0")
         repo = _repo(src, tgt)
+        offline = not _downloads_allowed()
         try:
-            tok = MarianTokenizer.from_pretrained(repo)
-            model = MarianMTModel.from_pretrained(repo)
+            if offline:
+                tok = MarianTokenizer.from_pretrained(repo, local_files_only=True)
+                model = MarianMTModel.from_pretrained(repo, local_files_only=True)
+            else:
+                tok = MarianTokenizer.from_pretrained(repo)
+                model = MarianMTModel.from_pretrained(repo)
             model.eval()
         except Exception as exc:
+            if offline:
+                raise ProviderUnavailable(
+                    "marian",
+                    f"{repo} is not present in the local HF cache and automatic model "
+                    f"downloads are disabled (set GT_ALLOW_MODEL_DOWNLOAD=1 to allow an "
+                    f"operator-approved download): {exc}")
             raise ProviderUnavailable("marian", f"cannot load {repo}: {exc}")
         _models[key] = (tok, model)
         return tok, model

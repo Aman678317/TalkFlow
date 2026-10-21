@@ -1,8 +1,14 @@
 """faster-whisper STT adapter (self-hosted, CPU int8 or GPU fp16). Warm singleton — weights
-are loaded once per process, never per request. Repo: SYSTRAN/faster-whisper (MIT)."""
+are loaded once per process, never per request. Repo: SYSTRAN/faster-whisper (MIT).
+
+Cache-first (issue #109, class 2): a request or a health poll must never start a
+model download; weights are served from the existing cache paths or the
+operator opts in via GT_ALLOW_MODEL_DOWNLOAD / GT_MT_ALLOW_MODEL_DOWNLOAD.
+"""
 from __future__ import annotations
 
 import io
+import os
 import threading
 import time
 import wave
@@ -15,6 +21,27 @@ _model = None
 _lock = threading.Lock()
 
 
+def _downloads_allowed() -> bool:
+    """Operator opt-in for on-demand model downloads (same policy as
+    gt_ai.translation.model_fetch.downloads_allowed, self-contained here so
+    the legacy lane does not import the canonical package)."""
+    v = os.environ.get("GT_ALLOW_MODEL_DOWNLOAD",
+                       os.environ.get("GT_MT_ALLOW_MODEL_DOWNLOAD", ""))
+    return v.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _weights_cached(model_size: str) -> bool:
+    """No-load probe: local dir path, our HF cache slugs, or the default cache."""
+    if os.path.isdir(model_size):
+        return os.path.isfile(os.path.join(model_size, "model.bin"))
+    from globaltalk.core.config import settings
+    hf = settings.resolve(settings.model_cache_path) / "hf" / "hub"
+    slug = f"models--{model_size.replace('/', '--')}"
+    slug2 = f"models--Systran--faster-whisper-{model_size}"
+    return os.path.isdir(hf / slug) or os.path.isdir(hf / slug2) or \
+        os.path.isdir(os.path.expanduser(f"~/.cache/huggingface/hub/{slug2}"))
+
+
 def _lang_map(code: str) -> str:
     """Platform codes → whisper codes (mostly identical; keep explicit map for clarity)."""
     return {"zh": "zh", "zh-CN": "zh"}.get(code, code.split("-")[0])
@@ -24,6 +51,12 @@ def load_model(model_size: str, device: str, compute_type: str):
     global _model
     with _lock:
         if _model is None:
+            if not _downloads_allowed() and not _weights_cached(model_size):
+                raise ProviderUnavailable(
+                    "faster_whisper",
+                    f"whisper model {model_size!r} is not present in the local cache "
+                    f"and automatic model downloads are disabled (set "
+                    f"GT_ALLOW_MODEL_DOWNLOAD=1 to allow an operator-approved download)")
             from faster_whisper import WhisperModel  # lazy import
             _model = WhisperModel(model_size, device=device, compute_type=compute_type)
         return _model
@@ -69,11 +102,13 @@ class FasterWhisperSTT:
             raise ProviderUnavailable(self.name, f"cannot load model: {exc}")
 
     def healthy(self) -> bool:
+        """No-load health probe (issue #109 class 2 — a poll used to run the
+        full load path, potentially starting a download)."""
         try:
-            self._ensure()
-            return True
-        except ProviderUnavailable:
+            import faster_whisper  # noqa: F401
+        except ImportError:
             return False
+        return _weights_cached(self.model_size)
 
     def available(self) -> bool:
         """Lightweight readiness probe — NO weight loading (used by the capability
@@ -82,13 +117,7 @@ class FasterWhisperSTT:
             import faster_whisper  # noqa: F401
         except ImportError:
             return False
-        import os
-        from globaltalk.core.config import settings
-        hf = settings.resolve(settings.model_cache_path) / "hf" / "hub"
-        slug = f"models--{self.model_size.replace('/', '--')}"
-        slug2 = f"models--Systran--faster-whisper-{self.model_size}"
-        return os.path.isdir(hf / slug) or os.path.isdir(hf / slug2) or \
-            os.path.isdir(os.path.expanduser(f"~/.cache/huggingface/hub/{slug2}"))
+        return _weights_cached(self.model_size)
 
     def supported_languages(self) -> set[str]:
         # faster-whisper/whisper covers ~99 languages; the capability registry is the gate,

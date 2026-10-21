@@ -1,17 +1,22 @@
 """faster-whisper STT adapter (real streaming-capable self-hosted STT).
 
-Model weights download on first use into MODEL_CACHE_PATH (configurable).
+Cache-first (issue #109, class 2 — 2026-10-21): weights are served from the
+local HF cache under MODEL_CACHE_PATH; a request, a warmup, or a health
+poll must never start a multi-hundred-MB download behind a user call
+(`healthcheck()` in particular no longer loads the model at all).
 Supports int8 CPU and float16 GPU. VAD filter enabled for realtime segments.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from typing import Any, AsyncIterator
 
 from gt_ai.base import BaseProvider
 from gt_ai.registry import register
+from gt_ai.translation import model_fetch
 from gt_ai.types import ProviderUnavailable, TranscriptChunk
 
 log = logging.getLogger("gt_ai.stt.faster_whisper")
@@ -38,6 +43,25 @@ class FasterWhisperProvider(BaseProvider):
         self._model: Any = None
         self._lock = asyncio.Lock()
 
+    def runtime_ready(self) -> bool:
+        """Serve only when the package is installed AND the weights are already
+        in the local cache (or the operator opted in)."""
+        import importlib.util
+        if importlib.util.find_spec("faster_whisper") is None:
+            return False
+        return model_fetch.downloads_allowed() or self._weights_cached()
+
+    def _weights_cached(self) -> bool:
+        """No-load probe for the cached CT2 conversion (issue #109 class 2)."""
+        try:
+            if os.path.isdir(self.model_size):
+                return os.path.isfile(os.path.join(self.model_size, "model.bin"))
+        except Exception:  # noqa: BLE001 — probe only
+            return False
+        repo = self.model_size if "/" in self.model_size \
+            else f"Systran/faster-whisper-{self.model_size}"
+        return model_fetch.hf_artifact_cached(repo, self.cache_dir, ("model.bin",))
+
     async def _ensure_loaded(self) -> None:
         if self._model is not None:
             return
@@ -61,6 +85,18 @@ class FasterWhisperProvider(BaseProvider):
                         device = "cpu"
                 if device == "cpu" and compute == "float16":
                     compute = "int8"
+                weights_cached = self._weights_cached()
+                if not weights_cached and not model_fetch.downloads_allowed():
+                    raise ProviderUnavailable(
+                        f"whisper model {self.model_size!r} is not present in the local "
+                        f"cache (download_root={self.cache_dir!r}) and automatic model "
+                        f"downloads are disabled (set {model_fetch.GENERIC_ALLOW_DOWNLOAD_ENV}=1 "
+                        f"or {model_fetch.ALLOW_DOWNLOAD_ENV}=1 to allow an operator-approved download)"
+                    )
+                if not weights_cached:
+                    log.warning(
+                        "faster-whisper: %s is not cached; downloading because an opt-in env allows it",
+                        self.model_size)
                 return WhisperModel(self.model_size, device=device,
                                     compute_type=compute, download_root=self.cache_dir)
             self._model = await asyncio.to_thread(_load)
@@ -71,13 +107,14 @@ class FasterWhisperProvider(BaseProvider):
         await self.transcribe(b"", 16000)  # trigger decode path warmup
 
     async def healthcheck(self) -> bool:
+        """Lightweight probe — NEVER loads the model (a dashboard poll used to
+        trigger the full download path, issue #109 class 2)."""
         if self._model is not None:
             return True
-        try:
-            from faster_whisper import WhisperModel
-            return True
-        except Exception:
+        import importlib.util
+        if importlib.util.find_spec("faster_whisper") is None:
             return False
+        return model_fetch.downloads_allowed() or self._weights_cached()
 
     def _transcribe_sync(self, audio: bytes, sample_rate: int,
                          lang_hint: str | None) -> TranscriptChunk:

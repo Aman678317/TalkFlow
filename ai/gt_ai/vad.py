@@ -120,8 +120,21 @@ class EnergyVAD:
         return self._clock_ms
 
 
+def _silero_cached() -> bool:
+    """Pure-fs probe of the torch-hub cache for the silero-vad clone ('master' ref)."""
+    import os
+    hub = os.path.join(os.environ.get("TORCH_HOME",
+                                      os.path.expanduser("~/.cache/torch")), "hub")
+    return os.path.isdir(os.path.join(hub, "snakers4_silero-vad_master"))
+
+
 class SileroVAD:
-    """Optional Silero VAD adapter (torch). Same interface as EnergyVAD."""
+    """Optional Silero VAD adapter (torch). Same interface as EnergyVAD.
+
+    Cache-first (issue #109 class 2): torch.hub.load used to clone the GitHub
+    repo on first use; now the local hub cache is probed first and downloads
+    only happen behind GT_ALLOW_MODEL_DOWNLOAD.
+    """
 
     def __init__(self, sample_rate: int = 16000, threshold: float = 0.5) -> None:
         self.sample_rate = sample_rate
@@ -134,6 +147,16 @@ class SileroVAD:
         if self._model is None:
             def _load():
                 import torch
+                import os
+                if not _silero_cached():
+                    v = os.environ.get("GT_ALLOW_MODEL_DOWNLOAD",
+                                       os.environ.get("GT_MT_ALLOW_MODEL_DOWNLOAD", ""))
+                    if v.strip().lower() not in ("1", "true", "yes", "on"):
+                        raise RuntimeError(
+                            "silero-vad is not present in the local torch-hub cache and "
+                            "automatic model downloads are disabled (set "
+                            "GT_ALLOW_MODEL_DOWNLOAD=1 to allow an operator-approved download)")
+                    log.warning("vad: silero not cached; downloading because an opt-in env allows it")
                 model, utils = torch.hub.load(
                     repo_or_dir="snakers4/silero-vad", model="silero_vad",
                     force_reload=False, trust_repo=True)
