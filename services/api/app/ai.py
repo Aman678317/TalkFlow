@@ -28,7 +28,7 @@ from gt_ai.base import BaseProvider
 from gt_ai.model_router.router import ModelRouter, ProviderSpec
 from gt_ai.registry import create
 from gt_ai.types import (
-    AudioChunk, DetectionResult, ProviderUnavailable,
+    AudioChunk, DetectionResult, Intent, NoPrivateProviderAvailable, ProviderUnavailable,
     RouteDecision, Task, TranslationRequest, TranslationResult, TranscriptChunk,
 )
 
@@ -257,10 +257,17 @@ class AIFacade:
         touched: list[tuple[Task, str, bool]] = []
         candidates = list(self.router.providers.get(task, []))
         max_attempts = max(10, len(candidates) + 2)
+        # "Private only" is a promise: the chain must not end in the online
+        # provider, which would send the caller's content to an external
+        # service (observed 2026-10-20).
+        intent = route_kw.get("intent")
+        private_only = getattr(intent, "value", intent) == Intent.PRIVATE_ONLY.value
         try:
             for _ in range(max_attempts):
                 try:
                     decision = self.router.route(task, **route_kw)
+                except NoPrivateProviderAvailable:
+                    raise
                 except Exception:
                     break
                 if decision.provider in tried:
@@ -274,8 +281,12 @@ class AIFacade:
 
             # Providers the router may not have listed, tried after everything it did.
             if task == Task.MT:
-                extras = [("neural_online", "neural translation provider"),
-                          ("dev_echo", "fallback to dev provider")]
+                if private_only:
+                    # No online fallback for a private_only request.
+                    extras: list[tuple[str, str]] = [("dev_echo", "fallback to dev provider")]
+                else:
+                    extras = [("neural_online", "neural translation provider"),
+                              ("dev_echo", "fallback to dev provider")]
             else:
                 fallback = {
                     Task.STT: "dev_text",
@@ -313,7 +324,18 @@ class AIFacade:
     async def _execute(self, task: Task, route_kw: dict, call):
         """call(provider) -> result; failover across providers."""
         last_err: Exception | None = None
-        for decision in self._ordered_candidates(task, route_kw):
+        intent = route_kw.get("intent")
+        private_only = getattr(intent, "value", intent) == Intent.PRIVATE_ONLY.value
+        try:
+            decisions = self._ordered_candidates(task, route_kw)
+        except NoPrivateProviderAvailable as e:
+            # Honest failure: the request was NOT sent to any external service.
+            raise ProviderError(
+                "No private provider is available for this request; the content was "
+                "not sent to any external service.",
+                details={"task": task.value, "error": str(e)},
+            ) from e
+        for decision in decisions:
             t0 = time.perf_counter()
             try:
                 provider = self.provider(task, decision.provider)
@@ -343,8 +365,12 @@ class AIFacade:
                     reason=type(e).__name__).inc()
                 log.exception("provider %s/%s failed", task, decision.provider)
         raise ProviderError(
-            "AI capability temporarily unavailable. Original content is unaffected.",
-            details={"task": task.value, "error": str(last_err)})
+            ("No private provider is available for this request; the content was "
+             "not sent to any external service.")
+            if private_only
+            else "AI capability temporarily unavailable. Original content is unaffected.",
+            details={"task": task.value, "error": str(last_err),
+                     "private_only": private_only})
 
     # ------------------------------------------------------------------ #
     # Public API used by services / realtime pipeline

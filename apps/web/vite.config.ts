@@ -41,6 +41,30 @@ export default defineConfig(async () => {
   const backendHttp = `http://127.0.0.1:${backendPort}`;
   const backendWs = `ws://127.0.0.1:${backendPort}`;
 
+  // Shared by the dev server and the production preview.
+  const apiProxy = {
+    "/api": {
+      target: backendHttp,
+      changeOrigin: true,
+      ws: true,
+      timeout: 60000,
+      proxyTimeout: 60000,
+      // "/api" (no sub-path) is the SPA's API-keys page, not a backend call.
+      bypass(req: { url?: string }) {
+        if (req.url === "/api" || req.url.startsWith("/api?")) return "/index.html";
+      },
+    },
+    "/api-docs": { target: backendHttp, changeOrigin: true, timeout: 60000, proxyTimeout: 60000 },
+    "/v2": { target: backendHttp, changeOrigin: true, timeout: 60000, proxyTimeout: 60000 },
+    "/v3": { target: backendHttp, changeOrigin: true, timeout: 60000, proxyTimeout: 60000 },
+    "/ws": { target: backendWs, changeOrigin: true, ws: true },
+    "/health": { target: backendHttp, timeout: 10000, proxyTimeout: 10000 },
+    "/healthz": { target: backendHttp, timeout: 10000, proxyTimeout: 10000 },
+    "/ready": { target: backendHttp, timeout: 10000, proxyTimeout: 10000 },
+    "/readyz": { target: backendHttp, timeout: 10000, proxyTimeout: 10000 },
+    "/metrics": { target: backendHttp, timeout: 10000, proxyTimeout: 10000 },
+  };
+
   return {
   plugins: reactPlugin ? [reactPlugin()] : [],
   esbuild: {
@@ -54,28 +78,14 @@ export default defineConfig(async () => {
   },
   server: {
     port: 5173,
-    proxy: {
-      "/api": {
-        target: backendHttp,
-        changeOrigin: true,
-        ws: true,
-        timeout: 60000,
-        proxyTimeout: 60000,
-        // "/api" (no sub-path) is the SPA's API-keys page, not a backend call.
-        bypass(req) {
-          if (req.url === "/api" || req.url.startsWith("/api?")) return "/index.html";
-        },
-      },
-      "/api-docs": { target: backendHttp, changeOrigin: true, timeout: 60000, proxyTimeout: 60000 },
-      "/v2": { target: backendHttp, changeOrigin: true, timeout: 60000, proxyTimeout: 60000 },
-      "/v3": { target: backendHttp, changeOrigin: true, timeout: 60000, proxyTimeout: 60000 },
-      "/ws": { target: backendWs, changeOrigin: true, ws: true },
-      "/health": { target: backendHttp, timeout: 10000, proxyTimeout: 10000 },
-      "/healthz": { target: backendHttp, timeout: 10000, proxyTimeout: 10000 },
-      "/ready": { target: backendHttp, timeout: 10000, proxyTimeout: 10000 },
-      "/readyz": { target: backendHttp, timeout: 10000, proxyTimeout: 10000 },
-      "/metrics": { target: backendHttp, timeout: 10000, proxyTimeout: 10000 },
-    },
+    proxy: apiProxy,
+  },
+  // The production bundle can be previewed against the same local backend —
+  // that is the only faithful way to measure the shipped app (the dev server
+  // serves unbundled modules and is not representative).
+  preview: {
+    port: 4173,
+    proxy: apiProxy,
   },
   build: {
     sourcemap: true,

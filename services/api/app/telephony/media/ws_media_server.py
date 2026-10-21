@@ -237,6 +237,11 @@ class PacedAudioSender:
         self._interval = interval_seconds
         self._queue: asyncio.Queue[bytes] = asyncio.Queue()
         self._stop = asyncio.Event()
+        #: flow control (PBX-driven MEDIA_XOFF/MEDIA_XON): set ⇒ the wire is
+        #: held and queued frames keep their order; resume restarts the phase.
+        self._resume_gate = asyncio.Event()
+        self._resume_gate.set()
+        self._paused = False
         #: number of frames actually flushed to the wire
         self.sent_count = 0
 
@@ -249,12 +254,54 @@ class PacedAudioSender:
     def stop(self) -> None:
         self._stop.set()
 
+    # -- flow control (P2: honor Asterisk's MEDIA_XOFF / MEDIA_XON) ---------- #
+
+    def pause(self) -> None:
+        """``MEDIA_XOFF``: hold the wire.
+
+        Frames already queued are NOT dropped — they keep their order and are
+        drained on ``MEDIA_XON`` at the normal ptime cadence.
+        """
+        if self._paused:
+            return
+        self._paused = True
+        self._resume_gate.clear()
+
+    def resume(self) -> None:
+        """``MEDIA_XON``: resume draining. Never a catch-up burst."""
+        if not self._paused:
+            return
+        self._paused = False
+        self._resume_gate.set()
+
+    @property
+    def paused(self) -> bool:
+        return self._paused
+
     async def run(self) -> None:
         """Deadline-paced sends: cadence is driven by the interval, and send
-        latency never accumulates (each deadline is absolute, not shifted)."""
+        latency never accumulates (each deadline is absolute, not shifted).
+
+        Flow control: while paused the loop holds the wire and re-checks the
+        resume gate every interval (so ``stop`` still terminates bounded);
+        on XON the phase restarts (first frame immediate, then ptime cadence
+        — the queue is NOT flushed as a burst).
+        """
         loop = asyncio.get_running_loop()
         next_deadline: float | None = None
+        was_paused = False
         while not self._stop.is_set():
+            if self._paused:
+                was_paused = True
+                try:
+                    await asyncio.wait_for(
+                        self._resume_gate.wait(), timeout=self._interval)
+                except TimeoutError:
+                    pass
+                continue
+            if was_paused:  # XON just arrived: restart the phase, never catch up
+                was_paused = False
+                next_deadline = None
             try:
                 frame = await asyncio.wait_for(self._queue.get(), timeout=self._interval)
             except TimeoutError:

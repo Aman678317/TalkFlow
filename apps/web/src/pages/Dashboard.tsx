@@ -265,7 +265,7 @@ export default function Dashboard() {
             {(langs ?? []).map((l) => (
               <span
                 key={l.code}
-                title={`${l.name}: STT ${l.stt_status}, MT ${l.mt_status}, TTS ${l.tts_status}`}
+                title={`${l.name}: STT ${l.speech_input_status}, MT ${l.translation_status}, TTS ${l.speech_output_status}`}
                 className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
                   l.translation_supported
                     ? "border-black/[0.06] bg-black/[0.03] text-neutral-800 hover:bg-black/[0.06]"

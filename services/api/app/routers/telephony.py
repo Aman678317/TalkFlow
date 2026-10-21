@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from typing import Any
 
@@ -17,6 +18,9 @@ from app.deps import Principal, client_ip_hash, require_org_user
 from app.errors import AppError, NotFoundError, ValidationError
 from app.ratelimit import check_rate_limit
 from app.telephony.call_service import CallService
+from app.telephony.call_transcript import assemble_transcript
+from app.telephony.escalation import shared_dispatcher
+from app.telephony.media.agent_media_session import MediaCallEventSink
 from app.telephony.media_stream_service import MediaStreamService, TelephonyMediaStreamSession
 from app.telephony.phone_number_service import PhoneNumberService
 from app.telephony.webhook_service import TelephonyWebhookService
@@ -660,6 +664,177 @@ async def get_call(
     cs = CallService(db)
     call = await cs.get_call_by_id(call_id, _org_id(principal))
     return _serialize_call(call)
+
+
+@router.get("/calls/{ref}/transcript", summary="Per-turn transcript + sha256 citations")
+async def get_call_transcript(
+    ref: str,
+    principal: Principal = Depends(require_org_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Per-turn transcript + sha256 citations, assembled from the call's ledger.
+
+    ``ref`` resolves deterministically: a bare UUID matches the session id,
+    anything else matches ``call_sid`` — both org-scoped, both fail closed
+    with 404 (foreign-org/unknown lookups are indistinguishable).
+
+    Caller speech is exposed as fingerprints only (sha256), the agent's own
+    lines verbatim, ``ai_agent.node`` transitions as citations, plus the
+    escalation trail and media timeline. See ``app.telephony.call_transcript``.
+    """
+    ref_stripped = (ref or "").strip()
+    if not ref_stripped:
+        raise ValidationError("Call reference is required.")
+    criteria: list[Any] = [M.CallSession.org_id == _org_id(principal)]
+    try:
+        criteria.append(M.CallSession.id == uuid.UUID(ref_stripped))
+    except ValueError:
+        criteria.append(M.CallSession.call_sid == ref_stripped)
+    res = await db.execute(select(M.CallSession).where(*criteria))
+    call = res.scalars().first()
+    if call is None:
+        raise NotFoundError("Call session not found.")
+    res = await db.execute(
+        select(M.CallEvent).where(M.CallEvent.call_id == call.id))
+    return assemble_transcript(call, list(res.scalars().all()))
+
+
+# --------------------------------------------------------------------------- #
+# Live-agent escalation board (§D1)
+# --------------------------------------------------------------------------- #
+
+
+class ClaimEscalationRequest(BaseModel):
+    worker: str | None = Field(default=None, max_length=80,
+                               description="Display name of the claiming agent")
+
+
+class ResolveEscalationRequest(BaseModel):
+    resolution: str = Field(default="handled_by_human", max_length=120)
+
+
+class EscalationTicketOut(BaseModel):
+    ticket_id: str
+    call_sid: str
+    reason: str | None = None
+    summary: str | None = None
+    turns: int
+    age_seconds: int
+    state: str              # pending | claimed | resolved
+    claimed_by: str | None = None
+    resolution: str | None = None
+
+
+def _ticket_out(ticket, q, state: str) -> EscalationTicketOut:
+    return EscalationTicketOut(
+        ticket_id=ticket.ticket_id,
+        call_sid=ticket.call_sid,
+        reason=ticket.reason,
+        summary=ticket.summary,
+        turns=ticket.turns,
+        age_seconds=max(0, int(time.monotonic() - ticket.created_at)),
+        state=state,
+        claimed_by=q.claimed_by(ticket.ticket_id) if state != "pending" else None,
+        resolution=(q.resolution_of(ticket.ticket_id) if state == "resolved" else None),
+    )
+
+
+@router.get("/escalations", response_model=list[EscalationTicketOut])
+async def list_escalations(
+    principal: Principal = Depends(require_org_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Live-agent board: every escalation ticket whose call belongs to this org.
+
+    Pending first, then claimed, then resolved; each group oldest first. The
+    queue itself stays org-agnostic — scoping is derived from the
+    ``call_sid → CallSession.org_id`` relationship, so a ticket from another
+    org's call is simply invisible (never listed).
+    """
+    q = shared_dispatcher().queue
+    res = await db.execute(
+        select(M.CallSession.call_sid).where(M.CallSession.org_id == _org_id(principal)))
+    org_sids = set(res.scalars().all())
+
+    claimed_ids = set(q.claimed_ticket_ids())
+    resolved_ids = set(q.resolved_ticket_ids())
+    ranked: list[EscalationTicketOut] = []
+    for t in q.pending_tickets():
+        if t.call_sid in org_sids and t.ticket_id not in claimed_ids and t.ticket_id not in resolved_ids:
+            ranked.append(_ticket_out(t, q, "pending"))
+    for tid in q.claimed_ticket_ids():
+        t = q.ticket_by_id(tid)
+        if t is not None and t.call_sid in org_sids and tid not in resolved_ids:
+            ranked.append(_ticket_out(t, q, "claimed"))
+    for tid in q.resolved_ticket_ids():
+        t = q.ticket_by_id(tid)
+        if t is not None and t.call_sid in org_sids:
+            ranked.append(_ticket_out(t, q, "resolved"))
+
+    ranked.sort(key=lambda r: ({"pending": 0, "claimed": 1, "resolved": 2}[r.state], -r.age_seconds))
+    return ranked
+
+
+async def _org_visible_ticket(db: AsyncSession, ticket_id: str, org_id: uuid.UUID):
+    """Resolve a ticket AND prove its call belongs to this org (else None)."""
+    ticket = shared_dispatcher().queue.ticket_by_id(ticket_id)
+    if ticket is None:
+        return None
+    res = await db.execute(
+        select(M.CallSession.id).where(
+            M.CallSession.call_sid == ticket.call_sid,
+            M.CallSession.org_id == org_id))
+    if res.scalars().first() is None:
+        return None
+    return ticket
+
+
+@router.post("/escalations/{ticket_id}/claim", response_model=EscalationTicketOut)
+async def claim_escalation(
+    ticket_id: str,
+    body: ClaimEscalationRequest | None = None,
+    principal: Principal = Depends(require_org_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Claim a pending escalation for a live agent (single claim, no stealing)."""
+    q = shared_dispatcher().queue
+    ticket = await _org_visible_ticket(db, ticket_id, _org_id(principal))
+    if ticket is None:
+        raise NotFoundError("Escalation ticket not found.")
+    if ticket_id in q.resolved_ticket_ids():
+        raise AppError("Escalation ticket is already resolved.", status=409)
+    worker = ((body.worker if body else None) or principal.identity_for_rate_limit or "operator").strip() or "operator"
+    claimed = q.claim(worker, ticket_id=ticket_id)
+    if claimed is None:
+        raise AppError("Escalation ticket was just claimed by someone else.",
+                       status=409, recoverable=False)
+    await shared_dispatcher().record_claim(
+        claimed, worker, MediaCallEventSink(claimed.call_sid))
+    return _ticket_out(claimed, q, "claimed")
+
+
+@router.post("/escalations/{ticket_id}/resolve", response_model=EscalationTicketOut)
+async def resolve_escalation(
+    ticket_id: str,
+    body: ResolveEscalationRequest | None = None,
+    principal: Principal = Depends(require_org_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Resolve a CLAIMED escalation (unclaimed work cannot be marked done)."""
+    q = shared_dispatcher().queue
+    ticket = await _org_visible_ticket(db, ticket_id, _org_id(principal))
+    if ticket is None:
+        raise NotFoundError("Escalation ticket not found.")
+    resolution = (body.resolution if body else "handled_by_human").strip() or "handled_by_human"
+    if (ticket_id in q.resolved_ticket_ids()
+            or ticket_id not in set(q.claimed_ticket_ids())):
+        raise AppError("Escalation ticket must be claimed before it can be resolved.",
+                       status=409, recoverable=False)
+    # record_resolution performs the completion AND the ledger row (one source
+    # of truth; a False return here only means a racing resolve got there first)
+    await shared_dispatcher().record_resolution(
+        ticket, resolution, MediaCallEventSink(ticket.call_sid))
+    return _ticket_out(ticket, q, "resolved")
 
 
 @router.post("/calls/{call_id}/end", response_model=CallSessionOut)

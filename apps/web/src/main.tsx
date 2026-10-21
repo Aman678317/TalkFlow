@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { MotionConfig } from "motion/react";
+import { Suspense, lazy } from "react";
 import "./index.css";
 import Layout from "./components/Layout";
 import { ToastHost } from "./stores/toast";
@@ -10,29 +11,48 @@ import { useAuth } from "./stores/auth";
 import Landing from "./pages/Landing";
 import Login from "./pages/Login";
 import Signup from "./pages/Signup";
-import Dashboard from "./pages/Dashboard";
-import TranslatePage from "./pages/Translate";
-import WritePage from "./pages/Write";
-import Voice from "./pages/Voice";
-import Documents from "./pages/Documents";
-import Meetings from "./pages/Meetings";
-import MeetingRoom from "./pages/MeetingRoom";
-import ChatRooms from "./pages/ChatRooms";
-import HistoryPage from "./pages/History";
-import Glossaries from "./pages/Glossaries";
-import TranslationMemory from "./pages/TranslationMemory";
-import StyleProfiles from "./pages/StyleProfiles";
-import ApiKeys from "./pages/ApiKeys";
-import Usage from "./pages/Usage";
-import Billing from "./pages/Billing";
-import Team from "./pages/Team";
-import SettingsPage from "./pages/Settings";
-import Admin from "./pages/Admin";
-import JoinCall from "./pages/JoinCall";
-import AuthCallback from "./pages/AuthCallback";
-import AgentStudio from "./pages/AgentStudio";
-import DocsPage from "./pages/DocsPage";
 import AppShell from "./components/layout/AppShell";
+
+// Route-level code splitting (2026-10-21 reference benchmark).
+// This entry shipped every page — including the ~560 kB meeting/LiveKit
+// bundle — to a visitor who only wanted to translate a sentence. Each route
+// now loads on demand, so the first paint carries the shell plus the page
+// being opened. Landing/Login/Signup stay eager: they are the first paint.
+const Dashboard = lazy(() => import("./pages/Dashboard"));
+const TranslatePage = lazy(() => import("./pages/Translate"));
+const TranslateWebPage = lazy(() => import("./pages/TranslateWebPage"));
+const WritePage = lazy(() => import("./pages/Write"));
+const Voice = lazy(() => import("./pages/Voice"));
+const Documents = lazy(() => import("./pages/Documents"));
+const Meetings = lazy(() => import("./pages/Meetings"));
+const MeetingRoom = lazy(() => import("./pages/MeetingRoom"));
+const ChatRooms = lazy(() => import("./pages/ChatRooms"));
+const HistoryPage = lazy(() => import("./pages/History"));
+const Glossaries = lazy(() => import("./pages/Glossaries"));
+const TranslationMemory = lazy(() => import("./pages/TranslationMemory"));
+const StyleProfiles = lazy(() => import("./pages/StyleProfiles"));
+const ApiKeys = lazy(() => import("./pages/ApiKeys"));
+const Usage = lazy(() => import("./pages/Usage"));
+const Billing = lazy(() => import("./pages/Billing"));
+const Team = lazy(() => import("./pages/Team"));
+const SettingsPage = lazy(() => import("./pages/Settings"));
+const Admin = lazy(() => import("./pages/Admin"));
+const AdminTelephony = lazy(() => import("./pages/AdminTelephony"));
+const AgentCalls = lazy(() => import("./pages/AgentCalls"));
+const JoinCall = lazy(() => import("./pages/JoinCall"));
+const AuthCallback = lazy(() => import("./pages/AuthCallback"));
+const AgentStudio = lazy(() => import("./pages/AgentStudio"));
+const DocsPage = lazy(() => import("./pages/DocsPage"));
+
+/** Shown while a route chunk is still arriving. */
+function RouteFallback() {
+  return (
+    <div className="flex h-full min-h-[40vh] items-center justify-center" role="status" aria-live="polite">
+      <div className="h-8 w-8 animate-spin-slow rounded-full border-2 border-iris-600 border-t-transparent" />
+      <span className="sr-only">Loading</span>
+    </div>
+  );
+}
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -77,6 +97,7 @@ export default function App() {
     <MotionConfig reducedMotion="user">
       <QueryClientProvider client={queryClient}>
         <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+          <Suspense fallback={<RouteFallback />}>
           <Routes>
             <Route path="/" element={<RootGate />} />
             <Route path="/login" element={<Login />} />
@@ -97,6 +118,7 @@ export default function App() {
             <Route element={<RequireAuth><Layout /></RequireAuth>}>
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/translate" element={<TranslatePage />} />
+              <Route path="/translate/page" element={<TranslateWebPage />} />
               <Route path="/write" element={<WritePage />} />
               <Route path="/voice" element={<Voice />} />
               <Route path="/documents" element={<Documents />} />
@@ -112,9 +134,12 @@ export default function App() {
               <Route path="/team" element={<Team />} />
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/admin" element={<Admin />} />
+              <Route path="/admin/telephony" element={<AdminTelephony />} />
+              <Route path="/agent/calls" element={<AgentCalls />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
+          </Suspense>
           <ToastHost />
         </BrowserRouter>
       </QueryClientProvider>

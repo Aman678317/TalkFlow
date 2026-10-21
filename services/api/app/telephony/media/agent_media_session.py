@@ -1,26 +1,26 @@
-"""Bridge turn-loop runtime: externalMedia ↔ AgentGraph ↔ ``call_events``.
+"""Bridge turn-loop runtime: externalMedia â†” AgentGraph â†” ``call_events``.
 
 One :class:`AgentMediaSession` per *connected* AI-agent outbound call:
 
-    caller PJSIP channel ─┐
-                          ├─ mixing bridge ─ externalMedia(chan_websocket) ─ WS media server
-    AgentMediaSession ────┘        (validated P3 topology, lab evidence §P3)
-        └─ AgentTurnLoop (disclosure → verify → purpose → respond → end/escalate)
-              └─ MediaCallEventSink → immutable call_events ledger
+    caller PJSIP channel â”€â”
+                          â”œâ”€ mixing bridge â”€ externalMedia(chan_websocket) â”€ WS media server
+    AgentMediaSession â”€â”€â”€â”€â”˜        (validated P3 topology, lab evidence Â§P3)
+        â””â”€ AgentTurnLoop (disclosure â†’ verify â†’ purpose â†’ respond â†’ end/escalate)
+              â””â”€ MediaCallEventSink â†’ immutable call_events ledger
 
-Lab-proven facts this module relies on (do not guess, see doc §P3):
+Lab-proven facts this module relies on (do not guess, see doc Â§P3):
 
 - ``MEDIA_START`` carries the client-chosen media channel id
-  (``talkflow-media-*``) — the deterministic correlation key between a WS
+  (``talkflow-media-*``) â€” the deterministic correlation key between a WS
   connection and its session;
 - teardown keeps bridge zero-frame flow until the media channel is deleted,
-  after which Asterisk closes the WS itself ("peer closed") — so channels are
+  after which Asterisk closes the WS itself ("peer closed") â€” so channels are
   deleted BEFORE the residual audit runs;
 - outbound sends must be paced (``PacedAudioSender``), never burst.
 
 Honest boundaries (unchanged from PR #71): no real STT/TTS is wired. Without
 a recognizer the source yields one zero-confidence turn and the graph's OWN
-``low_stt_confidence`` rule escalates — fail-closed by the existing guard,
+``low_stt_confidence`` rule escalates â€” fail-closed by the existing guard,
 not an invention here. Without a synthesizer, agent lines are decided,
 guarded and persisted but no frames leave the backend. This module makes no
 PSTN or human-audio claim; the whole runtime is default-off behind
@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
@@ -39,6 +40,7 @@ from sqlalchemy import select
 from app.telephony.ai_agent_graph import GraphConfig, build_graph
 from app.telephony.media.agent_turn_loop import (
     EVENT_OUTCOME,
+    TERMINAL_ESCALATED,
     TERMINAL_FAILED,
     TERMINAL_STOPPED,
     AgentTurnLoop,
@@ -53,7 +55,12 @@ from app.telephony.media.external_media import (
     MediaChannelInfo,
     MediaDirection,
 )
-from app.telephony.media.ws_media_protocol import ControlMessage, MediaStart
+from app.telephony.media.ws_media_protocol import (
+    EVENT_MEDIA_XON,
+    EVENT_MEDIA_XOFF,
+    ControlMessage,
+    MediaStart,
+)
 from app.telephony.media.ws_media_server import (
     MediaConnectionHooks,
     PacedAudioSender,
@@ -68,7 +75,7 @@ log = logging.getLogger("app.telephony.media")
 # caller-side utterance collection
 # --------------------------------------------------------------------------- #
 
-#: Segmenter constants (16 kHz mono, 20 ms frames — lab mic audio is ~RMS 8500).
+#: Segmenter constants (16 kHz mono, 20 ms frames â€” lab mic audio is ~RMS 8500).
 SILENCE_RMS_THRESHOLD = 900.0
 MIN_SPEECH_FRAMES = 5        # 100 ms of audio above threshold starts a segment
 MIN_SILENCE_FRAMES = 25      # 500 ms of trailing silence finalizes it
@@ -82,7 +89,7 @@ class MediaUtteranceSource:
     honest empty utterance (confidence 0) so the graph fail-closes on its own
     ``low_stt_confidence`` rule, then ``None``. When a ``transcribe`` hook is
     configured (future STT wiring / lab drives), caller audio is segmented by
-    simple RMS gating — silence-finalized, capped — and each segment goes to
+    simple RMS gating â€” silence-finalized, capped â€” and each segment goes to
     the hook; the hook owns any confidence it reports.
     """
     def __init__(
@@ -127,7 +134,7 @@ class MediaUtteranceSource:
         if self._gone.is_set():
             return None
         if self._transcribe is None:
-            # No recognizer wired: exactly one fail-closed turn, then done —
+            # No recognizer wired: exactly one fail-closed turn, then done â€”
             # the graph escalates on its own low-confidence rule.
             if not self._emitted_unavailable:
                 self._emitted_unavailable = True
@@ -157,7 +164,7 @@ class MediaUtteranceSource:
         Return ``"arrival"`` | ``"gone"`` | ``"timeout"``.
 
         NOTE: deliberately implemented as a bounded poll instead of
-        ``asyncio.wait({Event.wait() tasks})`` — that task-completion plumbing
+        ``asyncio.wait({Event.wait() tasks})`` â€” that task-completion plumbing
         proved schedule-order fragile in this environment (a completion wakeup
         could be missed, blocking the turn until the full timeout). A small
         poll slice is deterministic, wakes on ``gone`` within one slice (stop
@@ -227,17 +234,17 @@ class MediaUtteranceSource:
 
 
 # --------------------------------------------------------------------------- #
-# agent speech → paced frames (or honest silence-free no-op)
+# agent speech â†’ paced frames (or honest silence-free no-op)
 # --------------------------------------------------------------------------- #
 
 
 class PaceSpeaker:
     """SpeechRenderer implementation over the live ``WSMediaConnection``.
 
-    With a ``synthesize`` hook: text → slin16 frames → :class:`PacedAudioSender`
-    (one frame per absolute ptime deadline — the lab-validated cadence; never
+    With a ``synthesize`` hook: text â†’ slin16 frames â†’ :class:`PacedAudioSender`
+    (one frame per absolute ptime deadline â€” the lab-validated cadence; never
     a burst). Without one: ``wired=False``, ``render`` returns 0 and the
-    loop's audit records ``tts="absent"`` — the words exist, the audio doesn't.
+    loop's audit records ``tts="absent"`` â€” the words exist, the audio doesn't.
     """
 
     def __init__(self, *, synthesize: Callable[[str], Awaitable[Any]] | None) -> None:
@@ -286,6 +293,18 @@ class PaceSpeaker:
             self._pacer.stop()
         self._pacer = None
         self._pacer_task = None
+
+    # -- flow control passthrough (MEDIA_XOFF / MEDIA_XON, plan Â§P2) --------- #
+
+    def pause(self) -> None:
+        """Hold the outbound audio stream; the pacer keeps its queue order."""
+        if self._pacer is not None:
+            self._pacer.pause()
+
+    def resume(self) -> None:
+        """Resume the outbound stream at the ptime cadence (no catch-up)."""
+        if self._pacer is not None:
+            self._pacer.resume()
 
 
 # --------------------------------------------------------------------------- #
@@ -352,8 +371,8 @@ class AgentMediaSession:
     """Assemble the ARI dialogue, run the turn loop, tear down with order.
 
     Lifecycle is driven from a single background task (``run_until_done``):
-    start → turn loop → outcome event → teardown. ``request_stop`` is the
-    operator/interrupt seam (§6: a stop ends the graph within the same turn).
+    start â†’ turn loop â†’ outcome event â†’ teardown. ``request_stop`` is the
+    operator/interrupt seam (Â§6: a stop ends the graph within the same turn).
     """
 
     def __init__(
@@ -365,6 +384,7 @@ class AgentMediaSession:
         spec: AgentMediaSpec,
         sink: TurnEventSink,
         registry: dict[str, "AgentMediaSession"],
+        escalation: Any | None = None,
     ) -> None:
         self.call_sid = call_sid
         self.caller_channel_id = caller_channel_id
@@ -400,9 +420,16 @@ class AgentMediaSession:
         self.controls: dict[str, int] = {}
         self.ws_closed_reason: str | None = None
         self.outcome: TurnLoopOutcome | None = None
+        #: monotonic timestamp of bridge membership â€” feeds media_bridge_left
+        self._joined_at: float | None = None
+        #: ``media_codec_negotiated`` is emitted once per session
+        self._codec_negotiated_emitted = False
+        self._codec_negotiated_task: asyncio.Task[None] | None = None
 
         self._loop: AgentTurnLoop | None = None
         self._task: asyncio.Task[None] | None = None
+        #: P4 escalation hook (plan Â§C1) â€” default None = pure no-op
+        self.escalation = escalation
 
     # -- lifecycle ---------------------------------------------------------- #
 
@@ -422,7 +449,7 @@ class AgentMediaSession:
                                       summary="task cancelled")
             await asyncio.shield(self._teardown(outcome))
             raise
-        except Exception:  # noqa: BLE001 — a failed session must still tear down
+        except Exception:  # noqa: BLE001 â€” a failed session must still tear down
             log.exception("agent media session failed (call %s)", self.call_sid)
             await asyncio.shield(self._teardown(
                 TurnLoopOutcome(terminal=TERMINAL_FAILED)))
@@ -434,6 +461,26 @@ class AgentMediaSession:
         self.bridge_id = await self.external.create_bridge()
         await self.external.add_channel_to_bridge(
             self.bridge_id, self.caller_channel_id)
+        joined_members = [self.caller_channel_id]
+        try:
+            await self.external.add_channel_to_bridge(
+                self.bridge_id, self.media_channel_id)
+            joined_members.append(self.media_channel_id)
+        except Exception:  # noqa: BLE001 â€” membership failure degrades audio, not the call
+            log.exception(
+                "media channel %s could not join bridge %s (call %s)",
+                self.media_channel_id, self.bridge_id, self.call_sid)
+        self._joined_at = time.monotonic()
+        await safe_record(self._sink, "media_bridge_joined", {
+            "leg_id": self.media_channel_id,
+            "call_sid": self.call_sid,
+            "codec": self._spec.media_format,
+            "direction": self._spec.direction,
+            "caller_channel_id": self.caller_channel_id,
+            "media_channel_id": self.media_channel_id,
+            "bridge_id": self.bridge_id,
+            "members": joined_members,
+        })
         await safe_record(self._sink, "agent_media_session_started", {
             "call_sid": self.call_sid,
             "caller_channel_id": self.caller_channel_id,
@@ -450,6 +497,18 @@ class AgentMediaSession:
         )
         outcome = await self._loop.run()
         self.outcome = outcome
+        # P4 Â§C1: an escalated outcome routes to the live-agent queue (best
+        # effort â€” the dispatcher never breaks the call; a None hook is a
+        # deliberate no-op, and dispatch itself guards non-escalated
+        # outcomes). Fires BEFORE teardown so the audit rows stay on the
+        # same call.
+        if outcome.terminal == TERMINAL_ESCALATED and self.escalation is not None:
+            try:
+                await self.escalation.dispatch(self.call_sid, outcome, self._sink)
+            except Exception:  # noqa: BLE001 â€” escalation must never kill a call
+                log.exception(
+                    "escalation dispatch failed for call %s (continuing)",
+                    self.call_sid)
         return await self._teardown(outcome)
 
     def request_stop(self, reason: str = "operator") -> None:
@@ -466,6 +525,23 @@ class AgentMediaSession:
         self.conn = conn
         self.media_start = media_start
         self.speaker.attach(conn, media_start.ptime_ms)
+        if not self._codec_negotiated_emitted:
+            self._codec_negotiated_emitted = True
+            self._codec_negotiated_task = asyncio.create_task(
+                self._emit_codec_negotiated(media_start),
+                name=f"codec-event-{self.call_sid}",
+            )
+
+    async def _emit_codec_negotiated(self, media_start: MediaStart) -> None:
+        """Persist the wire-negotiated codec once (best-effort, ledger only)."""
+        await safe_record(self._sink, "media_codec_negotiated", {
+            "leg_id": self.media_channel_id,
+            "call_sid": self.call_sid,
+            "codec": media_start.format,
+            "direction": self._spec.direction,
+            "frame_size": media_start.optimal_frame_size,
+            "ptime_ms": media_start.ptime_ms,
+        })
 
     def route_frames(self, frames: list[bytes]) -> None:
         self.frames_in += len(frames)
@@ -474,6 +550,12 @@ class AgentMediaSession:
     def note_control(self, message: ControlMessage) -> None:
         key = message.event
         self.controls[key] = self.controls.get(key, 0) + 1
+        # P2 flow control: Asterisk says who may send. XOFF holds the outbound
+        # stream (queued frames keep order); XON resumes the ptime cadence.
+        if key == EVENT_MEDIA_XOFF:
+            self.speaker.pause()
+        elif key == EVENT_MEDIA_XON:
+            self.speaker.resume()
 
     def mark_closed(self, reason: str) -> None:
         self.ws_closed_reason = reason
@@ -514,8 +596,6 @@ class AgentMediaSession:
             if self.bridge_id:
                 await self.external.add_channel_to_bridge(
                     self.bridge_id, self.media_channel_id)
-                await self.external.add_channel_to_bridge(
-                    self.bridge_id, self.caller_channel_id)
 
             await safe_record(self._sink, "media_leg_restored", {
                 "call_sid": self.call_sid,
@@ -529,10 +609,10 @@ class AgentMediaSession:
                      self.call_sid, self.media_channel_id)
         except Exception:  # noqa: BLE001
             log.exception("Media reconnect failed for call %s", self.call_sid)
-            # Don't tear down the whole call — let the turn loop continue
+            # Don't tear down the whole call â€” let the turn loop continue
             # with whatever media path remains (or none)
 
-    # -- teardown (lab §P3 ordering: channels BEFORE the audit) -------------- #
+    # -- teardown (lab Â§P3 ordering: channels BEFORE the audit) -------------- #
 
     async def _teardown(self, outcome: TurnLoopOutcome) -> dict[str, Any]:
         if self._torn_down:
@@ -544,7 +624,7 @@ class AgentMediaSession:
                 bridge_id=self.bridge_id,
                 peer_channel_id=self.caller_channel_id,
             )
-        except Exception:  # noqa: BLE001 — teardown failures recorded, not fatal
+        except Exception:  # noqa: BLE001 â€” teardown failures recorded, not fatal
             log.exception("agent media teardown failed (call %s)", self.call_sid)
             audit = {
                 "media_channel_ids": [], "websocket_named_channels": [],
@@ -560,6 +640,17 @@ class AgentMediaSession:
             "ws_closed_reason": self.ws_closed_reason,
             "residual": audit,
         }
+        duration = (
+            round(time.monotonic() - self._joined_at, 3)
+            if self._joined_at is not None else 0.0
+        )
+        await safe_record(self._sink, "media_bridge_left", {
+            "leg_id": self.media_channel_id,
+            "call_sid": self.call_sid,
+            "reason": outcome.terminal,
+            "duration_seconds": duration,
+            "bridge_id": self.bridge_id,
+        })
         await safe_record(self._sink, "agent_media_session_ended", payload)
         self._registry.pop(self.media_channel_id, None)
         self._gone.set()
@@ -597,15 +688,18 @@ class AsteriskAgentMediaRuntime:
         bind_port: int,
         spec_builder: Callable[[str, str], AgentMediaSpec] | None = None,
         sink_factory: Callable[[str], TurnEventSink] | None = None,
+        escalation: Any | None = None,
     ) -> None:
         self._ari = ari
         self._host = bind_host
         self._port = bind_port
         self._spec_builder = spec_builder or self.build_spec
         self._sink_factory = sink_factory or MediaCallEventSink
+        #: P4 Â§C1: one process-wide live-agent escalation dispatcher
+        self._escalation = escalation
         self._registry_by_channel: dict[str, AgentMediaSession] = {}
         self.sessions_by_call: dict[str, AgentMediaSession] = {}
-        self._conns: dict[int, AgentMediaSession] = {}  # id(conn) → session
+        self._conns: dict[int, AgentMediaSession] = {}  # id(conn) â†’ session
         self._server: WSMediaServer | None = None
         self._tasks: set[asyncio.Task[None]] = set()
 
@@ -613,12 +707,16 @@ class AsteriskAgentMediaRuntime:
     def from_settings(cls, *, provider: Any = None) -> "AsteriskAgentMediaRuntime":
         from app.config import settings
         from app.telephony.ari_client import ARIConfig, ARIClient
+        from app.telephony.escalation import shared_dispatcher
 
         ari = getattr(provider, "ari", None) or ARIClient(ARIConfig.from_settings())
         return cls(
             ari,
             bind_host=settings.asterisk_media_bind_host,
             bind_port=settings.asterisk_media_bind_port,
+            # Â§D1: the runtime dispatches escalations into the process-wide
+            # board the operator console API reads (single-process lane).
+            escalation=shared_dispatcher(),
         )
 
     # -- server assembly ------------------------------------------------------ #
@@ -640,7 +738,7 @@ class AsteriskAgentMediaRuntime:
             session.request_stop("shutdown")
         if self._tasks:
             # Bounded poll instead of asyncio.wait: see the scheduling note on
-            # MediaUtteranceSource._wait_arrival_or_gone — task-completion
+            # MediaUtteranceSource._wait_arrival_or_gone â€” task-completion
             # wakeups must be allowed to arrive while stop() itself is parked.
             loop = asyncio.get_running_loop()
             deadline = loop.time() + 5.0
@@ -683,7 +781,7 @@ class AsteriskAgentMediaRuntime:
             if not await self._is_eligible(call_sid):
                 return
             self.start_for_call(call_sid, channel_id)
-        except Exception:  # noqa: BLE001 — media attach never breaks call state
+        except Exception:  # noqa: BLE001 â€” media attach never breaks call state
             log.exception("agent media attach failed for call %s", call_sid)
 
     async def _is_eligible(self, call_sid: str) -> bool:
@@ -707,6 +805,7 @@ class AsteriskAgentMediaRuntime:
             spec=self._spec_builder(call_sid, channel_id),
             sink=self._sink_factory(call_sid),
             registry=self._registry_by_channel,
+            escalation=self._escalation,
         )
         self.sessions_by_call[call_sid] = session
         task = session.start_task()

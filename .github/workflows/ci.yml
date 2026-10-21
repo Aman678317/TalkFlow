@@ -67,28 +67,45 @@ jobs:
         run: |
           python -m pytest \
             tests/test_agent_media_session.py \
+            tests/test_agent_runtime_info_hardened.py \
             tests/test_agent_turn_loop.py \
             tests/test_asterisk_ari_adapter.py \
             tests/test_asterisk_ari_inbound.py \
+            tests/test_audit_round3_truthfulness.py \
             tests/test_auth_hardened.py \
+            tests/test_bridge_seat_routing.py \
             tests/test_call_gate.py \
+            tests/test_call_transcript_api.py \
             tests/test_call_worker.py \
             tests/test_contacts_api.py \
             tests/test_database_migrations_hardened.py \
             tests/test_developer_platform_hardened.py \
+            tests/test_escalation_board_api.py \
+            tests/test_escalation_hooks.py \
+            tests/test_escalation_transport.py \
             tests/test_external_media.py \
             tests/test_full_qa_and_e2e_hardened.py \
+            tests/test_glossary_mismatch_note_hardened.py \
+            tests/test_history_filters_hardened.py \
+            tests/test_media_bridge_hygiene.py \
             tests/test_observability_and_metrics_hardened.py \
             tests/test_outbound_idempotency.py \
+            tests/test_page_translation_hardened.py \
             tests/test_performance_and_load_hardened.py \
             tests/test_production_readiness_hardened.py \
             tests/test_production_security_hardened.py \
+            tests/test_production_telephony_gates.py \
             tests/test_queue_and_workers_hardened.py \
             tests/test_realtime_pipeline_hardened.py \
             tests/test_realtime_translation_invariant_hardened.py \
+            tests/test_retention_escalations.py \
             tests/test_social_auth_hardened.py \
             tests/test_telemetry_tracing_hardened.py \
+            tests/test_telephony_ops_admin.py \
+            tests/test_telephony_privacy_abuse_gates.py \
             tests/test_telephony_webhook_security.py \
+            tests/test_translation_fanout.py \
+            tests/test_translation_memory_entries_hardened.py \
             tests/test_ws_media_protocol.py \
             tests/test_ws_media_server.py -q
       - name: Integration tests (PostgreSQL + Redis + pgvector)

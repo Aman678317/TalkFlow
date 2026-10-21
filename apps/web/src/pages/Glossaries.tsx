@@ -10,8 +10,8 @@ interface Glossary {
   version: number; status: string; domain: string; term_count: number; created_at: string; description?: string;
 }
 interface Term {
-  id: string; source_term: string; target_term: string; part_of_speech: string;
-  do_not_translate: boolean; spoken_variants: string[];
+  id: string; source_term: string; target_term: string;
+  spoken_variants: string[];
 }
 
 export default function Glossaries() {
@@ -23,7 +23,7 @@ export default function Glossaries() {
   const [termOpen, setTermOpen] = React.useState(false);
   const [importOpen, setImportOpen] = React.useState(false);
   const [form, setForm] = React.useState({ name: "", source_language: "en", target_language: "hi", domain: "general", description: "" });
-  const [term, setTerm] = React.useState({ source_term: "", target_term: "", part_of_speech: "", do_not_translate: false, spoken_variants: "" });
+  const [term, setTerm] = React.useState({ source_term: "", target_term: "", spoken_variants: "" });
   const [csvText, setCsvText] = React.useState("");
 
   const listQ = useQuery({ queryKey: ["glossaries"], queryFn: () => api<Glossary[]>("/api/v1/glossaries") });
@@ -57,7 +57,7 @@ export default function Glossaries() {
         spoken_variants: term.spoken_variants.split(",").map((s) => s.trim()).filter(Boolean),
       },
     }),
-    onSuccess: () => { setTermOpen(false); setTerm({ source_term: "", target_term: "", part_of_speech: "", do_not_translate: false, spoken_variants: "" }); invalidate(); },
+    onSuccess: () => { setTermOpen(false); setTerm({ source_term: "", target_term: "", spoken_variants: "" }); invalidate(); },
   });
   const removeTerm = useMutation({
     mutationFn: (tid: string) => api(`/api/v1/glossaries/${selected}/terms/${tid}`, { method: "DELETE" }),
@@ -73,8 +73,22 @@ export default function Glossaries() {
     onSuccess: invalidate,
   });
   const importCsv = useMutation({
-    mutationFn: () => api(`/api/v1/glossaries/${selected}/import?csv_text=${encodeURIComponent(csvText)}`, { method: "POST" }),
-    onSuccess: (r: any) => { setImportOpen(false); invalidate(); push({ kind: "success", title: `Imported ${r.imported} terms` }); },
+    // The endpoint takes a multipart FILE upload (the old `?csv_text=` query
+    // parameter never matched the signature, so every import failed with 422
+    // and the page reported "Imported undefined terms").
+    mutationFn: () => {
+      const form = new FormData();
+      form.append("file", new Blob([csvText], { type: "text/csv" }), "glossary.csv");
+      return api(`/api/v1/glossaries/${selected}/import`, { method: "POST", form });
+    },
+    onSuccess: (r: any) => {
+      setImportOpen(false);
+      invalidate();
+      const added = r?.added ?? 0;
+      const skipped = r?.skipped ?? 0;
+      push({ kind: "success", title: `Imported ${added} terms`, body: skipped ? `${skipped} rows skipped.` : undefined });
+    },
+    onError: (e: any) => push({ kind: "error", title: "Import failed", body: e?.message }),
   });
 
   const g = detailQ.data;
@@ -99,7 +113,7 @@ export default function Glossaries() {
                 <Badge tone={gl.status === "active" ? "good" : gl.status === "archived" ? "neutral" : "warn"}>{gl.status}</Badge>
               </div>
               <p className="mt-0.5 text-[11px] text-ink-400">
-                {gl.source_language || (gl as any).source_lang} → {gl.target_language || (gl as any).target_lang} · v{gl.version} · {gl.term_count ?? (gl as any).terms?.length ?? 0} terms · {gl.domain}
+                {gl.source_language || (gl as any).source_lang} → {gl.target_language || (gl as any).target_lang} · v{gl.version} · {gl.term_count ?? (gl as any).terms?.length ?? 0} terms{gl.description ? ` · ${gl.description}` : ""}
               </p>
             </button>
           ))}
@@ -134,7 +148,6 @@ export default function Glossaries() {
                   <tr key={t.id} className="border-b border-ink-50">
                     <td className="py-2 pr-2">
                       {t.source_term || (t as any).source_text}
-                      {t.do_not_translate && <Badge tone="warn" title="Kept as-is in translations"> DNT</Badge>}
                     </td>
                     <td className="py-2 pr-2 font-medium">{t.target_term || (t as any).target_text}</td>
                     <td className="py-2 pr-2 text-xs text-ink-400">{(t.spoken_variants || (t as any).spoken_variants_json || []).join(", ")}</td>
@@ -185,11 +198,6 @@ export default function Glossaries() {
           <Field label="Spoken variants" hint="Comma-separated pronunciations/ASR variants normalized before matching">
             <Input value={term.spoken_variants} onChange={(e) => setTerm({ ...term, spoken_variants: e.target.value })} placeholder="cloud console, cloud konsol" />
           </Field>
-          <label className="flex items-center gap-2 text-sm text-ink-600">
-            <input type="checkbox" checked={term.do_not_translate}
-                   onChange={(e) => setTerm({ ...term, do_not_translate: e.target.checked })} />
-            Do not translate (keep source term)
-          </label>
           <div className="flex justify-end gap-2">
             <Button type="button" variant="secondary" onClick={() => setTermOpen(false)}>Cancel</Button>
             <Button type="submit" loading={addTerm.isPending}>Add term</Button>
@@ -199,7 +207,7 @@ export default function Glossaries() {
 
       <Modal open={importOpen} onClose={() => setImportOpen(false)} title="Import CSV">
         <form className="space-y-3" onSubmit={(e) => { e.preventDefault(); importCsv.mutate(); }}>
-          <Field label="CSV content" hint="source_term,target_term[,pos[,do_not_translate]]">
+          <Field label="CSV content" hint="source_text,target_text[,spoken_variants(| separated)][,notes]">
             <Textarea rows={8} value={csvText} onChange={(e) => setCsvText(e.target.value)}
                       placeholder={"cloud console,क्लाउड कंसोल\nAPI key,API कुंजी"} />
           </Field>

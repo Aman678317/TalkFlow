@@ -73,6 +73,9 @@ class TranslateOutput:
     translation_id: uuid.UUID
     tm_match: str | None          # exact|fuzzy|semantic|None
     source_lang: str
+    #: set when a requested glossary was NOT applied — the honest reason
+    #: (e.g. "language pair mismatch (en→hi vs en→de)")
+    glossary_note: str | None = None
 
 
 def normalize_for_match(text: str) -> str:
@@ -180,9 +183,11 @@ async def load_glossary(db: AsyncSession, glossary_id: uuid.UUID,
     g = await db.get(M.Glossary, glossary_id)
     if g is None or g.status == "archived":
         return None
-    # glossary applies when its declared pair matches (or is language-agnostic)
+    # glossary applies when its declared pair matches (or is language-agnostic);
+    # a mismatch hands back (g, None, None) so the caller can SAY the glossary
+    # was requested but skipped — silently dropping it hides the enforcement.
     if g.source_lang not in (source_lang, "auto") or g.target_lang not in (target_lang, "auto"):
-        return None
+        return g, None, None
     terms: dict[str, str] = {}
     spoken: dict[str, str] = {}
     for t in g.terms:
@@ -256,10 +261,19 @@ async def translate_text(
     # 4) glossary + style --------------------------------------------------- #
     glossary_row = None
     glossary_terms: dict[str, str] = {}
+    glossary_note: str | None = None
     if ctx.glossary_id:
+        g = await db.get(M.Glossary, ctx.glossary_id)
         loaded = await load_glossary(db, ctx.glossary_id, detected, target_language)
         if loaded:
             glossary_row, glossary_terms, _spoken = loaded
+            glossary_row = glossary_row if glossary_terms is not None else None
+            if glossary_terms is None and g is not None:
+                glossary_note = (f"glossary not applied: language pair mismatch "
+                                 f"({g.source_lang}→{g.target_lang} vs "
+                                 f"{detected}→{target_language})")
+        elif g is not None and g.status == "archived":
+            glossary_note = "glossary not applied: archived"
     style_cfg = await load_style(db, ctx.style_profile_id) or {}
     if ctx.formality and ctx.formality != "default":
         style_cfg["formality"] = ctx.formality
@@ -307,7 +321,7 @@ async def translate_text(
 
     # 7) persist + meter ----------------------------------------------------- #
     out = await _persist(db, text, result, ctx, tm_match=None,
-                         glossary=glossary_row)
+                         glossary=glossary_row, glossary_note=glossary_note)
 
     # 8) optional TM write-back (approved flows only; never realtime partials)
     if ctx.tm_writeback and ctx.tm_id and "dev_provider" not in result.quality_flags \
@@ -321,7 +335,8 @@ async def translate_text(
 async def _persist(db: AsyncSession, source_text: str, result: TranslationResult,
                    ctx: TranslateContext, *, tm_match: str | None,
                    tm_entry_id: uuid.UUID | None = None,
-                   glossary: M.Glossary | None) -> TranslateOutput:
+                   glossary: M.Glossary | None,
+                   glossary_note: str | None = None) -> TranslateOutput:
     translation_id = uuid.uuid4()
     try:
         if ctx.persist:
@@ -367,7 +382,8 @@ async def _persist(db: AsyncSession, source_text: str, result: TranslationResult
         log.warning("failed to persist translation segment or record usage: %s", e)
         await db.rollback()
     return TranslateOutput(result=result, translation_id=translation_id,
-                           tm_match=tm_match, source_lang=result.source_lang)
+                           tm_match=tm_match, source_lang=result.source_lang,
+                           glossary_note=glossary_note)
 
 
 # --------------------------------------------------------------------------- #

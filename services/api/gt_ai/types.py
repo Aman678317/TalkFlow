@@ -118,5 +118,15 @@ class ProviderUnavailable(RuntimeError):
     """Raised when a provider cannot serve (missing model, crashed, etc.)."""
 
 
+class NoPrivateProviderAvailable(RuntimeError):
+    """No private (self-hosted) provider can serve a `private_only` request.
+
+    Raised instead of silently degrading to a cloud provider: "private only"
+    is a promise, not a preference. On 2026-10-20 a `private_only` translation
+    was observed falling through to the online provider, which sends the
+    caller's text to an external service.
+    """
+
+
 class UnsupportedLanguagePair(ValueError):
     """Raised when the capability registry forbids a pair."""

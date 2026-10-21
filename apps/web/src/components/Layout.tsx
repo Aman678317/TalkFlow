@@ -9,7 +9,7 @@ import {
   LayoutDashboard, ArrowLeftRight, PenLine, Mic2, FileText,
   Video, MessageSquare, Clock, BookOpen, Database, Sliders,
   KeyRound, BarChart2, CreditCard, Users, Settings, Shield,
-  ChevronDown, LogOut, ExternalLink,
+  ChevronDown, LogOut, ExternalLink, PhoneCall, PhoneIncoming,
 } from "lucide-react";
 
 export function Logo({ className = "h-8 w-8" }: { className?: string }) {
@@ -24,6 +24,7 @@ const NAV = [
   { to: "/documents",          label: "Documents",          Icon: FileText },
   { to: "/meetings",           label: "Meetings",           Icon: Video },
   { to: "/chat",               label: "Chat rooms",         Icon: MessageSquare },
+  { to: "/agent/calls",        label: "Agent calls",        Icon: PhoneCall },
   { to: "/history",            label: "History",            Icon: Clock },
   { to: "/glossaries",         label: "Glossaries",         Icon: BookOpen },
   { to: "/translation-memory", label: "Translation memory", Icon: Database },
@@ -34,6 +35,7 @@ const NAV = [
   { to: "/team",               label: "Team",               Icon: Users },
   { to: "/settings",           label: "Settings",           Icon: Settings },
   { to: "/admin",              label: "Admin",              Icon: Shield, adminOnly: true },
+  { to: "/admin/telephony",    label: "Telephony ops",      Icon: PhoneIncoming, adminOnly: true },
 ];
 
 const NAV_GROUPS = [
@@ -43,7 +45,7 @@ const NAV_GROUPS = [
   },
   {
     label: "Communication",
-    items: ["/voice", "/meetings", "/chat"],
+    items: ["/voice", "/meetings", "/chat", "/agent/calls"],
   },
   {
     label: "Tools",
@@ -51,7 +53,7 @@ const NAV_GROUPS = [
   },
   {
     label: "Account",
-    items: ["/api", "/usage", "/billing", "/team", "/settings", "/admin"],
+    items: ["/api", "/usage", "/billing", "/team", "/settings", "/admin", "/admin/telephony"],
   },
 ];
 

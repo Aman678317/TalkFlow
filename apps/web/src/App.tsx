@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { CopilotKit, CopilotSidebar } from '@copilotkit/react-core/v2';
 import '@copilotkit/react-core/v2/styles.css';
+import { Suspense, lazy } from 'react';
 import { useAuth } from './stores/auth';
 import ErrorBoundary from './components/common/ErrorBoundary';
 import AppShell from './components/layout/AppShell';
@@ -8,27 +9,46 @@ import Toaster from './components/layout/Toaster';
 import Landing from './pages/Landing';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
-import Dashboard from './pages/Dashboard';
-import Translate from './pages/Translate';
-import WritePage from './pages/Write';
-import Documents from './pages/Documents';
-import Voice from './pages/Voice';
-import Meetings from './pages/Meetings';
-import MeetingRoom from './pages/MeetingRoom';
-import ChatPage from './pages/ChatPage';
-import History from './pages/History';
-import Glossaries from './pages/Glossaries';
-import TranslationMemory from './pages/TranslationMemory';
-import StyleProfiles from './pages/StyleProfiles';
-import ApiKeysPage from './pages/ApiKeys';
-import Usage from './pages/Usage';
-import Billing from './pages/Billing';
-import Settings from './pages/Settings';
-import Team from './pages/Team';
-import Admin from './pages/Admin';
-import JoinCall from './pages/JoinCall';
-import DocsPage from './pages/DocsPage';
-import AgentStudio from './pages/AgentStudio';
+
+// Route-level code splitting (2026-10-21 reference benchmark).
+// The single 841 kB entry chunk shipped every page — including the 561 kB
+// meeting/LiveKit bundle — to a visitor who only wanted to translate a
+// sentence. Each route now loads on demand; the first paint only carries the
+// shell plus the page being opened.
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const Translate = lazy(() => import('./pages/Translate'));
+const TranslateWebPage = lazy(() => import('./pages/TranslateWebPage'));
+const WritePage = lazy(() => import('./pages/Write'));
+const Documents = lazy(() => import('./pages/Documents'));
+const Voice = lazy(() => import('./pages/Voice'));
+const Meetings = lazy(() => import('./pages/Meetings'));
+const MeetingRoom = lazy(() => import('./pages/MeetingRoom'));
+const ChatPage = lazy(() => import('./pages/ChatPage'));
+const History = lazy(() => import('./pages/History'));
+const Glossaries = lazy(() => import('./pages/Glossaries'));
+const TranslationMemory = lazy(() => import('./pages/TranslationMemory'));
+const StyleProfiles = lazy(() => import('./pages/StyleProfiles'));
+const ApiKeysPage = lazy(() => import('./pages/ApiKeys'));
+const Usage = lazy(() => import('./pages/Usage'));
+const Billing = lazy(() => import('./pages/Billing'));
+const Settings = lazy(() => import('./pages/Settings'));
+const Team = lazy(() => import('./pages/Team'));
+const Admin = lazy(() => import('./pages/Admin'));
+const AdminTelephony = lazy(() => import('./pages/AdminTelephony'));
+const AgentCalls = lazy(() => import('./pages/AgentCalls'));
+const JoinCall = lazy(() => import('./pages/JoinCall'));
+const DocsPage = lazy(() => import('./pages/DocsPage'));
+const AgentStudio = lazy(() => import('./pages/AgentStudio'));
+
+/** Shown while a route chunk is still arriving. */
+function RouteFallback() {
+  return (
+    <div className="flex h-full min-h-[40vh] items-center justify-center" role="status" aria-live="polite">
+      <div className="h-8 w-8 animate-spin-slow rounded-full border-2 border-iris-600 border-t-transparent" />
+      <span className="sr-only">Loading</span>
+    </div>
+  );
+}
 
 function RequireAuth({ children }: { children: JSX.Element }) {
   const status = useAuth((s) => s.status);
@@ -54,6 +74,7 @@ export default function App() {
   return (
     <CopilotKit runtimeUrl={runtimeUrl} publicLicenseKey={publicLicenseKey}>
       <ErrorBoundary sectionName="AppRoot">
+        <Suspense fallback={<RouteFallback />}>
         <Routes>
           <Route path="/" element={<Landing />} />
           <Route path="/login" element={<Login />} />
@@ -64,6 +85,7 @@ export default function App() {
 
           <Route element={<AppShell />}>
             <Route path="/translate" element={<Translate />} />
+            <Route path="/translate/page" element={<TranslateWebPage />} />
             <Route path="/write" element={<WritePage />} />
             <Route path="/agents" element={<AgentStudio />} />
             <Route path="/agent-studio" element={<AgentStudio />} />
@@ -88,9 +110,12 @@ export default function App() {
             <Route path="/settings" element={<Settings />} />
             <Route path="/team" element={<Team />} />
             <Route path="/admin" element={<Admin />} />
+            <Route path="/admin/telephony" element={<AdminTelephony />} />
+            <Route path="/agent/calls" element={<AgentCalls />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
+        </Suspense>
       </ErrorBoundary>
       <Toaster />
       <CopilotSidebar defaultOpen={false} />

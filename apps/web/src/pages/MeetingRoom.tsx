@@ -30,7 +30,9 @@ import { useLiveKitRoom } from "../hooks/useLiveKitRoom";
 import { AudioPlayer, MicCapture, b64ToBytes } from "../lib/audio";
 import { MeetingSocket, normId, type SocketState } from "../lib/ws";
 import { WebRTCManager, setIceServers, type SignalMessage } from "../lib/webrtc";
-import type { JoinMeetingResponse, Meeting, ParticipantInfo, Preferences, RealtimeEvent, TranscriptItem } from "../lib/types";
+import { iceQueryEnabled, iceQueryKey, iceQueryUrl } from "../lib/meetingRoomIce";
+import { useRosterQuery } from "../hooks/useRosterQuery";
+import type { JoinMeetingResponse, Meeting, Preferences, RealtimeEvent, TranscriptItem } from "../lib/types";
 import { Button, ErrorState, SegmentedControl, Select, Spinner } from "../components/ui";
 import { VideoTile } from "../components/meeting/VideoTile";
 import { StageStrip } from "../components/meeting/StageStrip";
@@ -87,14 +89,22 @@ export default function MeetingRoom() {
 
   const [myParticipantId, setMyParticipantId] = React.useState<string | undefined>();
 
+  // Adaptive roster polling (2026-10-20 audit round 2): the fixed 5 s roster
+  // poll ran even while the joined socket already delivers `participant.joined`
+  // / `participant.left` events. Now: a slow correctional poll while the socket
+  // is `joined`, the fast poll whenever it is not, and nothing while the page
+  // is hidden (lazy-init covers a mount that already starts hidden; the
+  // visibility listener below covers every later change).
+  const [pageHidden, setPageHidden] = React.useState<boolean>(
+    () => typeof document !== "undefined" && document.visibilityState === "hidden",
+  );
+  // Declared BEFORE the roster query on purpose: react-query evaluates the
+  // query's refetchInterval callback during the first render, so anything the
+  // callback reads must already be initialized.
+  const [socketState, setSocketState] = React.useState<SocketState>("connecting");
+
   const meetingQ = useQuery({ queryKey: ["meeting", id], queryFn: () => api<Meeting>(`/api/v1/meetings/${id}`) });
-  const participantsQ = useQuery({
-    queryKey: ["meeting", id, "participants", myParticipantId],
-    queryFn: () =>
-      api<ParticipantInfo[]>(`/api/v1/meetings/${id}/participants?participant_id=${myParticipantId}`),
-    enabled: !!myParticipantId,
-    refetchInterval: 5_000,
-  });
+  const participantsQ = useRosterQuery(id, myParticipantId, socketState, pageHidden);
 
   // ---------------- local state ----------------
   const [prefs, setPrefs] = React.useState<Preferences>({
@@ -105,7 +115,6 @@ export default function MeetingRoom() {
     latency_mode: "balanced",
     captions_enabled: true,
   });
-  const [socketState, setSocketState] = React.useState<SocketState>("connecting");
   const [isOnline, setIsOnline] = React.useState(typeof navigator !== "undefined" ? navigator.onLine : true);
   const [isDegradedNetwork, setIsDegradedNetwork] = React.useState(false);
   const [translationStatus, setTranslationStatus] = React.useState<"normal" | "delayed" | "unavailable">("normal");
@@ -287,6 +296,9 @@ export default function MeetingRoom() {
       setNotice("You are offline. Reconnecting as soon as network is restored.");
     }
     function handleVisibility() {
+      // Flip the adaptive-roster-poll state: hidden → interval stops; visible →
+      // interval restarts (re-render re-creates the query observer's options).
+      setPageHidden(document.visibilityState === "hidden");
       if (document.visibilityState === "visible") {
         if (socketState === "closed" || socketState === "error" || socketState === "reconnecting") {
           socketRef.current?.reconnectNow();
@@ -319,10 +331,11 @@ export default function MeetingRoom() {
   // STUN/TURN for the P2P mesh: room members only, resolved by the backend.
   // The guest must identify their seat (x-seat participants otherwise read
   // as anonymous to the endpoint's allowlist and get a uniform 404).
+  // Seat id lands asynchronously ⇒ the query waits for it and caches per seat.
   const iceServersQ = useQuery({
-    queryKey: ["meeting", id, "ice-servers"],
-    queryFn: () => api<{ ice_servers: RTCIceServer[] }>(`/api/v1/meetings/${id}/ice-servers?participant_id=${myParticipantId}`),
-    enabled: phase === "in" || phase === "lobby",
+    queryKey: iceQueryKey(id, myParticipantId),
+    queryFn: () => api<{ ice_servers: RTCIceServer[] }>(iceQueryUrl(id, myParticipantId)),
+    enabled: iceQueryEnabled(phase, myParticipantId),
     staleTime: 5 * 60 * 1000,
   });
   React.useEffect(() => {

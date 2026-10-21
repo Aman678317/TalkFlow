@@ -65,33 +65,8 @@ def mount_copilotkit_agent(app: FastAPI, path: str = "/api/copilotkit") -> None:
     @app.post(f"{path}/info")
     @app.get(path)
     async def get_copilotkit_info():
-        return {
-            "version": "1.77.0",
-            "agents": {
-                "globaltalk_agent": {
-                    "name": "globaltalk_agent",
-                    "description": "GlobalTalk AI assistant for translation, voice, and meetings",
-                    "className": "LangGraphAGUIAgent",
-                }
-            },
-            "mode": "intelligence",
-            "intelligence": {
-                "wsUrl": "wss://api.intelligence.copilotkit.ai/v1",
-            },
-            "licenseStatus": "valid",
-            "runtimeEntitlements": {
-                "status": "ready",
-            },
-            "threadEndpoints": {
-                "managedThreadMetadata": True,
-                "restEndpointsAvailable": True,
-                "mutations": True,
-            },
-            "suggestions": True,
-            "inspectorMetadata": True,
-            "inspectorLearning": True,
-            "audioFileTranscriptionEnabled": False,
-        }
+        from app.agent_info import copilotkit_info_payload
+        return copilotkit_info_payload()
 
     @app.post(f"{path}/agent/{{agent_name}}/run")
     @app.post(f"{path}/agent/{{agent_name}}")
