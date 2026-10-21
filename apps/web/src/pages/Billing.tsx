@@ -14,19 +14,46 @@ interface InvoicePreview {
   usage: Record<string, number>;
 }
 
-const PLANS = [
-  { id: "free", name: "Free", price: "$0", blurb: "500K characters · 10 voice minutes · 50 document pages · 3 seats" },
-  { id: "pro", name: "Pro", price: "$29", blurb: "5M characters · 100 voice minutes · 500 pages · 15 seats · glossaries + TM" },
-  { id: "business", name: "Business", price: "$129", blurb: "50M characters · 1000 voice minutes · 5K pages · 100 seats · webhooks + SSO-ready" },
-  { id: "enterprise", name: "Enterprise", price: "Custom", blurb: "Unlimited metering · private deployments · GPU pools · audit + retention controls" },
-];
+interface PlanCatalog {
+  plans: {
+    code: string; label: string; base_cents: number; currency: string;
+    price_note: string;
+    per_unit_cents: Record<string, number>;
+    included: Record<string, number>;
+  }[];
+  metered_dimensions: string[];
+  unpriced_dimensions: string[];
+}
+
+const DIMENSION_LABELS: Record<string, string> = {
+  characters: "characters",
+  translation_requests: "translation requests",
+  api_requests: "API requests",
+  document_pages: "document pages",
+  audio_seconds: "voice minutes",
+  telephony_minutes: "call minutes",
+};
+
+function includedBlurb(included: Record<string, number>): string {
+  const parts = Object.entries(included).map(([key, value]) => {
+    const amount = key === "audio_seconds" ? Math.round(value / 60) : value;
+    const unit = key === "audio_seconds" ? "voice minutes" : DIMENSION_LABELS[key] ?? key;
+    return `${amount.toLocaleString()} ${unit}`;
+  });
+  return parts.length ? parts.join(" · ") : "Unlimited metering";
+}
 
 export default function Billing() {
   const eventsQ = useQuery({ queryKey: ["billing-events"], queryFn: () => api<BillingEvent[]>("/api/v1/billing/events") });
   const invoices = (eventsQ.data ?? []).filter((e) => e.kind === "invoice_created");
   const previewQ = useQuery({ queryKey: ["billing-preview"], queryFn: () => api<InvoicePreview>("/api/v1/billing/preview-invoice") });
   const usageQ = useQuery({ queryKey: ["usage", 30], queryFn: () => api<any>("/api/v1/usage?days=30") });
+  // The plan table comes from the server. The page used to hard-code the
+  // prices and quotas, and they contradicted the server (issue #109 class 4)
+  // — a hard-coded price is a promise the server does not make.
+  const plansQ = useQuery({ queryKey: ["billing-plans"], queryFn: () => api<PlanCatalog>("/api/v1/billing/plans") });
   const currentPlan = usageQ.data?.plan ?? "free";
+  const plans = plansQ.data?.plans ?? [];
 
   return (
     <div className="mx-auto max-w-5xl space-y-4 p-4 lg:p-6">
@@ -35,22 +62,36 @@ export default function Billing() {
         <p className="text-xs text-ink-400">Usage-first pricing: plan base + metered overage, computed from immutable usage events (never estimated).</p>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        {PLANS.map((p) => (
-          <div key={p.id} className={`gt-card flex flex-col p-5 ${currentPlan === p.id ? "border-signal-500 ring-2 ring-signal-500/20" : ""}`}>
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-bold text-ink-900">{p.name}</h2>
-              {currentPlan === p.id && <Badge tone="good">current</Badge>}
+      {plansQ.isError ? (
+        <Card title="Plans">
+          <p className="text-xs text-ink-500">
+            The plan table could not be loaded. No prices are shown rather than
+            showing numbers this server did not publish.
+          </p>
+        </Card>
+      ) : (
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {plans.map((p) => (
+            <div key={p.code} className={`gt-card flex flex-col p-5 ${currentPlan === p.code ? "border-signal-500 ring-2 ring-signal-500/20" : ""}`}>
+              <div className="flex items-center justify-between">
+                <h2 className="text-sm font-bold text-ink-900">{p.label}</h2>
+                {currentPlan === p.code && <Badge tone="good">current</Badge>}
+              </div>
+              <p className="mt-2 text-2xl font-extrabold text-ink-900">
+                {p.price_note || `$${(p.base_cents / 100).toFixed(0)}`}
+                {!p.price_note && <span className="text-xs font-medium text-ink-400">/mo</span>}
+              </p>
+              <p className="mt-2 flex-1 text-[11px] leading-relaxed text-ink-400">
+                {includedBlurb(p.included)}
+              </p>
+              <Button size="sm" variant={currentPlan === p.code ? "secondary" : "primary"} className="mt-3" disabled
+                      title="Plan changes go through the billing provider integration (Stripe adapter) in production deployments">
+                {currentPlan === p.code ? "Active" : "Contact sales"}
+              </Button>
             </div>
-            <p className="mt-2 text-2xl font-extrabold text-ink-900">{p.price}<span className="text-xs font-medium text-ink-400">/mo</span></p>
-            <p className="mt-2 flex-1 text-[11px] leading-relaxed text-ink-400">{p.blurb}</p>
-            <Button size="sm" variant={currentPlan === p.id ? "secondary" : "primary"} className="mt-3" disabled
-                    title="Plan changes go through the billing provider integration (Stripe adapter) in production deployments">
-              {currentPlan === p.id ? "Active" : "Contact sales"}
-            </Button>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
 
       {previewQ.data && (
         <Card title={`Current period estimate — ${previewQ.data.period} (from real metering)`}>

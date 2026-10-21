@@ -15,25 +15,74 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import models as M
 from app.db.base import utcnow
-from app.services.usage_service import DEFAULT_PLAN_QUOTAS
+from app.services.usage_service import DEFAULT_PLAN_QUOTAS, METERED_DIMENSIONS
 
 log = logging.getLogger("app.billing")
 
 # cents per unit, per plan. Enterprise = negotiated (0 here, quoted offline).
+#
+# The priced dimensions are the ones the LEDGER records (issue #109 class 4):
+# the previous table priced "audio_minutes" while the ledger counts audio
+# SECONDS, and it never priced the translation volume at all — so
+# "translation volume is never billed" while the page claimed the invoice
+# came from real metering. The audio rate is the same money per minute as
+# before (12c/min = 0.2c/s), and the translation rate is the plan's existing
+# per-request rate.
+#
+# ``telephony_minutes`` is metered and limited but NOT priced: the plan
+# table carries no telephony rate, and inventing one would be a commercial
+# decision. The invoice discloses the tracked volume instead.
 PLAN_PRICING = {
-    "free": {"base_cents": 0, "characters": 0.0, "audio_minutes": 0.0,
-             "document_pages": 0.0, "api_requests": 0.0},
-    "pro": {"base_cents": 2400, "characters": 0.002, "audio_minutes": 12.0,
-            "document_pages": 10.0, "api_requests": 0.05,
-            "included": {"characters": 5_000_000, "audio_minutes": 1000,
-                         "document_pages": 200, "api_requests": 100_000}},
-    "business": {"base_cents": 12000, "characters": 0.0015, "audio_minutes": 9.0,
-                 "document_pages": 8.0, "api_requests": 0.03,
-                 "included": {"characters": 50_000_000, "audio_minutes": 10_000,
-                              "document_pages": 2_000, "api_requests": 1_000_000}},
-    "enterprise": {"base_cents": 0, "characters": 0.0, "audio_minutes": 0.0,
-                   "document_pages": 0.0, "api_requests": 0.0},
+    "free": {"base_cents": 0, "characters": 0.0, "audio_seconds": 0.0,
+             "document_pages": 0.0, "translation_requests": 0.0, "api_requests": 0.0},
+    "pro": {"base_cents": 2400, "characters": 0.002, "audio_seconds": 0.2,
+            "document_pages": 10.0, "translation_requests": 0.05, "api_requests": 0.05,
+            "included": {"characters": 5_000_000, "audio_seconds": 60_000,
+                         "document_pages": 200, "translation_requests": 100_000,
+                         "api_requests": 100_000}},
+    "business": {"base_cents": 12000, "characters": 0.0015, "audio_seconds": 0.15,
+                 "document_pages": 8.0, "translation_requests": 0.03, "api_requests": 0.03,
+                 "included": {"characters": 50_000_000, "audio_seconds": 600_000,
+                              "document_pages": 2_000, "translation_requests": 1_000_000,
+                              "api_requests": 1_000_000}},
+    "enterprise": {"base_cents": 0, "characters": 0.0, "audio_seconds": 0.0,
+                   "document_pages": 0.0, "translation_requests": 0.0, "api_requests": 0.0},
 }
+
+#: Dimensions the ledger meters and the plan limits, but that this plan
+#: table does not price. The invoice discloses them (amount 0 + the reason)
+#: instead of pretending they do not exist.
+UNPRICED_DIMENSIONS = ("telephony_minutes",)
+
+
+def plan_catalog() -> dict:
+    """The plan table for the client.
+
+    The frontend used to hard-code the plan prices and quotas, and they
+    contradicted the server (issue #109 class 4) — the server is the single
+    source of truth, so it publishes the table.
+    """
+    labels = {"free": "Free", "pro": "Pro", "business": "Business",
+              "enterprise": "Enterprise"}
+    plans = []
+    for code, pricing in PLAN_PRICING.items():
+        plans.append({
+            "code": code,
+            "label": labels.get(code, code.title()),
+            "base_cents": pricing.get("base_cents", 0),
+            "currency": "USD",
+            # Enterprise is negotiated (priced offline), so the server says so
+            # instead of the client inventing a number.
+            "price_note": "Custom (quoted offline)" if code == "enterprise" else "",
+            "per_unit_cents": {k: v for k, v in pricing.items()
+                               if k not in ("base_cents", "included")},
+            "included": pricing.get("included", {}),
+        })
+    return {
+        "plans": plans,
+        "metered_dimensions": list(METERED_DIMENSIONS),
+        "unpriced_dimensions": list(UNPRICED_DIMENSIONS),
+    }
 
 
 async def get_or_create_subscription(db: AsyncSession, org: M.Organization) -> M.Subscription:
@@ -104,10 +153,22 @@ async def compute_invoice(db: AsyncSession, org_id: uuid.UUID,
             lines.append({"description": f"{int(billable)} {unit} @ {rate}c",
                           "amount_cents": cents})
             total += cents
+    # Metered but not priced by this plan: say so, with the volume, instead of
+    # leaving the reader to assume it was never metered (issue #109 class 4).
+    for unit in UNPRICED_DIMENSIONS:
+        units = usage.get(unit, 0.0)
+        if units > 0:
+            lines.append({
+                "description": (f"{int(units)} {unit} (metered; not priced by the "
+                                f"{sub.plan_code} plan)"),
+                "amount_cents": 0,
+                "unpriced": True,
+            })
     return {"org_id": str(org_id),
             "period": period_start.strftime("%Y-%m"),
             "plan": sub.plan_code, "lines": lines, "total_cents": total,
-            "currency": "USD", "usage": usage}
+            "currency": "USD", "usage": usage,
+            "unpriced_dimensions": list(UNPRICED_DIMENSIONS)}
 
 
 async def finalize_invoice(db: AsyncSession, org_id: uuid.UUID,

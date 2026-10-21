@@ -156,8 +156,12 @@ async def get_usage(principal: Principal = Depends(require_org_user),
     sub = (await db.execute(select(M.Subscription).where(
         M.Subscription.org_id == _org_id(principal)))).scalars().first()
     plan = sub.plan_code if sub else "free"
-    quotas = (sub.quota_json if sub else None) or \
-        usage_service.DEFAULT_PLAN_QUOTAS.get(plan, usage_service.DEFAULT_PLAN_QUOTAS["free"])
+    # The limits are in the canonical dimension names — the same names the
+    # ledger records, so every dimension on the page can find its limit
+    # (issue #109 class 4: three quota cards could never show a percentage
+    # because the page asked for "document_pages"/"audio_seconds" while the
+    # limits said "documents"/"audio_minutes").
+    quotas = await usage_service.plan_quotas(db, _org_id(principal))
     data["plan"] = plan
     data["limits"] = {k: (None if v == float("inf") else v) for k, v in quotas.items()}
     return UsageSummary(**data)
@@ -169,11 +173,20 @@ async def get_quota(principal: Principal = Depends(require_org_user),
     used = await usage_service.current_period_usage(db, _org_id(principal))
     sub = (await db.execute(select(M.Subscription).where(
         M.Subscription.org_id == _org_id(principal)))).scalars().first()
-    quotas = (sub.quota_json if sub else None) or \
-        usage_service.DEFAULT_PLAN_QUOTAS.get(sub.plan_code if sub else "free",
-                                              usage_service.DEFAULT_PLAN_QUOTAS["free"])
+    quotas = await usage_service.plan_quotas(db, _org_id(principal))
     return {"plan": sub.plan_code if sub else "free", "used": used,
             "quota": {k: (None if v == float("inf") else v) for k, v in quotas.items()}}
+
+
+@usage_router.get("/billing/plans", response_model=dict)
+async def get_plans(principal: Principal = Depends(get_principal)):
+    """The plan table, from the server.
+
+    The billing page used to hard-code the prices and quotas, and they
+    contradicted the server (issue #109 class 4) — the server is the source
+    of truth, so it publishes the table.
+    """
+    return billing_service.plan_catalog()
 
 
 @usage_router.get("/billing/subscription", response_model=SubscriptionOut)

@@ -21,18 +21,71 @@ from app.errors import QuotaExceededError
 
 log = logging.getLogger("app.usage")
 
-# plan -> monthly quotas. NOT hardcoded in business logic: read via subscription.quota_json
+#: The canonical metered dimensions. The LEDGER records exactly these unit
+#: names and the plan limits are expressed in the SAME names, so a limit is
+#: always checked against the units that actually accrue (issue #109 class 4:
+#: the limits said "documents" / "meeting_minutes" / "audio_minutes" while the
+#: ledger recorded "document_pages" / "telephony_minutes" / audio seconds —
+#: two limits could never trip and three quota cards could never show a
+#: percentage).
+METERED_DIMENSIONS = (
+    "characters",
+    "translation_requests",
+    "api_requests",
+    "document_pages",
+    "audio_seconds",
+    "telephony_minutes",
+)
+
+#: plan -> monthly quotas. NOT hardcoded in business logic: read via
+#: subscription.quota_json. The values are the previous limits expressed in
+#: the canonical units (the audio allowance in seconds, the call allowance as
+#: telephony minutes); translation_requests reuses the per-request allowance.
 DEFAULT_PLAN_QUOTAS = {
-    "free": {"characters": 500_000, "audio_minutes": 60, "documents": 20,
-             "api_requests": 5_000, "meeting_minutes": 300},
-    "pro": {"characters": 5_000_000, "audio_minutes": 1_000, "documents": 200,
-            "api_requests": 100_000, "meeting_minutes": 5_000},
-    "business": {"characters": 50_000_000, "audio_minutes": 10_000, "documents": 2_000,
-                 "api_requests": 1_000_000, "meeting_minutes": 50_000},
-    "enterprise": {"characters": float("inf"), "audio_minutes": float("inf"),
-                   "documents": float("inf"), "api_requests": float("inf"),
-                   "meeting_minutes": float("inf")},
+    "free": {"characters": 500_000, "translation_requests": 5_000,
+             "api_requests": 5_000, "document_pages": 20,
+             "audio_seconds": 3_600, "telephony_minutes": 300},
+    "pro": {"characters": 5_000_000, "translation_requests": 100_000,
+            "api_requests": 100_000, "document_pages": 200,
+            "audio_seconds": 60_000, "telephony_minutes": 5_000},
+    "business": {"characters": 50_000_000, "translation_requests": 1_000_000,
+                 "api_requests": 1_000_000, "document_pages": 2_000,
+                 "audio_seconds": 600_000, "telephony_minutes": 50_000},
+    "enterprise": {k: float("inf") for k in METERED_DIMENSIONS},
 }
+
+#: The old limit names, and how they map onto the canonical dimensions. The
+#: audio limit changes VALUE (minutes -> seconds) because the ledger counts
+#: seconds; the other two are pure renames.
+_QUOTA_KEY_MIGRATION = {
+    "documents": "document_pages",
+    "meeting_minutes": "telephony_minutes",
+}
+
+
+def normalize_quotas(raw: dict | None) -> dict[str, float]:
+    """The plan's limits in the canonical dimension names.
+
+    Existing subscriptions carry the old limit names, so the limits are
+    migrated on read: "documents" -> "document_pages",
+    "meeting_minutes" -> "telephony_minutes", and the minutes-based audio
+    limit is converted to the seconds the ledger records. No migration is
+    needed for the rows themselves.
+    """
+    if not raw:
+        return dict(DEFAULT_PLAN_QUOTAS["free"])
+    out: dict[str, float] = {}
+    for key, value in raw.items():
+        if key == "audio_minutes":
+            out["audio_seconds"] = float(value) * 60.0
+        elif key in _QUOTA_KEY_MIGRATION:
+            out[_QUOTA_KEY_MIGRATION[key]] = float(value)
+        else:
+            try:
+                out[key] = float(value)
+            except (TypeError, ValueError):
+                continue
+    return out
 
 
 async def record_usage(
@@ -72,12 +125,32 @@ async def current_period_usage(db: AsyncSession, org_id: uuid.UUID) -> dict[str,
     return {unit: float(total or 0) for unit, total in res.all()}
 
 
-async def check_quota(db: AsyncSession, org_id: uuid.UUID, unit_type: str,
-                      add_units: float) -> None:
+async def plan_quotas(db: AsyncSession, org_id: uuid.UUID) -> dict[str, float]:
+    """The org's plan limits in the canonical dimension names.
+
+    Read from the subscription when there is one, else the plan defaults.
+    Every caller (quota checks, the usage endpoints) goes through here, so a
+    limit is always expressed in the unit the ledger records.
+    """
     sub = (await db.execute(select(M.Subscription).where(
         M.Subscription.org_id == org_id))).scalars().first()
-    quotas = (sub.quota_json if sub else None) or DEFAULT_PLAN_QUOTAS.get(
-        sub.plan_code if sub else "free", DEFAULT_PLAN_QUOTAS["free"])
+    if sub is None:
+        return normalize_quotas(DEFAULT_PLAN_QUOTAS["free"])
+    return normalize_quotas(sub.quota_json or DEFAULT_PLAN_QUOTAS.get(
+        sub.plan_code, DEFAULT_PLAN_QUOTAS["free"]))
+
+
+async def check_quota(db: AsyncSession, org_id: uuid.UUID, unit_type: str,
+                      add_units: float, *,
+                      quotas: dict[str, float] | None = None) -> None:
+    """Check a limit before the expensive work.
+
+    ``quotas`` lets a hot path (the realtime pipeline, one check per
+    utterance) pass the plan limits it already holds instead of re-reading
+    the subscription on every segment.
+    """
+    if quotas is None:
+        quotas = await plan_quotas(db, org_id)
     limit = quotas.get(unit_type)
     if limit is None or limit == float("inf"):
         return

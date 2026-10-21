@@ -158,20 +158,16 @@ export default function PhoneCallingTab() {
   const [liveReceiverInterim, setLiveReceiverInterim] = useState('');
 
   // Live Waterfall Latency Metrics (Section 9 Requirement)
-  const [latestLatency, setLatestLatency] = useState<LatencyMetrics | null>({
-    turn_id: 'init',
-    direction: 'A->B',
-    source_lang: 'hi',
-    target_lang: 'ja',
-    speech_to_stt_ms: 280,
-    stt_to_mt_ms: 130,
-    mt_to_tts_ms: 145,
-    total_e2e_latency_ms: 555,
-  });
+  // No fabricated waterfall: the panel shows real per-turn measurements
+  // only, and says "no measurement yet" before the first turn (issue #109
+  // class 4 — the old initial state rendered 280/130/145 ms and a 555 ms
+  // total before any call had happened).
+  const [latestLatency, setLatestLatency] = useState<LatencyMetrics | null>(null);
 
   // Call History
   const [history, setHistory] = useState<CallHistoryItem[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
 
   // Incoming Call Simulation State
   const [incomingCall, setIncomingCall] = useState<{
@@ -537,73 +533,14 @@ export default function PhoneCallingTab() {
     try {
       const data = await api.get<CallHistoryItem[]>('/api/v1/telephony/calls?limit=25');
       setHistory(data);
-    } catch {
-      // Fallback local sample history with Phase 12 & 13 itemized cost breakdown & security attributes
-      setHistory([
-        {
-          id: 'call-sample-1',
-          call_sid: 'CA_81905551234_TOKYO',
-          direction: 'outbound',
-          from_number: '+12025550199',
-          recipient_name: 'Tokyo Client (Tanaka)',
-          to_number: '+81905551234',
-          caller_language: 'hi',
-          receiver_language: 'ja',
-          duration_seconds: 763,
-          status: 'ended',
-          mode: 'human_to_human',
-          provider: 'Twilio',
-          recording_enabled: false,
-          started_at: new Date(Date.now() - 3600000).toISOString(),
-          telephony_cost_cents: 26,
-          stt_cost_cents: 8,
-          mt_cost_cents: 7,
-          tts_cost_cents: 10,
-          total_cost_cents: 51,
-        },
-        {
-          id: 'call-sample-2',
-          call_sid: 'CA_79165559876_MOSCOW',
-          direction: 'outbound',
-          from_number: '+912255501234',
-          recipient_name: 'Moscow Partner (Dmitry)',
-          to_number: '+79165559876',
-          caller_language: 'hi',
-          receiver_language: 'ru',
-          duration_seconds: 501,
-          status: 'ended',
-          mode: 'ai_agent',
-          provider: 'Telnyx',
-          recording_enabled: false,
-          started_at: new Date(Date.now() - 86400000).toISOString(),
-          telephony_cost_cents: 18,
-          stt_cost_cents: 6,
-          mt_cost_cents: 5,
-          tts_cost_cents: 7,
-          total_cost_cents: 36,
-        },
-        {
-          id: 'call-sample-3',
-          call_sid: 'CA_49302312567_BERLIN',
-          direction: 'inbound',
-          from_number: '+493023125678',
-          recipient_name: 'Berlin Support Desk',
-          to_number: '+912255501234',
-          caller_language: 'de',
-          receiver_language: 'en',
-          duration_seconds: 245,
-          status: 'ended',
-          mode: 'call_center',
-          provider: 'Twilio',
-          recording_enabled: false,
-          started_at: new Date(Date.now() - 172800000).toISOString(),
-          telephony_cost_cents: 10,
-          stt_cost_cents: 3,
-          mt_cost_cents: 2,
-          tts_cost_cents: 4,
-          total_cost_cents: 19,
-        },
-      ]);
+      setHistoryError(null);
+    } catch (err) {
+      // No fabricated history. The calls endpoint failed, so there is no
+      // call history to show: a rendered "Tokyo Client (Tanaka)" row with a
+      // duration and a cost split is invented data that reads as real
+      // (issue #109 class 4). The panel says what happened instead.
+      setHistory([]);
+      setHistoryError(err instanceof Error ? err.message : "The call history could not be loaded.");
     } finally {
       setIsLoadingHistory(false);
     }
@@ -2094,6 +2031,19 @@ export default function PhoneCallingTab() {
             </div>
           )}
 
+          {/* No measurement yet: the waterfall is real data only. Before the
+              first measured turn it says so, instead of showing invented
+              latencies (issue #109 class 4). */}
+          {!latestLatency && (
+            <div className="rounded-2xl border border-indigo-100 bg-indigo-50/40 p-3.5 text-[11px] text-slate-500">
+              <span className="flex items-center gap-1.5 font-bold text-indigo-700">
+                <Clock className="h-3.5 w-3.5" />
+                Live End-to-End Latency Waterfall
+              </span>
+              <p className="mt-1">No turn measured yet — the waterfall fills in after the first translated turn.</p>
+            </div>
+          )}
+
           {/* USAGE & COST METER FOOTER */}
           <div className="flex flex-wrap items-center justify-between rounded-xl bg-slate-50 px-4 py-2.5 text-xs text-slate-500 border border-slate-100">
             <div className="flex items-center gap-4">
@@ -2453,7 +2403,11 @@ export default function PhoneCallingTab() {
 
               <div className="divide-y divide-slate-100">
                 {history.length === 0 ? (
-                  <div className="py-4 text-center text-xs text-slate-400">No calls placed yet</div>
+                  <div className="py-4 text-center text-xs text-slate-400">
+                    {historyError
+                      ? `The call history could not be loaded${historyError ? `: ${historyError}` : "."}`
+                      : "No calls placed yet"}
+                  </div>
                 ) : (
                   history.slice(0, 4).map((h) => (
                     <div key={h.id} className="py-3 flex items-start justify-between text-xs gap-2">

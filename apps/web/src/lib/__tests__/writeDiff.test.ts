@@ -5,7 +5,7 @@
  * The metric must reflect the words that actually changed.
  */
 import { describe, expect, it } from "vitest";
-import { wordDiffPercent } from "../writeDiff";
+import { matchChangedWord, normalizeWord, wordDiffPercent } from "../writeDiff";
 
 describe("wordDiffPercent", () => {
   it("reports the changed words of a spelling/grammar rewrite", () => {
@@ -45,5 +45,41 @@ describe("wordDiffPercent", () => {
 
   it("ignores whitespace differences", () => {
     expect(wordDiffPercent("a  b\nc", "a b c")).toBe(0);
+  });
+});
+
+describe("matchChangedWord", () => {
+  it("matches the changed word exactly", () => {
+    const diffs = [{ original: "teh", replacement: "the" }];
+    expect(matchChangedWord("the", diffs)?.replacement).toBe("the");
+  });
+
+  it("does not mark every word containing the changed word", () => {
+    const diffs = [{ original: "teh", replacement: "the" }];
+    // "them" contains "the" but is not the word that changed
+    expect(matchChangedWord("them", diffs)).toBeUndefined();
+    expect(matchChangedWord("there", diffs)).toBeUndefined();
+  });
+
+  it("does not mark nearly every word for a one-letter diff", () => {
+    const diffs = [{ original: "a", replacement: "an" }];
+    expect(matchChangedWord("an", diffs)?.replacement).toBe("an");
+    expect(matchChangedWord("cat", diffs)).toBeUndefined();
+    expect(matchChangedWord("car", diffs)).toBeUndefined();
+  });
+
+  it("ignores punctuation-only and empty replacements", () => {
+    expect(matchChangedWord("the", [{ replacement: "!!!" }])).toBeUndefined();
+    expect(matchChangedWord("the", [{ replacement: "" }])).toBeUndefined();
+  });
+
+  it("normalizes case and punctuation on both sides", () => {
+    expect(normalizeWord("The,")).toBe("the");
+    expect(matchChangedWord("the", [{ replacement: "The," }])?.replacement).toBe("The,");
+  });
+
+  it("returns undefined without diffs", () => {
+    expect(matchChangedWord("the", undefined)).toBeUndefined();
+    expect(matchChangedWord("the", [])).toBeUndefined();
   });
 });
