@@ -496,6 +496,12 @@ class MeetingCreate(BaseModel):
     mode: Literal["ws", "livekit"] = "ws"
     speak_lang: str = "auto"
     hear_lang: str = "en"
+    # Tenant-level private-only (issue #109 class 3, finding 8): a live
+    # meeting could never be routed private-only because the realtime
+    # pipeline hard-coded a latency intent. The flag is stored on the
+    # meeting's settings bag (no schema migration) and carried into every
+    # translation the meeting makes.
+    tenant_private_only: bool = False
 
 
 class ParticipantOut(ORMModel):
@@ -856,6 +862,11 @@ class WriteRequest(BaseModel):
     style: str = "business"  # business, academic, casual, simple, creative
     tone: str = "professional"  # professional, friendly, confident, diplomatic, direct
     corrections_only: bool = False
+    # Private-only (issue #109 class 3, finding 7): when set, the neural
+    # rewrite tier only POSTs to the LLM HTTP endpoint if the operator
+    # declared it on-tenant (LLM_HTTP_PRIVATE=1); otherwise the offline rule
+    # engine serves the request — the content stays on the server.
+    private_only: bool = False
 
 
 class WriteDiff(BaseModel):

@@ -29,11 +29,13 @@ def _room_name(title: str) -> str:
 async def create_meeting(db: AsyncSession, *, org_id: uuid.UUID,
                          created_by: uuid.UUID | None, title: str,
                          mode: str, speak_lang: str, hear_lang: str,
-                         project_id: uuid.UUID | None = None) -> tuple[M.Meeting, M.Participant]:
+                         project_id: uuid.UUID | None = None,
+                         tenant_private_only: bool = False) -> tuple[M.Meeting, M.Participant]:
     meeting = M.Meeting(
         org_id=org_id, project_id=project_id, title=title, mode=mode,
         room_name=_room_name(title), created_by=created_by, status="scheduled",
-        settings_json={"default_speak_lang": speak_lang, "default_hear_lang": hear_lang},
+        settings_json={"default_speak_lang": speak_lang, "default_hear_lang": hear_lang,
+                       "tenant_private_only": bool(tenant_private_only)},
     )
     db.add(meeting)
     await db.flush()

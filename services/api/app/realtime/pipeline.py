@@ -125,15 +125,21 @@ class MeetingPipeline:
         self.bus = AgentBus()
         self.supervisor = Supervisor(meeting_id=self._meeting_id)
         self.supervisor.attach(self.bus)
+        # Tenant-private meeting (issue #109 class 3, finding 8): the STT /
+        # TTS / detection calls carry the private intent so a cloud provider
+        # is never reachable from a private room.
+        meeting_private_only = bool(getattr(self.session, "tenant_private_only", False))
         self.listening = ListeningAgent(
-            self.bus, RealtimeSttProvider(ai), meeting_id=self._meeting_id,
+            self.bus,
+            RealtimeSttProvider(ai, private_only=meeting_private_only),
+            meeting_id=self._meeting_id,
             min_audio_bytes=MIN_AUDIO_BYTES, on_detect=self._on_language_detected)
         self.translating = TranslationAgent(
             self.bus,
             RealtimeTranslatorProvider(db_session, self._translate_context,
                                        translate_fn=lambda *a: translate_text(*a)),
             meeting_id=self._meeting_id)
-        self.voice = VoiceAgent(self.bus, RealtimeTtsProvider(ai),
+        self.voice = VoiceAgent(self.bus, RealtimeTtsProvider(ai, private_only=meeting_private_only),
                                 meeting_id=self._meeting_id, voice_for=voice_for)
 
     # ------------------------------------------------------------------ #
@@ -151,6 +157,7 @@ class MeetingPipeline:
             org_id=self.session.org_id, user_id=speaker.user_id if speaker else None,
             product="realtime", meeting_id=self.session.meeting_id,
             segment_id=segment_uuid, intent="latency_optimized",
+            tenant_private_only=bool(getattr(self.session, "tenant_private_only", False)),
             context=context[-1] if context else None,
             persist=True, meter=True)
 

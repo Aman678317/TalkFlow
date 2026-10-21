@@ -1687,6 +1687,7 @@ async def improve_text_async(
     style: str = "business",
     tone: str = "professional",
     corrections_only: bool = False,
+    private_only: bool = False,
 ) -> WriteResponse:
     """Async contextual rewrite with neural/LLM integration and multi-tier rule fallback.
 
@@ -1694,6 +1695,13 @@ async def improve_text_async(
     OpenAI-compatible ``LLM_HTTP_URL`` is configured) -> Tier 3 (offline regex
     rules, unchanged quick-fix fallback). The neural tier is skipped silently
     when unavailable, so an outage only costs quality, never correctness.
+
+    ``private_only`` (issue #109 class 3, finding 7): the neural tier POSTs the
+    user's text to ``LLM_HTTP_URL`` — an arbitrary operator-configured URL that
+    may be a third-party service, outside the router. A private-only write
+    therefore only reaches that endpoint when the operator declared it
+    on-tenant (``LLM_HTTP_PRIVATE=1``); otherwise the offline rule engine
+    serves the request and the text never leaves the server.
     """
     raw = text.strip()
     if not raw:
@@ -1703,7 +1711,7 @@ async def improve_text_async(
         )
     neural = await _neural_rewrite(
         raw, language=language, style=style, tone=tone,
-        corrections_only=corrections_only)
+        corrections_only=corrections_only, private_only=private_only)
     if neural is not None:
         return neural
     return improve_text(
@@ -1751,6 +1759,7 @@ async def _neural_rewrite(
     raw: str,
     *,
     language: str, style: str, tone: str, corrections_only: bool,
+    private_only: bool = False,
 ) -> WriteResponse | None:
     """Tier 2: provider-backed contextual grammar correction.
 
@@ -1760,6 +1769,13 @@ async def _neural_rewrite(
     """
     url = (getattr(settings, "llm_http_url", "") or "").strip()
     if not url:
+        return None
+    if private_only and not bool(getattr(settings, "llm_http_private", False)):
+        # The endpoint posts the user's text outside the router's privacy
+        # classification and the operator has not declared it on-tenant
+        # (LLM_HTTP_PRIVATE). The offline rule engine serves instead.
+        with contextlib.suppress(Exception):
+            met.WRITE_NEURAL_REWRITE.labels(status="skipped_private_only").inc()
         return None
     protected_text, protected_spans = _protect_immutable_spans(raw)
     instruction = (f"Register: style={style}, tone={tone}. "

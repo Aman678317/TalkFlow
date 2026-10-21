@@ -25,7 +25,9 @@ from app.db import models as M
 from app.errors import ProviderError
 from app import metrics as met
 from gt_ai.base import BaseProvider
-from gt_ai.model_router.router import ModelRouter, ProviderSpec
+from gt_ai.model_router.router import (
+    ModelRouter, ProviderSpec, provider_is_private,
+)
 from gt_ai.registry import create
 from gt_ai.types import (
     AudioChunk, DetectionResult, Intent, NoPrivateProviderAvailable, ProviderUnavailable,
@@ -35,6 +37,22 @@ from gt_ai.types import (
 log = logging.getLogger("app.ai")
 
 TASKS = (Task.STT, Task.MT, Task.TTS, Task.LANG_DETECT, Task.SUMMARIZE, Task.EMBED)
+
+#: The provider order used when the operator leaves a task on `auto`.
+#: LOCAL-FIRST (issue #109 class 3, decision (d)): the default configuration
+#: is on-tenant inference — the cloud tier is an explicit operator choice
+#: (``TRANSLATION_PROVIDER=neural_online`` etc.), never the implicit head of
+#: every request. The list still ends with the dev stand-in so a dev box
+#: without weights has something honest to fall back to.
+AUTO_PROVIDER_ORDER: dict[Task, list[str]] = {
+    Task.MT: ["madlad400", "nllb_ct2", "argos", "airllm",
+              "neural_online", "deepl", "mt_http", "dev_echo"],
+    Task.STT: ["faster_whisper", "stt_http", "dev_text"],
+    Task.TTS: ["kokoro", "piper", "tts_http", "dev_tone"],
+    Task.LANG_DETECT: ["fasttext", "langdetect"],
+    Task.SUMMARIZE: ["extractive", "llm_http"],
+    Task.EMBED: ["sentence_transformers", "hash_tfidf"],
+}
 
 
 async def _open_tts_stream(raw):
@@ -103,16 +121,35 @@ class AIFacade:
                 Task.MT: "azure_translator",
                 Task.TTS: "azure_speech_tts",
             }[task]
-        # auto: prefer real providers that can healthcheck; dev fallback last
-        order = {
-            Task.MT: ["neural_online", "deepl", "airllm", "madlad400", "nllb_ct2", "argos", "mt_http", "dev_echo"],
-            Task.STT: ["faster_whisper", "stt_http", "dev_text"],
-            Task.TTS: ["kokoro", "piper", "tts_http", "dev_tone"],
-            Task.LANG_DETECT: ["fasttext", "langdetect"],
-            Task.SUMMARIZE: ["llm_http", "extractive"],
-            Task.EMBED: ["sentence_transformers", "hash_tfidf"],
-        }[task]
+        # auto: prefer real providers that can healthcheck; dev fallback last.
+        # LOCAL-FIRST under `auto` (issue #109 class 3, decision (d)): an
+        # operator who wants the cloud tier ranks it explicitly — the
+        # default configuration is on-tenant inference, and external
+        # providers are the failover hop, not the default destination.
+        order = AUTO_PROVIDER_ORDER[task]
         return order[0]  # lazily healthchecked; failover handles the rest
+
+    def _explicitly_configured(self, task: Task) -> str | None:
+        """The provider name ONLY when the operator named it explicitly.
+
+        ``_configured_name`` always resolves ``auto`` to a concrete name (the
+        local-first default), so ``cfg != "auto"`` was never a real guard and
+        the cloud provider picked up the +2000 boost for every request by
+        default (sweep finding 5). Only the raw setting counts as operator
+        preference.
+        """
+        env_map = {
+            Task.MT: settings.translation_provider,
+            Task.STT: settings.stt_provider,
+            Task.TTS: settings.tts_provider,
+            Task.LANG_DETECT: settings.lang_detect_provider,
+            Task.SUMMARIZE: settings.summarization_provider,
+            Task.EMBED: settings.embedding_provider,
+        }
+        raw = (env_map.get(task) or "").strip()
+        if raw and raw.lower() != "auto":
+            return raw
+        return None
 
     def _provider_kwargs(self, task: Task, name: str) -> dict:
         key = (task.value, name)
@@ -187,12 +224,90 @@ class AIFacade:
                                           **self._provider_kwargs(task, name))
         return self._providers[key]
 
+    def _http_private_overrides(self) -> set[str]:
+        """Provider names the operator declared on-tenant (the *_HTTP_PRIVATE
+        flags). An operator HTTP endpoint posts request content to a URL the
+        code cannot verify, so it counts as private ONLY with the explicit
+        opt-in (issue #109 class 3, finding 6)."""
+        overrides: set[str] = set()
+        if settings.mt_http_private:
+            overrides.add("mt_http")
+        if settings.stt_http_private:
+            overrides.add("stt_http")
+        if settings.tts_http_private:
+            overrides.add("tts_http")
+        if settings.llm_http_private:
+            overrides.add("llm_http")
+        return overrides
+
+    def _effective_private(self, provider: str, seeded: bool,
+                           overrides: set[str]) -> bool:
+        """The privacy flag the ROUTER must see for this provider.
+
+        The registry row carries the seeded value, but the operator's live
+        ``*_HTTP_PRIVATE`` setting is the current statement about that
+        endpoint — it wins over a stale seeded row (issue #109 class 3,
+        finding 6). Every other provider keeps the registry's own value, so
+        an operator who deliberately flipped a row is honored.
+        """
+        if provider in ("mt_http", "stt_http", "tts_http", "llm_http"):
+            return provider in overrides
+        return bool(seeded)
+
+    def _fallback_specs(self) -> dict[Task, list[ProviderSpec]]:
+        """The spec used for a task the registry knows nothing about.
+
+        Every spec carries the provider's REAL privacy classification — the
+        ``ProviderSpec`` dataclass default (``private=True``) used to tell
+        the router that a cloud provider was private, so the private_only
+        hard filter could not exclude it (sweep finding 4).
+        """
+        overrides = self._http_private_overrides()
+
+        def _spec(task: Task) -> ProviderSpec:
+            name = self._configured_name(task)
+            return ProviderSpec(
+                name=name, task=task,
+                requires_gpu=(task == Task.MT and name == "airllm"),
+                private=provider_is_private(name, overrides),
+                latency_class=("batch" if (task == Task.MT and name == "airllm")
+                               else "fast"),
+            )
+
+        return {t: [_spec(t)] for t in TASKS}
+
+    def _apply_priority_policy(self, specs: dict[Task, list[ProviderSpec]]) -> None:
+        """Apply the operator-preference policy to the task's specs.
+
+        * an EXPLICITLY named provider is a strong operator preference: it
+          gets the +2000 boost, so routing tries it first with the rest of
+          the registry as failover;
+        * while the task is on `auto`, a NON-private provider is demoted
+          (-2000) below the on-tenant ones — the seeded quality tiers alone
+          do not guarantee it (the cloud translator is seeded at 95, the
+          local madlad400 at 85), so the default configuration would still
+          start at the cloud tier. The cloud stays reachable as the failover
+          hop; it is simply not the default destination (decision (d)).
+        """
+        for t in TASKS:
+            task_specs = specs.get(t) or []
+            explicit = self._explicitly_configured(t)
+            if explicit:
+                for s in task_specs:
+                    if s.name == explicit:
+                        s.priority += 2000
+            else:
+                for s in task_specs:
+                    if not s.private:
+                        s.priority -= 2000
+
     async def load_registry(self, db: AsyncSession) -> None:
         """Load provider specs from the DB model registry (source of truth),
         merged with static defaults for anything not yet registered."""
         res = await db.execute(select(M.ModelRegistry).where(M.ModelRegistry.status == "active"))
         rows = res.scalars().all()
         specs: dict[Task, list[ProviderSpec]] = {t: [] for t in TASKS}
+        http_overrides = self._http_private_overrides()
         for r in rows:
             try:
                 task = Task(r.task)
@@ -203,42 +318,34 @@ class AIFacade:
             specs[task].append(ProviderSpec(
                 name=r.provider, model=r.config_json.get("model", r.name),
                 task=task, quality_tier=r.quality_tier, cost_tier=r.cost_tier,
-                latency_class=r.latency_class, private=r.private,
+                latency_class=r.latency_class,
+                private=self._effective_private(r.provider, r.private, http_overrides),
                 requires_gpu=r.requires_gpu, languages=langs, validated_pairs=pairs,
                 domains=set(r.domains_json or {"general"}), priority=r.priority,
             ))
-        # ensure at least one spec per task (registry may be empty in tests)
-        fallback_specs = {
-            Task.MT: [ProviderSpec(
-                name=self._configured_name(Task.MT), task=Task.MT,
-                requires_gpu=self._configured_name(Task.MT) == "airllm",
-                private=self._configured_name(Task.MT) == "airllm",
-                latency_class="batch" if self._configured_name(Task.MT) == "airllm" else "fast",
-            )],
-            Task.STT: [ProviderSpec(name=self._configured_name(Task.STT), task=Task.STT)],
-            Task.TTS: [ProviderSpec(name=self._configured_name(Task.TTS), task=Task.TTS)],
-            Task.LANG_DETECT: [ProviderSpec(name=self._configured_name(Task.LANG_DETECT),
-                                            task=Task.LANG_DETECT)],
-            Task.SUMMARIZE: [ProviderSpec(name=self._configured_name(Task.SUMMARIZE),
-                                          task=Task.SUMMARIZE)],
-            Task.EMBED: [ProviderSpec(name=self._configured_name(Task.EMBED), task=Task.EMBED)],
-        }
+        # ensure at least one spec per task (registry may be empty in tests).
+        # Every fallback spec carries its REAL privacy flag (sweep finding 4):
+        # the ProviderSpec default (private=True) told the router a cloud
+        # provider was private, so the private_only hard filter could not
+        # exclude it. The names satisfy _provider_kwargs (explicit configs
+        # resolve there; auto resolves to the local-first default).
+        fallback_specs = self._fallback_specs()
         for t in TASKS:
             if not specs[t]:
                 specs[t] = fallback_specs[t]
             else:
-                # configured provider always joins the candidate list
-                cfg = self._configured_name(t)
-                if cfg != "auto" and not any(s.name == cfg for s in specs[t]):
-                    specs[t].append(ProviderSpec(name=cfg, task=t))
-            # explicit (non-auto) configuration is a strong operator preference:
-            # boost its priority so routing tries it first, with the rest of the
-            # registry as failover candidates.
-            cfg = self._configured_name(t)
-            if cfg != "auto":
-                for s in specs[t]:
-                    if s.name == cfg:
-                        s.priority += 2000
+                # configured provider always joins the candidate list — with
+                # its real privacy flag; an unnamed "auto" no longer injects
+                # a synthetic cloud candidate (it is in the registry or fails
+                # over through the extras).
+                explicit = self._explicitly_configured(t)
+                if explicit and not any(s.name == explicit for s in specs[t]):
+                    specs[t].append(ProviderSpec(
+                        name=explicit, task=t,
+                        private=provider_is_private(explicit, self._http_private_overrides())))
+        # The operator-preference policy (explicit boost / local-first under
+        # `auto`) is applied once, to the assembled specs.
+        self._apply_priority_policy(specs)
         self._specs = specs
         health = self.router.health if self.router else {}
         self.router = ModelRouter(specs, gpu_available=settings.gpu_available, health=health)
@@ -272,6 +379,12 @@ class AIFacade:
                 try:
                     decision = self.router.route(task, **route_kw)
                 except NoPrivateProviderAvailable:
+                    # The private pool is exhausted. If the chain already holds
+                    # private candidates, that is the END of the chain — the
+                    # request continues with them. Only a chain with NO
+                    # private candidate at all is the honest failure.
+                    if order:
+                        break
                     raise
                 except Exception:
                     break
@@ -428,8 +541,7 @@ class AIFacade:
                     reason=type(e).__name__).inc()
                 log.exception("provider %s/%s failed", task, decision.provider)
         raise ProviderError(
-            ("No private provider is available for this request; the content was "
-             "not sent to any external service.")
+            self._NO_PRIVATE_MSG
             if private_only
             else "AI capability temporarily unavailable. Original content is unaffected.",
             details={"task": task.value, "error": str(last_err),
@@ -438,19 +550,24 @@ class AIFacade:
     # ------------------------------------------------------------------ #
     # Public API used by services / realtime pipeline
     # ------------------------------------------------------------------ #
-    async def detect_language(self, text: str) -> DetectionResult:
+    async def detect_language(self, text: str, intent: Intent | None = None) -> DetectionResult:
         result, decision = await self._execute(
-            Task.LANG_DETECT, {}, lambda p: p.detect(text))
+            Task.LANG_DETECT, {"intent": intent} if intent is not None else {},
+            lambda p: p.detect(text))
         met.LANG_DETECT_CONFIDENCE.labels(
             language=result.language or "unknown").observe(result.confidence or 0.0)
         return result
 
     async def translate(self, req: TranslationRequest,
                         language_capability: Any = None) -> tuple[TranslationResult, RouteDecision]:
+        # The tenant-level private flag is a promise, not a provider-name
+        # preference (sweep finding 1: the literal "private_only" matched no
+        # provider name and the flag had zero effect). Tenant flag wins over
+        # any per-request intent.
+        intent = Intent.PRIVATE_ONLY if req.tenant_private_only else req.intent
         route_kw: dict = dict(
             source_lang=req.source_lang, target_lang=req.target_lang,
-            domain=req.domain, intent=req.intent,
-            tenant_preference=req.tenant_private_only and "private_only" or None,
+            domain=req.domain, intent=intent,
         )
         result, decision = await self._execute(Task.MT, route_kw, lambda p: p.translate(req))
         pair = (req.source_lang, req.target_lang)
@@ -463,20 +580,30 @@ class AIFacade:
         ).observe(result.latency_ms)
         return result, decision
 
+    _NO_PRIVATE_MSG = ("No private provider is available for this request; the "
+                       "content was not sent to any external service.")
+
     async def translate_stream(self, req: TranslationRequest):
         if self.router is None:
             raise ProviderError("AI router not initialized")
-        decision = self.router.route(Task.MT, source_lang=req.source_lang,
-                                     target_lang=req.target_lang, domain=req.domain,
-                                     intent=req.intent)
+        intent = Intent.PRIVATE_ONLY if req.tenant_private_only else req.intent
+        try:
+            decision = self.router.route(Task.MT, source_lang=req.source_lang,
+                                         target_lang=req.target_lang, domain=req.domain,
+                                         intent=intent)
+        except NoPrivateProviderAvailable as e:
+            raise ProviderError(self._NO_PRIVATE_MSG,
+                                details={"task": Task.MT.value, "error": str(e)}) from e
         provider = self.provider(Task.MT, decision.provider)
         return provider.translate_stream(req), decision  # type: ignore[attr-defined]
 
     async def transcribe(self, audio: bytes, sample_rate: int,
-                         lang_hint: str | None = None) -> tuple[TranscriptChunk, RouteDecision]:
+                         lang_hint: str | None = None,
+                         intent: Intent | None = None) -> tuple[TranscriptChunk, RouteDecision]:
         t0 = time.perf_counter()
         result, decision = await self._execute(
-            Task.STT, {}, lambda p: p.transcribe(audio, sample_rate, lang_hint))
+            Task.STT, {"intent": intent} if intent is not None else {},
+            lambda p: p.transcribe(audio, sample_rate, lang_hint))
         elapsed_ms = (time.perf_counter() - t0) * 1000
         met.STT_LATENCY.labels(provider=decision.provider).observe(elapsed_ms)
         met.STT_STAGE_LATENCY.labels(
@@ -484,19 +611,27 @@ class AIFacade:
         return result, decision
 
     async def synthesize(self, text: str, lang: str,
-                         voice: str | None = None) -> tuple[AudioChunk, RouteDecision]:
+                         voice: str | None = None,
+                         intent: Intent | None = None) -> tuple[AudioChunk, RouteDecision]:
         t0 = time.perf_counter()
         result, decision = await self._execute(
-            Task.TTS, {}, lambda p: p.synthesize(text, lang, voice))
+            Task.TTS, {"intent": intent} if intent is not None else {},
+            lambda p: p.synthesize(text, lang, voice))
         met.TTS_STAGE_TTFB.labels(
             provider=decision.provider or "unknown", voice=voice or "default",
         ).observe((time.perf_counter() - t0) * 1000)
         return result, decision
 
-    async def synthesize_stream(self, text: str, lang: str, voice: str | None = None):
+    async def synthesize_stream(self, text: str, lang: str, voice: str | None = None,
+                                intent: Intent | None = None):
         if self.router is None:
             raise ProviderError("AI router not initialized")
-        candidates = self._ordered_candidates(Task.TTS, {})
+        route_kw: dict = {"intent": intent} if intent is not None else {}
+        try:
+            candidates = self._ordered_candidates(Task.TTS, route_kw)
+        except NoPrivateProviderAvailable as e:
+            raise ProviderError(self._NO_PRIVATE_MSG,
+                                details={"task": Task.TTS.value, "error": str(e)}) from e
         for decision in candidates:
             name = decision.provider
             try:
@@ -534,25 +669,34 @@ class AIFacade:
                 return stream, decision  # type: ignore[attr-defined,return-value]
             except Exception:
                 pass
-        decision = self.router.route(Task.TTS)
+        try:
+            decision = self.router.route(Task.TTS, **route_kw)
+        except NoPrivateProviderAvailable as e:
+            raise ProviderError(self._NO_PRIVATE_MSG,
+                                details={"task": Task.TTS.value, "error": str(e)}) from e
         provider = self.provider(Task.TTS, decision.provider)
         stream = await _open_tts_stream(provider.synthesize_stream(text, lang, voice))
         return stream, decision  # type: ignore[attr-defined,return-value]
 
     async def summarize(self, text: str, instruction: str = "",
-                        max_length: int = 400, lang: str = "en") -> str:
+                        max_length: int = 400, lang: str = "en",
+                        intent: Intent | None = None) -> str:
         result, _ = await self._execute(
-            Task.SUMMARIZE, {},
+            Task.SUMMARIZE, {"intent": intent} if intent is not None else {},
             lambda p: p.summarize(text, instruction, max_length, lang))
         return result
 
-    async def extract_structured(self, text: str, lang: str = "en") -> dict:
+    async def extract_structured(self, text: str, lang: str = "en",
+                                 intent: Intent | None = None) -> dict:
         result, _ = await self._execute(
-            Task.SUMMARIZE, {}, lambda p: p.extract_structured(text, lang=lang))
+            Task.SUMMARIZE, {"intent": intent} if intent is not None else {},
+            lambda p: p.extract_structured(text, lang=lang))
         return result
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
-        result, _ = await self._execute(Task.EMBED, {}, lambda p: p.embed(texts))
+    async def embed(self, texts: list[str], intent: Intent | None = None) -> list[list[float]]:
+        result, _ = await self._execute(
+            Task.EMBED, {"intent": intent} if intent is not None else {},
+            lambda p: p.embed(texts))
         return result
 
     # ------------------------------------------------------------------ #

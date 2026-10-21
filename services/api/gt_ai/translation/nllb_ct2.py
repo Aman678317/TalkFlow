@@ -109,11 +109,10 @@ class NllbCt2Provider(BaseProvider):
         return os.path.isdir(self.model_dir)
 
     async def healthcheck(self) -> bool:
-        try:
-            await self._ensure_loaded()
-            return True
-        except Exception:
-            return False
+        """Never load (issue #109 class 2): a health poll must not pull the
+        model into memory — the probe is deps + the cached model dir.
+        """
+        return self.runtime_ready()
 
     def _translate_sync(self, req: TranslationRequest) -> str:
         src_code = NLLB_CODES.get(req.source_lang if req.source_lang != "auto" else "en", "eng_Latn")

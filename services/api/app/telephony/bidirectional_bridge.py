@@ -168,6 +168,7 @@ class BidirectionalTranslationBridge:
         on_barge_in: Callable[[str], Coroutine[Any, Any, None]] | None = None,
         extra_legs: list[BridgeLegSpec] | None = None,
         caption_sink: Any | None = None,
+        tenant_private_only: bool = False,
     ) -> None:
         self.call_id = call_id
         self.caller_lang = caller_language
@@ -178,6 +179,10 @@ class BidirectionalTranslationBridge:
         self.on_audio_out = on_audio_out
         self.on_barge_in = on_barge_in
         self.caption_sink = caption_sink
+        # Tenant-private call (issue #109 class 3, finding 8): the bridge used
+        # to hard-code a latency intent, so a call could never be routed
+        # private-only. The flag rides into the translation request.
+        self.tenant_private_only = bool(tenant_private_only)
 
         # §306 routing table: primary legs are implicit `translated` seats, so
         # the legacy two-leg behavior is byte-identical; extra legs opt into the
@@ -264,7 +269,8 @@ class BidirectionalTranslationBridge:
                 source_lang=source_lang,
                 target_lang=target_lang,
                 domain="conversational",
-                intent=Intent.LATENCY_OPTIMIZED,
+                intent=Intent.PRIVATE_ONLY if self.tenant_private_only
+                else Intent.LATENCY_OPTIMIZED,
             )
             # Provider call under the seam lock: concurrent identical
             # requests serialize onto the ONE call instead of racing to

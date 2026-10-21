@@ -53,6 +53,9 @@ FEATURE_FLAGS = {
 
 MODEL_REGISTRY_SEED = [
     # name, task, provider, quality, cost, latency_class, private, gpu
+    # NOTE: the four `*_http` rows re-derive `private` from the live
+    # *_HTTP_PRIVATE settings on every seed run (see seed_model_registry) —
+    # the literal flags below are only fallbacks for a fresh DB.
     ("neural-web-mt", "mt", "neural_online", 92, 0, "fast", False, False),
     ("deepl-v2", "mt", "deepl", 95, 20, "fast", False, False),
     ("madlad-400-3b", "mt", "madlad400", 85, 70, "fast", True, False),
@@ -127,17 +130,37 @@ async def seed_styles(db) -> int:
 
 async def seed_model_registry(db) -> int:
     n = 0
+    # operator-private *_http endpoints (issue #109 class 3, finding 6): the
+    # four HTTP rows are factory defaults, not operator-authored data, and the
+    # seeded `private=True` asserted nothing about the URL's actual location.
+    # The live *_HTTP_PRIVATE classification re-applies on every seed — even
+    # for existing rows — so flipping the flag cannot be lost behind the
+    # insert-only idempotency below.
+    live_private = {
+        ("mt-http-service", "mt"): settings.mt_http_private,
+        ("stt-http-service", "stt"): settings.stt_http_private,
+        ("tts-http-service", "tts"): settings.tts_http_private,
+        ("llm-http", "summarize"): settings.llm_http_private,
+    }
     for name, task, provider, q, c, lat, private, gpu in MODEL_REGISTRY_SEED:
         res = await db.execute(select(M.ModelRegistry).where(
             M.ModelRegistry.name == name, M.ModelRegistry.task == task))
-        if res.scalars().first() is None:
+        row = res.scalars().first()
+        if row is None:
             db.add(M.ModelRegistry(
                 name=name, task=task, provider=provider, quality_tier=q,
-                cost_tier=c, latency_class=lat, private=private, requires_gpu=gpu,
+                cost_tier=c, latency_class=lat,
+                private=private if (name, task) not in live_private else live_private[(name, task)],
+                requires_gpu=gpu,
                 status="active",
                 config_json={"model": name},
             ))
             n += 1
+        elif (name, task) in live_private:
+            flag = live_private[(name, task)]
+            if bool(row.private) != flag:
+                row.private = flag
+                n += 1
     return n
 
 

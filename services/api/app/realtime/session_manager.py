@@ -65,6 +65,11 @@ class RtSession:
     db_seq: int = 0                  # transcript seq counter (mirrored from DB)
     active_speakers: set[str] = field(default_factory=set)
     quality_degraded: bool = False
+    # Tenant-level private-only for this meeting (issue #109 class 3,
+    # finding 8): carried from the meeting's settings bag at session
+    # bootstrap so every translation the meeting makes can be routed
+    # private-only instead of hard-coding a latency intent.
+    tenant_private_only: bool = False
 
     def next_sequence(self) -> int:
         self.sequence += 1
@@ -80,14 +85,16 @@ class SessionManager:
     # ------------------------------------------------------------------ #
     async def create_session(self, meeting_id: uuid.UUID, org_id: uuid.UUID,
                              room_name: str, mode: str,
-                             db_seq_start: int = 0) -> RtSession:
+                             db_seq_start: int = 0,
+                             tenant_private_only: bool = False) -> RtSession:
         async with self._lock:
             existing = self._by_meeting.get(meeting_id)
             if existing and existing in self._sessions:
                 return self._sessions[existing]
             session = RtSession(session_id=uuid.uuid4().hex, meeting_id=meeting_id,
                                 org_id=org_id, room_name=room_name, mode=mode,
-                                db_seq=db_seq_start)
+                                db_seq=db_seq_start,
+                                tenant_private_only=bool(tenant_private_only))
             self._sessions[session.session_id] = session
             self._by_meeting[meeting_id] = session.session_id
             met.ACTIVE_MEETINGS.inc()
