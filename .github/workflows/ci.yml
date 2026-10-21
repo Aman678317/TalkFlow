@@ -84,6 +84,7 @@ jobs:
             tests/test_escalation_board_api.py \
             tests/test_escalation_hooks.py \
             tests/test_escalation_transport.py \
+            tests/test_entrypoint_provider_resolution.py \
             tests/test_external_media.py \
             tests/test_full_qa_and_e2e_hardened.py \
             tests/test_frontend_api_contract_shapes.py \
