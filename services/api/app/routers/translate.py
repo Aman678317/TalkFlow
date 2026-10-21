@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
@@ -16,10 +17,11 @@ from app.db.session import get_db
 from app.deps import Principal, require_permission, require_scope, rl_translate
 from app.errors import AuthenticationError, AuthorizationError, NotFoundError, ProviderError, ValidationError
 from app.schemas import (
-    DetectRequest, DetectResponse, LanguageOut, TranslateRequest,
-    TranslateResponse, TranslationOut,
+    DetectRequest, DetectResponse, LanguageOut, PageTranslateRequest,
+    PageTranslateResponse, TranslateRequest, TranslateResponse, TranslationOut,
 )
 from app.services import audit_service
+from app.services.page_fetch import PageFetchError, fetch_page
 from app.services.translation_service import TranslateContext, translate_text
 
 log = logging.getLogger("app.routers.translate")
@@ -96,6 +98,56 @@ async def translate(body: TranslateRequest,
                              request_id=context.current().request_id)
 
 
+@router.post("/translate/page", response_model=PageTranslateResponse)
+async def translate_page(body: PageTranslateRequest,
+                         principal: Principal | None = Depends(rl_translate),
+                         db: AsyncSession = Depends(get_db)):
+    """Translate the readable text of a public web page.
+
+    The page is fetched server-side with strict guards (public addresses only,
+    size cap, timeout, content-type check) — see `app.services.page_fetch`.
+    The result is the **text** of the page, not a mirrored page: images,
+    layout and scripts are not reproduced.
+    """
+    if principal is None:
+        raise AuthenticationError("Authentication required.")
+    if principal.kind == "api_key" and principal.api_key is not None:
+        scopes = principal.api_key.scopes or []
+        if "translate" not in scopes and "*" not in scopes:
+            raise AuthorizationError("API key lacks scope 'translate'.")
+    principal.require("use_translate")
+
+    try:
+        page = await fetch_page(body.url)
+    except PageFetchError as exc:
+        raise ValidationError(str(exc)) from exc
+
+    if principal and principal.org_id:
+        from app.services import usage_service
+        await usage_service.check_quota(
+            db, principal.org_id, "characters", len(page.text))
+
+    ctx = _ctx(principal, body, product="page")
+    out = await translate_text(db, page.text, body.source_language,
+                               body.target_language, ctx)
+    from app import context
+    return PageTranslateResponse(
+        url=page.url,
+        final_url=page.final_url,
+        title=page.title,
+        source_text=page.text,
+        translated_text=out.result.text,
+        source_language=out.result.source_lang,
+        target_language=out.result.target_lang,
+        model=out.result.model,
+        provider=out.result.provider,
+        latency_ms=round(out.result.latency_ms, 1),
+        quality_flags=out.result.quality_flags,
+        truncated=page.truncated,
+        glossary_note=out.glossary_note,
+    )
+
+
 @router.post("/detect-language", response_model=DetectResponse)
 async def detect_language(body: DetectRequest,
                           principal: Principal = Depends(rl_translate),
@@ -165,17 +217,27 @@ async def history(principal: Principal = Depends(rl_translate),
                   limit: int = Query(default=50, le=200),
                   offset: int = Query(default=0, ge=0),
                   product: str = Query(default=""),
-                  target_lang: str = Query(default="")):
+                  target_lang: str = Query(default=""),
+                  source_lang: str = Query(default=""),
+                  q: str = Query(default="", max_length=200)):
     if principal is None or not principal.org_id:
         return {"items": [], "limit": limit, "offset": offset}
-    q = select(M.TranslationSegment).where(
+    q_stmt = select(M.TranslationSegment).where(
         M.TranslationSegment.org_id == principal.org_id,
         M.TranslationSegment.product.in_(["text", "chat"] if not product else [product]))
     if principal.kind == "user":
-        q = q.where(M.TranslationSegment.created_by == principal.user_id)
+        q_stmt = q_stmt.where(M.TranslationSegment.created_by == principal.user_id)
     if target_lang:
-        q = q.where(M.TranslationSegment.target_lang == target_lang)
-    res = await db.execute(q.order_by(M.TranslationSegment.created_at.desc())
+        q_stmt = q_stmt.where(M.TranslationSegment.target_lang == target_lang)
+    if source_lang:
+        q_stmt = q_stmt.where(M.TranslationSegment.source_lang == source_lang)
+    if q:
+        # The history page's search box sends `q`; it used to be ignored.
+        needle = f"%{q.strip()}%"
+        q_stmt = q_stmt.where(
+            M.TranslationSegment.source_text.ilike(needle)
+            | M.TranslationSegment.target_text.ilike(needle))
+    res = await db.execute(q_stmt.order_by(M.TranslationSegment.created_at.desc())
                            .limit(limit).offset(offset))
     rows = res.scalars().all()
     return {
@@ -191,6 +253,25 @@ async def history(principal: Principal = Depends(rl_translate),
         } for r in rows],
         "limit": limit, "offset": offset,
     }
+
+
+@router.delete("/history/{segment_id}", status_code=204)
+async def delete_history_entry(segment_id: uuid.UUID,
+                               principal: Principal = Depends(rl_translate),
+                               db: AsyncSession = Depends(get_db)):
+    """Delete one history row (the page had a per-row Delete that 404'd)."""
+    if principal is None or not principal.org_id:
+        raise AuthenticationError("Authentication required.")
+    stmt = select(M.TranslationSegment).where(
+        M.TranslationSegment.id == segment_id,
+        M.TranslationSegment.org_id == principal.org_id)
+    if principal.kind == "user":
+        stmt = stmt.where(M.TranslationSegment.created_by == principal.user_id)
+    row = (await db.execute(stmt)).scalars().first()
+    if row is None:
+        raise NotFoundError("History entry not found.")
+    await db.delete(row)
+    await db.commit()
 
 
 @router.delete("/history", status_code=204)

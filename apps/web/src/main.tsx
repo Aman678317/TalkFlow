@@ -117,6 +117,7 @@ export default function App() {
             <Route element={<RequireAuth><Layout /></RequireAuth>}>
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/translate" element={<TranslatePage />} />
+              <Route path="/translate/page" element={<TranslateWebPage />} />
               <Route path="/write" element={<WritePage />} />
               <Route path="/voice" element={<Voice />} />
               <Route path="/documents" element={<Documents />} />

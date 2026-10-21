@@ -4,17 +4,22 @@ export interface LanguageCapability {
   code: string;
   name: string;
   native_name: string;
+  script: string;
+  rtl: boolean;
   speech_input_supported: boolean;
   speech_output_supported: boolean;
   translation_supported: boolean;
   realtime_supported: boolean;
   document_supported: boolean;
-  stt_status: Status;
-  tts_status: Status;
-  mt_status: Status;
-  stt_provider: string;
-  tts_provider: string;
-  mt_provider: string;
+  // The API names these `*_status` (not `stt_status`/`mt_status`/`tts_status`)
+  // — the old names never existed on the wire, so every language chip's
+  // tooltip read "STT undefined, MT undefined, TTS undefined" (2026-10-21).
+  translation_status: Status;
+  speech_input_status: Status;
+  speech_output_status: Status;
+  realtime_status: Status;
+  document_status: Status;
+  tts_voices: string[];
 }
 export type Status = "EXPERIMENTAL" | "BETA" | "SUPPORTED" | "PRODUCTION";
 
@@ -33,6 +38,25 @@ export interface TranslateResponse {
   /** Set only when a REQUESTED glossary was NOT applied (honest reason). */
   glossary_note?: string | null;
   alternatives?: string[];
+}
+
+/** Result of translating the readable text of a public web page. */
+export interface PageTranslateResponse {
+  url: string;
+  final_url: string;
+  title: string;
+  source_text: string;
+  translated_text: string;
+  source_language: string;
+  target_language: string;
+  model: string;
+  provider: string;
+  latency_ms: number;
+  quality_flags: string[];
+  /** The page text was longer than the character budget. */
+  truncated: boolean;
+  /** Set only when a REQUESTED glossary was NOT applied (honest reason). */
+  glossary_note?: string | null;
 }
 
 export interface Meeting {

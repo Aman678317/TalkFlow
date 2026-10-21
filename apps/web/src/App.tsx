@@ -84,6 +84,7 @@ export default function App() {
 
           <Route element={<AppShell />}>
             <Route path="/translate" element={<Translate />} />
+            <Route path="/translate/page" element={<TranslateWebPage />} />
             <Route path="/write" element={<WritePage />} />
             <Route path="/agents" element={<AgentStudio />} />
             <Route path="/agent-studio" element={<AgentStudio />} />

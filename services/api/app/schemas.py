@@ -209,6 +209,38 @@ class TranslateResponse(BaseModel):
     request_id: str
 
 
+class PageTranslateRequest(BaseModel):
+    """Translate the readable text of a public web page."""
+
+    url: str = Field(min_length=8, max_length=2_000)
+    target_language: str = Field(min_length=2, max_length=8)
+    source_language: str = "AUTO"
+    glossary_id: uuid.UUID | None = None
+    style_profile_id: uuid.UUID | None = None
+    translation_memory_id: uuid.UUID | None = None
+    domain: str = "general"
+    intent: ModelIntent = "quality_optimized"
+    formality: Literal["default", "formal", "informal"] = "default"
+
+
+class PageTranslateResponse(BaseModel):
+    url: str
+    final_url: str
+    title: str
+    source_text: str
+    translated_text: str
+    source_language: str
+    target_language: str
+    model: str
+    provider: str
+    latency_ms: float
+    quality_flags: list[str] = Field(default_factory=list)
+    #: the page text was longer than the per-request character budget
+    truncated: bool = False
+    #: set only when a REQUESTED glossary was NOT applied (honest reason)
+    glossary_note: str | None = None
+
+
 class DetectRequest(BaseModel):
     text: str = Field(min_length=1, max_length=10_000)
 
@@ -350,6 +382,23 @@ class TMEntryIn(BaseModel):
     domain: str = "general"
 
 
+class TMEntryCreate(BaseModel):
+    """Add an entry to a named memory."""
+
+    tm_id: uuid.UUID | None = None
+    source_text: str = Field(min_length=1)
+    target_text: str = Field(min_length=1)
+    approved: bool = False
+    domain: str = "general"
+
+
+class TMEntryUpdate(BaseModel):
+    """Edit a stored pair (the reference product lets a reviewer fix a target)."""
+
+    target_text: str | None = Field(default=None, min_length=1)
+    approved: bool | None = None
+
+
 class TMOut(ORMModel):
     id: uuid.UUID
     name: str
@@ -368,6 +417,19 @@ class TMEntryOut(ORMModel):
     approved: bool
     confidence: float
     usage_count: int
+
+
+class TMEntryDetail(TMEntryOut):
+    """An entry as the editor shows it: the memory it belongs to, the pair's
+    languages and the version (every edit bumps the version)."""
+
+    tm_id: uuid.UUID
+    tm_name: str
+    source_language: str
+    target_language: str
+    domain: str
+    version: int
+    created_at: datetime
 
 
 class StyleProfileCreate(BaseModel):

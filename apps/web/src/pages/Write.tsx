@@ -88,6 +88,9 @@ interface ActiveWordPopover {
 interface ReadabilityMetrics {
   fleschScore: number;
   fleschLabel: string;
+  /** Flesch reading ease only works for latin script — for Devanagari/Arabic/
+   *  CJK text the syllable count collapses to 0 and the score is meaningless. */
+  applicable: boolean;
   avgSentenceLength: number;
   avgSyllablesPerWord: number;
   passiveVoiceCount: number;
@@ -98,7 +101,10 @@ interface ReadabilityMetrics {
 
 /* ─────────────────────────── Constants ──────────────────────────────── */
 
-const MAX_CHARS = 5000;
+// The API accepts up to 50 000 characters (WriteRequest.text). The page
+// enforced 5 000 and silently refused the rest, so the "N/5000" bar was
+// against a base ten times smaller than the real limit.
+const MAX_CHARS = 50000;
 
 const STYLES = [
   { value: 'business', label: '💼 Business', desc: 'Clear, executive, and impactful' },
@@ -1254,6 +1260,9 @@ function computeReadability(text: string): ReadabilityMetrics {
   const totalWords = words.length;
   const totalSentences = Math.max(sentences.length, 1);
   const totalSyllables = words.reduce((sum, w) => sum + countSyllables(w), 0);
+  // Flesch and the syllable count are latin-script constructs.
+  const latinChars = (text.match(/[A-Za-z]/g) || []).length;
+  const applicable = totalWords > 0 && latinChars >= Math.max(20, totalWords * 0.5);
 
   const avgSentenceLength = totalWords / totalSentences;
   const avgSyllablesPerWord = totalWords > 0 ? totalSyllables / totalWords : 0;
@@ -1273,7 +1282,10 @@ function computeReadability(text: string): ReadabilityMetrics {
   else if (clampedScore >= 30) fleschLabel = 'Difficult';
 
   // Passive voice detection
-  const passivePattern = /\b(?:is|are|was|were|be|been|being)\s+\w+ed\b/gi;
+  // No `g` flag: a global regex is stateful across `.test()` calls
+  // (`lastIndex` advances), so roughly every other passive sentence was
+  // missed and the count changed between renders.
+  const passivePattern = /\b(?:is|are|was|were|be|been|being)\s+\w+ed\b/i;
   const passiveSentences = sentences.filter(s => passivePattern.test(s)).map(s => s.trim());
   const passiveVoiceCount = passiveSentences.length;
 
@@ -1304,6 +1316,7 @@ function computeReadability(text: string): ReadabilityMetrics {
   return {
     fleschScore: clampedScore,
     fleschLabel,
+    applicable,
     avgSentenceLength: Math.round(avgSentenceLength * 10) / 10,
     avgSyllablesPerWord: Math.round(avgSyllablesPerWord * 10) / 10,
     passiveVoiceCount,
@@ -1491,6 +1504,10 @@ export default function WritePage() {
       if (currentReqId !== writeReqIdRef.current) return;
       if (res && res.improved_text) {
         setResult(res);
+        // The readability panel sits in the IMPROVED pane, so it must score
+        // the improved text — it used to score the original draft that the
+        // user was no longer looking at.
+        setReadability(computeReadability(res.improved_text));
         setLoading(false);
         return;
       }
@@ -2162,24 +2179,39 @@ export default function WritePage() {
                   <div className="rounded-2xl border border-black/[.06] bg-ink-50/60 p-4">
                     <div className="flex items-center justify-between mb-3">
                       <h4 className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-500">Readability Score</h4>
-                      <span className={cn('text-lg font-bold', fleschColor)}>{readability.fleschScore}/100</span>
+                      {readability.applicable ? (
+                        <span className={cn('text-lg font-bold', fleschColor)}>{readability.fleschScore}/100</span>
+                      ) : (
+                        <span className="text-[11px] text-ink-400">not applicable to this script</span>
+                      )}
                     </div>
-                    <div className="h-2 rounded-full bg-slate-200 overflow-hidden mb-2">
-                      <div
-                        className={cn('h-full rounded-full transition-all',
-                          readability.fleschScore >= 70 ? 'bg-emerald-500' : readability.fleschScore >= 50 ? 'bg-amber-400' : 'bg-rose-500')}
-                        style={{ width: `${readability.fleschScore}%` }}
-                      />
-                    </div>
-                    <p className={cn('text-sm font-semibold', fleschColor)}>{readability.fleschLabel}</p>
+                    {readability.applicable ? (
+                      <>
+                        <div className="h-2 rounded-full bg-slate-200 overflow-hidden mb-2">
+                          <div
+                            className={cn('h-full rounded-full transition-all',
+                              readability.fleschScore >= 70 ? 'bg-emerald-500' : readability.fleschScore >= 50 ? 'bg-amber-400' : 'bg-rose-500')}
+                            style={{ width: `${readability.fleschScore}%` }}
+                          />
+                        </div>
+                        <p className={cn('text-sm font-semibold', fleschColor)}>{readability.fleschLabel}</p>
+                      </>
+                    ) : (
+                      <p className="text-[11px] text-ink-400">
+                        The reading-ease score needs latin script - this text is not latin, so the
+                        number would be meaningless. The sentence metrics below still apply.
+                      </p>
+                    )}
                     <div className="mt-3 grid grid-cols-2 gap-3 text-xs text-slate-600">
-                        <div className="rounded-xl border border-black/[.04] bg-white p-2">
+                      <div className="rounded-xl border border-black/[.04] bg-white p-2">
                         <span className="block text-[10px] font-semibold uppercase text-slate-400">Avg sentence</span>
                         <span className="text-sm font-bold text-slate-800">{readability.avgSentenceLength} words</span>
                       </div>
-                        <div className="rounded-xl border border-black/[.04] bg-white p-2">
+                      <div className="rounded-xl border border-black/[.04] bg-white p-2">
                         <span className="block text-[10px] font-semibold uppercase text-slate-400">Avg syllables</span>
-                        <span className="text-sm font-bold text-slate-800">{readability.avgSyllablesPerWord}/word</span>
+                        <span className="text-sm font-bold text-slate-800">
+                          {readability.applicable ? `${readability.avgSyllablesPerWord}/word` : "n/a"}
+                        </span>
                       </div>
                     </div>
                   </div>
