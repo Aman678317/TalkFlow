@@ -78,6 +78,7 @@ jobs:
             tests/test_call_transcript_api.py \
             tests/test_call_worker.py \
             tests/test_contacts_api.py \
+            tests/test_copilotkit_auth_hardened.py \
             tests/test_database_migrations_hardened.py \
             tests/test_deploy_canonical_provider_tree.py \
             tests/test_developer_platform_hardened.py \
