@@ -187,6 +187,11 @@ class AudioPipeline:
                       or self._utt.duration_ms >= MAX_UTTERANCE_MS)  # type: ignore[union-attr]
         if should_end and self._utt.duration_ms >= MIN_UTTERANCE_MS:  # type: ignore[union-attr]
             await self._end_utterance()
+            # End-utterance leaves this speaker out of speech (self._utt is None while
+            # _in_speech is False): falling through to the partial block dereferenced
+            # None and — since ws._event_loop calls feed() unguarded — closed the WS
+            # with 1011 on a completed utterance (reproduced on main @6809cd5 too).
+            return
         elif should_end:
             # too short: drop as noise, keep listening seamlessly
             self._in_speech = False

@@ -58,7 +58,12 @@ def load_model(model_size: str, device: str, compute_type: str):
                     f"and automatic model downloads are disabled (set "
                     f"GT_ALLOW_MODEL_DOWNLOAD=1 to allow an operator-approved download)")
             from faster_whisper import WhisperModel  # lazy import
-            _model = WhisperModel(model_size, device=device, compute_type=compute_type)
+            # local_files_only keeps the REQUEST PATH download-free too: a partial
+            # cache (dir present, aux files missing) raises instead of silently
+            # completing itself over the network (issue #109, class 2). faster-whisper
+            # is pinned ==1.2.1 so the kwarg is always supported.
+            _model = WhisperModel(model_size, device=device, compute_type=compute_type,
+                                  local_files_only=not _downloads_allowed())
         return _model
 
 

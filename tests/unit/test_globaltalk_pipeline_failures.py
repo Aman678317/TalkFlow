@@ -321,3 +321,79 @@ async def test_fanout_diagnostic_records_provider_stages(monkeypatch):
     assert "mt_enter" in stages and "mt_exit" in stages
     assert stages["mt_exit"]["provider"] == "argos"
     assert "tts_enter" in stages and "tts_first_audio" in stages
+
+
+# ------------------------------------------------------------------ end-of-utterance state machine
+
+
+class _StubVAD:
+    def __init__(self, probs: list[float]):
+        self._probs = list(probs)
+        self._i = 0
+
+    def process_chunk(self, _chunk, _sample_rate):
+        p = self._probs[min(self._i, len(self._probs) - 1)]
+        self._i += 1
+        return p
+
+    def reset(self):
+        pass
+
+
+def _chunk(ms: int = 100) -> bytes:
+    """exactly ms of PCM16 audio at 16 kHz mono (32 bytes per ms)."""
+    return b"\x00" * (32 * ms)
+
+
+@pytest.mark.asyncio
+async def test_end_of_utterance_leaves_state_consistent_no_ws_1011():
+    """Regression (realtime-golden 1011, reproduced on main @6809cd5 too):
+    _process_chunk fell through to the incremental-partial block after
+    _end_utterance cleared self._utt, dereferencing None and — because
+    ws._event_loop calls feed() unguarded — closing the WS with code 1011 on
+    any completed utterance whose final partial was not in flight. A completed
+    utterance must leave the per-speaker state coherent so the next speech
+    chunk starts a fresh utterance instead of killing the meeting."""
+    pipe, session = _make_pipeline(targets=set(), listeners=[])
+    pipe._mono_ms = 0
+    pipe._in_speech = False
+    pipe._utt = None
+    pipe._silence_ms = 0
+    pipe._speech_ms = 0
+    pipe._partial_inflight = False
+    pipe._partial_task = None
+    pipe._last_partial_ms = 0
+    pipe.conn.latency_mode = "balanced"
+    scheduled: list = []
+    pipe._schedule_partial = lambda params: scheduled.append(params)
+    relays: list = []
+
+    async def _relay(_chunk):
+        relays.append(1)
+
+    pipe._relay_original = _relay
+    pipe.vad = _StubVAD([0.9] + [0.05] * 200)
+
+    for _ in range(5):  # 500 ms of speech
+        await pipe._process_chunk(_chunk())
+    assert pipe._in_speech is True and pipe._utt is not None
+    assert any(b["type"] == EventType.SPEECH_STARTED
+               for b in session.broadcasts)
+    first = pipe._utt.uid
+
+    for _ in range(30):  # silence crosses HANGOVER_MS(700): end MUST not raise
+        await pipe._process_chunk(_chunk())
+    assert pipe._in_speech is False, "speaker leaves speech at utterance end"
+    assert pipe._utt is None
+    assert any(b["type"] == EventType.SPEECH_ENDED
+               for b in session.broadcasts), "SPEECH_ENDED emitted at utterance end"
+    assert scheduled == [], "no partial scheduled after the utterance ended"
+
+    # the connection keeps working: a later speech chunk opens a fresh utterance
+    pipe.vad = _StubVAD([0.9])
+    await pipe._process_chunk(_chunk())
+    assert pipe._in_speech is True and pipe._utt is not None, \
+        "next speech starts a NEW utterance after the first one ended"
+    assert pipe._utt.uid != first
+    await pipe._process_chunk(_chunk())
+    assert pipe._utt.duration_ms >= 200, "the new utterance accretes chunks normally"
