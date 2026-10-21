@@ -97,6 +97,10 @@ async def test_webhook_backoff_timing_rescheduling():
     endpoint_id = uuid.uuid4()
     org_id = uuid.uuid4()
 
+    org = None
+    ep = None
+    delivery = None
+
     async with db_session() as db:
         try:
             org = M.Organization(id=org_id, name="Test Org", slug=f"test-{uuid.uuid4().hex[:8]}")
@@ -137,9 +141,12 @@ async def test_webhook_backoff_timing_rescheduling():
                 assert mock_q.requeue.called or mock_queue_fn.called
         finally:
             try:
-                await db.delete(delivery)
-                await db.delete(ep)
-                await db.delete(org)
+                if delivery is not None:
+                    await db.delete(delivery)
+                if ep is not None:
+                    await db.delete(ep)
+                if org is not None:
+                    await db.delete(org)
                 await db.commit()
             except Exception:
                 await db.rollback()

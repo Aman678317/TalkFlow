@@ -5,7 +5,7 @@ import logging
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine)
 
@@ -69,29 +69,39 @@ def _make_engine(url: str) -> AsyncEngine:
             from sqlalchemy.pool import NullPool
             kwargs.update(poolclass=NullPool)
         else:
-            kwargs.update(pool_size=settings.db_pool_size,
-                          max_overflow=settings.db_max_overflow,
-                          pool_pre_ping=True, pool_recycle=300)
-    elif "sqlite" in url:
-        if settings.app_env == "test":
-            from sqlalchemy.pool import NullPool
-            kwargs.update(poolclass=NullPool)
+            kwargs.update(
+                pool_size=settings.db_pool_size,
+                max_overflow=settings.db_max_overflow,
+                pool_timeout=getattr(settings, "db_pool_timeout", 30),
+                pool_pre_ping=True,
+                pool_recycle=getattr(settings, "db_pool_recycle", 300),
+            )
+        return create_async_engine(url, **kwargs)
 
-    engine = create_async_engine(url, **kwargs)
-    if "sqlite" in url:
-        from sqlalchemy import event
+    # SQLite (local development and offline testing)
+    connect_args = {"timeout": 30.0, "check_same_thread": False}
+    kwargs["connect_args"] = connect_args
+    if settings.app_env == "test":
+        from sqlalchemy.pool import NullPool
+        kwargs.update(poolclass=NullPool)
+    eng = create_async_engine(url, **kwargs)
 
-        @event.listens_for(engine.sync_engine, "connect")
-        def _set_sqlite_pragma(dbapi_connection, connection_record):
-            try:
-                cursor = dbapi_connection.cursor()
-                cursor.execute("PRAGMA journal_mode=WAL")
-                cursor.execute("PRAGMA busy_timeout=60000")
-                cursor.close()
-            except Exception:
-                pass
+    @event.listens_for(eng.sync_engine, "connect")
+    def _set_sqlite_pragmas(dbapi_connection, connection_record):
+        # A pragma is best-effort: a failure must never break the connection.
+        try:
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA busy_timeout=30000")
+            cursor.execute("PRAGMA cache_size=-64000")
+            cursor.execute("PRAGMA temp_store=MEMORY")
+            cursor.execute("PRAGMA mmap_size=268435456")
+            cursor.close()
+        except Exception:  # noqa: BLE001
+            pass
 
-    return engine
+    return eng
 
 
 async def init_db() -> None:
@@ -124,14 +134,16 @@ async def init_db() -> None:
 
 
 def engine() -> AsyncEngine:
+    global _engine
     if _engine is None:
-        raise RuntimeError("database not initialized")
+        _engine = _make_engine(settings.database_url)
     return _engine
 
 
 def sessionmaker() -> async_sessionmaker[AsyncSession]:
+    global _sessionmaker
     if _sessionmaker is None:
-        raise RuntimeError("database not initialized")
+        _sessionmaker = async_sessionmaker(engine(), expire_on_commit=False)
     return _sessionmaker
 
 

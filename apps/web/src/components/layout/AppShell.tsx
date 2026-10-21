@@ -20,6 +20,7 @@ const NAV = [
   { to: '/voice?tab=phone', label: 'Global Call', icon: Phone },
   { to: '/meetings', label: 'Meetings', icon: Video },
   { to: '/chat', label: 'Chat', icon: MessageSquare },
+  { to: '/knowledge', label: 'Knowledge Base', icon: BookOpen },
   { to: '/documents', label: 'Documents', icon: FileText },
   { to: '/history', label: 'History', icon: History },
 ];

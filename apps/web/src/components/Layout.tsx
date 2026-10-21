@@ -18,10 +18,10 @@ export function Logo({ className = "h-8 w-8" }: { className?: string }) {
 
 const NAV = [
   { to: "/dashboard",          label: "Dashboard",          Icon: LayoutDashboard },
-  { to: "/translate",          label: "Translate",          Icon: ArrowLeftRight },
-  { to: "/write",              label: "Write",              Icon: PenLine },
-  { to: "/voice",              label: "Voice",              Icon: Mic2 },
-  { to: "/documents",          label: "Documents",          Icon: FileText },
+  { to: "/translate",          label: "AMPL Translate",     Icon: ArrowLeftRight },
+  { to: "/write",              label: "AMPL Refine",        Icon: PenLine },
+  { to: "/voice",              label: "AMPL Voice",         Icon: Mic2 },
+  { to: "/documents",          label: "AMPL Documents",     Icon: FileText },
   { to: "/meetings",           label: "Meetings",           Icon: Video },
   { to: "/chat",               label: "Chat rooms",         Icon: MessageSquare },
   { to: "/agent/calls",        label: "Agent calls",        Icon: PhoneCall },
