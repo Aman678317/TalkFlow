@@ -34,9 +34,12 @@ export default function HistoryPage() {
     queryKey: ["history", debounced, src, tgt],
     queryFn: async () => {
       const p = new URLSearchParams({ limit: "100" });
+      // The endpoint takes `source_lang`/`target_lang` (the page used to send
+      // `source_language`/`target_language`, which it ignored, so both language
+      // dropdowns did nothing) and honours `q` over the source/target text.
       if (debounced) p.set("q", debounced);
-      if (src) p.set("source_language", src);
-      if (tgt) p.set("target_language", tgt);
+      if (src) p.set("source_lang", src);
+      if (tgt) p.set("target_lang", tgt);
       const res = await api<any>(`/api/v1/history?${p}`);
       return Array.isArray(res) ? res : (res?.items ?? []);
     },
