@@ -60,6 +60,12 @@ cd apps/web && npx vitest run && npx tsc -b
   is false for all three; none of them is a skip and none is a score.
   Covered in CI by `tests/unit/test_tts_voice_bench.py`, which runs the harness against a
   fake provider so the arithmetic and the honesty rules hold on a machine with no weights.
+- **Translation fan-out benchmark** (`make benchmark-translation`): an offline,
+  deterministic scheduler benchmark for one utterance sent to eight target languages.
+  It runs the former serial orchestration as a control and the production
+  `TranslationAgent.fan_out` implementation against the same delayed fake provider,
+  reporting per-run samples, medians, p95, speedup, and observed parallel calls. It
+  does not download model weights or call a network service.
 - **Frontend** (apps/web): vitest on the binary protocol decoder, API error contract
   normalization, base64 audio round-trip; `tsc -b` strict gate in CI.
 - **Failure tests** (section 56): provider-down paths are covered by the passthrough/

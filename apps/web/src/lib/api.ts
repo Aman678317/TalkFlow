@@ -25,9 +25,11 @@ export class ApiError extends Error {
 }
 
 let accessToken: string | null = null;
+let authSeq = 0;
 let onUnauthorized: () => void = () => { };
 let refreshInFlight: Promise<boolean> | null = null;
 let lastRefreshSuccess = 0;
+let lastRefreshError: "invalid" | "network" | null = null;
 const REFRESH_DEDUPE_MS = 3000;
 
 // Phase 1: the access token lives only in this module's memory (never persisted),
@@ -48,30 +50,39 @@ export const authChannel = typeof window !== "undefined" && typeof BroadcastChan
 if (authChannel) {
   authChannel.onmessage = (event) => {
     if (event.data?.type === "LOGOUT") {
+      authSeq = Math.max(authSeq, event.data?.seq ?? (authSeq + 1));
       accessToken = null;
       onUnauthorized();
     } else if (event.data?.type === "TOKEN_REFRESHED" && event.data?.accessToken) {
-      accessToken = event.data.accessToken;
-      if (event.data?.timestamp) {
-        lastRefreshSuccess = event.data.timestamp;
+      if (!event.data?.seq || event.data.seq >= authSeq) {
+        authSeq = Math.max(authSeq, event.data?.seq ?? (authSeq + 1));
+        accessToken = event.data.accessToken;
+        if (event.data?.timestamp) {
+          lastRefreshSuccess = event.data.timestamp;
+        }
       }
     } else if (event.data?.type === "LOGIN" && event.data?.accessToken) {
-      accessToken = event.data.accessToken;
+      if (!event.data?.seq || event.data.seq >= authSeq) {
+        authSeq = Math.max(authSeq, event.data?.seq ?? (authSeq + 1));
+        accessToken = event.data.accessToken;
+      }
     }
   };
 }
 
 export function setTokens(access: string | null) {
+  authSeq++;
   accessToken = access;
   if (access && authChannel) {
-    authChannel.postMessage({ type: "TOKEN_REFRESHED", accessToken: access, timestamp: Date.now() });
+    authChannel.postMessage({ type: "TOKEN_REFRESHED", accessToken: access, timestamp: Date.now(), seq: authSeq });
   }
 }
 
 export function broadcastLogout() {
+  authSeq++;
   accessToken = null;
   if (authChannel) {
-    authChannel.postMessage({ type: "LOGOUT" });
+    authChannel.postMessage({ type: "LOGOUT", seq: authSeq });
   }
   onUnauthorized();
 }
@@ -86,19 +97,117 @@ export function getAccessToken() {
 
 export const DEFAULT_PRODUCTION_API_BASE_URL = "https://talkflow-csbw.onrender.com";
 
+export interface ResolveApiOptions {
+  envUrl?: string;
+  isProduction?: boolean;
+  vercelEnv?: string;
+  mode?: string;
+  isStaging?: boolean;
+  isPreview?: boolean;
+  currentOrigin?: string;
+}
+
+/**
+ * Validate and normalize a candidate API base URL.
+ * Ensures the URL is well-formed, uses an approved HTTP/HTTPS protocol,
+ * strips trailing slashes, and verifies a non-empty hostname.
+ */
+export function validateApiUrl(urlStr: string): string {
+  const trimmed = urlStr.trim();
+  if (!trimmed) {
+    throw new Error("Invalid API base URL: URL string cannot be empty.");
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error(`Invalid API base URL: "${trimmed}" is not a valid URL.`);
+  }
+
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(
+      `Invalid API base URL: unsupported protocol "${parsed.protocol}". Only "http:" and "https:" are supported.`
+    );
+  }
+
+  if (!parsed.hostname) {
+    throw new Error(`Invalid API base URL: "${trimmed}" is missing a hostname.`);
+  }
+
+  // Prevent browser mixed-content blocks: upgrade http to https when running on https origin
+  if (
+    typeof window !== "undefined" &&
+    window.location?.protocol === "https:" &&
+    parsed.protocol === "http:" &&
+    parsed.hostname !== "localhost" &&
+    parsed.hostname !== "127.0.0.1"
+  ) {
+    parsed.protocol = "https:";
+  }
+
+  return `${parsed.protocol}//${parsed.host}${parsed.pathname === "/" ? "" : parsed.pathname}`.replace(/\/+$/, "");
+}
+
 /**
  * Resolve the API origin used by both REST and WebSocket traffic.
  *
- * Vercel serves the SPA, but it is not a durable database or WebSocket host.
- * The previous `.vercel.app` special case forced preview builds back to same-
- * origin `/api` and `/ws` routes, which made login state disappear between
- * serverless invocations and caused meeting seats to be rejected. A deployment
- * may still override this with VITE_API_BASE_URL, but production defaults to
- * the durable API service when no override is supplied.
+ * Rules:
+ * 1. If explicit envUrl (VITE_API_BASE_URL) is supplied, validate, normalize, and return it.
+ * 2. If no override is provided:
+ *    - In local development (isProduction = false), preserve same-origin ("").
+ *    - In preview or staging deployments (where environment isolation is required),
+ *      preserve same-origin ("") to prevent accidentally targeting production.
+ *    - In pure production deployments, fall back to DEFAULT_PRODUCTION_API_BASE_URL.
  */
-export function resolveApiBaseUrl(envUrl: string | undefined, isProduction: boolean): string {
-  const configured = envUrl?.trim().replace(/\/+$/, "");
-  if (configured) return configured;
+export function resolveApiBaseUrl(
+  envUrlOrOpts?: string | ResolveApiOptions,
+  isProductionArg?: boolean,
+  extraOpts?: Partial<ResolveApiOptions>,
+): string {
+  let envUrl: string | undefined;
+  let isProduction = false;
+  let vercelEnv: string | undefined;
+  let mode: string | undefined;
+  let isStaging = false;
+  let isPreview = false;
+
+  if (typeof envUrlOrOpts === "object" && envUrlOrOpts !== null) {
+    envUrl = envUrlOrOpts.envUrl;
+    isProduction = envUrlOrOpts.isProduction ?? false;
+    vercelEnv = envUrlOrOpts.vercelEnv;
+    mode = envUrlOrOpts.mode;
+    isStaging = envUrlOrOpts.isStaging ?? false;
+    isPreview = envUrlOrOpts.isPreview ?? false;
+  } else {
+    envUrl = envUrlOrOpts;
+    isProduction = isProductionArg ?? false;
+    if (extraOpts) {
+      vercelEnv = extraOpts.vercelEnv;
+      mode = extraOpts.mode;
+      isStaging = extraOpts.isStaging ?? false;
+      isPreview = extraOpts.isPreview ?? false;
+    }
+  }
+
+  const configured = envUrl?.trim();
+  if (configured) {
+    return validateApiUrl(configured);
+  }
+
+  // Detect staging / preview environments where environment isolation is required
+  const envIsPreviewOrStaging =
+    isStaging ||
+    isPreview ||
+    vercelEnv === "preview" ||
+    vercelEnv === "staging" ||
+    mode === "preview" ||
+    mode === "staging";
+
+  if (envIsPreviewOrStaging) {
+    // Prevent staging/preview from silently targeting production
+    return "";
+  }
+
   return isProduction ? DEFAULT_PRODUCTION_API_BASE_URL : "";
 }
 
@@ -106,56 +215,138 @@ export const getApiBaseUrl = (): string =>
   resolveApiBaseUrl(
     import.meta.env.VITE_API_BASE_URL as string | undefined,
     import.meta.env.PROD,
+    {
+      vercelEnv: (import.meta.env.VITE_VERCEL_ENV || import.meta.env.VERCEL_ENV) as string | undefined,
+      mode: import.meta.env.MODE as string | undefined,
+    },
   );
 
-const BASE = getApiBaseUrl();
+/**
+ * Derive WebSocket base URL (wss:// or ws://) from the validated API base URL.
+ * When the API base URL is HTTPS, the WebSocket connection uses WSS.
+ * When the API base URL is same-origin (""), the browser's current location protocol is respected.
+ */
+export function resolveWsBaseUrl(
+  apiBaseUrl?: string,
+  currentOrigin?: string,
+): string {
+  const base = apiBaseUrl !== undefined ? apiBaseUrl : getApiBaseUrl();
+  if (base) {
+    const validated = validateApiUrl(base);
+    const parsed = new URL(validated);
+    const wsProto = parsed.protocol === "https:" ? "wss:" : "ws:";
+    const path = parsed.pathname === "/" ? "" : parsed.pathname;
+    return `${wsProto}//${parsed.host}${path}`.replace(/\/+$/, "");
+  }
+
+  // Same-origin fallback
+  const origin =
+    currentOrigin ||
+    (typeof window !== "undefined" && window.location?.origin
+      ? window.location.origin
+      : "");
+
+  if (origin) {
+    try {
+      const parsed = new URL(origin);
+      const wsProto = parsed.protocol === "https:" ? "wss:" : "ws:";
+      return `${wsProto}//${parsed.host}`.replace(/\/+$/, "");
+    } catch {
+      // ignore
+    }
+  }
+
+  return "ws://localhost:5173";
+}
+
+/**
+ * Construct a full, validated WebSocket URL for a meeting or realtime path.
+ */
+export function resolveWsUrl(
+  path: string,
+  params?: Record<string, string | null | undefined> | URLSearchParams,
+  apiBaseUrl?: string,
+  currentOrigin?: string,
+): string {
+  const base = resolveWsBaseUrl(apiBaseUrl, currentOrigin);
+  const cleanPath = path.startsWith("/") ? path : `/${path}`;
+  let query = "";
+  if (params) {
+    const searchParams = params instanceof URLSearchParams ? params : new URLSearchParams();
+    if (!(params instanceof URLSearchParams)) {
+      for (const [k, v] of Object.entries(params)) {
+        if (v !== undefined && v !== null && v !== "") {
+          searchParams.set(k, v);
+        }
+      }
+    }
+    const qStr = searchParams.toString();
+    if (qStr) query = `?${qStr}`;
+  }
+  return `${base}${cleanPath}${query}`;
+}
 
 async function doRefreshRequest(): Promise<boolean> {
   // If another tab just refreshed within the dedupe window and we have an accessToken, reuse it
   if (Date.now() - lastRefreshSuccess < REFRESH_DEDUPE_MS && accessToken) {
+    lastRefreshError = null;
     return true;
   }
 
   // A page can start its silent cookie refresh at the same time that the user
   // submits login or signup. If that request finishes with the old unauthenticated
   // result after the explicit auth call succeeds, it must not clear the new session.
+  const seqAtStart = authSeq;
   const tokenAtStart = accessToken;
+  lastRefreshError = null;
 
   try {
+    const base = getApiBaseUrl();
     // Cookie-only: the HttpOnly refresh cookie authenticates this call; we never
     // hold or send a refresh token from JS. /auth/refresh is CSRF-exempt server-side.
-    const r = await fetch(`${BASE}/api/v1/auth/refresh`, {
+    const r = await fetch(`${base}/api/v1/auth/refresh`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       credentials: "include", // transport HttpOnly SameSite refresh cookie
       body: "{}",
     });
     if (!r.ok) {
-      if (r.status === 401 && accessToken === tokenAtStart) {
-        broadcastLogout();
+      if (r.status === 401) {
+        lastRefreshError = "invalid";
+        if (authSeq === seqAtStart && accessToken === tokenAtStart) {
+          broadcastLogout();
+        }
+      } else {
+        lastRefreshError = "invalid";
       }
       return false;
     }
     // An explicit login/signup or another tab may have established a newer token
     // while this request was in flight. Preserve that token rather than replacing
     // it with a stale cookie-refresh response.
-    if (accessToken !== tokenAtStart) {
+    if (authSeq !== seqAtStart || accessToken !== tokenAtStart) {
+      lastRefreshError = null;
       return true;
     }
     const data = await r.json();
     // The server rotates the cookie (Set-Cookie) and blanks refresh in the body;
     // only the access token is read back, into memory.
+    authSeq++;
     accessToken = data.access_token || null;
     lastRefreshSuccess = Date.now();
+    lastRefreshError = null;
     if (accessToken && authChannel) {
       authChannel.postMessage({
         type: "TOKEN_REFRESHED",
         accessToken,
         timestamp: lastRefreshSuccess,
+        seq: authSeq,
       });
     }
     return true;
   } catch {
+    // Network error: preserve local state; do not broadcast logout or log out user
+    lastRefreshError = "network";
     return false;
   }
 }
@@ -210,7 +401,9 @@ export async function api<T = any>(path: string, opts: RequestOptions = {}): Pro
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     const signal = opts.signal || controller.signal;
-    return fetch(`${BASE}${path}`, {
+    const base = getApiBaseUrl();
+    const cleanPath = path.startsWith("/") ? path : `/${path}`;
+    return fetch(`${base}${cleanPath}`, {
       ...opts,
       method,
       signal,
@@ -225,14 +418,23 @@ export async function api<T = any>(path: string, opts: RequestOptions = {}): Pro
     res = await doFetch();
   } catch (err: any) {
     if (err?.name === "AbortError") {
+      // A caller-supplied abort is deliberate cancellation (superseded
+      // request), not a timeout; let it propagate untouched.
+      if (opts.signal?.aborted) throw err;
       throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s. Please check connection and try again.`);
     }
     throw err;
   }
-  const isAuthRoute = path.includes("/auth/login") || path.includes("/auth/signup") || path.includes("/auth/refresh");
+  const isAuthRoute =
+    path.includes("/auth/login") ||
+    path.includes("/auth/signup") ||
+    path.includes("/auth/refresh") ||
+    path.includes("/auth/social-login");
   if (res.status === 401 && !isAuthRoute) {
     if (await tryRefresh()) {
-      headers.set("Authorization", `Bearer ${accessToken}`);
+      if (accessToken) {
+        headers.set("Authorization", `Bearer ${accessToken}`);
+      }
       try {
         res = await doFetch();
       } catch (err: any) {
@@ -241,11 +443,17 @@ export async function api<T = any>(path: string, opts: RequestOptions = {}): Pro
         }
         throw err;
       }
-    }
-  }
-  if (res.status === 401 && !isAuthRoute) {
-    if (accessToken) {
-      onUnauthorized();
+      if (res.status === 401) {
+        if (accessToken) {
+          accessToken = null;
+          onUnauthorized();
+        }
+      }
+    } else if (lastRefreshError === "invalid") {
+      if (accessToken) {
+        accessToken = null;
+        onUnauthorized();
+      }
     }
   }
   if (opts.raw) {

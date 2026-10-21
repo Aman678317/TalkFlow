@@ -298,6 +298,50 @@ def _is_distinct_translation(source: str, candidate: str | None,
     return compact(candidate) != compact(source)
 
 
+
+def _is_script_valid(candidate: str | None, target_lang: str) -> bool:
+    """Verify that a candidate translation for non-Latin scripts actually contains target script characters."""
+    if not candidate or not candidate.strip():
+        return False
+    tgt = (target_lang or "").lower().split("-")[0]
+    words = candidate.strip().split()
+    if len(words) < 2 and len(candidate.strip()) < 8:
+        return True
+
+    script_ranges = {
+        "hi": (0x0900, 0x097F),  # Devanagari (Hindi)
+        "mr": (0x0900, 0x097F),  # Marathi (Devanagari)
+        "ne": (0x0900, 0x097F),  # Nepali (Devanagari)
+        "ar": (0x0600, 0x06FF),  # Arabic
+        "fa": (0x0600, 0x06FF),  # Persian
+        "ur": (0x0600, 0x06FF),  # Urdu
+        "ru": (0x0400, 0x04FF),  # Cyrillic (Russian)
+        "uk": (0x0400, 0x04FF),  # Ukrainian
+        "bg": (0x0400, 0x04FF),  # Bulgarian
+        "zh": (0x4E00, 0x9FFF),  # Chinese CJK
+        "ja": (0x3040, 0x30FF),  # Japanese Hiragana/Katakana
+        "ko": (0xAC00, 0xD7AF),  # Korean Hangul
+        "el": (0x0370, 0x03FF),  # Greek
+        "th": (0x0E00, 0x0E7F),  # Thai
+        "bn": (0x0980, 0x09FF),  # Bengali
+        "ta": (0x0B80, 0x0BFF),  # Tamil
+        "te": (0x0C00, 0x0C7F),  # Telugu
+        "gu": (0x0A80, 0x0AFF),  # Gujarati
+        "kn": (0x0C80, 0x0CFF),  # Kannada
+        "ml": (0x0D00, 0x0D7F),  # Malayalam
+        "pa": (0x0A00, 0x0A7F),  # Punjabi (Gurmukhi)
+    }
+
+    if tgt in script_ranges:
+        start, end = script_ranges[tgt]
+        has_target_script = any(start <= ord(ch) <= end for ch in candidate)
+        if not has_target_script:
+            log.warning("Rejected translation for %s lacking target script: %s", tgt, candidate[:50])
+            return False
+
+    return True
+
+
 async def query_deepl(
     text: str,
     src_lang: str,
@@ -507,34 +551,34 @@ class NeuralOnlineTranslationProvider(BaseProvider):
             except Exception as e:
                 log.warning("DeepL API query failed: %s; falling back to MyMemory", e)
 
-        # 2. Try MyMemory Neural API
-        if not translated_text:
-            try:
-                src_code = "en" if src in ("auto", "") else src
-                primary, alts = await query_mymemory(text, src_code, tgt)
-                if _is_distinct_translation(text, primary, src, tgt):
-                    translated_text = primary
-                    alternatives = alts
-                    provider_used = "mymemory"
-                    model_used = "neural-mymemory-v1"
-                else:
-                    log.warning("MyMemory returned source text unchanged for %s->%s", src, tgt)
-            except Exception as e:
-                log.warning("MyMemory translation failed: %s; falling back to Google Web", e)
-
-        # 3. Try Google Web MT API
+        # 2. Try Google Web MT API (Primary high-performance neural engine, 130+ languages, idiom-aware)
         if not translated_text:
             try:
                 primary, alts = await query_google_web(text, src, tgt)
-                if _is_distinct_translation(text, primary, src, tgt):
+                if _is_distinct_translation(text, primary, src, tgt) and _is_script_valid(primary, tgt):
                     translated_text = primary
                     alternatives = alts
                     provider_used = "google_web"
                     model_used = "google-nmt-web"
                 else:
-                    log.warning("Google Web returned source text unchanged for %s->%s", src, tgt)
+                    log.warning("Google Web returned invalid or identical translation for %s->%s", src, tgt)
             except Exception as e:
-                log.warning("Google Web translation failed: %s; trying offline linguistic fallback", e)
+                log.warning("Google Web translation failed: %s; trying MyMemory fallback", e)
+
+        # 3. Try MyMemory Neural API (Fallback only, protected by strict script validation)
+        if not translated_text:
+            try:
+                src_code = "en" if src in ("auto", "") else src
+                primary, alts = await query_mymemory(text, src_code, tgt)
+                if _is_distinct_translation(text, primary, src, tgt) and _is_script_valid(primary, tgt):
+                    translated_text = primary
+                    alternatives = alts
+                    provider_used = "mymemory"
+                    model_used = "neural-mymemory-v1"
+                else:
+                    log.warning("MyMemory returned invalid or script-mismatched translation for %s->%s", src, tgt)
+            except Exception as e:
+                log.warning("MyMemory translation failed: %s; trying offline linguistic fallback", e)
 
         # 4. Offline linguistic rule engine
         if not translated_text:

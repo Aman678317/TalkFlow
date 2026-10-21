@@ -10,17 +10,20 @@ import {
   Copy,
   Download,
   FileText,
+  Globe,
   Mic,
   Sparkles,
   Trash2,
   Volume2,
   X,
   Upload,
-  ChevronDown,
 } from "lucide-react";
 import { api, friendlyMessage } from "../lib/api";
 import type { TranslateResponse } from "../lib/types";
 import { translateCanonical } from "../lib/translation";
+import { useShortcuts } from "../lib/shortcuts";
+import { LanguagePicker } from "../components/LanguagePicker";
+import { SelectionTranslate } from "../components/SelectionTranslate";
 import { useLanguages } from "../hooks/useLanguages";
 import { Badge, ErrorState } from "../components/ui";
 import { toast } from "../stores/toasts";
@@ -154,24 +157,13 @@ function LangBar({
             {ql.name}
           </button>
         ))}
-        <div className="relative">
-          <select
-            aria-label="More languages"
-            value={!showAuto && !QUICK_LANGS.slice(0, 4).find((q) => q.code === selected) ? selected : ""}
-            onChange={(e) => e.target.value && onSelect(e.target.value)}
-            className="appearance-none h-8 rounded-lg border border-dl-border bg-white pl-3 pr-8 text-xs font-medium text-dl-muted hover:border-dl-blue/40 focus:outline-none focus:ring-2 focus:ring-dl-blue/20 cursor-pointer"
-          >
-            <option value="">More ▾</option>
-            {langs
-              .filter((c: any) => c.translation_supported || c.code === "en")
-              .map((c: any) => (
-                <option key={c.code} value={c.code}>
-                  {c.name}{c.native_name ? ` (${c.native_name})` : ""}
-                </option>
-              ))}
-          </select>
-          <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-dl-faint" />
-        </div>
+        <LanguagePicker
+          languages={langs.filter((c: any) => c.translation_supported || c.code === "en")}
+          value={selected}
+          onSelect={onSelect}
+          ariaLabel={showAuto ? "More source languages" : "More target languages"}
+          triggerLabel="More ▾"
+        />
         {detected && (
           <>
             <Badge tone="info" title="Auto-detected language">
@@ -435,6 +427,7 @@ export default function TranslatePage() {
   });
 
   const [source, setSource] = React.useState("");
+  const sourceRef = React.useRef<HTMLTextAreaElement | null>(null);
   const [srcLang, setSrcLang] = React.useState("AUTO");
   const [tgtLang, setTgtLang] = React.useState("de");
   const [detectedLanguage, setDetectedLanguage] = React.useState("");
@@ -560,8 +553,11 @@ export default function TranslatePage() {
         method: "POST",
         body: {
           word: query.trim(),
-          source_language: srcLang === "AUTO" ? (detectedLanguage || result?.source_language || "") : srcLang,
-          target_language: tgtLang,
+          // The dictionary endpoint takes `source_lang`/`target_lang`; the
+          // `source_language`/`target_language` names were dropped by
+          // pydantic, so every lookup silently ran en->en.
+          source_lang: srcLang === "AUTO" ? (detectedLanguage || result?.source_language || "") : srcLang,
+          target_lang: tgtLang,
         },
       });
       setDictData(data);
@@ -658,29 +654,17 @@ export default function TranslatePage() {
     return () => window.clearTimeout(t);
   }, [result]);
 
-  // DeepL-style keyboard shortcuts: swap languages, copy translation, clear.
-  React.useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      const mod = e.metaKey || e.ctrlKey;
-      if (mod && e.shiftKey && e.key.toLowerCase() === "k") {
-        e.preventDefault();
-        swap();
-      } else if (mod && e.shiftKey && e.key.toLowerCase() === "c") {
-        e.preventDefault();
-        copyOut();
-      } else if (e.key === "Escape") {
-        const el = document.activeElement as HTMLElement | null;
-        if (el && el.getAttribute("aria-label") === "Source text" && source) {
-          e.preventDefault();
-          clearAll();
-          el.blur();
-        }
-      }
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source, result, srcLang, tgtLang]);
+  // DeepL-style keyboard shortcuts (shared matcher, 2026-10-21): swap
+  // languages, copy translation, clear, and submit with Ctrl/Cmd+Enter.
+  useShortcuts(
+    {
+      submit: () => { if (source.trim()) translate.mutate(source); },
+      swap: () => { swap(); },
+      copy: () => { copyOut(); },
+      clear: () => { clearAll(); },
+    },
+    { clearTargetLabel: "Source text" },
+  );
 
   const activeGlossaries = (glossaries ?? []).filter((g) => g.status === "active");
   const caps = langs ?? [];
@@ -695,11 +679,13 @@ export default function TranslatePage() {
           onChange={(v) => {
             if (v === "file") navigate("/documents");
             if (v === "write") navigate("/write");
+            if (v === "page") navigate("/translate/page");
           }}
           tabs={[
             { value: "text",  label: "Translate text",  icon: <FileText  className="h-4 w-4" /> },
             { value: "file",  label: "Translate files", icon: <Upload    className="h-4 w-4" />,
               badge: <span className="ml-1 rounded-full bg-dl-blue-light px-2 py-0.5 text-[10px] font-bold text-dl-blue">PDF · DOCX</span> },
+            { value: "page",  label: "Web page",       icon: <Globe     className="h-4 w-4 text-emerald-600" /> },
             { value: "write", label: "AI Write",        icon: <Sparkles  className="h-4 w-4 text-amber-500" /> },
           ]}
         />
@@ -778,6 +764,7 @@ export default function TranslatePage() {
           {/* Textarea */}
           <div className="relative flex-1 p-5">
             <textarea
+              ref={sourceRef}
               className="w-full h-full min-h-[200px] resize-none border-0 bg-transparent p-0 text-[15px] leading-relaxed text-dl-navy focus:outline-none focus:ring-0 placeholder:text-dl-faint"
               placeholder="Type or paste text…"
               value={source}
@@ -789,6 +776,13 @@ export default function TranslatePage() {
                 const text = e.dataTransfer.getData("text/plain");
                 if (text) setSource(text);
               }}
+            />
+
+            {/* Translate just the selected phrase (reference parity, 2026-10-21). */}
+            <SelectionTranslate
+              editorRef={sourceRef}
+              sourceLanguage={srcLang}
+              targetLanguage={tgtLang}
             />
 
             {/* Clear button */}
@@ -1005,6 +999,9 @@ export default function TranslatePage() {
                       {f.replace(/_/g, " ")}
                     </Badge>
                   ))}
+                {result.glossary_note && (
+                  <Badge tone="warn">{result.glossary_note}</Badge>
+                )}
               </div>
             )}
           </div>

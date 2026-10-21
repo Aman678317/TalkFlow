@@ -1,19 +1,41 @@
 /**
  * WebRTC Mesh Manager for real-time bilateral video & audio calling.
- * Connects participants directly using STUN servers and WebSocket signaling.
+ * Connects participants directly using TURN/STUN servers and WebSocket signaling.
  */
 
-const RTC_CONFIG: RTCConfiguration = {
-  iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' },
-    { urls: 'stun:stun3.l.google.com:19302' },
-    { urls: 'stun:stun4.l.google.com:19302' },
-    { urls: 'stun:stun.cloudflare.com:3478' },
-  ],
-  iceCandidatePoolSize: 10,
-};
+/** Public default ICE servers used when the deployment does not configure its
+ * own edge (see GET /api/v1/meetings/{id}/ice-servers). STUN alone still fails
+ * behind symmetric NAT — deployments should add TURN for mobile networks. */
+const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun2.l.google.com:19302' },
+  { urls: 'stun:stun3.l.google.com:19302' },
+  { urls: 'stun:stun4.l.google.com:19302' },
+  { urls: 'stun:stun.cloudflare.com:3478' },
+];
+
+let ICE_SERVERS: RTCIceServer[] = DEFAULT_ICE_SERVERS;
+
+/** How long ICE may sit in 'disconnected' before we try an ICE restart.
+ * Network switches (Wi-Fi -> mobile) route through 'disconnected' and usually
+ * recover on their own; killing the peer instantly ended every such handoff. */
+const DISCONNECT_GRACE_MS = 2500;
+/** After an ICE restart has been attempted, how long a 'failed' state may
+ * linger before the peer is torn down for a clean re-dial. */
+const FAILED_PEER_TTL_MS = 5000;
+
+export function setIceServers(servers: RTCIceServer[] | undefined | null) {
+  ICE_SERVERS = servers && servers.length > 0 ? servers : DEFAULT_ICE_SERVERS;
+}
+
+export function currentIceServers(): RTCIceServer[] {
+  return ICE_SERVERS;
+}
+
+function rtcConfig(): RTCConfiguration {
+  return { iceServers: [...ICE_SERVERS], iceCandidatePoolSize: 10 };
+}
 
 export type SignalMessage =
   | { type: 'offer'; sdp: RTCSessionDescriptionInit }
@@ -31,6 +53,8 @@ export class WebRTCManager {
   private peers = new Map<string, RTCPeerConnection>();
   private remoteStreams = new Map<string, MediaStream>();
   private pendingCandidates = new Map<string, RTCIceCandidateInit[]>();
+  private disconnectGrace = new Map<string, ReturnType<typeof setTimeout>>();
+  private restartTried = new Set<string>();
   private localVideoTrack: MediaStreamTrack | null = null;
   private localAudioTrack: MediaStreamTrack | null = null;
   private options: WebRTCManagerOptions;
@@ -117,6 +141,40 @@ export class WebRTCManager {
       this.options.sendSignal(remoteId, { type: 'offer', sdp: offer });
     } catch (err) {
       console.warn(`[WebRTC] Renegotiation error with ${remoteId}:`, err);
+    }
+  }
+
+  /**
+   * One ICE restart per failure episode: re-gathers candidates under the same
+   * peer connection (now including any TURN servers that loaded late) and asks
+   * the remote to do the same. Recovery to 'connected' resets the attempt so a
+   * later outage can restart once more.
+   */
+  private async attemptIceRestart(remoteId: string, pc: RTCPeerConnection) {
+    try {
+      if (pc.signalingState === 'have-remote-offer') {
+        // Offer/answer glare safety: roll the pending answer back first.
+        await pc.setLocalDescription({ type: 'rollback' as any });
+      }
+      if (pc.signalingState !== 'stable') return;
+      const offer = await pc.createOffer({
+        iceRestart: true,
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: true,
+      });
+      await pc.setLocalDescription(offer);
+      this.options.sendSignal(remoteId, { type: 'offer', sdp: offer });
+      console.info(`[WebRTC] ICE restart offered to ${remoteId}`);
+    } catch (err) {
+      console.warn(`[WebRTC] ICE restart failed for ${remoteId}:`, err);
+    }
+  }
+
+  private clearDisconnectGrace(remoteId: string) {
+    const timer = this.disconnectGrace.get(remoteId);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      this.disconnectGrace.delete(remoteId);
     }
   }
 
@@ -216,7 +274,7 @@ export class WebRTCManager {
   }
 
   private async createPeerConnection(remoteId: string): Promise<RTCPeerConnection> {
-    const pc = new RTCPeerConnection(RTC_CONFIG);
+    const pc = new RTCPeerConnection(rtcConfig());
     this.peers.set(remoteId, pc);
 
     // Track pending track-attachment operations so `onnegotiationneeded`
@@ -309,7 +367,7 @@ export class WebRTCManager {
         });
         await pc.setLocalDescription(offer);
         this.options.sendSignal(remoteId, { type: 'offer', sdp: offer });
-        console.info(`[WebRTC] negotiationneeded → sent offer to ${remoteId}`);
+        console.info(`[WebRTC] negotiationneeded â†’ sent offer to ${remoteId}`);
         // If the peer races us with their own offer, the polite/impolite
         // glare rule in handleSignal will roll back and accept theirs.
       } catch (err) {
@@ -353,12 +411,60 @@ export class WebRTCManager {
     };
 
     pc.onconnectionstatechange = () => {
-      if (
-        pc.connectionState === 'disconnected' ||
-        pc.connectionState === 'failed' ||
-        pc.connectionState === 'closed'
-      ) {
-        this.removePeer(remoteId);
+      switch (pc.connectionState) {
+        case 'connected':
+          this.clearDisconnectGrace(remoteId);
+          this.restartTried.delete(remoteId);
+          return;
+        case 'disconnected':
+          // Transient on any network handoff: grace period, then ICE restart.
+          if (this.disconnectGrace.has(remoteId)) return;
+          {
+            const graceTimer = setTimeout(() => {
+              this.disconnectGrace.delete(remoteId);
+              if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+                if (!this.restartTried.has(remoteId)) {
+                  this.restartTried.add(remoteId);
+                  void this.attemptIceRestart(remoteId, pc);
+                  // The restart gets one bounded window to restore a
+                  // connection; afterwards the tile is torn down for a clean
+                  // re-dial instead of sitting dead while showing "connected".
+                  const postRestartTimer = setTimeout(() => {
+                    this.disconnectGrace.delete(remoteId);
+                    if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+                      this.removePeer(remoteId);
+                    }
+                  }, FAILED_PEER_TTL_MS);
+                  this.disconnectGrace.set(remoteId, postRestartTimer);
+                } else {
+                  this.removePeer(remoteId);
+                }
+              }
+            }, DISCONNECT_GRACE_MS);
+            this.disconnectGrace.set(remoteId, graceTimer);
+          }
+          return;
+        case 'failed':
+          // Try one ICE restart before tearing the peer down; if it fails the
+          // roster effect re-dials a fresh peer connection within seconds.
+          if (this.disconnectGrace.has(remoteId)) return;
+          {
+            const failTimer = setTimeout(() => {
+              this.disconnectGrace.delete(remoteId);
+              if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+                this.removePeer(remoteId);
+              }
+            }, FAILED_PEER_TTL_MS);
+            this.disconnectGrace.set(remoteId, failTimer);
+          }
+          if (!this.restartTried.has(remoteId)) {
+            this.restartTried.add(remoteId);
+            void this.attemptIceRestart(remoteId, pc);
+          }
+          return;
+        case 'closed':
+          this.removePeer(remoteId);
+          return;
       }
     };
 
@@ -370,6 +476,7 @@ export class WebRTCManager {
   }
 
   removePeer(remoteId: string) {
+    this.clearDisconnectGrace(remoteId);
     const pc = this.peers.get(remoteId);
     if (pc) {
       pc.close();
@@ -388,6 +495,9 @@ export class WebRTCManager {
     this.peers.clear();
     this.pendingCandidates.clear();
     this.remoteStreams.clear();
+    for (const timer of this.disconnectGrace.values()) clearTimeout(timer);
+    this.disconnectGrace.clear();
+    this.restartTried.clear();
     this.localVideoTrack = null;
     this.localAudioTrack = null;
   }

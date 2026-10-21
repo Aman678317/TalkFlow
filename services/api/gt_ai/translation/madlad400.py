@@ -14,6 +14,7 @@ from typing import Any, AsyncIterator
 from gt_ai.base import BaseProvider
 from gt_ai.registry import register
 from gt_ai.types import ProviderUnavailable, TranslationRequest, TranslationResult
+from gt_ai.translation.model_fetch import load_cached_first
 from gt_ai.translation.text_ops import (
     apply_glossary_to_output,
     normalize_unicode,
@@ -66,10 +67,26 @@ class Madlad400Provider(BaseProvider):
                         "madlad400 requires `pip install gt-ai[mt]` (transformers+torch)"
                     ) from e
                 device = self._resolve_device()
-                tok = AutoTokenizer.from_pretrained(self.model_id, cache_dir=self.cache_dir)
-                model = AutoModelForSeq2SeqLM.from_pretrained(
-                    self.model_id, cache_dir=self.cache_dir,
-                    torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+                # Local cache only — see gt_ai.translation.model_fetch: an
+                # on-demand download of a 3B model crashed the API worker
+                # (2026-10-20) and must never happen behind a user request.
+                tok = load_cached_first(
+                    lambda: AutoTokenizer.from_pretrained(
+                        self.model_id, cache_dir=self.cache_dir, local_files_only=True),
+                    lambda: AutoTokenizer.from_pretrained(
+                        self.model_id, cache_dir=self.cache_dir),
+                    what="madlad400 tokenizer", model_id=self.model_id,
+                )
+                model = load_cached_first(
+                    lambda: AutoModelForSeq2SeqLM.from_pretrained(
+                        self.model_id, cache_dir=self.cache_dir, local_files_only=True,
+                        torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+                    ),
+                    lambda: AutoModelForSeq2SeqLM.from_pretrained(
+                        self.model_id, cache_dir=self.cache_dir,
+                        torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+                    ),
+                    what="madlad400 model", model_id=self.model_id,
                 ).to(device)
                 model.eval()
                 return tok, model, device

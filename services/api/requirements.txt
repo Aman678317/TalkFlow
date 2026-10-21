@@ -32,4 +32,7 @@ livekit-api>=0.8.0
 langid>=1.1.6
 numpy>=1.26.0
 langdetect>=1.0.9
+# Optional at runtime (credentials select the provider); required only when
+# STT_PROVIDER=azure_speech. The REST MT/TTS adapters use existing httpx.
+azure-cognitiveservices-speech>=1.41.1
 

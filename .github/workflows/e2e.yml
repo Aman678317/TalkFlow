@@ -1,0 +1,102 @@
+name: E2E (browser WebRTC smoke)
+
+# The WS golden-call test alone cannot prove meeting media: this boots the
+# compose meeting stack (postgres/redis/livekit/api/web, MinIO-free via
+# docker-compose.e2e.yml) and drives two real Chromium participants with fake
+# camera/mic devices through join → room → translated turn → leave. See
+# apps/web/e2e + docs/TRANSLATION_QUALITY_REMEDIATION_PLAN.md §5.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "apps/web/**"
+      - "services/api/**"
+      - "docker-compose.yml"
+      - "infrastructure/docker/**"
+      - ".github/workflows/e2e.yml"
+  push:
+    branches: [main]
+    paths:
+      - "apps/web/**"
+      - "services/api/**"
+      - "docker-compose.yml"
+      - "infrastructure/docker/**"
+
+jobs:
+  webrtc-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build and start the compose stack
+        run: |
+          # Compose set for CI: MinIO-free override (the minio/minio image is no
+          # longer anonymously pullable from Docker Hub), so S3 is disabled and
+          # the API uses its local-disk storage. See docker-compose.e2e.yml.
+          COMPOSE="docker compose -f docker-compose.yml -f docker-compose.e2e.yml"
+          # Docker Hub anonymous pulls from hosted runners are rate-limited
+          # ("pull access denied" / 429); retry the image pulls first so the
+          # subsequent build only resolves cached/verified base layers.
+          ok=""
+          for attempt in 1 2 3 4 5; do
+            if $COMPOSE pull postgres redis livekit; then
+              echo "external images pulled on attempt $attempt"
+              ok=1
+              break
+            fi
+            if [ "$attempt" = 5 ]; then
+              echo "compose pull failed after 5 attempts"
+              exit 1
+            fi
+            echo "pull attempt $attempt failed (likely Docker Hub rate limit) — retrying in 30s"
+            sleep 30
+          done
+          $COMPOSE up -d --build postgres redis livekit api web
+        env:
+          LIVEKIT_PUBLIC_URL: "ws://localhost:7880"
+
+      - name: Wait for the SPA+API to be ready (same-origin health)
+        run: |
+          for i in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:5173/health || true)
+            if [ "$code" = "200" ]; then echo "stack ready"; exit 0; fi
+            echo "waiting ($i/60): /health -> $code"; sleep 5
+          done
+          echo "compose stack did not become healthy in time"; \
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml ps; \
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml logs --tail=100 api web; exit 1
+
+      - name: Install web dependencies
+        working-directory: apps/web
+        run: npm ci --legacy-peer-deps --no-audit --no-fund
+
+      - name: Install Playwright Chromium
+        working-directory: apps/web
+        run: npx playwright install --with-deps chromium
+
+      - name: Run browser smoke
+        working-directory: apps/web
+        run: npx playwright test --reporter=list
+
+      - name: Capture compose api/web logs on failure
+        if: failure()
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml logs --tail=400 api > compose-api.log
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml logs --tail=120 web > compose-web.log
+
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-artifacts
+          path: |
+            apps/web/test-results/
+            apps/web/playwright-report/
+            compose-api.log
+            compose-web.log
+          retention-days: 7

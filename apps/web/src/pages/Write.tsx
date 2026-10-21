@@ -25,7 +25,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ArrowRight, BookOpen, Check, ChevronDown, Copy, Download,
+  ArrowRight, BookOpen, Check, ChevronDown, Copy, Download, Languages,
   Lock, Mic, MicOff, PenTool, RefreshCw, RotateCcw,
   Search, Sparkles, TrendingDown, Unlock, Volume2, Wand2, X, Zap,
 } from 'lucide-react';
@@ -33,6 +33,8 @@ import { api, friendlyMessage } from '@/lib/api';
 import { Badge, Button, Card, Spinner } from '@/components/ui';
 import { toast } from '@/stores/toasts';
 import { cn } from '@/lib/utils';
+import { wordDiffPercent } from '@/lib/writeDiff';
+import { useShortcuts } from '@/lib/shortcuts';
 
 /* ─────────────────────────── Types ──────────────────────────────────── */
 
@@ -86,6 +88,9 @@ interface ActiveWordPopover {
 interface ReadabilityMetrics {
   fleschScore: number;
   fleschLabel: string;
+  /** Flesch reading ease only works for latin script — for Devanagari/Arabic/
+   *  CJK text the syllable count collapses to 0 and the score is meaningless. */
+  applicable: boolean;
   avgSentenceLength: number;
   avgSyllablesPerWord: number;
   passiveVoiceCount: number;
@@ -96,7 +101,10 @@ interface ReadabilityMetrics {
 
 /* ─────────────────────────── Constants ──────────────────────────────── */
 
-const MAX_CHARS = 5000;
+// The API accepts up to 50 000 characters (WriteRequest.text). The page
+// enforced 5 000 and silently refused the rest, so the "N/5000" bar was
+// against a base ten times smaller than the real limit.
+const MAX_CHARS = 50000;
 
 const STYLES = [
   { value: 'business', label: '💼 Business', desc: 'Clear, executive, and impactful' },
@@ -1252,6 +1260,9 @@ function computeReadability(text: string): ReadabilityMetrics {
   const totalWords = words.length;
   const totalSentences = Math.max(sentences.length, 1);
   const totalSyllables = words.reduce((sum, w) => sum + countSyllables(w), 0);
+  // Flesch and the syllable count are latin-script constructs.
+  const latinChars = (text.match(/[A-Za-z]/g) || []).length;
+  const applicable = totalWords > 0 && latinChars >= Math.max(20, totalWords * 0.5);
 
   const avgSentenceLength = totalWords / totalSentences;
   const avgSyllablesPerWord = totalWords > 0 ? totalSyllables / totalWords : 0;
@@ -1271,7 +1282,10 @@ function computeReadability(text: string): ReadabilityMetrics {
   else if (clampedScore >= 30) fleschLabel = 'Difficult';
 
   // Passive voice detection
-  const passivePattern = /\b(?:is|are|was|were|be|been|being)\s+\w+ed\b/gi;
+  // No `g` flag: a global regex is stateful across `.test()` calls
+  // (`lastIndex` advances), so roughly every other passive sentence was
+  // missed and the count changed between renders.
+  const passivePattern = /\b(?:is|are|was|were|be|been|being)\s+\w+ed\b/i;
   const passiveSentences = sentences.filter(s => passivePattern.test(s)).map(s => s.trim());
   const passiveVoiceCount = passiveSentences.length;
 
@@ -1302,6 +1316,7 @@ function computeReadability(text: string): ReadabilityMetrics {
   return {
     fleschScore: clampedScore,
     fleschLabel,
+    applicable,
     avgSentenceLength: Math.round(avgSentenceLength * 10) / 10,
     avgSyllablesPerWord: Math.round(avgSyllablesPerWord * 10) / 10,
     passiveVoiceCount,
@@ -1414,6 +1429,11 @@ export default function WritePage() {
   const [activePopover, setActivePopover] = useState<ActiveWordPopover | null>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   const langDropdownRef = useRef<HTMLDivElement>(null);
+  const writeReqIdRef = useRef(0);
+  // Abort the in-flight rewrite when a new keystroke fires the next one; a
+  // request-id guard alone still left the old provider call running and its
+  // late response fighting the response of the newer text.
+  const rewriteAbortRef = useRef<AbortController | null>(null);
 
   // Dictionary Lookup State
   const [dictQuery, setDictQuery] = useState('');
@@ -1452,12 +1472,18 @@ export default function WritePage() {
     const timer = setTimeout(() => {
       void runRewrite(sourceText);
       setReadability(computeReadability(sourceText));
-    }, 350);
+    }, 400);
     return () => clearTimeout(timer);
   }, [sourceText, style, tone, correctionsOnly, language, detectedLang]);
 
   async function runRewrite(text: string) {
     if (!text.trim()) return;
+    const currentReqId = ++writeReqIdRef.current;
+    // Stale-request cancellation: the previous request is aborted so a fast
+    // typist never waits behind (or races) their own earlier input.
+    rewriteAbortRef.current?.abort();
+    const controller = new AbortController();
+    rewriteAbortRef.current = controller;
     setLoading(true);
     setActivePopover(null);
     setIsEditingImproved(false);
@@ -1466,6 +1492,7 @@ export default function WritePage() {
     try {
       const res = await api<WriteResponse>('/api/v1/write', {
         method: 'POST',
+        signal: controller.signal,
         body: {
           text,
           language: effectiveLang,
@@ -1474,16 +1501,30 @@ export default function WritePage() {
           corrections_only: correctionsOnly,
         },
       });
+      if (currentReqId !== writeReqIdRef.current) return;
       if (res && res.improved_text) {
         setResult(res);
+        // The readability panel sits in the IMPROVED pane, so it must score
+        // the improved text — it used to score the original draft that the
+        // user was no longer looking at.
+        setReadability(computeReadability(res.improved_text));
         setLoading(false);
         return;
       }
       throw new Error('Writing provider returned no correction. Please retry.');
     } catch (err) {
+      // Superseded by a newer keystroke (or unmounted): not an error, the
+      // newest request owns the UI state.
+      if (controller.signal.aborted || currentReqId !== writeReqIdRef.current) {
+        return;
+      }
       setResult(null);
       setWriteError(friendlyMessage(err));
       setLoading(false);
+    } finally {
+      if (rewriteAbortRef.current === controller) {
+        rewriteAbortRef.current = null;
+      }
     }
   }
 
@@ -1628,6 +1669,18 @@ export default function WritePage() {
       toast.error('Copy failed');
     }
   };
+
+  // Keyboard shortcuts (reference parity, 2026-10-21 benchmark): Ctrl/Cmd+Enter
+  // improves the draft, Ctrl/Cmd+Shift+C copies the improved text, Escape
+  // clears the draft. The Write page had no shortcuts at all before.
+  useShortcuts(
+    {
+      submit: () => { void runRewrite(sourceText); },
+      copy: () => { void handleCopy(result?.improved_text || sourceText); },
+      clear: () => { setSourceText(''); },
+    },
+    { clearTargetLabel: 'Input draft text' },
+  );
 
   const handleDownload = () => {
     if (!result?.improved_text) return;
@@ -2126,24 +2179,39 @@ export default function WritePage() {
                   <div className="rounded-2xl border border-black/[.06] bg-ink-50/60 p-4">
                     <div className="flex items-center justify-between mb-3">
                       <h4 className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-500">Readability Score</h4>
-                      <span className={cn('text-lg font-bold', fleschColor)}>{readability.fleschScore}/100</span>
+                      {readability.applicable ? (
+                        <span className={cn('text-lg font-bold', fleschColor)}>{readability.fleschScore}/100</span>
+                      ) : (
+                        <span className="text-[11px] text-ink-400">not applicable to this script</span>
+                      )}
                     </div>
-                    <div className="h-2 rounded-full bg-slate-200 overflow-hidden mb-2">
-                      <div
-                        className={cn('h-full rounded-full transition-all',
-                          readability.fleschScore >= 70 ? 'bg-emerald-500' : readability.fleschScore >= 50 ? 'bg-amber-400' : 'bg-rose-500')}
-                        style={{ width: `${readability.fleschScore}%` }}
-                      />
-                    </div>
-                    <p className={cn('text-sm font-semibold', fleschColor)}>{readability.fleschLabel}</p>
+                    {readability.applicable ? (
+                      <>
+                        <div className="h-2 rounded-full bg-slate-200 overflow-hidden mb-2">
+                          <div
+                            className={cn('h-full rounded-full transition-all',
+                              readability.fleschScore >= 70 ? 'bg-emerald-500' : readability.fleschScore >= 50 ? 'bg-amber-400' : 'bg-rose-500')}
+                            style={{ width: `${readability.fleschScore}%` }}
+                          />
+                        </div>
+                        <p className={cn('text-sm font-semibold', fleschColor)}>{readability.fleschLabel}</p>
+                      </>
+                    ) : (
+                      <p className="text-[11px] text-ink-400">
+                        The reading-ease score needs latin script - this text is not latin, so the
+                        number would be meaningless. The sentence metrics below still apply.
+                      </p>
+                    )}
                     <div className="mt-3 grid grid-cols-2 gap-3 text-xs text-slate-600">
-                        <div className="rounded-xl border border-black/[.04] bg-white p-2">
+                      <div className="rounded-xl border border-black/[.04] bg-white p-2">
                         <span className="block text-[10px] font-semibold uppercase text-slate-400">Avg sentence</span>
                         <span className="text-sm font-bold text-slate-800">{readability.avgSentenceLength} words</span>
                       </div>
-                        <div className="rounded-xl border border-black/[.04] bg-white p-2">
+                      <div className="rounded-xl border border-black/[.04] bg-white p-2">
                         <span className="block text-[10px] font-semibold uppercase text-slate-400">Avg syllables</span>
-                        <span className="text-sm font-bold text-slate-800">{readability.avgSyllablesPerWord}/word</span>
+                        <span className="text-sm font-bold text-slate-800">
+                          {readability.applicable ? `${readability.avgSyllablesPerWord}/word` : "n/a"}
+                        </span>
                       </div>
                     </div>
                   </div>
@@ -2321,12 +2389,26 @@ export default function WritePage() {
               )}
               {result && (
                 <span className="text-xs text-slate-400">
-                  {impWords} words ({Math.round(((impWords - origWords) / (origWords || 1)) * 100)}% word diff)
+                  {impWords} words ({wordDiffPercent(sourceText, result?.improved_text || "")}% of words changed)
                 </span>
               )}
             </div>
 
             <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => {
+                  if (!result?.improved_text) return;
+                  window.location.href = `/translate?text=${encodeURIComponent(result.improved_text)}`;
+                }}
+                disabled={!result}
+                className="gap-1.5 text-slate-600 hover:text-slate-900"
+                title="Translate improved text into another language"
+              >
+                <Languages className="h-3.5 w-3.5 text-slate-600" />
+                <span className="hidden sm:inline">Translate</span>
+              </Button>
               <Button
                 size="sm"
                 variant="secondary"

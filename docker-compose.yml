@@ -2,6 +2,8 @@ name: globaltalk-ai
 # One command local dev stack:
 #   docker compose up -d          (postgres, redis, minio, livekit, api, worker, web)
 #   docker compose down
+# MinIO-free variant (minio/minio is no longer anonymously pullable from
+# Docker Hub): docker compose -f docker-compose.yml -f docker-compose.e2e.yml up -d --build
 # GPU inference workers: use docker-compose.gpu.yml override (see docs/DEPLOYMENT.md).
 
 x-api-env: &api-env
@@ -27,7 +29,7 @@ x-api-env: &api-env
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16
     environment:
       POSTGRES_USER: globaltalk
       POSTGRES_PASSWORD: globaltalk
@@ -52,7 +54,7 @@ services:
       retries: 10
 
   minio:
-    image: minio/minio:latest
+    image: minio/minio:RELEASE.2024-06-13T22-53-53Z
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minioadmin
@@ -60,25 +62,29 @@ services:
     ports: ["9000:9000", "9001:9001"]
     volumes: [miniodata:/data]
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 5s
       timeout: 3s
       retries: 10
 
   minio-init:
-    image: minio/mc:latest
+    image: minio/minio:RELEASE.2024-06-13T22-53-53Z
     depends_on:
       minio: { condition: service_healthy }
     entrypoint: >
       /bin/sh -c "
       mc alias set local http://minio:9000 minioadmin minioadmin &&
       mc mb --ignore-existing local/globaltalk &&
-      mc anonymous set none local/globaltalk &&
       echo 'bucket ready'
       "
 
   livekit:
-    image: livekit/livekit-server:latest
+    # Pinned per third_party_components.yaml ("pinned versions only"): v1.13.10
+    # is the exact image this repo's e2e stack has validated all along (digest
+    # 89ca9ce0…, identical to what `latest` resolved to through the 2026-10-19
+    # runs). Floating `latest` here made an unreviewed server release able to
+    # silently change CI behavior; bumps go through the manifest re-review.
+    image: livekit/livekit-server:v1.13.10
     command: ["--dev", "--bind", "0.0.0.0", "--keys", "devkey: devsecret-at-least-32-chars-long!!"]
     ports: ["7880:7880", "7881:7881", "7882:7882/udp"]
     healthcheck:
@@ -123,7 +129,15 @@ services:
       context: .
       dockerfile: infrastructure/docker/Dockerfile.web
       args:
-        VITE_API_BASE_URL: ""
+        # Same-origin through the SPA's nginx proxy (/api, /ws, /health all
+        # proxy to api:8000). An empty value would fall back to
+        # .env.production's Render URL in prod builds — never ship a compose
+        # bundle that dials the hosted deployment.
+        VITE_API_BASE_URL: "http://localhost:5173"
+        VITE_COPILOTKIT_RUNTIME_URL: "http://localhost:5173/api/copilotkit"
+        # Local compose is APP_ENV=development: keep the inject affordance
+        # available so the browser E2E can drive the pipeline without a model.
+        VITE_E2E_INJECT: "1"
     ports: ["5173:80"]
     depends_on: [api]
 

@@ -17,13 +17,18 @@ The rules this module enforces, all from the guide:
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
+import time
 from collections import abc, defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from app.realtime.agents import inference_gate
 from app.realtime.agents.bus import AgentBus
 from app.realtime.agents.contracts import RealtimeEvent, Stage, TranscriptSegment, TranslationSegment
+from app.realtime.agents.inference_gate import StageDeadlineExpired
 
 log = logging.getLogger("app.realtime.agents.translation")
 
@@ -75,9 +80,31 @@ class RealtimeTranslatorProvider:
         else:
             translate_fn = self._translate_fn
         ctx = self._context_factory(segment_id, context, speaker_id)
-        async with self._session_factory() as db:
-            out = await translate_fn(db, text, source_lang, target_lang, ctx)
+        # Bounded concurrency + the configured MT deadline: a provider that can
+        # answer in 300 ms must not be starved behind eight concurrent calls,
+        # and a provider that hangs must fail this language run (not the call).
+        from app.config import settings
+        deadline_ms = float(getattr(settings, "rt_mt_deadline_ms", 2500.0))
+        t0 = time.perf_counter()
+        async with inference_gate.default_gate().slot():
+            async with self._session_factory() as db:
+                try:
+                    out = await asyncio.wait_for(
+                        translate_fn(db, text, source_lang, target_lang, ctx),
+                        timeout=max(0.05, deadline_ms / 1000.0))
+                except TimeoutError:
+                    if (time.perf_counter() - t0) * 1000 >= deadline_ms * 0.9:
+                        raise StageDeadlineExpired("mt", deadline_ms)
+                    # Fast provider timeout: an outage, not our deadline.
+                    raise
+        except_gate_exit = time.perf_counter()
         r = out.result
+        with contextlib.suppress(Exception):
+            from app import metrics as met
+            met.MT_STAGE_LATENCY.labels(
+                src=source_lang or "auto", tgt=target_lang,
+                provider=r.provider or "unknown", model=r.model or "unknown",
+            ).observe((except_gate_exit - t0) * 1000)
         return ProviderTranslation(
             text=r.text, provider=r.provider, model=r.model,
             latency_ms=r.latency_ms, quality_flags=list(r.quality_flags or []))
@@ -117,6 +144,9 @@ class TranslationAgent:
             out = await self.translator.translate(
                 text, segment.source_language, target_lang, prior,
                 segment_id=segment.segment_id, speaker_id=segment.speaker_id)
+        except StageDeadlineExpired as exc:
+            await self._fail(segment, target_lang, exc, reason="deadline_exceeded")
+            raise
         except Exception as exc:
             await self._fail(segment, target_lang, exc, reason="provider_unavailable")
             raise
@@ -178,12 +208,26 @@ class TranslationAgent:
         langs = sorted({lang for lang, recips in recipients_by_lang.items()
                         if recips and lang != segment.source_language})
         produced: list[TranslationSegment] = []
-        for target_lang in langs:
+
+        # Pin the context before scheduling the independent calls.  The source
+        # turn is recorded only after every target has finished, but keeping the
+        # snapshot explicit prevents a queued task from ever observing a later
+        # context update.
+        prior_context = self.context_for(segment.speaker_id)
+
+        async def translate_target(target_lang: str):
             recips = list(recipients_by_lang[target_lang])
             try:
-                one = await self.translate_one(segment, target_lang, recips)
+                one = await self.translate_one(
+                    segment, target_lang, recips, prior_context=prior_context)
             except Exception:
                 # Already reported as a stage event above; other languages continue.
+                return recips, None
+            return recips, one
+
+        results = await asyncio.gather(*(translate_target(lang) for lang in langs))
+        for recips, one in results:
+            if one is None:
                 continue
             # One provider result, one record per recipient: the copy that
             # reaches a listener has to name that listener.

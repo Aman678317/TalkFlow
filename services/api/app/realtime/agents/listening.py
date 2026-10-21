@@ -9,14 +9,17 @@ this stage can fail produces an explicit event instead of silence.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Protocol
 
+from app.realtime.agents import inference_gate
 from app.realtime.agents.bus import AgentBus
 from app.realtime.agents.contracts import RealtimeEvent, Stage, TranscriptSegment
+from app.realtime.agents.inference_gate import StageDeadlineExpired
 from gt_ai.types import DetectionResult, RouteDecision, TranscriptChunk
 
 log = logging.getLogger("app.realtime.agents.listening")
@@ -103,6 +106,45 @@ class ListeningAgent:
         """
         return await self.stt.detect_language(text)
 
+    async def _transcribe_bounded(self, audio: bytes, hint: str | None,
+                                  stage: str) -> tuple[TranscriptChunk, RouteDecision]:
+        """One provider call, gated and deadlined.
+
+        Blocks outside the event loop is the *provider's* job (it runs its
+        model in a thread); this wrapper adds two hard guarantees on top:
+        the process-wide inference slot cap, and the configured ``rt_stt_deadline_ms``
+        so a hung recognizer degrades the caption instead of stalling the room.
+        Raises ``StageDeadlineExpired`` on a deadline breach.
+        """
+        import contextlib
+        from app import metrics as met
+        from app.config import settings
+
+        deadline_ms = float(getattr(settings, "rt_stt_deadline_ms", 3000.0))
+        t0 = time.perf_counter()
+        try:
+            async with inference_gate.default_gate().slot():
+                chunk, decision = await asyncio.wait_for(
+                    self.stt.transcribe(audio, self.sample_rate, lang_hint=hint),
+                    timeout=max(0.05, deadline_ms / 1000.0))
+        except TimeoutError:
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            if elapsed_ms >= deadline_ms * 0.9:
+                # OUR deadline fired: the recognizer may be healthy, just slow.
+                with contextlib.suppress(Exception):
+                    met.STAGE_FAILURES.labels(
+                        stage=f"stt_{stage}", provider="unknown",
+                        reason="deadline_exceeded").inc()
+                raise StageDeadlineExpired(f"stt_{stage}", deadline_ms)
+            # The provider itself timed out fast — an outage, not our deadline;
+            # keep the caller's provider_unavailable reporting intact.
+            raise
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        with contextlib.suppress(Exception):
+            met.STT_STAGE_LATENCY.labels(
+                provider=decision.provider or "unknown", stage=stage).observe(elapsed_ms)
+        return chunk, decision
+
     def _effective_hint(self, state: _SegmentState,
                         lang_hint: str | None) -> str | None:
         """A declared speak language wins over a lock inferred from audio."""
@@ -145,8 +187,13 @@ class ListeningAgent:
         # text without saying "Hindi" costs accuracy on every later partial.
         hint = self._effective_hint(state, lang_hint)
         try:
-            chunk, decision = await self.stt.transcribe(audio, self.sample_rate,
-                                                        lang_hint=hint)
+            chunk, decision = await self._transcribe_bounded(audio, hint, "partial")
+        except StageDeadlineExpired:
+            await self._fail(correlation_id=correlation_id, speaker_id=speaker_id,
+                             segment_id=segment_id, sequence_number=sequence_number,
+                             reason="deadline_exceeded", phase="partial",
+                             error_code="StageDeadlineExpired")
+            return None
         except Exception as exc:
             await self._fail(correlation_id=correlation_id, speaker_id=speaker_id,
                              segment_id=segment_id, sequence_number=sequence_number,
@@ -188,8 +235,13 @@ class ListeningAgent:
         t0 = time.perf_counter()
         hint = self._effective_hint(state, lang_hint)
         try:
-            chunk, decision = await self.stt.transcribe(audio, self.sample_rate,
-                                                        lang_hint=hint)
+            chunk, decision = await self._transcribe_bounded(audio, hint, "final")
+        except StageDeadlineExpired:
+            await self._fail(correlation_id=correlation_id, speaker_id=speaker_id,
+                             segment_id=segment_id, sequence_number=sequence_number,
+                             reason="deadline_exceeded",
+                             error_code="StageDeadlineExpired")
+            return None
         except Exception as exc:
             await self._fail(correlation_id=correlation_id, speaker_id=speaker_id,
                              segment_id=segment_id, sequence_number=sequence_number,

@@ -71,8 +71,10 @@ class FasterWhisperProvider(BaseProvider):
         await self.transcribe(b"", 16000)  # trigger decode path warmup
 
     async def healthcheck(self) -> bool:
+        if self._model is not None:
+            return True
         try:
-            await self._ensure_loaded()
+            from faster_whisper import WhisperModel
             return True
         except Exception:
             return False

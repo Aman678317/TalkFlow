@@ -939,3 +939,189 @@ class PromptVersion(Base, UUIDPkMixin, TimestampMixin):
 
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+
+# --------------------------------------------------------------------------- #
+# Outbound calling CRM: contacts, consent evidence, call jobs & campaigns
+# --------------------------------------------------------------------------- #
+
+
+class Contact(Base, UUIDPkMixin, TimestampMixin):
+    """Phonebook entry. phone_e164 is the canonical key per organization."""
+    __tablename__ = "contacts"
+    __table_args__ = (
+        UniqueConstraint("org_id", "phone_e164", name="uq_contact_org_phone"),
+        Index("ix_contacts_org_name", "org_id", "display_name"),
+        Index("ix_contacts_org_created", "org_id", "created_at"),
+    )
+
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), index=True, nullable=False)
+    phone_e164: Mapped[str] = mapped_column(String(32), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(200), default="", nullable=False)
+    language: Mapped[str] = mapped_column(String(16), default="en", nullable=False)
+    country: Mapped[str] = mapped_column(String(8), default="", nullable=False)  # ISO alpha-2
+    timezone: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    notes: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    tags_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    # does_not_call: org-wide DNC opt-out Toggle (source of truth = consent events)
+    do_not_call: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    last_call_session_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("call_sessions.id", ondelete="SET NULL"), nullable=True)
+
+
+class ContactConsent(Base, UUIDPkMixin):
+    """APPEND-ONLY consent ledger. The newest row per contact wins; older rows
+    are never mutated or deleted (evidence, not state)."""
+    __tablename__ = "contact_consents"
+    __table_args__ = (
+        Index("ix_contact_consent_contact_time", "contact_id", "created_at"),
+    )
+
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), index=True, nullable=False)
+    contact_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("contacts.id", ondelete="CASCADE"), index=True, nullable=False)
+    channel: Mapped[str] = mapped_column(String(20), default="phone", nullable=False)
+    # grant|revoke|dnc
+    decision: Mapped[str] = mapped_column(String(16), nullable=False)
+    # manual_entry|imported_csv|call_prompt|customer_portal|verbal_note
+    source: Mapped[str] = mapped_column(String(32), default="manual_entry", nullable=False)
+    evidence_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    note: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    recorded_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TZDateTime, nullable=False, index=True)
+
+
+class ContactDocument(Base, UUIDPkMixin, TimestampMixin):
+    """Pivot: documents attached to a contact (org-scoped, both sides checked)."""
+    __tablename__ = "contact_documents"
+    __table_args__ = (
+        UniqueConstraint("contact_id", "document_id", name="uq_contact_document"),
+    )
+
+    contact_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("contacts.id", ondelete="CASCADE"), index=True, nullable=False)
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), index=True, nullable=False)
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), index=True, nullable=False)
+    note: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    attached_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+
+class Campaign(Base, UUIDPkMixin, TimestampMixin):
+    """Explicit, config-gated outbound campaign. AI-agent calling exists ONLY
+    through a campaign row created by an authorized operator."""
+    __tablename__ = "campaigns"
+    __table_args__ = (
+        CheckConstraint(
+            "mode IN ('human_dial','ai_agent')", name="ck_campaign_mode"),
+        CheckConstraint(
+            "status IN ('draft','active','paused','completed','stopped')", name="ck_campaign_status"),
+    )
+
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), index=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    mode: Mapped[str] = mapped_column(String(16), default="human_dial", nullable=False)
+    # human_dial: connect the operator; ai_agent: requires explicit ack below
+    agent_prompt_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("agent_prompts.id", ondelete="SET NULL"), nullable=True)
+    from_number: Mapped[str] = mapped_column(String(32), default="", nullable=False)
+    caller_language: Mapped[str] = mapped_column(String(16), default="en", nullable=False)
+    receiver_language_overrides_contact: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False)
+    # Calling window in UTC hours (inclusive start, exclusive end)
+    window_start_hour_utc: Mapped[int] = mapped_column(Integer, default=8, nullable=False)
+    window_end_hour_utc: Mapped[int] = mapped_column(Integer, default=20, nullable=False)
+    max_attempts_per_contact: Mapped[int] = mapped_column(Integer, default=2, nullable=False)
+    max_concurrent_calls: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    retry_backoff_minutes: Mapped[int] = mapped_column(Integer, default=60, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="draft", nullable=False)
+    # Auditable authorization for AI-agent outbound usage (never auto-granted)
+    ai_agent_authorized: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    ai_agent_authorized_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    ai_agent_authorized_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
+    ai_disclosure_required: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+
+
+class CallJob(Base, UUIDPkMixin, TimestampMixin):
+    """One queued dial attempt. Idempotency key (org, key) unique — replaying
+    the same request never places a second PSTN call."""
+    __tablename__ = "call_jobs"
+    __table_args__ = (
+        UniqueConstraint("org_id", "idempotency_key", name="uq_calljob_org_key"),
+        Index("ix_calljob_campaign_status", "campaign_id", "status"),
+        Index("ix_calljob_contact", "contact_id", "status"),
+        CheckConstraint(
+            "status IN ('pending','claimed','placing','called','blocked','failed','canceled')",
+            name="ck_calljob_status"),
+    )
+
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), index=True, nullable=False)
+    contact_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("contacts.id", ondelete="CASCADE"), index=True, nullable=False)
+    campaign_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("campaigns.id", ondelete="SET NULL"), nullable=True)
+    mode: Mapped[str] = mapped_column(String(16), default="human_dial", nullable=False)
+    # human_dial|ai_agent (copied from campaign; job is what the gate checks)
+    status: Mapped[str] = mapped_column(String(16), default="pending", nullable=False, index=True)
+    # NULL when the caller did not supply an Idempotency-Key: SQL uniqueness
+    # treats NULLs as distinct, so keyless jobs never collide on (org, key).
+    idempotency_key: Mapped[str | None] = mapped_column(
+        String(120), default=None, nullable=True)
+    to_number: Mapped[str] = mapped_column(String(32), default="", nullable=False)
+    from_number: Mapped[str] = mapped_column(String(32), default="", nullable=False)
+    caller_language: Mapped[str] = mapped_column(String(16), default="en", nullable=False)
+    receiver_language: Mapped[str] = mapped_column(String(16), default="en", nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    blocked_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    blocked_detail_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    call_session_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("call_sessions.id", ondelete="SET NULL"), nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
+    claimed_by: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    not_before: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+
+
+class AgentEscalation(Base, UUIDPkMixin, TimestampMixin):
+    """Durable copy of one escalation ticket (§E2 transport).
+
+    The in-process FIFO stays the live authority inside this process; this
+    row is what survives a restart (the queue rehydrates unresolved rows at
+    boot). Push is idempotent on ``call_sid`` — exactly the queue's own
+    dedupe contract — so a replay of the same escalation never writes a
+    second ticket.
+    """
+    __tablename__ = "agent_escalations"
+    __table_args__ = (
+        UniqueConstraint("call_sid", name="uq_agent_escalation_call"),
+        UniqueConstraint("ticket_id", name="uq_agent_escalation_ticket"),
+    )
+
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), index=True, nullable=False)
+    ticket_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    call_sid: Mapped[str] = mapped_column(String(64), nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    turns: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    claimed_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
+    resolved_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
+    resolution: Mapped[str | None] = mapped_column(String(120), nullable=True)

@@ -20,6 +20,12 @@ from app.telephony.service import get_telephony_service
 
 log = logging.getLogger("app.telephony.call_service")
 
+# Carrier retry idempotency: statuses a call can never leave again.
+_TERMINAL_STATUSES = frozenset({
+    "ended", "failed", "busy", "no_answer", "declined",
+    "timeout", "invalid_number", "unsupported_country",
+})
+
 
 class CallService:
     def __init__(self, db: AsyncSession) -> None:
@@ -52,11 +58,23 @@ class CallService:
             recipient_consented=False,
         )
 
-        # 1. Normalize and validate E.164 destination
-        norm_to = PhoneNumberService.normalize_to_e164(to_number)
-        is_valid, err = PhoneNumberService.validate_e164(norm_to)
-        if not is_valid:
-            raise ValidationError(err or "Invalid destination phone number.")
+        # 1. Destination: carrier providers dial validated E.164 numbers, while
+        # the Asterisk adapter (P2 contract, docs/ASTERISK_LOCAL_SIP_LAB.md)
+        # dials only operator-allowlisted local SIP extensions — E.164
+        # validation would reject those, so destination normalization is
+        # delegated to the provider, which rejects non-allowlisted extensions
+        # BEFORE any originate action.
+        provider = self.telephony.get_provider()
+        is_asterisk = provider.provider_name == "asterisk"
+        norm_to = (
+            provider.normalize_destination(to_number)
+            if is_asterisk
+            else PhoneNumberService.normalize_to_e164(to_number)
+        )
+        if not is_asterisk:
+            is_valid, err = PhoneNumberService.validate_e164(norm_to)
+            if not is_valid:
+                raise ValidationError(err or "Invalid destination phone number.")
 
         # 2. Determine caller ID
         caller_id = from_number
@@ -93,8 +111,7 @@ class CallService:
         host_netloc = host_base.split("://")[-1]
         stream_url = f"{ws_scheme}://{host_netloc}/ws/telephony/media/{call_id}"
 
-        # 5. Place call via provider
-        provider = self.telephony.get_provider()
+        # 5. Place call via provider (resolved before normalization above)
         call_res: TelephonyCallResult = await provider.create_call(
             to=norm_to,
             from_=caller_id,
@@ -120,7 +137,8 @@ class CallService:
             from_number=caller_id,
             to_number=norm_to,
             caller_name=caller_name,
-            recipient_name=recipient_name or PhoneNumberService.format_friendly(norm_to),
+            recipient_name=recipient_name
+            or (norm_to if is_asterisk else PhoneNumberService.format_friendly(norm_to)),
             caller_language=caller_language,
             receiver_language=receiver_language,
             status=call_res.status.value,
@@ -212,6 +230,21 @@ class CallService:
             return None
 
         status_val = new_status.value if isinstance(new_status, CallStatus) else new_status
+
+        # Carrier retries re-deliver identical status callbacks; the transition
+        # must be idempotent: a same-status callback (without new details) adds
+        # no state change, no duplicate CallEvent, and no second usage record.
+        if status_val == call.status:
+            if not (error_message and error_message != call.error_message):
+                log.debug("Status webhook retry for %s: %s unchanged, ignoring", call_sid, status_val)
+                return call
+
+        # A terminal state is absorbing: late out-of-order retries (e.g.
+        # "in-progress" after "completed") must not roll a call back.
+        if call.status in _TERMINAL_STATUSES and status_val not in _TERMINAL_STATUSES:
+            log.info("Ignoring late carrier transition to %r for terminal call %s", status_val, call_sid)
+            return call
+
         call.status = status_val
 
         if status_val in ("connected", "translating") and not call.connected_at:

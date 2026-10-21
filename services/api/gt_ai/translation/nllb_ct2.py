@@ -15,6 +15,7 @@ from typing import Any, AsyncIterator
 from gt_ai.base import BaseProvider
 from gt_ai.registry import register
 from gt_ai.types import ProviderUnavailable, TranslationRequest, TranslationResult
+from gt_ai.translation.model_fetch import load_cached_first
 from gt_ai.translation.text_ops import (
     apply_glossary_to_output,
     normalize_unicode,
@@ -78,9 +79,17 @@ class NllbCt2Provider(BaseProvider):
                     device = "cuda" if ctranslate2.get_cuda_device_count() > 0 else "cpu"
                 model = ctranslate2.Translator(self.model_dir, device=device,
                                                compute_type=self.compute_type)
-                tok = AutoTokenizer.from_pretrained(self.tokenizer_id,
-                                                    cache_dir=self.cache_dir,
-                                                    src_lang="eng_Latn")
+                # Local cache only — see gt_ai.translation.model_fetch: an
+                # on-demand download behind a user request crashed the API
+                # worker (2026-10-20) and must never happen implicitly.
+                tok = load_cached_first(
+                    lambda: AutoTokenizer.from_pretrained(
+                        self.tokenizer_id, cache_dir=self.cache_dir,
+                        local_files_only=True, src_lang="eng_Latn"),
+                    lambda: AutoTokenizer.from_pretrained(
+                        self.tokenizer_id, cache_dir=self.cache_dir, src_lang="eng_Latn"),
+                    what="nllb_ct2 tokenizer", model_id=self.tokenizer_id,
+                )
                 return model, tok, device
             self._model, self._tokenizer, self._device = await asyncio.to_thread(_load)
             log.info("nllb_ct2 loaded dir=%s device=%s", self.model_dir, self._device)

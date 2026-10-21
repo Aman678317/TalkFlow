@@ -6,7 +6,7 @@ import logging
 import uuid
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import delete as sa_delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -414,6 +414,76 @@ async def admin_overview(principal: Principal = Depends(_require_platform_admin)
         "active_participants": gauge("gt_active_participants"),
         "queue_depth": depths, "ai_health": ai_health,
         "cache_backend": type(cache()).__name__,
+    }
+
+
+@admin_router.get("/telephony-ops", response_model=dict)
+async def admin_telephony_ops(
+    request: Request,
+    principal: Principal = Depends(_require_platform_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Read-only telephony lane visibility for platform admins (§D2).
+
+    Honest distinctions only:
+    - ``flags`` = what settings SAY (configured);
+    - ``process`` = what actually STARTED in this process (armed, incl.
+      dead-ticker detection);
+    - ``inbound_intake`` = configured flag vs the intake hook actually
+      attached to the live ARI consumer in this process (a configured flag
+      that never armed MUST be visible, never implied);
+    - ``escalations`` = the in-process escalation queue's live depth (the
+      production transport replaces this transport behind the shared seam
+      — the numbers are what THIS process can honestly see);
+    - ``queues`` = live depths;
+    - ``provider`` = the honesty surface that never advertises PSTN on the
+      local-SIP lane.
+    Nothing here mutates state; there is no dial-from-admin path.
+    """
+    from app.routers.telephony import get_provider_status
+
+    provider_status = await get_provider_status()
+
+    ticker_task = getattr(request.app.state, "call_job_ticker_task", None)
+    worker_running = ticker_task is not None and not ticker_task.done()
+    media_runtime = getattr(request.app.state, "asterisk_media_runtime", None)
+    ari_task = getattr(request.app.state, "asterisk_ari_task", None)
+    ari_consumer = getattr(request.app.state, "asterisk_ari_consumer", None)
+
+    from app.queue import queue
+
+    telephony_depth = await queue().depth("telephony")
+
+    from app.telephony.escalation import shared_dispatcher
+
+    esc_queue = shared_dispatcher().queue
+
+    return {
+        "provider": provider_status,
+        "flags": {
+            "telephony_provider": settings.telephony_provider,
+            "call_worker_enabled": settings.call_worker_enabled,
+            "asterisk_telephony_enabled": settings.asterisk_telephony_enabled,
+            "asterisk_inbound_enabled": settings.asterisk_inbound_enabled,
+            "asterisk_media_enabled": settings.asterisk_media_enabled,
+        },
+        "process": {
+            "call_worker_ticker_running": worker_running,
+            "asterisk_media_runtime_armed": media_runtime is not None,
+        },
+        "inbound_intake": {
+            "configured": settings.asterisk_inbound_enabled,
+            "armed": (
+                ari_consumer is not None
+                and ari_consumer.inbound_intake is not None
+            ),
+            "consumer_task_dead": ari_task is not None and ari_task.done(),
+        },
+        "escalations": {
+            "pending": esc_queue.pending_count(),
+            "claimed_open": esc_queue.claimed_open_count(),
+        },
+        "queues": {"telephony": telephony_depth},
     }
 
 

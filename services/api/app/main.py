@@ -77,7 +77,7 @@ def create_app() -> FastAPI:
     from app.realtime.ws import router as ws_router
     from app.routers import (
         assistant as assistant_routers,
-        auth, documents, health, meetings, orgs, platform, translate,
+        auth, contacts, documents, health, meetings, orgs, platform, translate,
         customization, write, v2_v3, telephony, agent_studio,
     )
     app.include_router(v2_v3.router)
@@ -95,6 +95,8 @@ def create_app() -> FastAPI:
     app.include_router(assistant_routers.agent_router)
     app.include_router(agent_studio.router)
     app.include_router(telephony.router)
+    app.include_router(contacts.router)
+    app.include_router(contacts.campaign_router)
     # Technical specification alias: /api/voice/* endpoints
     voice_alias_router = APIRouter(prefix="/api/voice", tags=["voice-aliases"])
     voice_alias_router.add_api_route("/token", telephony.get_voice_access_token, methods=["GET"])
@@ -158,6 +160,19 @@ async def _lifespan_startup(app: FastAPI) -> None:
     async with db_session() as db:
         await ai.load_registry(db)
 
+    # Model warm pool (remediation P1): pre-load configured STT/MT/TTS weights in
+    # the background so the first realtime call does not pay model-load latency.
+    # Best effort — a warmup failure never blocks startup; providers still
+    # lazy-load on first use.
+    async def _warm_models() -> None:
+        try:
+            await ai.warmup()
+            log.info("model warmup complete")
+        except Exception:
+            log.exception("model warmup failed (non-fatal)")
+
+    app.state.warmup_task = asyncio.create_task(_warm_models())
+
     # workers
     app.state.workers = []
     from app.queue import WorkerRunner, queue
@@ -175,6 +190,92 @@ async def _lifespan_startup(app: FastAPI) -> None:
     default_worker.register("billing.finalize", _billing_job)
     default_worker.start()
     app.state.workers.append(default_worker)
+
+    # Asterisk ARI events (P4 adapter; opt-in): the consumer reads the
+    # authenticated ARI WebSocket — NOT an HTTP webhook — and maps events onto
+    # call states (see app/telephony/ari_events.py). Best effort: a consumer
+    # failure must never block startup, and nothing here fabricates call state.
+    if settings.asterisk_telephony_enabled:
+        try:
+            from app.telephony.ari_events import AsteriskARIEventConsumer
+            from app.telephony.service import get_telephony_service
+
+            asterisk = get_telephony_service().get_registered_provider("asterisk")
+            # P3 marathon follow-up (opt-in): the agent media runtime binds the
+            # WS media server Asterisk dials per externalMedia channel and
+            # drives the AI-agent turn loop for connected ai_agent calls.
+            on_connected = None
+            if settings.asterisk_media_enabled:
+                try:
+                    from app.telephony.media.agent_media_session import (
+                        AsteriskAgentMediaRuntime,
+                    )
+
+                    media_runtime = AsteriskAgentMediaRuntime.from_settings(
+                        provider=asterisk)
+                    await media_runtime.start()
+                    app.state.asterisk_media_runtime = media_runtime
+                    on_connected = media_runtime.on_call_connected
+                    log.info(
+                        "agent media runtime started on %s:%s "
+                        "(turn loop armed for ai_agent calls)",
+                        settings.asterisk_media_bind_host,
+                        settings.asterisk_media_bind_port,
+                    )
+                except Exception:  # noqa: BLE001 — media lane is opt-in; startup must not fail
+                    log.exception(
+                        "failed to start agent media runtime (non-fatal); "
+                        "calls keep working signaling-only")
+            consumer = AsteriskARIEventConsumer.from_settings(
+                provider=asterisk, on_connected=on_connected)
+            # D3 ops honesty: the consumer OBJECT is stashed next to its
+            # task so /admin/telephony-ops can report whether the inbound
+            # intake hook was really attached (configured-vs-armed) and
+            # whether the consumer task died after startup.
+            app.state.asterisk_ari_consumer = consumer
+            app.state.asterisk_ari_task = consumer.start()
+            log.info("Asterisk ARI event consumer started (feature flag enabled)")
+        except Exception:  # noqa: BLE001 — adapter is opt-in; startup must not fail
+            log.exception("failed to start Asterisk ARI event consumer (non-fatal)")
+
+    # P4 auto-dial worker (opt-in): due pending call jobs are executed
+    # automatically through the same consent/DNC/window gate as operator
+    # claims. At-least-once queue delivery is made safe by execute_job's
+    # atomic pending->placing claim (one winner per job).
+    if settings.call_worker_enabled:
+        from app.telephony.call_worker import (
+            JOB_TYPE,
+            QUEUE_NAME,
+            CallJobTicker,
+            handle_calljob_execute,
+        )
+
+        call_wr = WorkerRunner(queue(), QUEUE_NAME)
+        call_wr.register(JOB_TYPE, handle_calljob_execute)
+        call_wr.start()
+        app.state.workers.append(call_wr)
+        app.state.call_job_ticker_task = CallJobTicker().start()
+        log.info("call-job auto-dial worker started (feature flag enabled)")
+
+    # §E2 durable escalation transport: the shared dispatcher gains a
+    # best-effort DB store and unresolved tickets rehydrate at boot, so a
+    # process restart doesn't strand escalated calls. Both steps are
+    # best-effort — a DB problem logs an honest persist-failed ledger event
+    # and the live queue remains the working view (never blocks startup).
+    try:
+        from app.telephony.escalation import EscalationDispatcher, rewire_shared_dispatcher
+        from app.telephony.escalation_store import (
+            DBEscalationStore,
+            rehydrate_shared_dispatcher,
+        )
+
+        rewire_shared_dispatcher(EscalationDispatcher(store=DBEscalationStore()))
+        restored = await rehydrate_shared_dispatcher()
+        if restored:
+            log.info("escalation transport rehydrated %d unresolved ticket(s)",
+                     restored)
+    except Exception:  # noqa: BLE001 — transport is opt-in durability; startup must not fail
+        log.exception("escalation transport init failed (non-fatal)")
 
     # periodic: retention sweep hourly, usage-threshold checks every 10m
     from app.realtime.ws import session_sweeper
@@ -234,10 +335,16 @@ async def _ensure_schema() -> None:
 
 async def _lifespan_shutdown(app: FastAPI) -> None:
     log.info("shutting down")
+    media_runtime = getattr(app.state, "asterisk_media_runtime", None)
+    if media_runtime is not None:
+        with contextlib.suppress(Exception):
+            await media_runtime.stop()
     for w in getattr(app.state, "workers", []):
         await w.stop()
     for t in (getattr(app.state, "sweeper", None),
-              getattr(app.state, "retention_task", None)):
+              getattr(app.state, "retention_task", None),
+              getattr(app.state, "asterisk_ari_task", None),
+              getattr(app.state, "call_job_ticker_task", None)):
         if t:
             t.cancel()
             with contextlib.suppress(asyncio.CancelledError):

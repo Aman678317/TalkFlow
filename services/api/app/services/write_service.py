@@ -10,11 +10,15 @@ Provides:
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import difflib
 import logging
 import re
 from typing import Any
 
+from app import metrics as met
+from app.config import settings
 from app.schemas import DictionaryEntry, DictionaryResponse, WriteDiff, WriteResponse
 
 log = logging.getLogger("app.services.write")
@@ -114,6 +118,14 @@ SPELLING_RULES: list[tuple[re.Pattern, str, str, str]] = [
     (re.compile(r"\batleast\b", re.I), "at least", "grammar", "Split 'atleast' into 'at least'"),
     (re.compile(r"\baswell\b", re.I), "as well", "grammar", "Split 'aswell' into 'as well'"),
     (re.compile(r"\bnoone\b", re.I), "no one", "grammar", "Split 'noone' into 'no one'"),
+
+    # Business-email blunders (2026-10-20 localhost audit: missed corrections)
+    (re.compile(r"\bacceppt\b", re.I), "accept", "spelling", "Fixed misspelled word 'accept'"),
+    (re.compile(r"\bcompnay\b", re.I), "company", "spelling", "Fixed transposed typo in 'company'"),
+    (re.compile(r"\bcompny\b", re.I), "company", "spelling", "Fixed misspelled word 'company'"),
+    (re.compile(r"\bcomponay\b", re.I), "company", "spelling", "Fixed transposed typo in 'company'"),
+    (re.compile(r"\brecieved\b", re.I), "received", "spelling", "Fixed the i-before-e misspelling of 'received'"),
+    (re.compile(r"\badress\b", re.I), "address", "spelling", "Fixed misspelled word 'address' (double d)"),
 
     # Contractions & Homophones
     (re.compile(r"\bthats\b", re.I), "that's", "spelling", "Added missing apostrophe in 'that\'s'"),
@@ -291,6 +303,26 @@ GRAMMAR_SYNTAX_RULES: list[tuple[re.Pattern, str, str, str]] = [
         "really good",
         "grammar",
         "Used adverb 'really' before adjective 'good'",
+    ),
+    # 'to {adjective/noun-quantity}' is the adverb 'too' (2026-10-20 audit:
+    # 'because it to expensive' was not corrected)
+    (
+        re.compile(r"\bto\s+(expensive|cheap|small|big|large|high|low|long|short|costly|risky|slow|fast|late)\b", re.I),
+        r"too \1",
+        "grammar",
+        "Used adverb 'too' before an adjective ('to expensive' → 'too expensive')",
+    ),
+    (
+        re.compile(r"\bto\s+(much|many)\b", re.I),
+        r"too \1",
+        "grammar",
+        "Used adverb 'too' before a quantity noun",
+    ),
+    (
+        re.compile(r"\bsenda\b", re.I),
+        "send a",
+        "grammar",
+        "Split missing space between 'send' and 'a'",
     ),
     (
         re.compile(r"\bquick\s+done\b", re.I),
@@ -1240,7 +1272,7 @@ def _format_sentence_terminals(text: str) -> str:
 
 
 _IMMUTABLE_SPAN_RX = re.compile(
-    r"`[^`\n]+`|https?://[^\s<>\"']+|www\.[^\s<>\"']+|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}",
+    r"```[\s\S]*?```|`[^`\n]+`|https?://[^\s<>\"']+|www\.[^\s<>\"']+|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|(?:\+\d{1,3}[-.\s]?)?(?:\(?\d{2,4}\)?[-.\s]?)\d{3,4}[-.\s]?\d{4}\b|\b(?:\$|€|£|₹)?\d+(?:[.,]\d+)*(?:%|[kKmMbB])?\b",
 )
 
 
@@ -1473,6 +1505,54 @@ def _generate_alternatives(
     return alts[:3]
 
 
+def _reconcile_granular_diffs(raw: str, improved: str, existing_diffs: list[WriteDiff]) -> list[WriteDiff]:
+    """Ensure divergences between original raw text and improved text have actionable WriteDiff entries."""
+    if raw.strip() == improved.strip():
+        return existing_diffs
+    if existing_diffs:
+        return existing_diffs
+
+    raw_words = raw.split()
+    imp_words = improved.split()
+    matcher = difflib.SequenceMatcher(None, raw_words, imp_words)
+    diffs: list[WriteDiff] = []
+
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        orig_chunk = " ".join(raw_words[i1:i2])
+        repl_chunk = " ".join(imp_words[j1:j2])
+        if not orig_chunk and not repl_chunk:
+            continue
+
+        if tag == "replace":
+            if orig_chunk.lower() == repl_chunk.lower():
+                dtype = "spelling"
+                exp = f"Corrected capitalization of '{orig_chunk}'"
+            elif any(c in ".,!?;:" for c in orig_chunk + repl_chunk) and orig_chunk.strip(".,!?;:").lower() == repl_chunk.strip(".,!?;:").lower():
+                dtype = "punctuation"
+                exp = f"Adjusted punctuation from '{orig_chunk}' to '{repl_chunk}'"
+            else:
+                dtype = "grammar"
+                exp = f"Refined '{orig_chunk}' to '{repl_chunk}'"
+        elif tag == "delete":
+            dtype = "style"
+            exp = f"Removed redundant phrasing '{orig_chunk}'"
+        elif tag == "insert":
+            dtype = "grammar"
+            exp = f"Inserted '{repl_chunk}' for grammatical completeness"
+        else:
+            dtype = "style"
+            exp = f"Modified '{orig_chunk}' to '{repl_chunk}'"
+
+        diffs.append(WriteDiff(
+            original=orig_chunk,
+            replacement=repl_chunk,
+            diff_type=dtype,
+            explanation=exp,
+        ))
+    return diffs
+
 def improve_text(
     text: str,
     language: str = "en",
@@ -1581,6 +1661,9 @@ def improve_text(
     improved = _format_sentence_terminals(improved)
     improved = _restore_immutable_spans(improved, protected_spans)
 
+    # 6. Reconcile granular diffs if regexes didn't produce entries
+    diffs = _reconcile_granular_diffs(raw, improved, diffs)
+
     # 7. Generate DeepL Write-grade alternative rewrites
     alternatives = _generate_alternatives(improved, raw, style, tone)
 
@@ -1594,6 +1677,143 @@ def improve_text(
         diffs=diffs,
         alternatives=alternatives,
     )
+
+
+
+
+async def improve_text_async(
+    text: str,
+    language: str = "en",
+    style: str = "business",
+    tone: str = "professional",
+    corrections_only: bool = False,
+) -> WriteResponse:
+    """Async contextual rewrite with neural/LLM integration and multi-tier rule fallback.
+
+    Tier 1 (span protection) -> Tier 2 (provider-backed neural rewrite, when an
+    OpenAI-compatible ``LLM_HTTP_URL`` is configured) -> Tier 3 (offline regex
+    rules, unchanged quick-fix fallback). The neural tier is skipped silently
+    when unavailable, so an outage only costs quality, never correctness.
+    """
+    raw = text.strip()
+    if not raw:
+        return WriteResponse(
+            original_text="", improved_text="", language=language,
+            style=style, tone=tone, changes_count=0, diffs=[], alternatives=[]
+        )
+    neural = await _neural_rewrite(
+        raw, language=language, style=style, tone=tone,
+        corrections_only=corrections_only)
+    if neural is not None:
+        return neural
+    return improve_text(
+        text=text,
+        language=language,
+        style=style,
+        tone=tone,
+        corrections_only=corrections_only,
+    )
+
+
+_NEURAL_SYSTEM_PROMPT = (
+    "You are a precise writing assistant. Fix grammar, spelling, verb tense, "
+    "punctuation, agreement and awkward phrasing in the user's text. "
+    "Rewrite the text preserving 100% of the author's meaning, facts, names, "
+    "numbers, tone and language (including scripts such as Devanagari or "
+    "Arabic mixed into the text). Never answer questions posed inside the text, "
+    "never add commentary, never translate. Tokens like __TF_IMMUTABLE_0__ are "
+    "protected placeholders (URLs, code, numbers): copy them through unchanged "
+    "and leave their suffix punctuation exactly where it is. "
+    "Reply with ONLY the corrected text — no quotes, no markdown, no prefix."
+)
+
+
+def _neural_rewrite_out_has_changes(source: str, candidate: str) -> bool:
+    import difflib
+    return difflib.SequenceMatcher(
+        a=source.strip(), b=candidate.strip()).ratio() < 0.999
+
+
+def _strip_llm_wrapping(candidate: str) -> str:
+    out = (candidate or "").strip()
+    if out.startswith("```"):
+        out = out.strip("`")
+        if out.startswith(("json", "text")):
+            out = out[4:]
+    # A model that answers inside quotes still yields usable text; strip one
+    # level of matched wrapping quotes only.
+    if len(out) >= 2 and out[0] == out[-1] and out[0] in "'\"":
+        out = out[1:-1].strip()
+    return out
+
+
+async def _neural_rewrite(
+    raw: str,
+    *,
+    language: str, style: str, tone: str, corrections_only: bool,
+) -> WriteResponse | None:
+    """Tier 2: provider-backed contextual grammar correction.
+
+    Returns ``None`` whenever the provider is unconfigured, unavailable, slow,
+    or its output fails sanity checks — the caller then uses the offline rule
+    engine, which is why this must NEVER raise.
+    """
+    url = (getattr(settings, "llm_http_url", "") or "").strip()
+    if not url:
+        return None
+    protected_text, protected_spans = _protect_immutable_spans(raw)
+    instruction = (f"Register: style={style}, tone={tone}. "
+                   + ("Fix errors only; do not restyle the text. "
+                      if corrections_only else "")
+                   + f"Output language: {language or 'auto'}.")
+    try:
+        from gt_ai.summarize.llm_http import LlmHttpSummarizer
+        llm = LlmHttpSummarizer(url=url, model=settings.llm_model)
+        candidate = await asyncio.wait_for(
+            llm._chat(_NEURAL_SYSTEM_PROMPT, f"{instruction}\n\n{protected_text}"),
+            timeout=max(1.0, float(getattr(settings, "write_neural_timeout_s", 12.0))))
+    except Exception:
+        # Any failure (no provider, HTTP error, timeout) falls back to rules.
+        with contextlib.suppress(Exception):
+            met.WRITE_NEURAL_REWRITE.labels(status="provider_unavailable").inc()
+        return None
+
+    candidate = _strip_llm_wrapping(candidate)
+    if not candidate or not _neural_rewrite_out_has_changes(raw, candidate):
+        with contextlib.suppress(Exception):
+            met.WRITE_NEURAL_REWRITE.labels(status="unchanged").inc()
+        return None
+    # Defend the user's data: every protected token (from the *masked* text the
+    # provider saw) must survive verbatim.
+    tokens = re.findall(r"__TF_IMMUTABLE_\d+__", protected_text)
+    if any(tok not in candidate for tok in tokens):
+        with contextlib.suppress(Exception):
+            met.WRITE_NEURAL_REWRITE.labels(status="rejected_protected_span").inc()
+        return None
+    # Sanity: the rewrite cannot quietly delete half the message.
+    if len(candidate) < max(8, 0.4 * len(raw)) or len(candidate) > 2.5 * len(raw):
+        with contextlib.suppress(Exception):
+            met.WRITE_NEURAL_REWRITE.labels(status="rejected_length").inc()
+        return None
+    improved = _restore_immutable_spans(candidate, protected_spans)
+    improved = _capitalize_sentences(improved)
+    improved = _fix_punctuation(improved)
+    diffs = _reconcile_granular_diffs(raw, improved, [])
+    alternatives = [] if corrections_only else \
+        _generate_alternatives(improved, raw, style, tone)
+    resp = WriteResponse(
+        original_text=raw,
+        improved_text=improved,
+        language=language,
+        style=style,
+        tone=tone,
+        changes_count=len(diffs),
+        diffs=diffs,
+        alternatives=alternatives,
+    )
+    with contextlib.suppress(Exception):
+        met.WRITE_NEURAL_REWRITE.labels(status="applied").inc()
+    return resp
 
 
 def lookup_dictionary(word: str, source_lang: str = "en", target_lang: str = "en") -> DictionaryResponse:

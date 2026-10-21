@@ -2,18 +2,14 @@ import React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Upload, FileText, Trash2, Download } from "lucide-react";
 import { api, ApiError } from "../lib/api";
+import { useDocumentsQuery, type DocRow } from "../hooks/useDocumentsQuery";
+import { documentErrorText, documentMetaLine } from "../lib/documentMeta";
 import { useLanguages } from "../hooks/useLanguages";
 import { Button, Select } from "../components/ui";
 import { toast } from "../stores/toasts";
 
 const MAX_MB = 50;
 const ACCEPT = ".pdf,.docx,.pptx,.xlsx,.txt,.html,.htm";
-
-interface DocRow {
-  id: string; filename: string; status: string; source_language: string; target_language: string;
-  detected_language: string; pages: number; segments_total: number; segments_done: number;
-  error?: string | null; created_at: string; size_bytes: number; mime_type: string;
-}
 
 export default function Documents() {
   const qc = useQueryClient();
@@ -26,7 +22,22 @@ export default function Documents() {
   const [statusFilter, setStatusFilter] = React.useState<"all" | "active" | "completed">("all");
   const inputRef = React.useRef<HTMLInputElement>(null);
 
-  const docsQ = useQuery({ queryKey: ["documents"], queryFn: () => api<DocRow[]>("/api/v1/documents"), refetchInterval: 3000 });
+  // Page-visibility state for the adaptive list poll above (lazy-init covers a
+  // mount that already starts hidden; the listener covers every later change).
+  const [pageHidden, setPageHidden] = React.useState<boolean>(
+    () => typeof document !== "undefined" && document.visibilityState === "hidden",
+  );
+  React.useEffect(() => {
+    const sync = () => setPageHidden(document.visibilityState === "hidden");
+    document.addEventListener("visibilitychange", sync);
+    return () => document.removeEventListener("visibilitychange", sync);
+  }, []);
+
+  // Adaptive polling (2026-10-20 audit round 2): the fixed 3 s list poll ran
+  // forever even when every row was settled. The hook polls only while a row is
+  // inside the processing pipeline, and never polls a hidden page — the
+  // visibility listener re-renders on tab show/hide so the interval flips.
+  const docsQ = useDocumentsQuery(pageHidden);
   const glossQ = useQuery({ queryKey: ["glossaries"], queryFn: () => api<any[]>("/api/v1/glossaries") });
   const styleQ = useQuery({ queryKey: ["styles"], queryFn: () => api<any[]>("/api/v1/style-profiles") });
 
@@ -62,6 +73,10 @@ export default function Documents() {
   const STAGE_ORDER = ["uploaded", "queued", "scanning", "parsing", "translating", "reconstructing", "quality_check", "ready"];
   function stageProgress(d: DocRow): number {
     if (d.status === "failed") return 100;
+    // The API reports the real progress (5 / 15 / 25 / 90 / 95 / 100). The
+    // old implementation derived a percentage from a hard-coded stage list
+    // instead, so a document that was 90% done ("reconstructing") showed 71%.
+    if (typeof d.progress === "number" && d.progress > 0) return Math.min(100, Math.round(d.progress));
     const idx = Math.max(0, STAGE_ORDER.indexOf(d.status));
     return Math.round((idx / (STAGE_ORDER.length - 1)) * 100);
   }
@@ -241,9 +256,9 @@ export default function Documents() {
                   : "No documents uploaded yet. Drop a file above to begin."}
               </div>
             ) : (
-              <div className="space-y-3">
+              <div className="space-y-3 stagger">
                 {filteredDocs.map((d) => (
-                  <div key={d.id} className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs space-y-2.5">
+                  <div key={d.id} className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs space-y-2.5 motion-interactive">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="flex items-center gap-3 min-w-0 flex-1">
                         <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-50 text-dl-blue shrink-0">
@@ -252,7 +267,7 @@ export default function Documents() {
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-sm font-semibold text-slate-900">{d.filename}</p>
                           <p className="text-[11px] text-slate-500">
-                            {(d.size_bytes / 1024).toFixed(0)} KB · {d.detected_language || d.source_language} → {d.target_language} · {d.pages} pages · {new Date(d.created_at).toLocaleString()}
+                            {documentMetaLine(d)}
                           </p>
                         </div>
                       </div>
@@ -269,6 +284,24 @@ export default function Documents() {
                         >
                           {d.status}
                         </span>
+
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          className="gap-1 h-8 text-slate-600 hover:text-slate-900"
+                          title="Download original file"
+                          onClick={async () => {
+                            const res = await api<Response>(`/api/v1/documents/${d.id}/original`, { raw: true });
+                            const blob = await res.blob();
+                            const a = document.createElement("a");
+                            a.href = URL.createObjectURL(blob);
+                            a.download = d.filename;
+                            a.click();
+                            URL.revokeObjectURL(a.href);
+                          }}
+                        >
+                          Original
+                        </Button>
 
                         {d.status === "ready" && (
                           <Button
@@ -312,11 +345,15 @@ export default function Documents() {
                           <div className="h-full rounded-full bg-dl-blue transition-all duration-300" style={{ width: `${stageProgress(d)}%` }} />
                         </div>
                         <p className="text-[11px] text-slate-400">
-                          {d.status}… {d.segments_total > 0 && `(${d.segments_done}/${d.segments_total} segments)`}
+                          {d.status}… {d.char_count > 0 && `${d.char_count} chars`}
                         </p>
                       </div>
                     )}
-                    {d.error && <p className="mt-2 rounded-lg bg-rose-50 px-2.5 py-1 text-xs text-rose-700">{d.error}</p>}
+                    {documentErrorText(d) && (
+                      <p className="mt-2 rounded-lg bg-rose-50 px-2.5 py-1 text-xs text-rose-700">
+                        {documentErrorText(d)}
+                      </p>
+                    )}
                   </div>
                 ))}
               </div>

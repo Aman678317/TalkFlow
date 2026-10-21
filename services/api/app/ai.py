@@ -11,8 +11,10 @@ Responsibilities:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import time
+from collections.abc import AsyncIterator
 from typing import Any
 
 from sqlalchemy import select
@@ -26,13 +28,39 @@ from gt_ai.base import BaseProvider
 from gt_ai.model_router.router import ModelRouter, ProviderSpec
 from gt_ai.registry import create
 from gt_ai.types import (
-    AudioChunk, DetectionResult, Intent, ProviderHealth, ProviderUnavailable,
+    AudioChunk, DetectionResult, Intent, NoPrivateProviderAvailable, ProviderUnavailable,
     RouteDecision, Task, TranslationRequest, TranslationResult, TranscriptChunk,
 )
 
 log = logging.getLogger("app.ai")
 
 TASKS = (Task.STT, Task.MT, Task.TTS, Task.LANG_DETECT, Task.SUMMARIZE, Task.EMBED)
+
+
+async def _open_tts_stream(raw):
+    """Turn a provider's ``synthesize_stream`` result into an open stream.
+
+    Providers with missing model extras raise lazily at stream-start (e.g.
+    kokoro without ``pip install gt-ai[tts]``), so failover must verify the
+    stream OPENS and emits its first chunk, not merely that the provider
+    object exists. The first chunk is prefetched here and inlined into the
+    returned iterator so consumers see an unopened, ordinary stream. Fakes
+    and sync adapters that hand back a ready-made value (or a coroutine
+    yielding one) keep the historical pass-through contract.
+    """
+    stream = await raw if inspect.isawaitable(raw) else raw
+    if not isinstance(stream, AsyncIterator):
+        return stream
+    first = await stream.__anext__()
+
+    def _prefetched(first=first, stream=stream):
+        async def _it():
+            yield first
+            async for chunk in stream:
+                yield chunk
+        return _it()
+
+    return _prefetched()
 
 
 class AIFacade:
@@ -58,6 +86,22 @@ class AIFacade:
         name = env_map.get(task, "auto") or "auto"
         if name != "auto":
             return name
+        # Prefer the managed Azure path when its server-side credentials are
+        # present. Without credentials, retain the existing local order.
+        azure_ready = {
+            Task.STT: bool(settings.azure_speech_key and settings.azure_speech_region),
+            Task.TTS: bool(settings.azure_speech_key and settings.azure_speech_region),
+            Task.MT: bool(
+                (settings.azure_translator_key or settings.azure_speech_key)
+                and (settings.azure_translator_region or settings.azure_speech_region)
+            ),
+        }
+        if azure_ready.get(task):
+            return {
+                Task.STT: "azure_speech",
+                Task.MT: "azure_translator",
+                Task.TTS: "azure_speech_tts",
+            }[task]
         # auto: prefer real providers that can healthcheck; dev fallback last
         order = {
             Task.MT: ["neural_online", "deepl", "airllm", "madlad400", "nllb_ct2", "argos", "mt_http", "dev_echo"],
@@ -93,11 +137,25 @@ class AIFacade:
             }
         elif task == Task.MT and name == "mt_http":
             kwargs = {"url": settings.mt_http_url, "style": settings.mt_http_style}
+        elif task == Task.MT and name in ("azure_translator", "azure_mt", "azure"):
+            kwargs = {
+                "key": settings.azure_translator_key or settings.azure_speech_key,
+                "region": settings.azure_translator_region or settings.azure_speech_region,
+                "endpoint": settings.azure_translator_endpoint,
+                "api_version": settings.azure_translator_api_version,
+            }
         elif task == Task.STT and name == "faster_whisper":
             kwargs = {"model_size": settings.stt_model, "device": settings.stt_device,
                       "compute_type": settings.stt_compute_type, "cache_dir": cache}
         elif task == Task.STT and name == "stt_http":
             kwargs = {"url": settings.stt_http_url}
+        elif task == Task.STT and name in ("azure_speech", "azure_stt", "azure_speech_stt"):
+            kwargs = {
+                "key": settings.azure_speech_key,
+                "region": settings.azure_speech_region,
+                "default_language": settings.azure_speech_language,
+                "auto_detect_languages": settings.azure_speech_auto_detect_languages,
+            }
         elif task == Task.TTS and name == "kokoro":
             kwargs = {"model_path": f"{cache}/kokoro-v1.0.onnx",
                       "voices_path": f"{cache}/kokoro-voices.json"}
@@ -105,6 +163,12 @@ class AIFacade:
             kwargs = {"model_dir": f"{cache}/piper"}
         elif task == Task.TTS and name == "tts_http":
             kwargs = {"url": settings.tts_http_url}
+        elif task == Task.TTS and name in ("azure_speech_tts", "azure_tts", "azure_speech"):
+            kwargs = {
+                "key": settings.azure_speech_key,
+                "region": settings.azure_speech_region,
+                "voice_map": settings.azure_speech_voice_map,
+            }
         elif task == Task.LANG_DETECT and name == "fasttext":
             kwargs = {"model_path": settings.fasttext_lid_model or f"{cache}/lid.176.ftz"}
         elif task == Task.SUMMARIZE and name == "llm_http":
@@ -193,10 +257,17 @@ class AIFacade:
         touched: list[tuple[Task, str, bool]] = []
         candidates = list(self.router.providers.get(task, []))
         max_attempts = max(10, len(candidates) + 2)
+        # "Private only" is a promise: the chain must not end in the online
+        # provider, which would send the caller's content to an external
+        # service (observed 2026-10-20).
+        intent = route_kw.get("intent")
+        private_only = getattr(intent, "value", intent) == Intent.PRIVATE_ONLY.value
         try:
             for _ in range(max_attempts):
                 try:
                     decision = self.router.route(task, **route_kw)
+                except NoPrivateProviderAvailable:
+                    raise
                 except Exception:
                     break
                 if decision.provider in tried:
@@ -210,8 +281,12 @@ class AIFacade:
 
             # Providers the router may not have listed, tried after everything it did.
             if task == Task.MT:
-                extras = [("neural_online", "neural translation provider"),
-                          ("dev_echo", "fallback to dev provider")]
+                if private_only:
+                    # No online fallback for a private_only request.
+                    extras: list[tuple[str, str]] = [("dev_echo", "fallback to dev provider")]
+                else:
+                    extras = [("neural_online", "neural translation provider"),
+                              ("dev_echo", "fallback to dev provider")]
             else:
                 fallback = {
                     Task.STT: "dev_text",
@@ -249,7 +324,18 @@ class AIFacade:
     async def _execute(self, task: Task, route_kw: dict, call):
         """call(provider) -> result; failover across providers."""
         last_err: Exception | None = None
-        for decision in self._ordered_candidates(task, route_kw):
+        intent = route_kw.get("intent")
+        private_only = getattr(intent, "value", intent) == Intent.PRIVATE_ONLY.value
+        try:
+            decisions = self._ordered_candidates(task, route_kw)
+        except NoPrivateProviderAvailable as e:
+            # Honest failure: the request was NOT sent to any external service.
+            raise ProviderError(
+                "No private provider is available for this request; the content was "
+                "not sent to any external service.",
+                details={"task": task.value, "error": str(e)},
+            ) from e
+        for decision in decisions:
             t0 = time.perf_counter()
             try:
                 provider = self.provider(task, decision.provider)
@@ -263,6 +349,8 @@ class AIFacade:
                 if self.router is not None:
                     self.router.record_outcome(task, decision.provider, latency, ok=False)
                 last_err = e
+                met.PROVIDER_RETRIES.labels(
+                    stage=task.value, provider=decision.provider).inc()
                 log.warning("provider %s/%s unavailable (%s); failing over",
                             task, decision.provider, e)
             except Exception as e:
@@ -270,10 +358,19 @@ class AIFacade:
                 if self.router is not None:
                     self.router.record_outcome(task, decision.provider, latency, ok=False)
                 last_err = e
+                met.PROVIDER_RETRIES.labels(
+                    stage=task.value, provider=decision.provider).inc()
+                met.STAGE_FAILURES.labels(
+                    stage=task.value, provider=decision.provider,
+                    reason=type(e).__name__).inc()
                 log.exception("provider %s/%s failed", task, decision.provider)
         raise ProviderError(
-            "AI capability temporarily unavailable. Original content is unaffected.",
-            details={"task": task.value, "error": str(last_err)})
+            ("No private provider is available for this request; the content was "
+             "not sent to any external service.")
+            if private_only
+            else "AI capability temporarily unavailable. Original content is unaffected.",
+            details={"task": task.value, "error": str(last_err),
+                     "private_only": private_only})
 
     # ------------------------------------------------------------------ #
     # Public API used by services / realtime pipeline
@@ -281,6 +378,8 @@ class AIFacade:
     async def detect_language(self, text: str) -> DetectionResult:
         result, decision = await self._execute(
             Task.LANG_DETECT, {}, lambda p: p.detect(text))
+        met.LANG_DETECT_CONFIDENCE.labels(
+            language=result.language or "unknown").observe(result.confidence or 0.0)
         return result
 
     async def translate(self, req: TranslationRequest,
@@ -294,6 +393,11 @@ class AIFacade:
         pair = (req.source_lang, req.target_lang)
         met.TRANSLATION_LATENCY.labels(src=pair[0], tgt=pair[1],
                                        provider=decision.provider).observe(result.latency_ms)
+        met.MT_STAGE_LATENCY.labels(
+            src=pair[0] or "auto", tgt=pair[1] or "unknown",
+            provider=decision.provider or "unknown",
+            model=result.model or "unknown",
+        ).observe(result.latency_ms)
         return result, decision
 
     async def translate_stream(self, req: TranslationRequest):
@@ -310,21 +414,28 @@ class AIFacade:
         t0 = time.perf_counter()
         result, decision = await self._execute(
             Task.STT, {}, lambda p: p.transcribe(audio, sample_rate, lang_hint))
-        met.STT_LATENCY.labels(provider=decision.provider).observe(
-            (time.perf_counter() - t0) * 1000)
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        met.STT_LATENCY.labels(provider=decision.provider).observe(elapsed_ms)
+        met.STT_STAGE_LATENCY.labels(
+            provider=decision.provider or "unknown", stage="final").observe(elapsed_ms)
         return result, decision
 
     async def synthesize(self, text: str, lang: str,
                          voice: str | None = None) -> tuple[AudioChunk, RouteDecision]:
+        t0 = time.perf_counter()
         result, decision = await self._execute(
             Task.TTS, {}, lambda p: p.synthesize(text, lang, voice))
+        met.TTS_STAGE_TTFB.labels(
+            provider=decision.provider or "unknown", voice=voice or "default",
+        ).observe((time.perf_counter() - t0) * 1000)
         return result, decision
 
     async def synthesize_stream(self, text: str, lang: str, voice: str | None = None):
         if self.router is None:
             raise ProviderError("AI router not initialized")
         candidates = self._ordered_candidates(Task.TTS, {})
-        for name in candidates:
+        for decision in candidates:
+            name = decision.provider
             try:
                 provider = self.provider(Task.TTS, name)
                 if hasattr(provider, "healthcheck"):
@@ -332,8 +443,17 @@ class AIFacade:
                     if not ok:
                         continue
                 if hasattr(provider, "synthesize_stream"):
-                    decision = self.router.route(Task.TTS, force_provider=name)
-                    return provider.synthesize_stream(text, lang, voice), decision  # type: ignore[attr-defined]
+                    # `_ordered_candidates` already imposed routing order and
+                    # fallthrough (real providers first, dev stand-ins last,
+                    # never outside non-production) — route() is consulted
+                    # only as the last-resort decision below.
+                    stream = await _open_tts_stream(
+                        provider.synthesize_stream(text, lang, voice))
+                    if not isinstance(stream, AsyncIterator):
+                        # Ready-made value, not a stream (sync adapters and
+                        # fakes): keep the historical pass-through contract.
+                        return stream, decision  # type: ignore[attr-defined,return-value]
+                    return stream, decision  # type: ignore[attr-defined]
             except Exception:
                 continue
         # In production there is no test-tone stand-in: a generated beep must
@@ -341,13 +461,17 @@ class AIFacade:
         if not settings.is_production:
             try:
                 provider = self.provider(Task.TTS, "dev_tone")
-                decision = self.router.route(Task.TTS, force_provider="dev_tone")
-                return provider.synthesize_stream(text, lang, voice), decision  # type: ignore[attr-defined]
+                decision = RouteDecision(provider="dev_tone", model="dev_tone",
+                                         task=Task.TTS, reason="test-tone fallback")
+                stream = await _open_tts_stream(
+                    provider.synthesize_stream(text, lang, voice))
+                return stream, decision  # type: ignore[attr-defined,return-value]
             except Exception:
                 pass
         decision = self.router.route(Task.TTS)
         provider = self.provider(Task.TTS, decision.provider)
-        return provider.synthesize_stream(text, lang, voice), decision  # type: ignore[attr-defined]
+        stream = await _open_tts_stream(provider.synthesize_stream(text, lang, voice))
+        return stream, decision  # type: ignore[attr-defined,return-value]
 
     async def summarize(self, text: str, instruction: str = "",
                         max_length: int = 400, lang: str = "en") -> str:
@@ -389,6 +513,115 @@ class AIFacade:
                 ok = False
             out[task.value] = {"provider": name, "healthy": ok}
         return out
+
+    async def diagnostics(self) -> dict[str, Any]:
+        """Readiness diagnostics for configured providers, weights, voices, language pairs,
+        and OCR availability, strictly without exposing secrets."""
+        import os
+        import shutil
+        from app.realtime.voices import parse_voice_map
+
+        task_diags: dict[str, Any] = {}
+        cache = settings.model_cache_path
+
+        for task in TASKS:
+            cfg_name = self._configured_name(task)
+            provider = self.provider(task, cfg_name)
+            is_healthy = False
+            try:
+                # 1.5s deadline to avoid blocking on large on-demand model weight downloads
+                is_healthy = await asyncio.wait_for(provider.healthcheck(), timeout=1.5)
+            except Exception:
+                is_healthy = False
+
+            weights_loaded = True
+            if task == Task.STT and cfg_name == "faster_whisper":
+                weights_loaded = os.path.exists(cache)
+            elif task == Task.TTS and cfg_name == "kokoro":
+                weights_loaded = os.path.exists(f"{cache}/kokoro-v1.0.onnx")
+            elif task == Task.TTS and cfg_name == "piper":
+                weights_loaded = os.path.exists(f"{cache}/piper")
+            elif task == Task.LANG_DETECT and cfg_name == "fasttext":
+                weights_loaded = os.path.exists(settings.fasttext_lid_model or f"{cache}/lid.176.ftz")
+
+            fallbacks: list[str] = []
+            if self.router and task in self.router.providers:
+                fallbacks = [spec.name for spec in self.router.providers[task]]
+            if not fallbacks:
+                fallbacks = [cfg_name]
+
+            model_info = getattr(settings, f"{task.value.lower()}_model", "")
+            if not model_info:
+                if task == Task.MT:
+                    model_info = settings.translation_model or "google/madlad-400-3b-mt"
+                elif task == Task.STT:
+                    model_info = settings.stt_model
+                elif task == Task.TTS:
+                    model_info = settings.tts_model
+
+            task_diags[task.value] = {
+                "configured_provider": cfg_name,
+                "active_provider": cfg_name,
+                "model": model_info,
+                "healthy": is_healthy,
+                "weights_present": weights_loaded,
+                "fallback_chain": fallbacks,
+            }
+
+        voice_map = parse_voice_map(settings.tts_voice_map)
+        default_voices = {
+            "hi": voice_map.get("hi", "hi-IN-SwaraNeural" if "azure" in settings.tts_provider else "hf_alpha"),
+            "mr": voice_map.get("mr", "mr-IN-AarohiNeural" if "azure" in settings.tts_provider else "mr_female"),
+            "en": voice_map.get("en", "en-US-JennyNeural" if "azure" in settings.tts_provider else "af_heart"),
+            "es": voice_map.get("es", "es-ES-ElviraNeural" if "azure" in settings.tts_provider else "ef_dora"),
+            "fr": voice_map.get("fr", "fr-FR-DeniseNeural" if "azure" in settings.tts_provider else "ff_siwis"),
+        }
+
+        ocr_status = {"available": False, "engine": "none", "details": ""}
+        try:
+            import fitz
+            doc = fitz.open()
+            page = doc.new_page()
+            try:
+                _ = page.get_textpage_ocr(language="eng")
+                ocr_status["available"] = True
+                ocr_status["engine"] = "pymupdf_tesseract"
+                ocr_status["details"] = "PyMuPDF integrated Tesseract engine active"
+            except Exception as ocr_err:
+                tess_bin = shutil.which("tesseract")
+                if tess_bin:
+                    ocr_status["available"] = True
+                    ocr_status["engine"] = f"tesseract_cli:{tess_bin}"
+                    ocr_status["details"] = "Tesseract binary found on PATH"
+                else:
+                    ocr_status["details"] = f"Tesseract not available: {ocr_err}"
+            doc.close()
+        except Exception as e:
+            ocr_status["details"] = f"PyMuPDF not available: {e}"
+
+        core_pairs = [
+            ("en", "hi"), ("hi", "en"),
+            ("en", "mr"), ("mr", "en"),
+            ("en", "es"), ("es", "en"),
+            ("en", "fr"), ("fr", "en"),
+            ("en", "de"), ("de", "en"),
+            ("en", "ja"), ("ja", "en"),
+            ("en", "zh"), ("zh", "en"),
+        ]
+
+        return {
+            "status": "ready" if all(t["healthy"] for t in task_diags.values()) else "degraded",
+            "tasks": task_diags,
+            "voices": {
+                "voice_map": voice_map,
+                "supported_targets": default_voices,
+            },
+            "ocr": ocr_status,
+            "language_pairs": {
+                "supported_count": len(core_pairs),
+                "core_sample": [f"{s}->{t}" for s, t in core_pairs],
+            },
+        }
 
     def is_dev_mode(self, task: Task) -> bool:
         # `transcript.inject` etc. are dev affordances. The configured name is

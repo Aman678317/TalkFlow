@@ -20,7 +20,8 @@ from app.deps import Principal, require_org_user
 from app.errors import ConflictError, NotFoundError, ValidationError
 from app.schemas import (
     GlossaryCreate, GlossaryOut, GlossaryTermIn, GlossaryTermOut, StyleProfileCreate,
-    StyleProfileOut, TMCreate, TMEntryIn, TMEntryOut, TMOut,
+    StyleProfileOut, TMCreate, TMEntryCreate, TMEntryDetail, TMEntryIn,
+    TMEntryOut, TMEntryUpdate, TMOut,
 )
 from app.services import audit_service
 
@@ -260,6 +261,142 @@ async def _get_tm(db, tm_id, principal) -> M.TranslationMemory:
     if tm is None or tm.org_id != principal.org_id:
         raise NotFoundError("Translation memory not found.")
     return tm
+
+
+# --------------------------------------------------------------------------- #
+# Entries (the pairs a reviewer curates).
+#
+# These are declared BEFORE the `/{tm_id}` routes on purpose: FastAPI matches
+# in declaration order, and "/translation-memories/entries" would otherwise be
+# swallowed by "/translation-memories/{tm_id}/entries" with a UUID parse
+# error. The editor page used to read the *memory list* where it expected
+# entries, which rendered empty languages, "confidence NaN%" and a Delete
+# button that removed a whole memory (2026-10-21).
+# --------------------------------------------------------------------------- #
+def _entry_detail(e: M.TranslationMemoryEntry, tm: M.TranslationMemory) -> dict:
+    return {
+        "id": e.id,
+        "source_text": e.source_text,
+        "target_text": e.target_text,
+        "approved": e.approved,
+        "confidence": e.confidence,
+        "usage_count": e.usage_count,
+        "tm_id": tm.id,
+        "tm_name": tm.name,
+        "source_language": tm.source_lang,
+        "target_language": tm.target_lang,
+        "domain": e.domain or tm.domain,
+        "version": e.version,
+        "created_at": e.created_at,
+    }
+
+
+@router.get("/translation-memories/entries", response_model=list[TMEntryDetail])
+async def list_tm_entries_all(principal: Principal = Depends(require_org_user),
+                              db: AsyncSession = Depends(get_db),
+                              q: str | None = Query(default=None, max_length=200),
+                              limit: int = Query(default=200, le=1000)):
+    """Every stored pair of the organization, newest first, optionally filtered
+    by a search term over the source text."""
+    principal.require("manage_tm")
+    stmt = (
+        select(M.TranslationMemoryEntry, M.TranslationMemory)
+        .join(M.TranslationMemory, M.TranslationMemory.id == M.TranslationMemoryEntry.tm_id)
+        .where(M.TranslationMemory.org_id == principal.org_id)
+        .order_by(M.TranslationMemoryEntry.created_at.desc())
+        .limit(limit)
+    )
+    if q:
+        stmt = stmt.where(M.TranslationMemoryEntry.source_text.ilike(f"%{q}%"))
+    res = await db.execute(stmt)
+    return [_entry_detail(e, tm) for e, tm in res.all()]
+
+
+@router.post("/translation-memories/entries", response_model=TMEntryDetail,
+             status_code=201)
+async def create_tm_entry_any(body: TMEntryCreate,
+                               principal: Principal = Depends(require_org_user),
+                               db: AsyncSession = Depends(get_db)):
+    """Add a pair to a named memory (the first one when none is given)."""
+    principal.require("manage_tm")
+    if body.tm_id is not None:
+        tm = await _get_tm(db, body.tm_id, principal)
+    else:
+        res = await db.execute(select(M.TranslationMemory).where(
+            M.TranslationMemory.org_id == principal.org_id)
+            .order_by(M.TranslationMemory.created_at.asc()).limit(1))
+        tm = res.scalars().first()
+        if tm is None:
+            raise ValidationError("Create a translation memory first.")
+    from app.services.translation_service import tm_store
+    entry = await tm_store(db, tm.id, body.source_text, body.target_text,
+                            tm.source_lang, tm.target_lang,
+                            body.domain or tm.domain, body.approved,
+                            principal.user_id)
+    await db.refresh(entry)
+    return _entry_detail(entry, tm)
+
+
+@router.put("/translation-memories/entries/{entry_id}", response_model=TMEntryDetail)
+async def update_tm_entry(entry_id: uuid.UUID, body: TMEntryUpdate,
+                          principal: Principal = Depends(require_org_user),
+                          db: AsyncSession = Depends(get_db)):
+    """Edit a stored pair. Every edit bumps the entry version."""
+    principal.require("manage_tm")
+    entry, tm = await _get_tm_entry(db, entry_id, principal)
+    if body.target_text is not None:
+        entry.target_text = body.target_text
+    if body.approved is not None:
+        entry.approved = body.approved
+    entry.version = (entry.version or 1) + 1
+    await db.commit()
+    await db.refresh(entry)
+    return _entry_detail(entry, tm)
+
+
+@router.delete("/translation-memories/entries/{entry_id}", status_code=204)
+async def delete_tm_entry(entry_id: uuid.UUID,
+                          principal: Principal = Depends(require_org_user),
+                          db: AsyncSession = Depends(get_db)):
+    """Delete one stored pair (not the memory that holds it)."""
+    principal.require("manage_tm")
+    entry, _tm = await _get_tm_entry(db, entry_id, principal)
+    await db.delete(entry)
+    await db.commit()
+    return None
+
+
+@router.get("/translation-memories/entries/export", response_class=PlainTextResponse)
+async def export_tm_entries(principal: Principal = Depends(require_org_user),
+                            db: AsyncSession = Depends(get_db)):
+    """CSV export of the organization's pairs (parity with glossary export)."""
+    principal.require("manage_tm")
+    res = await db.execute(
+        select(M.TranslationMemoryEntry, M.TranslationMemory)
+        .join(M.TranslationMemory, M.TranslationMemory.id == M.TranslationMemoryEntry.tm_id)
+        .where(M.TranslationMemory.org_id == principal.org_id)
+        .order_by(M.TranslationMemoryEntry.created_at.desc()))
+    out = io.StringIO()
+    writer = csv.writer(out)
+    writer.writerow(["source_text", "target_text", "source_language",
+                     "target_language", "domain", "approved", "memory"])
+    for e, tm in res.all():
+        writer.writerow([e.source_text, e.target_text, tm.source_lang,
+                         tm.target_lang, e.domain or tm.domain,
+                         "1" if e.approved else "0", tm.name])
+    return out.getvalue()
+
+
+async def _get_tm_entry(db, entry_id, principal):
+    res = await db.execute(
+        select(M.TranslationMemoryEntry, M.TranslationMemory)
+        .join(M.TranslationMemory, M.TranslationMemory.id == M.TranslationMemoryEntry.tm_id)
+        .where(M.TranslationMemoryEntry.id == entry_id,
+               M.TranslationMemory.org_id == principal.org_id))
+    row = res.first()
+    if row is None:
+        raise NotFoundError("Translation memory entry not found.")
+    return row[0], row[1]
 
 
 @router.post("/translation-memories/{tm_id}/entries", response_model=TMEntryOut,

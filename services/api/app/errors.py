@@ -76,6 +76,18 @@ class RateLimitError(AppError):
     recoverable = True
 
 
+class GateBlockedError(AppError):
+    """An outbound call was blocked by policy (campaign, consent, disclosure).
+
+    A policy decision is not a server fault: it is reported with its own
+    error code so clients and monitoring can tell "blocked" from "broken"
+    (2026-10-20 localhost audit — these surfaced as `internal_error`).
+    """
+    code = "gate_blocked"
+    status = 409
+    recoverable = True
+
+
 class QuotaExceededError(AppError):
     """Plan quota exceeded."""
     code = "quota_exceeded"

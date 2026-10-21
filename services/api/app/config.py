@@ -91,6 +91,13 @@ class Settings(BaseSettings):
     livekit_api_key: str = ""
     livekit_api_secret: str = ""
 
+    # --- P2P WebRTC mesh ICE configuration (WS transport meetings) ---
+    # JSON list passed straight to RTCPeerConnection.iceServers for room members
+    # only. Deployments behind symmetric NAT/mobile carriers must host a TURN
+    # server; public STUN-only defaults stay when this is empty.
+    # e.g. '[{"urls":"turn:turn.example.com:3478?transport=udp","username":"tk","credential":"pw"}]'
+    webrtc_ice_servers_json: str = ""
+
     # --- telephony & international calling ---
     telephony_provider: str = "auto"  # auto | twilio | telnyx | livekit_sip | simulated
     twilio_account_sid: str = ""
@@ -106,6 +113,47 @@ class Settings(BaseSettings):
     telephony_webhook_base_url: str = ""
     telephony_sample_rate: int = 8000
 
+    # --- Asterisk local SIP adapter (P1 design; opt-in, operator-controlled) ---
+    # The adapter places calls ONLY into allowlisted local SIP extensions; all
+    # credentials stay backend-only. A real call is never silently substituted:
+    # selecting the provider while disabled/config-less fails loudly instead of
+    # falling back to simulated. See docs/ASTERISK_LOCAL_SIP_LAB.md.
+    asterisk_telephony_enabled: bool = False
+    asterisk_ari_base_url: str = ""  # e.g. http://127.0.0.1:8088 (lab default)
+    asterisk_ari_username: str = ""  # dedicated least-privilege ARI user
+    asterisk_ari_password: str = ""
+    asterisk_ari_app_name: str = "talkflow"  # Stasis application name
+    asterisk_allowed_extensions: str = ""  # comma-separated, e.g. "1001,1002"
+    asterisk_request_timeout_seconds: float = 10.0
+    asterisk_event_retry_seconds: float = 2.0  # grace for originate-commit races
+    asterisk_ws_reconnect_seconds: float = 5.0  # WS reconnect backoff cap
+
+    # --- P4 auto-dial worker (explicit operator opt-in, default off) ---
+    call_worker_enabled: bool = False
+    call_worker_interval_seconds: float = 2.0  # due-scan tick interval
+    call_worker_batch_size: int = 16  # max jobs enqueued per tick
+
+    # --- agent media runtime (P3 marathon follow-up; explicit opt-in, default off) ---
+    # Bridges the validated externalMedia runtime to the AI-agent turn loop for
+    # connected outbound calls. Requires `asterisk_telephony_enabled`. Without a
+    # wired STT the agent fail-closes (graph's own low-confidence escalation);
+    # without a wired TTS the lines are decided and audited but no frames are
+    # sent. No PSTN or human-audio claim: lab-local lane only.
+    asterisk_media_enabled: bool = False
+    asterisk_media_bind_host: str = "0.0.0.0"
+    asterisk_media_bind_port: int = 8787  # the port Asterisk's dials per call
+    asterisk_media_external_host: str = "talkflow-media-cfg"  # websocket-client object
+    asterisk_agent_permitted_documents: str = ""  # comma-separated doc ids
+    asterisk_agent_segment_wait_seconds: float = 2.0  # recognizer-path wait
+
+    # Inbound Stasis legs (P3 lab decision): accept a call only when the
+    # dialplan shape is `Stasis(talkflow,inbound)`, the caller AND dialed
+    # extension are both operator-allowlisted local extensions, and the
+    # owning organization is explicitly configured (empty = fail closed —
+    # multi-tenant ownership is never guessed from an ARI event).
+    asterisk_inbound_enabled: bool = False
+    asterisk_inbound_org_id: str = ""
+
     # --- AI providers ---
     translation_provider: str = "auto"
     translation_model: str = ""
@@ -118,6 +166,18 @@ class Settings(BaseSettings):
     deepl_api_url: str = "https://api-free.deepl.com/v2/translate"
     mt_http_url: str = ""
     mt_http_style: str = "opennmt"
+    # Azure is optional and server-side only. Translator credentials may be
+    # separate; adapters fall back to the Speech key/region for multi-service
+    # Azure resources.
+    azure_speech_key: str = ""
+    azure_speech_region: str = ""
+    azure_speech_language: str = "en-US"
+    azure_speech_auto_detect_languages: str = ""
+    azure_speech_voice_map: str = ""
+    azure_translator_key: str = ""
+    azure_translator_region: str = ""
+    azure_translator_endpoint: str = "https://api.cognitive.microsofttranslator.com"
+    azure_translator_api_version: str = "3.0"
     stt_provider: str = "auto"
     stt_model: str = "small"
     stt_device: str = "auto"
@@ -140,6 +200,8 @@ class Settings(BaseSettings):
     embedding_model: str = ""
     model_cache_path: str = "/tmp/model_cache" if _is_serverless() else "./model_cache"
     vad_provider: str = "webrtc_energy"
+    document_translation_concurrency: int = 4
+    ocr_provider: str = "auto"
 
     # --- turn segmentation (Phase 3) --------------------------------------- #
     # One source of truth for when a turn ends. Before this the numbers lived in
@@ -159,7 +221,17 @@ class Settings(BaseSettings):
 
     gpu_available: bool = False
 
+    # --- writing service (P2): provider-backed contextual grammar tier --------
+    write_neural_timeout_s: float = 12.0
+
     # realtime tuning (PDD §11.4)
+    # Per-stage provider deadlines (remediation plan §2.3). A stage that blows its
+    # deadline fails over / degrades instead of stalling the room's event loop.
+    rt_stt_deadline_ms: float = 3000.0
+    rt_mt_deadline_ms: float = 2500.0
+    rt_tts_ttfb_deadline_ms: float = 2000.0
+    # Bounded local-inference concurrency across STT/MT/TTS in one process.
+    rt_inference_concurrency: int = 4
     rt_target_latency_ms: float = 2500.0
     rt_stale_after_ms: float = 6000.0
     rt_min_chunk_ms: int = 200
@@ -213,6 +285,9 @@ class Settings(BaseSettings):
         return ["http://localhost:5173", "http://localhost:4173", "http://127.0.0.1:5173"]
 
     secure_cookies: bool = False
+    cookie_samesite: str = "lax"
+    cookie_domain: str | None = None
+    refresh_grace_seconds: int = 15
     csrf_enabled: bool = True
 
     # Phase 2 (docs/PRODUCTION_ROADMAP.md): real social authentication. Verification
@@ -238,6 +313,9 @@ class Settings(BaseSettings):
     retention_transcript_days: int = 365
     retention_document_days: int = 90
     retention_usage_days: int = 730
+    # resolved escalate-ticket audit rows (§E2 durable transport). The
+    # resolution itself outlives the row on the call's own event ledger.
+    retention_escalation_days: int = 30
 
     # --- workers ---
     worker_inproc: bool = True  # run job worker loop inside API process (dev)
@@ -287,6 +365,97 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "Production environment forbids wildcard '*' in 'cors_origins' when credentials are enabled."
                 )
+            if self.cookie_samesite.lower() not in ("lax", "strict", "none"):
+                raise ValueError("cookie_samesite must be 'lax', 'strict', or 'none'.")
+            self.secure_cookies = True
+            # --- §E1 production telephony gates (fail-closed at boot) --------- #
+            # 0. An explicit provider choice is mandatory the moment carrier
+            #    credentials exist: "auto" silently resolves at runtime and can
+            #    pick a carrier WITHOUT passing that carrier's production gates
+            #    below — that is exactly how a half-configured lane boots.
+            carrier_creds_present = any((
+                self.twilio_account_sid,
+                self.twilio_auth_token,
+                self.telnyx_api_key,
+            ))
+            if self.telephony_provider == "auto" and carrier_creds_present:
+                raise ValueError(
+                    "Production requires an explicit 'telephony_provider' "
+                    "when carrier credentials are configured — 'auto' "
+                    "resolves silently and can bypass this environment's "
+                    "lane gates."
+                )
+            # 1. Signed carrier webhooks can never be disabled in production;
+            #    anti-replay + HMAC are silent safety nets otherwise.
+            if not self.telephony_verify_webhook_signatures:
+                raise ValueError(
+                    "Production environment must not disable "
+                    "'telephony_verify_webhook_signatures' (signed webhooks, "
+                    "anti-replay). Verification is compile-safety, not optional."
+                )
+            # 2. A selected CARRIER lane must bring its full secret set AND a
+            #    TLS-terminating webhook base URL — carrier callbacks carry
+            #    signed requests; a signed webhook over http:// is worthless.
+            expected_https = "https://"
+            if self.telephony_provider == "twilio":
+                missing = [name for name, value in (
+                    ("TWILIO_ACCOUNT_SID", self.twilio_account_sid),
+                    ("TWILIO_AUTH_TOKEN", self.twilio_auth_token),
+                    ("TWILIO_PHONE_NUMBER", self.twilio_phone_number),
+                ) if not value]
+                if missing:
+                    raise ValueError(
+                        "Production twilio provider requires " + ", ".join(missing))
+            elif self.telephony_provider == "telnyx":
+                if not self.telnyx_api_key:
+                    raise ValueError(
+                        "Production telnyx provider requires 'TELNYX_API_KEY'.")
+            elif self.telephony_provider == "livekit_sip":
+                if not (self.livekit_enabled and self.livekit_url
+                        and self.livekit_api_key and self.livekit_api_secret):
+                    raise ValueError(
+                        "Production livekit_sip provider requires 'LIVEKIT_ENABLED' "
+                        "plus LIVEKIT_URL / API key / API secret.")
+            elif self.telephony_provider == "asterisk":
+                if not (self.asterisk_telephony_enabled and self.asterisk_ari_base_url
+                        and self.asterisk_ari_username and self.asterisk_ari_password
+                        and self.asterisk_allowed_extensions):
+                    raise ValueError(
+                        "Production asterisk (local SIP) lane requires "
+                        "'ASTERISK_TELEPHONY_ENABLED' plus ARI base URL, "
+                        "least-privilege credentials and an explicit extension "
+                        "allowlist (public dialing is rejected by design).")
+            if self.telephony_provider in ("twilio", "telnyx", "livekit_sip"):
+                if not self.telephony_webhook_base_url.startswith(expected_https):
+                    raise ValueError(
+                        "Production carrier telephony requires an HTTPS "
+                        "'telephony_webhook_base_url' (signed carrier callbacks "
+                        "arrive there; http:// or empty is not acceptable).")
+            # 3. LiveKit SFU configured in production must be fully specified —
+            #    half-configured media = silent failure of real traffic.
+            if self.livekit_enabled:
+                if not self.livekit_url or not self.livekit_api_key \
+                        or not self.livekit_api_secret:
+                    raise ValueError(
+                        "Production LIVEKIT_ENABLED requires LIVEKIT_URL, "
+                        "LIVEKIT_API_KEY and LIVEKIT_API_SECRET.")
+                if not self.livekit_public_url.startswith("wss://"):
+                    raise ValueError(
+                        "Production requires a browser-reachable wss:// "
+                        "'livekit_public_url' (TLS media path).")
+                if self.webrtc_ice_servers_json.strip():
+                    import json as _json
+                    try:
+                        ice = _json.loads(self.webrtc_ice_servers_json)
+                    except _json.JSONDecodeError:
+                        raise ValueError(
+                            "'webrtc_ice_servers_json' must be a JSON list of "
+                            "{urls, username, credential} TURN objects.") from None
+                    if not (isinstance(ice, list) and len(ice) > 0 and all(
+                            isinstance(s, dict) and s.get("urls") for s in ice)):
+                        raise ValueError(
+                            "'webrtc_ice_servers_json' must be a JSON list of "
+                            "{urls, username, credential} TURN objects.")
         return self
 
     @model_validator(mode="after")

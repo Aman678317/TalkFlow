@@ -9,6 +9,7 @@ PERMISSIONS = [
     "manage_integrations", "manage_security", "view_usage", "manage_documents",
     "manage_styles", "manage_tm", "manage_webhooks", "admin_platform",
     "use_translate", "use_write", "use_voice", "manage_projects", "view_audit",
+    "manage_contacts", "view_contacts", "manage_campaigns",
 ]
 
 ROLE_PERMISSIONS: dict[str, set[str]] = {
@@ -19,13 +20,16 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
         "view_transcript", "export_document", "manage_integrations", "view_usage",
         "manage_documents", "manage_styles", "manage_tm", "manage_webhooks",
         "use_translate", "use_write", "use_voice", "manage_projects", "view_audit",
+        "manage_contacts", "view_contacts",
     },
     "member": {
-        "create_meeting", "view_transcript", "export_document", "view_usage",
+        "create_meeting","view_transcript", "export_document", "view_usage",
         "manage_documents", "manage_glossaries", "manage_styles", "manage_tm",
         "use_translate", "use_write", "use_voice",
+        "view_contacts",
     },
-    "viewer": {"view_transcript", "use_translate", "use_write", "view_usage"},
+    "viewer": {"view_transcript", "use_translate", "use_write", "view_usage",
+               "view_contacts"},
 }
 
 

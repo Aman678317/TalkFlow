@@ -301,6 +301,62 @@ async def leave_meeting(
                 )
 
 
+DEFAULT_ICE_SERVERS = [
+    {"urls": [
+        "stun:stun.l.google.com:19302",
+        "stun:stun1.l.google.com:19302",
+    ]},
+]
+
+
+@router.get("/meetings/{meeting_id}/ice-servers")
+async def meeting_ice_servers(
+    meeting_id: uuid.UUID,
+    request: Request,
+    principal: Principal | None = Depends(get_principal_optional),
+    db: AsyncSession = Depends(get_db),
+):
+    """RTC ICE servers for the P2P mesh (WS-transport meetings).
+
+    `RTCPeerConnection.iceServers` is a browser-only knob: people joined to the
+    room need reachable STUN/TURN, everyone else must not. STUN-only defaults
+    apply when the deployment has not configured a TURN edge (which symmetric
+    NAT and most mobile-carrier networks require for any media to flow).
+    """
+    meeting = await db.get(M.Meeting, meeting_id)
+    if meeting is None:
+        raise NotFoundError("Meeting not found.")
+
+    participants = await meeting_service.list_participants(db, meeting.id)
+    is_org_member = bool(principal and principal.org_id and principal.org_id == meeting.org_id)
+    is_participant = bool(
+        principal and principal.user_id
+        and any(p.user_id == principal.user_id for p, _ in participants)
+    )
+    p_header = request.headers.get("x-participant-id") or request.query_params.get("participant_id")
+    is_guest = False
+    if p_header:
+        with contextlib.suppress(ValueError):
+            p_uuid = uuid.UUID(p_header)
+            is_guest = any(p.id == p_uuid for p, _ in participants)
+
+    if not (is_org_member or is_participant or is_guest):
+        raise NotFoundError("Meeting not found.")
+
+    import json as _json
+
+    servers: list[dict] | None = None
+    raw = (settings.webrtc_ice_servers_json or "").strip()
+    if raw:
+        try:
+            parsed = _json.loads(raw)
+            if isinstance(parsed, list) and parsed:
+                servers = [s for s in parsed if isinstance(s, dict) and s.get("urls")]
+        except Exception:
+            log.warning("webrtc_ice_servers_json is set but not valid JSON; using STUN defaults")
+    return {"ice_servers": servers or DEFAULT_ICE_SERVERS}
+
+
 @router.get("/meetings/{meeting_id}/participants", response_model=list[dict])
 async def get_participants(request: Request,
                            meeting_id: uuid.UUID,
@@ -366,30 +422,58 @@ async def meeting_token(meeting_id: uuid.UUID,
 @router.post("/meetings/{meeting_id}/media-token", response_model=dict)
 async def meeting_media_token(meeting_id: uuid.UUID,
                               participant_id: uuid.UUID = Query(...),
-                              principal: Principal = Depends(require_org_user),
+                              body: dict = Body(default_factory=dict),
+                              principal: Principal | None = Depends(get_principal_optional),
                               db: AsyncSession = Depends(get_db)):
     """LiveKit SFU credentials for an already-joined participant.
 
     `/tokens` hands out a websocket ticket; the browser media layer instead
     needs the {url, token} pair that livekit-client connects with.
+
+    Authorized callers: an org member minting for their own seat (or a
+    manage_members holder), or a guest presenting the seat's `session_key` —
+    the same guest credential /join-ticket accepts. Guests joined from a
+    shared link have no organization, so without the seat path their only
+    media credential ever minted is the one-shot token inside the /join
+    response, and any mid-call reconnect strands them.
     """
     if not livekit_bridge.enabled():
         raise ValidationError(
             "Video calling is not configured for this server.",
             details={"code": "media_transport_unavailable"})
-    meeting = await _meeting_or_404(db, meeting_id, principal)
+    meeting = await db.get(M.Meeting, meeting_id)
+    if meeting is None:
+        raise NotFoundError("Meeting not found.")
     if meeting.mode != "livekit":
         raise ValidationError(
             "This meeting runs on the websocket transport.",
             details={"code": "media_transport_unavailable", "mode": meeting.mode})
-    participants = await meeting_service.list_participants(db, meeting.id)
-    mine = next((p for p, _ in participants if p.id == participant_id), None)
-    if mine is None:
-        raise NotFoundError("Join the meeting first.")
-    # Mint only for the caller's own identity unless they manage members;
-    # otherwise any org user could join the room as someone else.
-    if not (principal.user_id and mine.user_id == principal.user_id):
-        principal.require("manage_members")
+
+    session_key = (body or {}).get("session_key")
+    mine: M.Participant | None = None
+    if not principal or not principal.org_id:
+        # Guest seat path: the session key is the credential, and it mints
+        # ONLY for the seat it binds — never for an arbitrary participant_id.
+        if not session_key:
+            raise AuthenticationError("Authentication or session key required.")
+        res = await db.execute(
+            select(M.Participant)
+            .join(M.AudioSession, M.AudioSession.participant_id == M.Participant.id)
+            .where(M.AudioSession.session_key == session_key,
+                   M.Participant.meeting_id == meeting.id))
+        mine = res.scalars().first()
+        if mine is None or mine.id != participant_id:
+            raise AuthenticationError("Invalid or expired session key.")
+    else:
+        await _meeting_or_404(db, meeting_id, principal)
+        participants = await meeting_service.list_participants(db, meeting.id)
+        mine = next((p for p, _ in participants if p.id == participant_id), None)
+        if mine is None:
+            raise NotFoundError("Join the meeting first.")
+        # Mint only for the caller's own identity unless they manage members;
+        # otherwise any org user could join the room as someone else.
+        if not (principal.user_id and mine.user_id == principal.user_id):
+            principal.require("manage_members")
     credentials = livekit_bridge.join_token(
         meeting.room_name, mine.livekit_identity or str(mine.id),
         mine.display_name,

@@ -1,0 +1,34 @@
+# CI (E2E) override — MinIO-free stack.
+#
+# The minio/minio image is no longer anonymously pullable from Docker Hub
+# (the registry answers "pull access denied ... repository does not exist"
+# for it, even though postgres/redis/livekit pull normally — verified
+# 2026-10-18). The E2E smoke exercises the meeting/translation flow, not
+# uploads, so CI runs with S3 disabled and the API's local-disk storage
+# (LOCAL_STORAGE_PATH); that is functionally equivalent for these tests.
+#
+# Usage (works locally too):
+#   docker compose -f docker-compose.yml -f docker-compose.e2e.yml up -d \
+#     --build postgres redis livekit api web
+services:
+  api:
+    environment:
+      S3_ENABLED: "false"
+      # The browser smoke verifies the realtime EVENT pipeline (STT→MT→TTS
+      # fan-out, truth chips, captions, latency reporting), not model quality —
+      # the provider unit suites own that. Pinning the dev providers keeps CI
+      # deterministic and model-free: the API image ships without TTS extras,
+      # so auto-selection would otherwise route kokoro, abort the listener
+      # fan-out ("kokoro requires pip install gt-ai[tts]"), and leave every
+      # listener's Voice/LINK chips honest-but-failed.
+      STT_PROVIDER: "dev_text"
+      TRANSLATION_PROVIDER: "dev_echo"
+      TTS_PROVIDER: "dev_tone"
+    # !override REPLACES the base depends_on map: a plain map-merge would keep
+    # the minio dependency and make CI try to pull MinIO again.
+    depends_on: !override
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  web:
+    depends_on: [api]
