@@ -33,6 +33,7 @@ import { api, friendlyMessage } from '@/lib/api';
 import { Badge, Button, Card, Spinner } from '@/components/ui';
 import { toast } from '@/stores/toasts';
 import { cn } from '@/lib/utils';
+import { matchChangedWord } from '@/lib/writeDiff';
 import { wordDiffPercent } from '@/lib/writeDiff';
 import { useShortcuts } from '@/lib/shortcuts';
 
@@ -1737,9 +1738,10 @@ export default function WritePage() {
       if (/^\s+$/.test(token)) return <span key={idx}>{token}</span>;
       const currentIdx = wordCounter++;
       const cleanWord = token.replace(/[^a-zA-Z0-9'-]/g, '').toLowerCase();
-      const matchingDiff = result?.diffs.find((d) =>
-        d.replacement.toLowerCase().includes(cleanWord) || cleanWord.includes(d.replacement.toLowerCase())
-      );
+      // Word-for-word match (see lib/writeDiff.ts): the old substring test
+      // marked every word CONTAINING the changed word — and a diff of "a"
+      // marked nearly every word in the text (issue #109 class 4).
+      const matchingDiff = matchChangedWord(cleanWord, result?.diffs);
       const isChanged = Boolean(matchingDiff);
       return (
         <span

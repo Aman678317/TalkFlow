@@ -74,6 +74,11 @@ async def translate(body: TranslateRequest,
     if principal and principal.org_id:
         await usage_service.check_quota(
             db, principal.org_id, "characters", sum(len(t) for t in texts))
+        # the translation volume is metered as "translation_requests" — the
+        # limit was never checked against it, so the request quota could not
+        # trip (issue #109 class 4)
+        await usage_service.check_quota(
+            db, principal.org_id, "translation_requests", len(texts))
     ctx = _ctx(principal, body)
     outputs = []
     for text in texts:
@@ -127,6 +132,8 @@ async def translate_page(body: PageTranslateRequest,
         from app.services import usage_service
         await usage_service.check_quota(
             db, principal.org_id, "characters", len(page.text))
+        await usage_service.check_quota(
+            db, principal.org_id, "translation_requests", 1)
 
     ctx = _ctx(principal, body, product="page")
     out = await translate_text(db, page.text, body.source_language,
@@ -156,6 +163,10 @@ async def detect_language(body: DetectRequest,
                           db: AsyncSession = Depends(get_db)):
     from app.ai import ai
     from app.services import usage_service
+    if principal.org_id:
+        # the api-request limit was never checked against the dimension it is
+        # metered in (issue #109 class 4)
+        await usage_service.check_quota(db, principal.org_id, "api_requests", 1)
     det = await ai.detect_language(body.text)
     if principal.org_id:
         await usage_service.record_usage(

@@ -52,6 +52,14 @@ class CallService:
     ) -> M.CallSession:
         from app.telephony.security import TelephonySecurity
 
+        # The call-minute limit is metered as "telephony_minutes"; it was
+        # never checked, so the plan's call allowance could not trip
+        # (issue #109 class 4). The pre-check uses the one-minute floor —
+        # the final duration is only known when the call ends, and the meter
+        # records the real minutes then.
+        from app.services import usage_service
+        await usage_service.check_quota(self.db, org_id, "telephony_minutes", 1)
+
         # Enforce Recording OFF by default (Phase 12 & 13 Privacy Policy)
         recording_enabled = TelephonySecurity.enforce_recording_policy(
             requested_recording=recording_requested,

@@ -84,7 +84,11 @@ async def upload_document(
         if sp is None or (sp.org_id is not None and sp.org_id != principal.org_id):
             raise NotFoundError("Style profile not found.")
 
-    await usage_service.check_quota(db, principal.org_id, "documents", 1)
+    # The limit is expressed in the unit the ledger records: the usage
+    # records are "document_pages", so the check has to be against the same
+    # dimension — against "documents" it compared against a unit nothing
+    # ever recorded, and the limit could never trip (issue #109 class 4).
+    await usage_service.check_quota(db, principal.org_id, "document_pages", 1)
 
     key = object_key("documents", str(principal.org_id), safe_name, checksum)
     await storage().put(key, data, mime)

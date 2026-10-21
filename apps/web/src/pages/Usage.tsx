@@ -2,16 +2,20 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { Badge, Card, Skeleton } from "../components/ui";
 
+// The dimensions are the canonical metered units (services/api
+// usage_service.METERED_DIMENSIONS) — the same names the ledger records and
+// the plan limits use, so every card can find its limit. The old list asked
+// for "document_pages"/"audio_seconds"/"translation_requests" while the
+// limits said "documents"/"audio_minutes"/"meeting_minutes", so three cards
+// could never show a percentage and three limits were never displayed
+// (issue #109 class 4).
 const DIMENSIONS: [string, string][] = [
   ["characters", "Characters translated"],
   ["translation_requests", "Translation requests"],
-  ["audio_seconds", "Audio seconds (realtime voice)"],
-  ["document_pages", "Document pages"],
-  ["video_minutes", "Video minutes"],
   ["api_requests", "API requests"],
-  ["storage_bytes", "Storage bytes"],
-  ["gpu_seconds", "GPU seconds"],
-  ["tokens", "LLM tokens"],
+  ["document_pages", "Document pages"],
+  ["audio_seconds", "Audio seconds (realtime voice)"],
+  ["telephony_minutes", "Call minutes"],
 ];
 
 export default function Usage() {
@@ -42,7 +46,7 @@ export default function Usage() {
               <div key={key} className="gt-card p-4">
                 <p className="text-[11px] font-semibold uppercase tracking-wider text-ink-400">{label}</p>
                 <p className="mt-1 text-2xl font-bold text-ink-900">
-                  {key === "storage_bytes" ? `${(used / 1048576).toFixed(1)} MB` : Math.round(used).toLocaleString()}
+                  {Math.round(used).toLocaleString()}
                 </p>
                 {pct !== null && (
                   <>

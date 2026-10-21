@@ -30,7 +30,7 @@ from app.config import settings
 from app.db import models as M
 from app.db.base import utcnow
 from app.db.session import db_session
-from app.errors import AppError
+from app.errors import AppError, QuotaExceededError
 from app.realtime.agents.bus import AgentBus
 from app.realtime.agents.contracts import TtsChunkReady, TranscriptSegment
 from app.realtime.agents.listening import (
@@ -41,6 +41,7 @@ from app.realtime.agents.translation import RealtimeTranslatorProvider, Translat
 from app.realtime.agents.voice import RealtimeTtsProvider, VoiceAgent
 from app.realtime.protocol import LatencyTrace, ServerEventType
 from app.realtime.session_manager import RtParticipant, RtSession, manager
+from app.services import usage_service
 from app.realtime.voices import voice_for
 from app.services.translation_service import (
     TranslateContext, translate_text, validate_pair,
@@ -171,6 +172,22 @@ class MeetingPipeline:
 
     def _take_detected_language(self, correlation_id: str) -> dict | None:
         return self._detected.pop(correlation_id, None)
+
+    async def _plan_quotas(self, db) -> dict[str, float]:
+        """The org's plan limits, cached for a minute.
+
+        The audio allowance is checked once per utterance, and a realtime
+        segment must not pay a subscription read on every turn. A plan
+        change taking effect within the minute is fine — the check is an
+        allowance guard, not a billing statement.
+        """
+        now = time.monotonic()
+        cached = getattr(self, "_quota_cache", None)
+        if cached and now - cached[0] < 60.0:
+            return cached[1]
+        limits = await usage_service.plan_quotas(db, self.session.org_id)
+        self._quota_cache = (now, limits)
+        return limits
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -647,6 +664,37 @@ class MeetingPipeline:
             ptask.cancel()
         corr = str(utterance_id or u.utterance_id)
         seq_num = seq if seq is not None else u.seq
+        # Meter the audio, and check the audio allowance BEFORE the expensive
+        # work (the STT). The canonical realtime path never recorded audio
+        # seconds, so the plan's audio limit had nothing to accrue and could
+        # never trip (issue #109 class 4). When the monthly allowance is
+        # exhausted the segment is not transcribed and the diagnostic says
+        # why — the limit is real, the meeting keeps running.
+        if duration_ms > 0 and self.session.org_id:
+            try:
+                async with db_session() as qdb:
+                    await usage_service.check_quota(
+                        qdb, self.session.org_id, "audio_seconds",
+                        duration_ms / 1000.0,
+                        quotas=await self._plan_quotas(qdb))
+                    await usage_service.record_usage(
+                        qdb, org_id=self.session.org_id, product="realtime",
+                        unit_type="audio_seconds", units=duration_ms / 1000.0,
+                        metadata={"meeting_id": str(self.session.meeting_id),
+                                  "speaker_id": str(p.participant_id)})
+                    await qdb.commit()
+            except QuotaExceededError as qe:
+                self._broadcast_diag(self._diag(
+                    "quota_exceeded", utt=corr, seq=seq_num,
+                    speaker=p.participant_id, unit="audio_seconds",
+                    reason=str(qe)))
+                return
+            except Exception as exc:
+                # Metering must never break a live meeting: a ledger write
+                # that fails leaves the usage under-counted for this segment,
+                # which is visible; a dropped segment is not recoverable.
+                log.warning("realtime audio metering failed (%s); the segment "
+                            "continues without this usage record", exc)
         self._broadcast_diag(self._diag(
             "stt_enter", utt=corr, seq=seq_num, speaker=p.participant_id,
             audio_bytes=len(audio), lang_hint=self._lang_hint(p, u) or "auto"))

@@ -107,6 +107,14 @@ def no_db(monkeypatch):
         def scalar(self):
             return 0
 
+        def scalars(self):
+            return self
+
+        def first(self):
+            # No subscription row in this fake: the plan limits fall back to
+            # the defaults, which is what the metering path reads.
+            return None
+
     @asynccontextmanager
     async def _fake_session(*_a, **_kw):
         def _add(obj):

@@ -52,3 +52,35 @@ export function wordDiffPercent(original: string, improved: string): number {
   const changed = Math.max(a.length, b.length) - common;
   return Math.round((changed / a.length) * 100);
 }
+
+/**
+ * Which words of the improved text a set of write diffs actually changed.
+ *
+ * The old implementation matched with a SUBSTRING test
+ * (`replacement.includes(word) || word.includes(replacement)`), so a diff of
+ * "the" marked every word containing "the" as changed and a diff of "a"
+ * marked nearly every word in the text — which did not match the "% of words
+ * changed" printed next to it (issue #109 class 4).
+ *
+ * The match is word-for-word: the panel renders the IMPROVED text, so the
+ * word on screen is the diff's replacement.
+ */
+export interface WriteDiffLike {
+  original?: string;
+  replacement?: string;
+}
+
+export function normalizeWord(word: string): string {
+  return (word || "").toLowerCase().replace(/[^a-zA-Z0-9'-]/g, "");
+}
+
+export function matchChangedWord(
+  cleanWord: string,
+  diffs: WriteDiffLike[] | undefined,
+): WriteDiffLike | undefined {
+  if (!diffs || !cleanWord) return undefined;
+  return diffs.find((d) => {
+    const replacement = normalizeWord(d.replacement || "");
+    return replacement !== "" && replacement === cleanWord;
+  });
+}
