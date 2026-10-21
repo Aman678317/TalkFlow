@@ -14,7 +14,8 @@ import {
   BookOpen,
   ArrowRight,
   Activity,
-  FileText
+  FileText,
+  AlertTriangle
 } from 'lucide-react';
 import { api, friendlyMessage } from '@/lib/api';
 
@@ -373,8 +374,18 @@ export default function AgentStudio() {
 
                   {/* Specialist Response */}
                   <div className="rounded-xl border border-slate-200 bg-white p-4">
-                    <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">
-                      Specialist Agent Resolution:
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                        {triageResult.response_is_draft ? 'Specialist Agent Draft:' : 'Specialist Agent Resolution:'}
+                      </div>
+                      {/* A fallback classification is a keyword guess and its
+                          reply is a draft for a human — say so (issue #109
+                          class 3, day-2 finding B-2). */}
+                      {triageResult.response_is_draft && (
+                        <span className="text-[10px] font-mono bg-amber-100 text-amber-800 px-2 py-0.5 rounded">
+                          DRAFT · heuristic fallback
+                        </span>
+                      )}
                     </div>
                     <div className="rounded-lg bg-slate-50 p-3 text-xs text-slate-800 whitespace-pre-wrap font-sans leading-relaxed">
                       {triageResult.response}
@@ -530,7 +541,10 @@ export default function AgentStudio() {
                     <div className="rounded-xl bg-slate-50 p-3 ring-1 ring-slate-200/70">
                       <div className="text-[10px] font-semibold uppercase text-slate-500">Quality Score</div>
                       <div className="mt-1 text-base font-bold text-emerald-600">
-                        {contentResult.score ? (contentResult.score * 100).toFixed(0) : '94'} / 100
+                        {/* No invented score: the old fallback rendered "94"
+                            when the pipeline had never scored anything
+                            (issue #109 class 3, day-2 finding B-2). */}
+                        {contentResult.score != null ? `${(contentResult.score * 100).toFixed(0)} / 100` : '— not scored'}
                       </div>
                     </div>
                     <div className="rounded-xl bg-slate-50 p-3 ring-1 ring-slate-200/70">
@@ -547,25 +561,54 @@ export default function AgentStudio() {
                     </div>
                   </div>
 
-                  {/* Feedback points incorporated */}
-                  <div className="rounded-xl bg-amber-50/70 border border-amber-200 p-3">
-                    <div className="text-xs font-bold text-amber-900 mb-1">
-                      Self-Correction Iteration History:
+                  {/* The critique history comes from the pipeline. The old
+                      panel hard-coded two passes with scores (0.72, 0.94)
+                      for runs that never happened (issue #109 class 3,
+                      day-2 finding B-2). */}
+                  {contentResult.feedback && contentResult.feedback.length > 0 ? (
+                    <div className="rounded-xl bg-amber-50/70 border border-amber-200 p-3">
+                      <div className="text-xs font-bold text-amber-900 mb-1">
+                        Self-Correction Iteration History:
+                      </div>
+                      <div className="text-xs text-amber-800 space-y-1">
+                        {contentResult.feedback.map((f: string, i: number) => (
+                          <div key={i}>• {f}</div>
+                        ))}
+                      </div>
                     </div>
-                    <div className="text-xs text-amber-800 space-y-1">
-                      <div>• Pass 1: Score 0.72 (Below threshold) &rarr; Feedback generated: missing schema & source citations.</div>
-                      <div>• Pass 2: Re-draft incorporated concrete Pydantic model & sources list &rarr; Score 0.94 (Approved & Published).</div>
+                  ) : (
+                    <div className="rounded-xl bg-slate-50/70 border border-slate-200 p-3">
+                      <div className="text-xs font-bold text-slate-600 mb-1">
+                        Self-Correction Iteration History:
+                      </div>
+                      <div className="text-xs text-slate-500">
+                        {contentResult.loops > 0
+                          ? `${contentResult.loops} pass${contentResult.loops === 1 ? '' : 'es'} — no critique recorded.`
+                          : 'The pipeline did not run, so there are no passes to show.'}
+                      </div>
                     </div>
-                  </div>
+                  )}
 
-                  {/* Published Markdown Preview */}
-                  <div className="rounded-xl border border-slate-200 bg-slate-900 p-4 text-slate-100 font-mono text-xs overflow-y-auto max-h-[420px]">
-                    <div className="text-[10px] text-slate-400 mb-2 border-b border-slate-800 pb-1 flex justify-between">
-                      <span>PUBLISHED ARTIFACT ({contentResult.published_path || 'output.md'})</span>
-                      <span className="text-emerald-400">QUALITY GATE PASSED</span>
+                  {/* The artifact block only claims a published file when one
+                      was actually written (the old fallback invented
+                      "output.md" and a "QUALITY GATE PASSED" badge). */}
+                  {contentResult.published_path ? (
+                    <div className="rounded-xl border border-slate-200 bg-slate-900 p-4 text-slate-100 font-mono text-xs overflow-y-auto max-h-[420px]">
+                      <div className="text-[10px] text-slate-400 mb-2 border-b border-slate-800 pb-1 flex justify-between">
+                        <span>PUBLISHED ARTIFACT ({contentResult.published_path})</span>
+                        <span className="text-emerald-400">QUALITY GATE PASSED</span>
+                      </div>
+                      <pre className="whitespace-pre-wrap">{contentResult.final_content || contentResult.draft}</pre>
                     </div>
-                    <pre className="whitespace-pre-wrap">{contentResult.final_content || contentResult.draft}</pre>
-                  </div>
+                  ) : (
+                    <div className="rounded-xl border border-amber-200 bg-amber-50/50 p-4 text-xs text-amber-900">
+                      <div className="font-semibold">Nothing was published</div>
+                      <p className="mt-1">
+                        {contentResult.note
+                          || 'The content pipeline did not produce a publishable artifact.'}
+                      </p>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="flex-1 flex flex-col items-center justify-center p-8 text-center text-slate-400">
@@ -674,13 +717,35 @@ export default function AgentStudio() {
 
               {researchResult ? (
                 <div className="mt-5 space-y-4 flex-1">
-                  <div className="flex items-center justify-between rounded-xl bg-emerald-50 p-3 text-xs text-emerald-800 border border-emerald-200">
+                  {/* The badge states what actually happened: a crew that ran
+                      and verified, or a placeholder (issue #109 class 3,
+                      day-2 finding B-2 — the old header always claimed
+                      "Kickoff Completed" and "Fact-Check: Verified"). */}
+                  <div className={`flex items-center justify-between rounded-xl p-3 text-xs border ${
+                    researchResult.verified
+                      ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                      : 'bg-amber-50 text-amber-900 border-amber-200'
+                  }`}>
                     <span className="flex items-center gap-1.5 font-semibold">
-                      <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-                      Sequential Crew Kickoff Completed (Mode: {researchResult.mode})
+                      {researchResult.verified
+                        ? <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                        : <AlertTriangle className="h-4 w-4 text-amber-600" />}
+                      {researchResult.verified
+                        ? `Sequential Crew Kickoff Completed (Mode: ${researchResult.mode})`
+                        : 'Research crew did not run — no verified research'}
                     </span>
-                    <span className="text-[11px] bg-emerald-100 px-2 py-0.5 rounded font-mono">Fact-Check: Verified</span>
+                    <span className={`text-[11px] px-2 py-0.5 rounded font-mono ${
+                      researchResult.verified ? 'bg-emerald-100' : 'bg-amber-100'
+                    }`}>
+                      {researchResult.verified ? 'Fact-Check: Verified' : 'Fact-Check: Not run'}
+                    </span>
                   </div>
+
+                  {researchResult.note && (
+                    <p className="rounded-xl bg-amber-50 border border-amber-200 p-3 text-xs text-amber-900">
+                      {researchResult.note}
+                    </p>
+                  )}
 
                   <div className="rounded-xl border border-slate-200 bg-white p-5 text-slate-800 text-xs whitespace-pre-wrap font-sans leading-relaxed max-h-[480px] overflow-y-auto">
                     {researchResult.report}
