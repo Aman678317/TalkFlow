@@ -88,6 +88,7 @@ jobs:
             tests/test_glossary_mismatch_note_hardened.py \
             tests/test_history_filters_hardened.py \
             tests/test_media_bridge_hygiene.py \
+            tests/test_metering_worker_thresholds_hardened.py \
             tests/test_model_fetch_gates_hardened.py \
             tests/test_observability_and_metrics_hardened.py \
             tests/test_outbound_idempotency.py \
