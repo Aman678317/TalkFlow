@@ -14,7 +14,7 @@ from typing import Any, AsyncIterator
 from gt_ai.base import BaseProvider
 from gt_ai.registry import register
 from gt_ai.types import ProviderUnavailable, TranslationRequest, TranslationResult
-from gt_ai.translation.model_fetch import load_cached_first
+from gt_ai.translation.model_fetch import downloads_allowed, load_cached_first
 from gt_ai.translation.text_ops import (
     apply_glossary_to_output,
     normalize_unicode,
@@ -95,6 +95,30 @@ class Madlad400Provider(BaseProvider):
 
     async def warmup(self) -> None:
         await self._ensure_loaded()
+
+    def runtime_ready(self) -> bool:
+        """Offloaded only when deps import AND weights are already cached
+        (see gt_ai.translation.model_fetch). Loading-without-weights here
+        crashed the worker natively (0xC0000374) during the 2026-10-21
+        offline-chain descent, so a request never descends into it."""
+        import importlib.util
+
+        if (importlib.util.find_spec("torch") is None
+                or importlib.util.find_spec("transformers") is None):
+            return False
+        if downloads_allowed():
+            return True  # operator explicitly owns on-demand downloads
+        if "/" not in self.model_id:
+            return False  # try_to_load_from_cache requires org/model form
+        try:
+            from huggingface_hub import try_to_load_from_cache
+
+            return (try_to_load_from_cache(self.model_id, "config.json",
+                                           cache_dir=self.cache_dir) is not None
+                    and try_to_load_from_cache(self.model_id, "tokenizer.json",
+                                               cache_dir=self.cache_dir) is not None)
+        except Exception:
+            return False
 
     async def healthcheck(self) -> bool:
         try:

@@ -224,6 +224,12 @@ class Settings(BaseSettings):
     # --- writing service (P2): provider-backed contextual grammar tier --------
     write_neural_timeout_s: float = 12.0
 
+    # Per-attempt provider deadline (P0 remediation for #109(a)). No single
+    # provider attempt may own a request forever: providers that hang at
+    # first use (offline model bootstrap, upstream stalls) get their attempt
+    # bounded and the chain fails over to the next candidate. 0 disables.
+    provider_attempt_timeout_s: float = 20.0
+
     # realtime tuning (PDD §11.4)
     # Per-stage provider deadlines (remediation plan §2.3). A stage that blows its
     # deadline fails over / degrades instead of stalling the room's event loop.

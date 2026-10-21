@@ -50,6 +50,14 @@ class AirLLMTranslationProvider(BaseProvider):
         self._model: Any | None = None
         self._load_lock = asyncio.Lock()
 
+    def runtime_ready(self) -> bool:
+        """Serves only when the optional airllm package is installed — its
+        import must never happen behind a user request (heavier native
+        bootstrap than the request budget allows)."""
+        import importlib.util
+
+        return importlib.util.find_spec("airllm") is not None
+
     async def _load_model(self) -> Any:
         if self._model is not None:
             return self._model

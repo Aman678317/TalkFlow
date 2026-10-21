@@ -68,6 +68,7 @@ class AIFacade:
         self.router: ModelRouter | None = None
         self._providers: dict[tuple[str, str], BaseProvider] = {}
         self._provider_args: dict[tuple[str, str], dict] = {}
+        self._chain_provider_cache: dict[tuple[str, str], BaseProvider] = {}
         self._specs: dict[Task, list[ProviderSpec]] = {t: [] for t in TASKS}
         self._lock = asyncio.Lock()
 
@@ -252,6 +253,10 @@ class AIFacade:
         already tried. Health is restored after routing so long-term state is
         not corrupted by a single request's failover."""
         assert self.router is not None
+        # Candidates resolved here (readiness filter below) are handed to
+        # _execute through this per-call map so a candidate instance is built
+        # exactly once: the filter's resolution is the attempt's provider.
+        self._chain_provider_cache.clear()
         order: list[RouteDecision] = []
         tried: set[str] = set()
         touched: list[tuple[Task, str, bool]] = []
@@ -319,7 +324,42 @@ class AIFacade:
                 h = self.router.health.get((t_key, name))
                 if h is not None:
                     h.available = prev
-        return order
+
+        served: set[object] = set()
+        chain: list[RouteDecision] = []
+        for decision in order:
+            try:
+                provider = self.provider(task, decision.provider)
+            except Exception:
+                # Not registered / not buildable on this install (a test
+                # scaffolding name or an adapter whose factory input is
+                # absent). Fail open: the name stays in the chain, and the
+                # per-attempt deadline bounds whatever it does. A fresh
+                # identity keeps two such names from colliding in `served`.
+                impl = object()
+            else:
+                impl = type(provider)
+                self._chain_provider_cache[(task.value, decision.provider)] = provider
+                try:
+                    is_ready = provider.runtime_ready()
+                except Exception:
+                    # Stand-in without the pre-flight hook (test fakes,
+                    # adapters predating the hook): no information either
+                    # way — keep it; the bounded attempt decides.
+                    is_ready = True
+                if not is_ready:
+                    log.info("provider %s/%s not runtime-ready "
+                             "(deps/weights absent); excluded from chain",
+                             task, decision.provider)
+                    continue
+            if impl in served:
+                log.info("candidate %s duplicates an earlier chain slot (%s); "
+                         "excluded to avoid retrying the same implementation",
+                         decision.provider, getattr(impl, "__name__", impl))
+                continue
+            served.add(impl)
+            chain.append(decision)
+        return chain
 
     async def _execute(self, task: Task, route_kw: dict, call):
         """call(provider) -> result; failover across providers."""
@@ -335,15 +375,38 @@ class AIFacade:
                 "not sent to any external service.",
                 details={"task": task.value, "error": str(e)},
             ) from e
+        timeout_s = settings.provider_attempt_timeout_s
         for decision in decisions:
             t0 = time.perf_counter()
             try:
-                provider = self.provider(task, decision.provider)
-                result = await call(provider)
+                provider = self._chain_provider_cache.get(
+                    (task.value, decision.provider))
+                if provider is None:
+                    provider = self.provider(task, decision.provider)
+                attempt = call(provider)
+                if timeout_s > 0:
+                    # Deadline-first failover (#109(a) P0): a provider attempt
+                    # must never own the request forever. Cancelling the await
+                    # abandons a stuck attempt (a thread stuck in a native
+                    # load keeps running, but the loop — and this request's
+                    # failover — stay alive and honest).
+                    result = await asyncio.wait_for(attempt, timeout=timeout_s)
+                else:
+                    result = await attempt
                 latency = (time.perf_counter() - t0) * 1000
                 if self.router is not None:
                     self.router.record_outcome(task, decision.provider, latency, ok=True)
                 return result, decision
+            except asyncio.TimeoutError:
+                latency = (time.perf_counter() - t0) * 1000
+                if self.router is not None:
+                    self.router.record_outcome(task, decision.provider, latency, ok=False)
+                last_err = ProviderUnavailable(
+                    f"attempt exceeded the {timeout_s:.1f}s provider deadline")
+                met.PROVIDER_RETRIES.labels(
+                    stage=task.value, provider=decision.provider).inc()
+                log.warning("provider %s/%s exceeded %.1fs attempt deadline; failing over",
+                            task, decision.provider, timeout_s)
             except ProviderUnavailable as e:
                 latency = (time.perf_counter() - t0) * 1000
                 if self.router is not None:
@@ -437,7 +500,10 @@ class AIFacade:
         for decision in candidates:
             name = decision.provider
             try:
-                provider = self.provider(Task.TTS, name)
+                provider = self._chain_provider_cache.get(
+                    (Task.TTS.value, name))
+                if provider is None:
+                    provider = self.provider(Task.TTS, name)
                 if hasattr(provider, "healthcheck"):
                     ok = await provider.healthcheck()
                     if not ok:
