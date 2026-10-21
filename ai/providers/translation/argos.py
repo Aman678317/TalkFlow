@@ -1,6 +1,9 @@
 """Argos Translate adapter (offline open NMT, CTranslate2/NLLB-based). Repo: argosopentech (MIT).
 
-Downloads/loads language packages lazily into MODEL_CACHE_PATH. Reports its actually-installed
+Loads language packages from MODEL_CACHE_PATH. A translation request is
+cache-only — the remote package index refresh and package downloads run
+only behind the operator opt-in GT_ALLOW_MODEL_DOWNLOAD (issue #109 class 2:
+they used to run inside the first request). Reports its actually-installed
 pairs — the capability registry consults this instead of trusting model claims.
 IMPORTANT: Argos may pivot through English for pairs without a direct model; `pivoted` is set
 so routing policy can reject pivots for premium realtime routes.
@@ -17,6 +20,15 @@ from ai.interfaces import ProviderUnavailable, TranslationResult
 _lock = threading.Lock()
 _SUBPROCESS_LOCK = threading.Lock()  # serialize heavy model subprocesses (low-RAM safety)
 _installed_pairs: set[tuple[str, str]] | None = None
+
+
+def _downloads_allowed() -> bool:
+    """Operator opt-in for on-demand model downloads (same policy as
+    gt_ai.translation.model_fetch.downloads_allowed, self-contained here so
+    the legacy lane does not import the canonical package)."""
+    v = os.environ.get("GT_ALLOW_MODEL_DOWNLOAD",
+                       os.environ.get("GT_MT_ALLOW_MODEL_DOWNLOAD", ""))
+    return v.strip().lower() in ("1", "true", "yes", "on")
 
 
 def _import_argos():
@@ -122,28 +134,33 @@ def _ensure_installed():
         except ImportError as exc:
             raise ProviderUnavailable("argos", f"not installed: {exc}")
         _use_cache_dir(cache)
-        try:
-            argostranslate_package.update_package_index()
-            available = argostranslate_package.get_available_packages()
-        except Exception:
-            available = []
         installed = argostranslate_package.get_installed_packages()
         have = {(p.from_code, p.to_code) for p in installed}
-        # Auto-install the India-first + golden-demo pairs when the index is reachable.
-        # Kept small on purpose: every package is a full NMT model (~40-180 MB).
-        wanted = [("en", "hi"), ("hi", "en"), ("en", "ja"), ("ja", "en"), ("en", "mr"),
-                  ("mr", "en"), ("en", "zh"), ("zh", "en"), ("en", "es"), ("es", "en")]
-        for pair in wanted:
-            if pair in have:
-                continue
-            pkg = next((p for p in available
-                        if (p.from_code, p.to_code) == pair), None)
-            if pkg:
-                try:
-                    argostranslate_package.install_from_path(pkg.download())
-                    have.add(pair)
-                except Exception:
-                    pass  # pair stays NOT_CONFIGURED — registry honesty over optimism
+        if _downloads_allowed():
+            # Operator approved on-demand provisioning (the legacy flow): refresh
+            # the remote index and install the India-first + golden-demo pairs when
+            # reachable. Kept small on purpose: every package is a full NMT model
+            # (~40-180 MB). Without the opt-in a translation request is cache-only
+            # and fails honestly for uninstalled pairs — this block used to run on
+            # every first request, up to ~1 GB of downloads (issue #109 class 2).
+            try:
+                argostranslate_package.update_package_index()
+                available = argostranslate_package.get_available_packages()
+            except Exception:
+                available = []
+            wanted = [("en", "hi"), ("hi", "en"), ("en", "ja"), ("ja", "en"), ("en", "mr"),
+                      ("mr", "en"), ("en", "zh"), ("zh", "en"), ("en", "es"), ("es", "en")]
+            for pair in wanted:
+                if pair in have:
+                    continue
+                pkg = next((p for p in available
+                            if (p.from_code, p.to_code) == pair), None)
+                if pkg:
+                    try:
+                        argostranslate_package.install_from_path(pkg.download())
+                        have.add(pair)
+                    except Exception:
+                        pass  # pair stays NOT_CONFIGURED — registry honesty over optimism
         _installed_pairs = have
         return have
 

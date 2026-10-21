@@ -2,6 +2,8 @@
 
 - EnergyVAD: deterministic RMS + adaptive noise floor (real DSP, always available).
 - SileroVAD: silero-vad ONNX model when downloaded (Phase-2 upgrade; same interface).
+  Cache-first (issue #109 class 2): torch.hub used to clone the GitHub repo inside a
+  request; downloads only happen behind GT_ALLOW_MODEL_DOWNLOAD.
 
 Both emit speech probability per chunk; the realtime pipeline turns probabilities into
 speech_started / speech_ended events with hangover, per section 100.
@@ -9,8 +11,25 @@ speech_started / speech_ended events with hangover, per section 100.
 from __future__ import annotations
 
 import math
+import os
 
 import numpy as np
+
+
+def _silero_cached() -> bool:
+    """Pure-fs probe of the torch-hub cache for the silero-vad clone ('master' ref)."""
+    hub = os.path.join(os.environ.get("TORCH_HOME",
+                                      os.path.expanduser("~/.cache/torch")), "hub")
+    return os.path.isdir(os.path.join(hub, "snakers4_silero-vad_master"))
+
+
+def _downloads_allowed() -> bool:
+    """Operator opt-in for on-demand model downloads (same policy as
+    gt_ai.translation.model_fetch.downloads_allowed, self-contained here so
+    the legacy lane does not import the canonical package)."""
+    v = os.environ.get("GT_ALLOW_MODEL_DOWNLOAD",
+                       os.environ.get("GT_MT_ALLOW_MODEL_DOWNLOAD", ""))
+    return v.strip().lower() in ("1", "true", "yes", "on")
 
 
 class EnergyVAD:
@@ -58,6 +77,8 @@ class SileroVAD:
         if self._model is None:
             try:
                 import torch
+                if not (_downloads_allowed() or _silero_cached()):
+                    return False
                 self._model = torch.hub.load(repo_or_dir="snakers4/silero-vad",
                                              model="silero_vad", trust_repo=True)
             except Exception:

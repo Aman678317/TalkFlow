@@ -19,6 +19,15 @@ sys.path.insert(0, str(REPO / "apps" / "api"))
 sys.path.insert(0, str(REPO))
 os.environ.setdefault("MODEL_CACHE_PATH", os.environ.get("MODEL_CACHE_PATH", "/tmp/globaltalk-models"))
 
+# Same env policy as ai/bootstrap._build(): HF weights live under MODEL_CACHE_PATH
+# (never $HOME, never a download). The verify probes must READ the seeded cache;
+# with load_model() now cache-first (issue #109 class 2), a probe whose HF cache
+# points at the default $HOME path would report an honest miss instead of the
+# weights this repo treats as the operator-provisioned location.
+from globaltalk.core.config import settings as _settings
+
+os.environ.setdefault("HF_HOME", str(_settings.resolve(_settings.model_cache_path) / "hf"))
+
 RESULTS: list[tuple[str, str, str]] = []
 
 

@@ -88,6 +88,7 @@ jobs:
             tests/test_glossary_mismatch_note_hardened.py \
             tests/test_history_filters_hardened.py \
             tests/test_media_bridge_hygiene.py \
+            tests/test_model_fetch_gates_hardened.py \
             tests/test_observability_and_metrics_hardened.py \
             tests/test_outbound_idempotency.py \
             tests/test_page_translation_hardened.py \
@@ -196,7 +197,10 @@ jobs:
       - name: Download CPU model weights
         env:
           MODEL_CACHE_PATH: ${{ runner.temp }}/models
-        run: MODEL_PROFILE=CPU bash scripts/download_models.sh
+        # STT_SIZE=small matches the server's default stt_model (Systran/faster-whisper-small):
+        # #109 class 2 made the request path cache-first, so the golden must find the
+        # artifact in the seeded cache instead of downloading it inside the call.
+        run: MODEL_PROFILE=CPU STT_SIZE=small bash scripts/download_models.sh
       - name: Golden multilingual call (real STT/MT/TTS over WebSocket)
         env:
           MODEL_CACHE_PATH: ${{ runner.temp }}/models

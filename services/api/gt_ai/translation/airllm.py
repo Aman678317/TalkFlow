@@ -3,8 +3,10 @@
 AirLLM is deliberately isolated from the normal API image. The adapter imports
 the package only when the operator selects ``TRANSLATION_PROVIDER=airllm`` in a
 GPU worker, so CPU/Vercel/Render deployments keep the existing provider set.
-Weights are downloaded and split into the configured model cache at runtime;
-they are never copied into this repository or a regular application image.
+Weights must already sit in the local HF cache (seeded by the operator workflow)
+or the operator must opt in via ``GT_ALLOW_MODEL_DOWNLOAD`` — a user request
+never starts a Llama download (issue #109 class 2, 2026-10-21). They are never
+copied into this repository or a regular application image.
 """
 from __future__ import annotations
 
@@ -17,6 +19,7 @@ from typing import Any, AsyncIterator
 from gt_ai.base import BaseProvider
 from gt_ai.registry import register
 from gt_ai.types import ProviderUnavailable, TranslationRequest, TranslationResult
+from gt_ai.translation import model_fetch
 from gt_ai.translation.text_ops import apply_glossary_to_output, normalize_unicode, quality_checks
 
 log = logging.getLogger("gt_ai.mt.airllm")
@@ -51,12 +54,17 @@ class AirLLMTranslationProvider(BaseProvider):
         self._load_lock = asyncio.Lock()
 
     def runtime_ready(self) -> bool:
-        """Serves only when the optional airllm package is installed — its
-        import must never happen behind a user request (heavier native
-        bootstrap than the request budget allows)."""
+        """Serves only when the optional airllm package is installed AND the
+        (default >100 GB) Llama weights are already in the local HF cache —
+        unless the operator explicitly opted in to downloads. The import must
+        never happen behind a user request (heavier native bootstrap than the
+        request budget allows)."""
         import importlib.util
 
-        return importlib.util.find_spec("airllm") is not None
+        if importlib.util.find_spec("airllm") is None:
+            return False
+        return model_fetch.downloads_allowed() or model_fetch.hf_artifact_cached(
+            self.model_id, None, ("config.json",))
 
     async def _load_model(self) -> Any:
         if self._model is not None:
@@ -64,6 +72,8 @@ class AirLLMTranslationProvider(BaseProvider):
         async with self._load_lock:
             if self._model is not None:
                 return self._model
+            model_fetch.require_cached_or_raise(
+                "airllm", self.model_id, None, ("config.json",))
             try:
                 from airllm import AutoModel
                 import torch

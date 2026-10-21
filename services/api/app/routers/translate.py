@@ -310,7 +310,17 @@ def _get_whisper_model():
     if _whisper_instance is None:
         try:
             from faster_whisper import WhisperModel
-            _whisper_instance = WhisperModel("tiny", device="cpu", compute_type="int8")
+            from gt_ai.translation import model_fetch
+            from app.config import settings
+            cache_root = str(settings.model_cache_path)  # same basis app/ai.py passes to the provider
+            weights_cached = model_fetch.hf_artifact_cached(
+                "Systran/faster-whisper-tiny", cache_root, ("model.bin",))
+            if not (weights_cached or model_fetch.downloads_allowed()):
+                return None  # caller falls back to the AIFacade chain; never download behind a request
+            if not weights_cached:
+                log.warning("voice transcribe: whisper-tiny not cached; downloading because an opt-in env allows it")
+            _whisper_instance = WhisperModel("tiny", device="cpu", compute_type="int8",
+                                             download_root=cache_root)
         except Exception:
             return None
     return _whisper_instance
