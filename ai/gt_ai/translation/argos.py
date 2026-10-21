@@ -43,13 +43,26 @@ class ArgosProvider(BaseProvider):
             import argostranslate.translate
         except ImportError as e:
             raise ProviderUnavailable("argos requires `pip install gt-ai[argos]`") from e
-        argostranslate.package.update_package_index()
+        # Cache-only: the package index lives wherever argospm left it. A
+        # request path must never perform network fetches —
+        # update_package_index() here could block a translate request
+        # indefinitely on a slow or blocked network (observed 2026-10-21
+        # during the #109 offline-chain descent). Index refreshes belong
+        # to the operator CLI (argospm), not to user traffic.
         packages = argostranslate.package.get_installed_packages()
         codes: set[str] = set()
         for p in packages:
             codes.add(p.from_code)
             codes.add(p.to_code)
         return codes
+
+    def runtime_ready(self) -> bool:
+        """Serves only when the argos packages are (or can be) resolved from
+        the local cache — importing argostranslate inside a request's
+        fallback descent was part of the 2026-10-21 offline-chain wedge."""
+        import importlib.util
+
+        return importlib.util.find_spec("argostranslate") is not None
 
     async def _ensure(self) -> None:
         if self._lang_codes is not None:

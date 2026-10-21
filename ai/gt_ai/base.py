@@ -39,6 +39,19 @@ class BaseProvider(ABC):
     async def healthcheck(self) -> bool:
         return True
 
+    def runtime_ready(self) -> bool:
+        """Cheap pre-flight gate consulted before a candidate enters the
+        routed fallback chain (see app.ai._ordered_candidates).
+
+        The check must stay bounded: no model loads, no network, no native
+        downstream. Providers whose heavy third-party deps or weights may be
+        absent override this so a real outage fails over into an honest
+        bounded error instead of into a landmine (unbounded download,
+        native crash of the whole worker — observed 2026-10-20 and
+        2026-10-21, 0xC0000374, inside the offline MT descent).
+        """
+        return True
+
 
 @runtime_checkable
 class TranslationProvider(Protocol):

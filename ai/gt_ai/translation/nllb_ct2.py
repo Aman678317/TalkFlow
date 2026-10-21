@@ -97,6 +97,17 @@ class NllbCt2Provider(BaseProvider):
     async def warmup(self) -> None:
         await self._ensure_loaded()
 
+    def runtime_ready(self) -> bool:
+        """Serves only when deps import AND the CT2 checkpoint dir exists
+        (offline-first policy: see gt_ai.translation.model_fetch)."""
+        import os
+        import importlib.util
+
+        if (importlib.util.find_spec("ctranslate2") is None
+                or importlib.util.find_spec("transformers") is None):
+            return False
+        return os.path.isdir(self.model_dir)
+
     async def healthcheck(self) -> bool:
         try:
             await self._ensure_loaded()

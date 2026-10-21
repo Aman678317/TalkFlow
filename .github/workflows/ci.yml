@@ -95,6 +95,7 @@ jobs:
             tests/test_production_readiness_hardened.py \
             tests/test_production_security_hardened.py \
             tests/test_production_telephony_gates.py \
+            tests/test_provider_chain_hardened.py \
             tests/test_queue_and_workers_hardened.py \
             tests/test_realtime_pipeline_hardened.py \
             tests/test_realtime_translation_invariant_hardened.py \
