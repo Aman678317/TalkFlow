@@ -17,6 +17,9 @@ Evidence behind this suite (2026-10-21, #109):
   ``TRANSFORMERS_OFFLINE=0``, argos refreshed the remote index and installed
   up to ~1 GB of packages inside a translation request, and silero VAD
   cloned its GitHub repo through torch.hub on first use.
+* Post-#112 re-verification found the straggler: the canonical
+  ``services/api/gt_ai/vad.py`` Silero adapter still cloned silero-vad
+  from GitHub inside ``load()`` — the realtime/telephony provider path.
 
 Pinned here: every loader checks the local cache first and fails honestly
 with :class:`ProviderUnavailable` when the weights are absent, unless the
@@ -503,3 +506,54 @@ async def test_mirror_vad_cache_only(monkeypatch):
         await mirror.SileroVAD().load()
     assert "GT_ALLOW_MODEL_DOWNLOAD" in str(exc.value), \
         "the operator sees the honest failure instead of a silent GitHub clone"
+
+
+# --------------------------------------------------------------------------- #
+# Canonical services/api lane (gt_ai.vad — the realtime/telephony copy)
+# --------------------------------------------------------------------------- #
+async def test_canonical_vad_cache_only(monkeypatch):
+    canonical = importlib.import_module("gt_ai.vad")
+    _both_flags_off(monkeypatch)
+    monkeypatch.setattr(canonical, "_silero_cached", lambda: False)
+    import torch
+    monkeypatch.setattr(torch.hub, "load",
+                        lambda *a, **k: pytest.fail("torch.hub.load is not a cache probe"))
+    with pytest.raises(RuntimeError) as exc:
+        await canonical.SileroVAD().load()
+    assert "GT_ALLOW_MODEL_DOWNLOAD" in str(exc.value), \
+        "the operator sees the honest failure instead of a silent GitHub clone"
+
+
+async def test_canonical_vad_opt_in_loads(monkeypatch):
+    """The opt-in keeps the documented provisioning flow (still cache-probed first)."""
+    canonical = importlib.import_module("gt_ai.vad")
+    monkeypatch.delenv("GT_MT_ALLOW_MODEL_DOWNLOAD", raising=False)
+    monkeypatch.setenv("GT_ALLOW_MODEL_DOWNLOAD", "1")
+    monkeypatch.setattr(canonical, "_silero_cached", lambda: False)
+    calls: list = []
+
+    def _hub_load(*args, **kwargs):
+        calls.append(1)
+        return types.SimpleNamespace(reset_states=lambda: None), None
+
+    import torch
+    monkeypatch.setattr(torch.hub, "load", _hub_load)
+    await canonical.SileroVAD().load()
+    assert calls == [1], "an explicit operator opt-in reaches the provisioning path"
+
+
+async def test_canonical_vad_cached_loads_without_flag(monkeypatch):
+    """An operator-provisioned torch-hub cache loads with no opt-in at all."""
+    canonical = importlib.import_module("gt_ai.vad")
+    _both_flags_off(monkeypatch)
+    monkeypatch.setattr(canonical, "_silero_cached", lambda: True)
+    calls: list = []
+
+    def _hub_load(*args, **kwargs):
+        calls.append(1)
+        return types.SimpleNamespace(reset_states=lambda: None), None
+
+    import torch
+    monkeypatch.setattr(torch.hub, "load", _hub_load)
+    await canonical.SileroVAD().load()
+    assert calls == [1], "the cached clone serves without requiring the opt-in env"
