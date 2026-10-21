@@ -1,5 +1,10 @@
 import { api } from "./api";
-import type { TranslateResponse } from "./types";
+import type {
+  NormalizedTranslation,
+  TranslateResponse,
+  TranslateResponseLike,
+  TranslationOut,
+} from "./types";
 
 export class TranslationUnavailableError extends Error {
   constructor(message = "Translation provider is unavailable or not configured. Please retry.") {
@@ -9,7 +14,7 @@ export class TranslationUnavailableError extends Error {
 }
 
 export interface CanonicalTranslation {
-  response: TranslateResponse;
+  response: NormalizedTranslation;
   sourceLanguage: string;
   detectedConfidence: number | null;
 }
@@ -18,8 +23,19 @@ export function languageCode(value: string | undefined): string {
   return (value || "").toLowerCase().split("-")[0];
 }
 
-export function normalizeTranslationResponse(res: any): TranslateResponse {
-  const item = Array.isArray(res?.translations) ? res.translations[0] : res;
+/**
+ * The API answers with an ENVELOPE (`{ translations: [...], request_id }`).
+ * The UI wants one flat translation, so the envelope is normalized here —
+ * with the envelope typed, not `any` (issue #109 class 1: the old client
+ * type described a single flat translation, so the type did not describe
+ * what the server sends).
+ */
+export function normalizeTranslationResponse(
+  res: TranslateResponseLike,
+): NormalizedTranslation {
+  const item: Partial<TranslationOut> = Array.isArray(res?.translations)
+    ? (res.translations[0] ?? {})
+    : (res as Partial<TranslationOut>);
   return {
     translation_id: item?.translation_id || res?.request_id || "",
     source_language: item?.source_language || "",
@@ -30,8 +46,8 @@ export function normalizeTranslationResponse(res: any): TranslateResponse {
     provider: item?.provider || "",
     latency_ms: Number(item?.latency_ms ?? 0),
     quality_flags: Array.isArray(item?.quality_flags) ? item.quality_flags : [],
-    from_translation_memory: Boolean(item?.from_translation_memory || item?.tm_match),
-    detected_confidence: Number(item?.detected_confidence ?? 1.0),
+    from_translation_memory: Boolean(item?.tm_match),
+    detected_confidence: Number(res?.detected_confidence ?? 1.0),
     alternatives: Array.isArray(item?.alternatives) ? item.alternatives : [],
     // Honest glossary accounting: keep the backend's "not applied (reason)"
     // note so the UI can surface it (absent = applied or no glossary asked).
@@ -40,7 +56,7 @@ export function normalizeTranslationResponse(res: any): TranslateResponse {
 }
 
 export function isUsableTranslation(
-  response: TranslateResponse,
+  response: NormalizedTranslation,
   originalText: string,
   sourceLanguage: string,
   targetLanguage: string,

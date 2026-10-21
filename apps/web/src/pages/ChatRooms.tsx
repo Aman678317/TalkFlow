@@ -3,7 +3,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { MeetingSocket } from "../lib/ws";
-import type { Meeting, RealtimeEvent } from "../lib/types";
+import type { ChatMessage, Meeting, RealtimeEvent } from "../lib/types";
 import { Badge, Button, Card, EmptyState, Input } from "../components/ui";
 import { useAuth } from "../stores/auth";
 import { useLanguages, languageLabel } from "../hooks/useLanguages";
@@ -29,8 +29,12 @@ export default function ChatRooms() {
 
   const meetingsQ = useQuery({ queryKey: ["meetings"], queryFn: () => api<Meeting[]>("/api/v1/meetings") });
   const historyQ = useQuery({
-    queryKey: ["chat-history", activeId, listenLang],
-    queryFn: () => api<any[]>(`/api/v1/meetings/${activeId}/chat?listening_language=${listenLang}`),
+    // The chat endpoint takes no `listening_language` — the server ignored
+    // the parameter and the client filters locally anyway, so sending it
+    // only made the request look like it controlled the result (issue #109
+    // class 1).
+    queryKey: ["chat-history", activeId],
+    queryFn: () => api<ChatMessage[]>(`/api/v1/meetings/${activeId}/chat`),
     enabled: !!activeId,
   });
 

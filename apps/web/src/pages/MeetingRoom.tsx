@@ -32,7 +32,7 @@ import { MeetingSocket, normId, type SocketState } from "../lib/ws";
 import { WebRTCManager, setIceServers, type SignalMessage } from "../lib/webrtc";
 import { iceQueryEnabled, iceQueryKey, iceQueryUrl } from "../lib/meetingRoomIce";
 import { useRosterQuery } from "../hooks/useRosterQuery";
-import type { JoinMeetingResponse, Meeting, Preferences, RealtimeEvent, TranscriptItem } from "../lib/types";
+import type { JoinMeetingResponse, Meeting, Preferences, RealtimeEvent, TranscriptSegment } from "../lib/types";
 import { Button, ErrorState, SegmentedControl, Select, Spinner } from "../components/ui";
 import { VideoTile } from "../components/meeting/VideoTile";
 import { StageStrip } from "../components/meeting/StageStrip";
@@ -400,7 +400,7 @@ export default function MeetingRoom() {
 
   useQuery({
     queryKey: ["meeting", id, "transcript"],
-    queryFn: () => api<TranscriptItem[]>(`/api/v1/meetings/${id}/transcript`),
+    queryFn: () => api<TranscriptSegment[]>(`/api/v1/meetings/${id}/transcript`),
     enabled: drawerOpen && drawerTab === "captions",
     refetchInterval: drawerOpen && drawerTab === "captions" ? 8000 : false,
   });

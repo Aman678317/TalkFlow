@@ -19,7 +19,7 @@ import {
   Upload,
 } from "lucide-react";
 import { api, friendlyMessage } from "../lib/api";
-import type { TranslateResponse } from "../lib/types";
+import type { NormalizedTranslation } from "../lib/types";
 import { translateCanonical } from "../lib/translation";
 import { useShortcuts } from "../lib/shortcuts";
 import { LanguagePicker } from "../components/LanguagePicker";
@@ -249,7 +249,7 @@ async function fetchNeuralTranslation(
   srcLang: string,
   tgtLang: string,
   formality: string = "default"
-): Promise<TranslateResponse> {
+): Promise<NormalizedTranslation> {
   const t0 = performance.now();
   const src = (srcLang || "en").toLowerCase().split("-")[0];
   const tgt = (tgtLang || "de").toLowerCase().split("-")[0];
@@ -437,7 +437,7 @@ export default function TranslatePage() {
   const [styleId, setStyleId] = React.useState("");
   const [domain, setDomain] = React.useState("general");
   const [intent, setIntent] = React.useState("quality_optimized");
-  const [result, setResult] = React.useState<TranslateResponse | null>(null);
+  const [result, setResult] = React.useState<NormalizedTranslation | null>(null);
   const [debounced, setDebounced] = React.useState("");
   const [copied, setCopied] = React.useState(false);
   const [isSpeaking, setIsSpeaking] = React.useState(false);
@@ -485,7 +485,7 @@ export default function TranslatePage() {
       return response;
     },
     onMutate: () => setResult(null),
-    onSuccess: (normalized: TranslateResponse) => {
+    onSuccess: (normalized: NormalizedTranslation) => {
       setResult(normalized);
       const trimmed = source.trim();
       if (trimmed.length > 0 && trimmed.split(/\s+/).length <= 2) {
@@ -602,7 +602,7 @@ export default function TranslatePage() {
     setTimeout(() => URL.revokeObjectURL(url), 200);
   }
 
-  function commitRecent(res: TranslateResponse) {
+  function commitRecent(res: NormalizedTranslation) {
     const srcText = (res.source_text || "").trim();
     const outText = (res.translated_text || "").trim();
     if (!srcText || !outText) return;
