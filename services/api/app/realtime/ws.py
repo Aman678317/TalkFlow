@@ -186,8 +186,14 @@ async def realtime_ws(
     session = manager.get_session_for_meeting(meeting_id_uuid)
     resumed = False
     if session is None:
+        # The meeting row is already loaded above: its settings bag carries the
+        # tenant-level private-only flag (issue #109 class 3, finding 8), so
+        # the session knows before the first translation is routed.
+        meeting_private_only = bool(
+            (getattr(meeting, "settings_json", None) or {}).get("tenant_private_only"))
         session = await manager.create_session(meeting_id_uuid, org_id, room_name,
-                                               mode, db_seq_start=db_seq)
+                                               mode, db_seq_start=db_seq,
+                                               tenant_private_only=meeting_private_only)
         pl.get_pipeline(session)
     else:
         resumed = True

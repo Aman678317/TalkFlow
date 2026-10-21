@@ -20,7 +20,13 @@ Features:
 - Context-aware translation: accepts previous segment context, strictly capped to 250 chars
 - Natural conversational phrasing (avoids literal word-by-word artifacts)
 - TTS-friendly punctuation and sentence boundary normalization
-- Strict data privacy: no external leaks of private call content
+- Privacy: this adapter performs no privacy classification of its own — it
+  passes the caller's intent through to the provider, and the provider
+  chain shortlist (router privacy flags / tenant-private routing) decides
+  which providers may see the content. Callers that need the private-only
+  guarantee pass ``intent=Intent.PRIVATE_ONLY``; the previous wording
+  ("no external leaks of private call content") claimed a guarantee this
+  adapter does not and cannot implement.
 """
 from __future__ import annotations
 
@@ -80,8 +86,14 @@ class Translator(ABC):
         source_language: str,
         target_language: str,
         context: str | None = None,
+        intent: Intent | None = None,
     ) -> TranslationResponse:
-        """Translate text from source_language to target_language."""
+        """Translate text from source_language to target_language.
+
+        ``intent`` is the caller's routing intent; it is carried into the
+        provider request so a privacy-classified chain (private_only) can
+        honor it instead of being silently downgraded here.
+        """
 
 
 class IndicTranslator(Translator):
@@ -126,6 +138,7 @@ class IndicTranslator(Translator):
         source_language: str,
         target_language: str,
         context: str | None = None,
+        intent: Intent | None = None,
     ) -> TranslationResponse:
         t0 = time.perf_counter()
         raw_text = (text or "").strip()
@@ -155,7 +168,10 @@ class IndicTranslator(Translator):
             text=raw_text,
             source_lang=src,
             target_lang=tgt,
-            intent=Intent.LATENCY_OPTIMIZED,
+            # The caller's intent travels with the request (issue #109 class 3,
+            # finding 9): a private_only request must not be downgraded to a
+            # latency intent on the way to the provider chain.
+            intent=intent if intent is not None else Intent.LATENCY_OPTIMIZED,
             context=context_list,
         )
 

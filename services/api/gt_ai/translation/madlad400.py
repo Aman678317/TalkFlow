@@ -121,11 +121,12 @@ class Madlad400Provider(BaseProvider):
             return False
 
     async def healthcheck(self) -> bool:
-        try:
-            await self._ensure_loaded()
-            return True
-        except Exception:
-            return False
+        """Never load (issue #109 class 2): a health poll must not pull a 3B
+        model into memory. The local-first default made this the provider the
+        admin dashboard polls, so the probe is deps + cached weights — the
+        same contract the faster-whisper probe follows since #112.
+        """
+        return self.runtime_ready()
 
     def _generate_sync(self, req: TranslationRequest) -> str:
         import torch

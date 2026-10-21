@@ -21,6 +21,7 @@ from app.schemas import (
     PageTranslateResponse, TranslateRequest, TranslateResponse, TranslationOut,
 )
 from app.services import audit_service
+from gt_ai.types import Intent
 from app.services.page_fetch import PageFetchError, fetch_page
 from app.services.translation_service import TranslateContext, translate_text
 
@@ -297,6 +298,10 @@ class VoiceTranscribeRequest(BaseModel):
     audio_base64: str = Field(..., description="Base64 encoded 16-bit PCM audio")
     sample_rate: int = Field(default=16000, description="Audio sample rate in Hz")
     language: str | None = Field(default=None, description="Optional language code")
+    # Private-only (issue #109 class 3): the local whisper tier is on-tenant,
+    # but the AIFacade fallback may be a cloud provider — the private intent
+    # keeps that fallback on private providers (or fails honestly).
+    private_only: bool = Field(default=False, description="Route to private providers only")
 
 class VoiceTranscribeResponse(BaseModel):
     text: str
@@ -367,7 +372,9 @@ async def voice_transcribe(body: VoiceTranscribeRequest):
             except Exception as w_err:
                 log.warning("Local faster-whisper unavailable (%s), trying AIFacade fallback", w_err)
                 from app.ai import ai
-                chunk, decision = await ai.transcribe(raw_bytes, body.sample_rate, lang_hint=body.language)
+                intent = Intent.PRIVATE_ONLY if body.private_only else None
+                chunk, decision = await ai.transcribe(raw_bytes, body.sample_rate,
+                                                      lang_hint=body.language, intent=intent)
                 if settings.is_production and (
                     getattr(chunk, "is_dev", False)
                     or str(getattr(decision, "provider", "")).startswith("dev_")
@@ -390,6 +397,10 @@ class VoiceTtsRequest(BaseModel):
     text: str = Field(..., description="Text to synthesize")
     language: str = Field(default="en", description="Target language code (e.g. en, hi, de, es, fr)")
     voice: str | None = Field(default=None, description="Optional voice name")
+    # Private-only (issue #109 class 3): the gTTS tier talks to Google's
+    # service OUTSIDE the router, so a private request skips it and stays on
+    # the on-tenant providers behind the private intent.
+    private_only: bool = Field(default=False, description="Use on-tenant providers only")
 
 class VoiceTtsResponse(BaseModel):
     audio_base64: str
@@ -414,7 +425,10 @@ async def voice_tts(body: VoiceTtsRequest):
 
     # Tier 1: Try natural neural gTTS (handles Hindi, German, Spanish, French, English, etc.)
     from app.config import settings
-    if settings.app_env != "test":
+    if settings.app_env != "test" and not body.private_only:
+        # gTTS is a third-party (Google) service outside the router — a
+        # private-only request must not send the text there (issue #109
+        # class 3).
         try:
             import gtts
             def _synth_gtts():
@@ -433,7 +447,8 @@ async def voice_tts(body: VoiceTtsRequest):
     # Tier 2: AIFacade / local engine (Kokoro / Piper / tts_http)
     try:
         from app.ai import ai
-        chunk, decision = await ai.synthesize(clean_text, lang, voice=body.voice)
+        intent = Intent.PRIVATE_ONLY if body.private_only else None
+        chunk, decision = await ai.synthesize(clean_text, lang, voice=body.voice, intent=intent)
         if settings.is_production and (
             getattr(chunk, "is_dev", False) or decision.provider.startswith("dev_")
         ):

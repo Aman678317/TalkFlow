@@ -93,6 +93,7 @@ jobs:
             tests/test_outbound_idempotency.py \
             tests/test_page_translation_hardened.py \
             tests/test_performance_and_load_hardened.py \
+            tests/test_private_only_guarantee_hardened.py \
             tests/test_production_readiness_hardened.py \
             tests/test_production_security_hardened.py \
             tests/test_production_telephony_gates.py \

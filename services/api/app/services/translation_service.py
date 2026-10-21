@@ -56,6 +56,10 @@ class TranslateContext:
     tm_id: uuid.UUID | None = None
     domain: str = "general"
     intent: str = "quality_optimized"
+    # Tenant-level private-only (issue #109 class 3): a meeting/call marked
+    # private must never let its content reach a non-private provider. The
+    # flag travels with the context into the router's private_only intent.
+    tenant_private_only: bool = False
     formality: str = "default"
     product: str = "text"          # text|document|realtime|chat
     meeting_id: uuid.UUID | None = None
@@ -297,6 +301,7 @@ async def translate_text(
         context=context_list,
         glossary=glossary_terms or None,
         style=style_cfg,
+        tenant_private_only=bool(ctx.tenant_private_only),
     )
     result, decision = await ai.translate(req)
 

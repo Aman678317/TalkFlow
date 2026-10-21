@@ -52,6 +52,8 @@ class TelephonyMediaStreamSession:
         self.receiver_language: str = "ja"
         self.call_mode: str = "human_to_human"
         self.unified_prompt: str = ""
+        # Tenant-private call (issue #109 class 3, finding 8)
+        self.tenant_private_only: bool = False
 
         # Bidirectional Translation Bridge
         self.bridge: BidirectionalTranslationBridge | None = None
@@ -69,6 +71,11 @@ class TelephonyMediaStreamSession:
                 self.caller_language = call_row.caller_language or "hi"
                 self.receiver_language = call_row.receiver_language or "ja"
                 self.call_mode = call_row.mode or "human_to_human"
+                # Tenant-private call (issue #109 class 3, finding 8): the
+                # call row carries the flag; the bridge's translations are
+                # routed private-only.
+                self.tenant_private_only = bool(
+                    (call_row.metadata_json or {}).get("tenant_private_only"))
 
                 # If prompt version ID is attached, load prompt
                 if call_row.prompt_version_id:
@@ -89,6 +96,7 @@ class TelephonyMediaStreamSession:
             on_event=self._broadcast_event,
             on_audio_out=self._handle_bridge_audio_out,
             on_barge_in=self._handle_bridge_barge_in,
+            tenant_private_only=self.tenant_private_only,
         )
         await self.bridge.start()
 

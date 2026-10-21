@@ -43,16 +43,31 @@ class SttProvider(Protocol):
 
 
 class RealtimeSttProvider:
-    """Production adapter: delegates to the configured AI facade."""
+    """Production adapter: delegates to the configured AI facade.
 
-    def __init__(self, facade) -> None:
+    ``private_only`` (issue #109 class 3, finding 8): a meeting marked
+    tenant-private must not reach a cloud STT/detection provider, so the
+    private intent is carried into the router. The kwarg is only passed when
+    the meeting is private, so the historical call shape (and the test
+    fakes) are untouched.
+    """
+
+    def __init__(self, facade, private_only: bool = False) -> None:
         self._facade = facade
+        self._private_only = bool(private_only)
 
     async def transcribe(self, audio: bytes, sample_rate: int,
                          lang_hint: str | None = None):
+        if self._private_only:
+            from gt_ai.types import Intent
+            return await self._facade.transcribe(audio, sample_rate, lang_hint=lang_hint,
+                                                 intent=Intent.PRIVATE_ONLY)
         return await self._facade.transcribe(audio, sample_rate, lang_hint=lang_hint)
 
     async def detect_language(self, text: str) -> DetectionResult:
+        if self._private_only:
+            from gt_ai.types import Intent
+            return await self._facade.detect_language(text, intent=Intent.PRIVATE_ONLY)
         return await self._facade.detect_language(text)
 
 

@@ -46,6 +46,10 @@ class CreateCallRequest(BaseModel):
     recording_enabled: bool = Field(default=False, description="Recording toggle (OFF by default for privacy compliance)")
     agent_id: str | None = None
     prompt_version_id: str | None = None
+    # Tenant-private call (issue #109 class 3, finding 8): the call's
+    # translations are routed private-only — no non-private provider ever
+    # receives the conversation.
+    tenant_private_only: bool = Field(default=False, description="Route this call's translations to private providers only")
 
 
 class CallSessionOut(BaseModel):
@@ -223,6 +227,7 @@ async def initiate_call(
             recording_requested=body.recording_enabled,
             agent_id=uuid.UUID(body.agent_id) if body.agent_id else None,
             prompt_version_id=uuid.UUID(body.prompt_version_id) if body.prompt_version_id else None,
+            tenant_private_only=body.tenant_private_only,
             base_url=base_url,
         )
     except ValidationError:

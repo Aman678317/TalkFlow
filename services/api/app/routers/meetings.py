@@ -59,7 +59,8 @@ async def create_meeting(body: MeetingCreate,
     meeting, participant = await meeting_service.create_meeting(
         db, org_id=principal.org_id, created_by=principal.user_id,
         title=body.title, mode=body.mode, speak_lang=body.speak_lang,
-        hear_lang=body.hear_lang)
+        hear_lang=body.hear_lang,
+        tenant_private_only=body.tenant_private_only)
     if principal.user:
         participant.display_name = principal.user.name or principal.user.email.split("@")[0]
         await db.commit()

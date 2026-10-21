@@ -61,8 +61,9 @@ class RealtimeTtsProvider:
     language run to captions instead of stalling the fan-out task.
     """
 
-    def __init__(self, facade) -> None:
+    def __init__(self, facade, private_only: bool = False) -> None:
         self._facade = facade
+        self._private_only = bool(private_only)
 
     async def synthesize_stream(self, text: str, lang: str, voice: str | None = None):
         from app.config import settings
@@ -71,9 +72,18 @@ class RealtimeTtsProvider:
         t0 = time.perf_counter()
         try:
             async with inference_gate.default_gate().slot():
-                stream, decision = await asyncio.wait_for(
-                    self._facade.synthesize_stream(text, lang, voice),
-                    timeout=timeout)
+                if self._private_only:
+                    # Tenant-private meeting (issue #109 class 3, finding 8):
+                    # the private intent keeps a cloud TTS provider out.
+                    from gt_ai.types import Intent
+                    stream, decision = await asyncio.wait_for(
+                        self._facade.synthesize_stream(text, lang, voice,
+                                                       intent=Intent.PRIVATE_ONLY),
+                        timeout=timeout)
+                else:
+                    stream, decision = await asyncio.wait_for(
+                        self._facade.synthesize_stream(text, lang, voice),
+                        timeout=timeout)
         except TimeoutError:
             if (time.perf_counter() - t0) * 1000 >= deadline_ms * 0.9:
                 raise StageDeadlineExpired("tts_open", deadline_ms)

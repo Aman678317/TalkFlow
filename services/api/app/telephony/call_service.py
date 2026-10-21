@@ -47,6 +47,7 @@ class CallService:
         recording_requested: bool = False,
         agent_id: uuid.UUID | None = None,
         prompt_version_id: uuid.UUID | None = None,
+        tenant_private_only: bool = False,
         base_url: str = "",
     ) -> M.CallSession:
         from app.telephony.security import TelephonySecurity
@@ -99,6 +100,7 @@ class CallService:
             mode="ws",
             speak_lang=caller_language,
             hear_lang=receiver_language,
+            tenant_private_only=tenant_private_only,
         )
 
         call_id = uuid.uuid4()
@@ -151,7 +153,8 @@ class CallService:
             started_at=utcnow(),
             error_code=call_res.error_code,
             error_message=call_res.error_message,
-            metadata_json={"raw": call_res.raw_response, "stream_url": stream_url},
+            metadata_json={"raw": call_res.raw_response, "stream_url": stream_url,
+                           "tenant_private_only": bool(tenant_private_only)},
         )
         self.db.add(call_session)
 

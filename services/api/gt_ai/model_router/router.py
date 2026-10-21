@@ -42,6 +42,35 @@ class ProviderSpec:
 
 LATENCY_WEIGHTS = {"realtime": 1.0, "fast": 0.6, "batch": 0.2}
 
+#: Provider NAMES whose content leaves the tenant. Cloud SaaS (neural_online,
+#: deepl, azure_*) and the operator HTTP endpoints (``*_http`` post arbitrary
+#: request content to a configured URL that may be a third-party service —
+#: seeded ``private=True`` with nothing verifying the destination was finding
+#: #6 in the private-only sweep). An operator who hosts such an endpoint
+#: on-tenant opts it into private via the ``*_HTTP_PRIVATE`` settings at
+#: seed/spec time (services/api: MT/STT/TTS/LLM_HTTP_PRIVATE).
+NON_PRIVATE_PROVIDER_NAMES = frozenset({
+    "neural_online",
+    "deepl",
+    "azure_translator", "azure_mt", "azure",
+    "azure_speech", "azure_stt", "azure_speech_stt",
+    "azure_speech_tts", "azure_tts", "azure_speech",
+    "mt_http", "stt_http", "tts_http", "llm_http",
+})
+
+
+def provider_is_private(name: str, overrides: set[str] | frozenset[str] | None = None) -> bool:
+    """The privacy classification to put on a provider NAME's spec.
+
+    ``overrides`` carries the operator opt-ins already resolved upstream
+    (e.g. an ``*_http`` provider whose URL the operator declared private
+    infra); those names count as private. Everything not listed as
+    non-private is local inference (self-hosted / on-tenant).
+    """
+    if overrides and name in overrides:
+        return True
+    return name not in NON_PRIVATE_PROVIDER_NAMES
+
 
 class ModelRouter:
     def __init__(

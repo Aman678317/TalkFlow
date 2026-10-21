@@ -166,6 +166,16 @@ class Settings(BaseSettings):
     deepl_api_url: str = "https://api-free.deepl.com/v2/translate"
     mt_http_url: str = ""
     mt_http_style: str = "opennmt"
+    # Privacy classification of the operator-configured HTTP endpoints
+    # (issue #109 class 3, finding 6): these providers post request content
+    # to the URL above, which may be a third-party service — nothing in the
+    # code can verify the destination is on-tenant. Default NOT-private: a
+    # private_only request excludes them. Declare the endpoint on-tenant
+    # infrastructure with =1 to include it in private routing.
+    mt_http_private: bool = False
+    stt_http_private: bool = False
+    tts_http_private: bool = False
+    llm_http_private: bool = False
     # Azure is optional and server-side only. Translator credentials may be
     # separate; adapters fall back to the Speech key/region for multi-service
     # Azure resources.

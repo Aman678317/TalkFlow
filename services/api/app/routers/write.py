@@ -29,6 +29,7 @@ async def improve_text(
         style=body.style,
         tone=body.tone,
         corrections_only=body.corrections_only,
+        private_only=body.private_only,
     )
 
 
