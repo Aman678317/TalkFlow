@@ -58,16 +58,10 @@ builder.add_edge("agent", END)
 
 globaltalk_graph = builder.compile(checkpointer=MemorySaver())
 
-# In-memory store for thread messages, scoped per organization so one
-# organization's conversation can never be read by another (issue #109 class
-# 3, day-2 finding B-3).
-threads_db: dict[str, dict[str, list[dict[str, Any]]]] = {}
-
-
-def _org_threads(org_id: Any) -> dict[str, list[dict[str, Any]]]:
-    """The thread store of one organization."""
-    key = str(org_id or "")
-    return threads_db.setdefault(key, {})
+# The thread store lives in app.agent_threads: it is scoped per organization
+# and imports no agent dependency, so the isolation is verifiable everywhere
+# (issue #109 class 3, day-2 finding B-3).
+from app.agent_threads import org_threads as _org_threads
 
 
 def mount_copilotkit_agent(app: FastAPI, path: str = "/api/copilotkit") -> None:
