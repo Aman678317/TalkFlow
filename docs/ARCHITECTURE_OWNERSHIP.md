@@ -387,8 +387,8 @@ The SDK is now `gt_ai_sdk`, so it cannot shadow anything. What each entry point 
 | `scripts/bench_tts_voices.py`, `scripts/run_evaluation.py`, `scripts/run_dev.sh` | docs only | operator tools |
 | `scripts/download_models.ps1` | **nothing** | the PowerShell twin of a CI-referenced script — a Windows-operator gap |
 | `scripts/bootstrap_full_ai.{sh,ps1}` | nothing | a one-shot bootstrap with no owner |
-| `scripts/apply_phase4_hardening.py` | nothing | **mutates source in place** (`app/realtime/livekit_bridge.py`) — a one-shot migration script that is not idempotent-safe and is referenced by nothing |
-| `scripts/benchmark_translation_fanout.py`, `scripts/probe_e2e_features.py`, `scripts/update_cross_tests.py` | nothing | unreferenced tools |
+| `scripts/apply_phase4_hardening.py` | nothing | **deleted (O-12)** — the phase-4 one-shot codemod whose guarded patterns had gone stale and whose unguarded rewrites reported "Patched" while writing byte-identical content |
+| `scripts/benchmark_translation_fanout.py`, `scripts/probe_e2e_features.py` | nothing | unreferenced tools |
 
 ---
 
@@ -448,7 +448,7 @@ Every row is verified with a file + line. **Nothing here was deleted or "fixed"*
 | **O-6** | `app/workers_runner.py` is an **orphan** worker entry point that duplicates the in-process registration and omits the `default` queue. | `workers_runner.py:31-37` vs `main.py:180-192`; no importer, no Docker/Make target | Two competing "worker" entry points; the standalone one is not what the image runs |
 | **O-7** | Unreachable modules inside the canonical backend: `app/mcp/indic_server.py`, `app/globaltalk_client.py` (whose docstring claims "all callers inject the same singleton" — false), `gt_ai/evaluation/runner.py`, `gt_ai/translation/translator.py` + `gt_ai/stt/recognizer.py` (451 lines, imported only by tests). | `globaltalk_client.py:26-27` vs zero importers; `gt_ai/translation/translator.py` imported only by `tests/unit/test_translation_adapter.py:2` | Dead code that reads as live; the "only place" claim in the docstring is wrong |
 | **O-8** | Two modules named `webhook_service` with different owners. | `app/services/webhook_service.py:39` (org webhooks) vs `app/telephony/webhook_service.py:20` (carrier callbacks) | A naming trap for the matrix and for reviewers |
-| **O-12** | Two stale scripts in `scripts/` **mutate source in place** and are referenced by nothing. | `scripts/apply_phase4_hardening.py:52,83,160,194,204` write to `services/api/app/**` without the guard used at `:43` (its pattern no longer matches, so the later blocks rewrite unconditionally); `scripts/update_cross_tests.py:183-188` appends a test that already exists at `tests/test_cross_tenant_security.py:161` | Running either silently rewrites or duplicates canonical source and test files — and CI lints them, so they look maintained |
+| **O-12** | Two stale scripts in `scripts/` **mutate source in place** and are referenced by nothing. | `scripts/apply_phase4_hardening.py:52,83,160,194,204` write to `services/api/app/**` without the guard used at `:43` (its pattern no longer matches, so the later blocks rewrite unconditionally); `scripts/update_cross_tests.py:183-188` appends a test that already exists at `tests/test_cross_tenant_security.py:161` | **Retired** — both deleted, one line pinned in the CI lane (`test_source_mutating_scripts_retired.py`). Re-checked on `ecf4dc5` before retiring: the guarded patterns are all stale, the two unguarded rewrites (`ws.py`, `meeting_service.py`) report "Patched" while writing byte-identical content, and the cross-test append is inert today — it keys on a single sentinel test name and carries pre-#124 v2/v3 assumptions, so the first rename of that sentinel injects stale tests straight into the lane. The finding holds as stated; the code that produced the row is gone |
 
 ### 10.3 Configuration and environment
 

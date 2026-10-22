@@ -115,6 +115,7 @@ jobs:
             tests/test_retention_escalations.py \
             tests/test_social_auth_hardened.py \
             tests/test_social_real_verification.py \
+            tests/test_source_mutating_scripts_retired.py \
             tests/test_storage_webhooks.py \
             tests/test_telemetry_tracing_hardened.py \
             tests/test_telephony_ops_admin.py \
