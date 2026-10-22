@@ -59,13 +59,21 @@ def test_the_runtime_serves_the_contract_when_the_agent_is_mounted(services_app_
     assert "globaltalk_agent" in agents
 
 
-def test_the_run_endpoint_accepts_the_alias_agent_name(services_app_client):
+def test_the_run_endpoint_accepts_the_alias_agent_name(services_app_client, user):
+    """The alias name is accepted by the run endpoint.
+
+    The endpoint requires an authenticated organization member (issue #109
+    class 3, day-2 finding B-3), and a deployment without a model
+    configured answers 502 — an honest failure — instead of a canned reply.
+    """
     r = services_app_client.post(
         "/api/copilotkit/agent/default/run",
         json={"threadId": "audit-thread", "messages": [
             {"role": "user", "content": "hello"}]},
+        headers=user["headers"],
     )
     if r.status_code == 404:
         pytest.skip("the optional CopilotKit agent is not mounted in this environment")
-    assert r.status_code == 200, r.text
-    assert r.json().get("threadId") == "audit-thread"
+    assert r.status_code in (200, 502), r.text
+    if r.status_code == 200:
+        assert r.json().get("threadId") == "audit-thread"
