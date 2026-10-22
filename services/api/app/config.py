@@ -409,6 +409,18 @@ class Settings(BaseSettings):
                     "'telephony_verify_webhook_signatures' (signed webhooks, "
                     "anti-replay). Verification is compile-safety, not optional."
                 )
+            # 1b. The metrics endpoint carries tenant-labelled series and
+            #     latency histograms, so it must never be served
+            #     unauthenticated in production. A token is mandatory there,
+            #     the same "not optional" rule as the webhook signatures
+            #     (issue #109 class 3, day-2 finding C-4).
+            if self.metrics_enabled and not self.metrics_token:
+                raise ValueError(
+                    "Production environment must set 'metrics_token' while "
+                    "'metrics_enabled' is on (the /metrics endpoint exposes "
+                    "tenant-labelled series and latency histograms). Either "
+                    "set a token or disable the endpoint."
+                )
             # 2. A selected CARRIER lane must bring its full secret set AND a
             #    TLS-terminating webhook base URL — carrier callbacks carry
             #    signed requests; a signed webhook over http:// is worthless.
