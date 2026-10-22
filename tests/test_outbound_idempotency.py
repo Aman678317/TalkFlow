@@ -325,3 +325,31 @@ async def test_concurrency_cap_blocks_second_active_dial(services_app_client, us
     executed2 = await _execute(user["org_id"], job2)
     assert executed2.status == "blocked"
     assert executed2.blocked_reason == "max_concurrent_reached"
+
+
+# --------------------------------------------------------------------------- #
+# Day-3 (2026-10-23): the phone bridge renders both sides' languages, but call
+# creation never checked them against the capability registry — a call with
+# caller_language="xx" was happily scheduled and the bridge then translated
+# with no validated pair. Creation is the choke point: both languages must be
+# registered (and not EXPERIMENTAL) before any provider or meeting work runs.
+# --------------------------------------------------------------------------- #
+
+def test_a_call_in_an_unregistered_language_is_rejected(services_app_client, user):
+    headers = user["headers"]
+    for field, value in (("caller_language", "xx"), ("receiver_language", "zz")):
+        body = {"to_number": "+919876543210", "caller_language": "en",
+                "receiver_language": "hi"}
+        body[field] = value
+        res = services_app_client.post("/api/v1/telephony/calls", json=body, headers=headers)
+        assert res.status_code == 422, (
+            f"{field}={value} was accepted although the capability registry "
+            f"does not carry it: HTTP {res.status_code} {res.text[:200]}")
+
+
+def test_a_call_in_registered_languages_still_places(services_app_client, user):
+    body = {"to_number": "+919876543210", "caller_language": "hi",
+            "receiver_language": "mr"}
+    res = services_app_client.post("/api/v1/telephony/calls", json=body,
+                                   headers={**user["headers"], "Idempotency-Key": f"lang-{uuid.uuid4().hex}"})
+    assert res.status_code == 201, res.text

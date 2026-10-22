@@ -287,12 +287,20 @@ def _is_distinct_translation(source: str, candidate: str | None,
     when a language pair is unavailable. Passing that through looks successful
     to the backend, but the web client correctly rejects it as unusable. Treat
     it as a failed provider attempt so the next configured fallback can run.
+
+    The identity pair (source == target) and an unknown target stay pass-through
+    by contract. Everything else — including an unknown (``auto``, empty,
+    ``unknown``) source — must differ from the source text: knowing the source
+    language is NOT required to detect a verbatim echo, and the old
+    short-circuit let auto-detected surfaces (page translate, the telephony
+    bridge's detected_lang override) ship echoes on Latin-script targets,
+    where the script check is skipped (day-3, 2026-10-23).
     """
     if not candidate or not candidate.strip():
         return False
     src = (source_lang or "").lower().split("-")[0]
     tgt = (target_lang or "").lower().split("-")[0]
-    if not src or src in ("auto", "unknown") or not tgt or src == tgt:
+    if not tgt or src == tgt:
         return True
     compact = lambda value: re.sub(r"\s+", " ", normalize_unicode(value)).strip().casefold()
     return compact(candidate) != compact(source)
