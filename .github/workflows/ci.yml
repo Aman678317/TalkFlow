@@ -83,7 +83,7 @@ jobs:
             tests/test_cross_tenant_security.py \
             tests/test_database_migrations_hardened.py \
             tests/test_deploy_canonical_provider_tree.py \
-            tests/test_deployment_and_devops_alignment.py \
+            tests/test_dev_entrypoint_contract.py \
             tests/test_developer_platform_hardened.py \
             tests/test_escalation_board_api.py \
             tests/test_escalation_hooks.py \
