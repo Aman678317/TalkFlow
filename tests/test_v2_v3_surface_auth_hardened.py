@@ -95,3 +95,121 @@ def test_the_usage_route_counts_what_the_org_actually_used(services_app_client, 
     if res.status_code == 200:
         assert usage.json()["character_count"] > 0, (
             "the usage report must reflect what the organization consumed")
+
+
+# --------------------------------------------------------------------------- #
+# Day-3 (2026-10-23): content honesty on the same surface. The capability
+# routes were already public by design; what they SAY must now be true, and
+# the v2 translate fallback must never fabricate a "translation".
+# --------------------------------------------------------------------------- #
+
+def _registry_serving_codes():
+    from gt_ai.capabilities import DEFAULT_LANGUAGES
+    return {lc.code.upper() for lc in DEFAULT_LANGUAGES if lc.translation_supported}
+
+
+def test_the_v2_language_list_serves_only_registry_languages(services_app_client):
+    """GET /v2/languages advertised ~95 codes — Latin, Esperanto, unrelated
+    scripts no adapter, no registry row and no provider serves. The default
+    language list is an advertisement: it may only contain languages the
+    capability registry carries."""
+    res = services_app_client.get("/v2/languages?type=target")
+    assert res.status_code == 200
+    entries = res.json()
+    serving = _registry_serving_codes()
+    advertised = {str(e["language"]).split("-")[0].upper() for e in entries}
+    over_advertised = advertised - serving
+    assert not over_advertised, (
+        "/v2/languages advertised languages nothing serves: "
+        + ", ".join(sorted(over_advertised)))
+    formality = {e["language"] for e in entries if e.get("supports_formality")}
+    assert {c.lower() for c in formality} <= {"de", "es", "fr"}, (
+        "formality advertised for languages with no formality rules: "
+        + ", ".join(sorted(formality)))
+
+
+def test_a_real_provider_result_is_never_replaced_by_the_canned_dictionary(
+        services_app_client, monkeypatch):
+    """The dictionary override ran POST-provider: a configured provider's real
+    translation was silently swapped for the canned phrase whenever the source
+    happened to match a dictionary key."""
+    from types import SimpleNamespace
+    import app.routers.v2_v3 as v2
+
+    async def real_provider(db, text, src, tgt, ctx):
+        return SimpleNamespace(
+            source_lang="en",
+            result=SimpleNamespace(
+                text="A genuinely translated greeting.",
+                quality_flags=[],
+                is_dev=False),
+        )
+
+    monkeypatch.setattr(v2, "translate_text", real_provider)
+    res = services_app_client.post(
+        "/v2/translate",
+        json={"text": ["hello world"], "source_lang": "EN", "target_lang": "DE"})
+    assert res.status_code == 200, res.text
+    item = res.json()["translations"][0]
+    assert item["text"] == "A genuinely translated greeting.", (
+        "the canned dictionary replaced the provider's real translation: "
+        + item["text"])
+    assert "untranslated_fallback" not in item
+
+
+def test_a_failed_provider_yields_no_fabricated_translation(
+        services_app_client, monkeypatch):
+    """The fallback answered with ``"[DE] <source text>"`` (or a dictionary
+    phrase) on ANY exception — a fabricated text indistinguishable from a real
+    translation. Honest shape: empty text + ``untranslated_fallback`` flag."""
+    import app.routers.v2_v3 as v2
+
+    async def down(db, text, src, tgt, ctx):
+        raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(v2, "translate_text", down)
+    text = "The quarterly expedition reached the plateau before dawn."
+    res = services_app_client.post(
+        "/v2/translate",
+        json={"text": [text], "source_lang": "EN", "target_lang": "DE"})
+    assert res.status_code == 200, res.text
+    item = res.json()["translations"][0]
+    assert item["text"] != f"[DE] {text}"
+    assert text not in item["text"], "the source was shipped as the translation"
+    assert item["text"] == "", "empty means nothing was translated"
+    assert item.get("untranslated_fallback") is True, (
+        "a machine-checkable failure flag is required")
+
+
+def test_the_desi_translate_dictionary_hit_carries_provenance(services_app_client):
+    """/v2/desi/translate answers from its phrase dictionary before any
+    provider runs; the caller must be able to tell (DeepL-compatible clients
+    treat dictionary output differently from MT output)."""
+    res = services_app_client.post(
+        "/v2/desi/translate",
+        json={"text": ["hello world"], "source_lang": "en", "target_lang": "hi"})
+    assert res.status_code == 200, res.text
+    item = res.json()["translations"][0]
+    assert item["text"] == "नमस्ते दुनिया"
+    assert item.get("translated_by") == "dictionary", (
+        f"a canned dictionary answer shipped without provenance: {item!r}")
+
+
+def test_the_desi_translate_path_never_fabricates_either(
+        services_app_client, monkeypatch):
+    import app.routers.v2_v3 as v2
+
+    async def down(db, text, src, tgt, ctx):
+        raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(v2, "translate_text", down)
+    text = "The quarterly expedition reached the plateau before dawn."
+    res = services_app_client.post(
+        "/v2/desi/translate",
+        json={"text": [text], "source_lang": "en", "target_lang": "hi"})
+    assert res.status_code == 200, res.text
+    item = res.json()["translations"][0]
+    assert text not in item["text"], "the source was shipped as the translation"
+    assert f"[HI]" not in item["text"] and f"[HI]".lower() not in item["text"].lower()
+    assert item["text"] == ""
+    assert item.get("untranslated_fallback") is True

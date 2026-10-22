@@ -15,7 +15,7 @@ from app.config import settings
 from app.db import models as M
 from app.db.session import db_session, get_db
 from app.deps import Principal, client_ip_hash, require_org_user
-from app.errors import AppError, NotFoundError, ValidationError
+from app.errors import AppError, NotFoundError, ValidationError, UnsupportedLanguageError
 from app.ratelimit import check_rate_limit
 from app.telephony.call_service import CallService
 from app.telephony.call_transcript import assemble_transcript
@@ -231,6 +231,10 @@ async def initiate_call(
             base_url=base_url,
         )
     except ValidationError:
+        raise
+    except UnsupportedLanguageError:
+        # Day-3: a language the capability registry does not carry is a 422
+        # from the service itself — do not bury it in the generic carrier wrap.
         raise
     except Exception as exc:
         log.exception("Exception inside create_outbound_call")

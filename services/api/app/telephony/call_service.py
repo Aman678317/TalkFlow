@@ -52,6 +52,15 @@ class CallService:
     ) -> M.CallSession:
         from app.telephony.security import TelephonySecurity
 
+        # Day-3 (2026-10-23): pair truth at the one choke point. The phone bridge
+        # renders BOTH sides' languages (bidirectional), but creation never checked
+        # them — a call with caller_language="xx" was happily scheduled and the
+        # bridge then translated with no validated pair. The capability registry is
+        # the runtime source of truth; UnsupportedLanguageError maps to 422.
+        from app.services.translation_service import validate_pair
+        await validate_pair(self.db, "en", caller_language)
+        await validate_pair(self.db, "en", receiver_language)
+
         # The call-minute limit is metered as "telephony_minutes"; it was
         # never checked, so the plan's call allowance could not trip
         # (issue #109 class 4). The pre-check uses the one-minute floor —

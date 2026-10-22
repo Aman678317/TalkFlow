@@ -85,3 +85,65 @@ async def test_document_pipeline_resumes_completed_segments():
         # Job/Doc should reach ready status
         assert doc.status == "ready"
         assert doc.output_object_key is not None
+
+
+@pytest.mark.asyncio
+async def test_a_failed_segment_never_ships_as_its_own_translation():
+    """Day-3 (2026-10-23): when one segment's translation raised, the pipeline
+    wrote the SOURCE text into that segment and continued — so the doc reached
+    "ready" carrying English text inside a Spanish document, which also defeats
+    the file's own empty/missing-segment quality gates. A failed segment must
+    stay missing: the existing gate then fails the document honestly."""
+    from sqlalchemy import select
+
+    from app.errors import DocumentProcessingError
+
+    await init_db()
+    async with engine().begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    doc_id = uuid.uuid4()
+    org_id = uuid.uuid4()
+
+    raw_bytes = b"Hello world.\n\nThank you very much."
+    checksum = sha256_bytes(raw_bytes)
+    storage_key = object_key("documents", str(org_id), "test-fail.txt", checksum)
+    await storage().put(storage_key, raw_bytes, "text/plain")
+
+    async with db_session() as db:
+        org = M.Organization(id=org_id, name="Test Org", slug=f"org-{uuid.uuid4().hex[:8]}")
+        db.add(org)
+        await db.flush()
+        doc = M.Document(
+            id=doc_id, org_id=org.id,
+            filename="test-fail.txt", mime_type="text/plain",
+            size_bytes=len(raw_bytes), checksum=checksum,
+            source_object_key=storage_key,
+            source_lang="en", target_lang="es",
+            status="uploaded"
+        )
+        db.add(doc)
+        await db.commit()
+        await db.refresh(doc)
+
+        async def one_block_fails(db, text, src, tgt, ctx):
+            if "Thank you" in text:
+                raise RuntimeError("provider down for this segment")
+            res = MagicMock()
+            res.result.text = f"Translated: {text}"
+            return res
+
+        with pytest.raises(DocumentProcessingError):
+            with patch("app.services.document_service.translate_text",
+                       side_effect=one_block_fails):
+                await _run_pipeline(db, doc, resume=False)
+        assert doc.status != "ready", "the document claimed ready with missing segments"
+
+    async with db_session() as db:
+        rows = (await db.execute(
+            select(M.DocumentSegment).where(M.DocumentSegment.document_id == doc_id)
+        )).scalars().all()
+        self_translations = [s for s in rows if (s.target_text or "") == s.source_text]
+        assert not self_translations, (
+            "a failed segment was shipped with its own source text as the translation: "
+            + ", ".join(s.source_text for s in self_translations))
