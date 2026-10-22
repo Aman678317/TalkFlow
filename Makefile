@@ -17,9 +17,13 @@ bootstrap:
 models:
 	@bash scripts/download_models.sh
 
-## run API + web (dev)
+## run API + web (dev) — the CANONICAL backend (services/api)
 dev:
 	@bash scripts/run_dev.sh
+
+## run the LEGACY lane's API + web (apps/api) — a separate compatibility product
+dev-legacy:
+	@DEV_LEGACY=1 bash scripts/run_dev.sh
 
 api:
 	$(PY) run_api.py

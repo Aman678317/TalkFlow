@@ -80,6 +80,7 @@ jobs:
             tests/test_contacts_api.py \
             tests/test_database_migrations_hardened.py \
             tests/test_deploy_canonical_provider_tree.py \
+            tests/test_dev_entrypoint_contract.py \
             tests/test_developer_platform_hardened.py \
             tests/test_escalation_board_api.py \
             tests/test_escalation_hooks.py \

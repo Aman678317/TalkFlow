@@ -10,6 +10,9 @@ make bootstrap        # toolchain check, deps, .env, DB init+seed, model weights
 make dev              # API :8000 + Web :5173 (Vite proxies /api and /ws)
 ```
 
+`make dev` starts the **canonical** backend (`services/api`) — the same code the
+image runs. The legacy compatibility lane has its own target: `make dev-legacy`.
+
 Open http://localhost:5173 — sign up, or use the seeded dev account
 `admin@globaltalk.dev` / `Demo1234!` (platform admin, org "GlobalTalk Demo", seeded glossary).
 
