@@ -47,3 +47,11 @@ minisbd>=0.1.7
 pytest==9.0.3
 pytest-cov==7.0.0
 pytest-asyncio>=0.24.0
+# Direct test imports (declared here so they never hang off another
+# package's extras or a transitive install):
+#  - cryptography: tests/test_social_real_verification.py builds RSA keys
+#    for the signed social-provider verification pins
+#  - PyYAML: tests/test_deployment_and_devops_alignment.py parses the
+#    compose / k8s / docs YAML it aligns
+cryptography>=3.4.0
+pyyaml>=5.1
