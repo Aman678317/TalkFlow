@@ -290,14 +290,14 @@ One path, every layer, with the line it happens on. This is the chain the Day-2 
 | Suite | Tests | Area it owns |
 |---|---|---|
 | `tests/test_tenant_security_extended.py` | 18 | tenant isolation & BOLA/IDOR |
-| `tests/test_ai_agent_graph.py` | 17 | the AI-agent state graph's hard guards |
-| `tests/test_meeting_media_contract.py` | 15 | the web ↔ API media contract |
+| `tests/test_ai_agent_graph.py` | 17 | AI-agent graph hard guards — **wired** |
+| `tests/test_meeting_media_contract.py` | 15 | the web ↔ API media contract — **wired** |
 | `tests/test_realtime_security_hardened.py` | 12 | realtime/WS session authorization — **excluded on purpose** (`ci.yml:56-59`, SQLite lock contention) |
-| `tests/test_auth_full_flow.py` | 10 | the end-to-end auth + refresh-rotation flow |
-| `tests/test_cross_tenant_security.py` | 9 | cross-tenant isolation |
-| `tests/test_social_real_verification.py` | 9 | real signed social-provider verification |
-| `tests/test_storage_webhooks.py` | 5 | object storage + webhook SSRF protection |
-| `tests/test_deployment_and_devops_alignment.py` | 5 | compose/k8s/nginx/Dockerfile alignment |
+| `tests/test_auth_full_flow.py` | 10 | end-to-end auth + refresh-rotation flow — **wired** |
+| `tests/test_cross_tenant_security.py` | 9 | cross-tenant isolation — **wired** |
+| `tests/test_social_real_verification.py` | 9 | real signed social-provider verification — **wired** |
+| `tests/test_storage_webhooks.py` | 5 | object storage + webhook SSRF protection — **wired** |
+| `tests/test_deployment_and_devops_alignment.py` | 5 | compose/k8s/nginx/Dockerfile alignment — **wired** |
 
 `tests/deployment/` (2 files, 9 tests) and `tests/browser_e2e/` (1 file, 1 test) are **orphaned directories** — no CI lane references them.
 
@@ -432,7 +432,7 @@ Every row is verified with a file + line. **Nothing here was deleted or "fixed"*
 | **B-1** | **The metering worker died on every pass after the first quota threshold.** The threshold markers are written *inside* `quota_json`; the next pass iterates them, so `limit` becomes a dict and `used / limit` raises `TypeError`, which the blanket `except` swallows as "metering pass failed". | `workers/metering-worker/main.py:65-66` writes `qj["_thresholds"] = state`; `:50` iterates `quota.items()`; `:53` divides by `limit`; `:68-69` catches everything | After the first 80 %/100 % threshold crossing the worker never finalized an invoice and never dispatched a threshold webhook again. The invoice line the page claims comes "from real metering" stopped moving. **Fixed** |
 | **B-2** | **Agent Studio returns fabricated results as if they were real.** The fallback (used whenever the `bridge.py` subprocess is missing or fails) returns a hard-coded report with `"verified": True`, and a hard-coded draft with `"score": 9.2`, `"published_path": "content/published/article.md"`, `"status": "published"`. | `services/api/app/routers/agent_studio.py:114-125` (`_fallback_research`), `:128-139` (`_fallback_content`), used at `:147-166`; `/status` always reports `"ready"` (`:236`) | A caller cannot tell a fabricated "verified" report or a claimed publication from a real one — the exact failure mode the rest of the repo refuses |
 | **B-3** | **The CopilotKit agent endpoints have no auth** and swallow every failure into a canned greeting. | `services/api/app/agent.py:64-74` (no `Depends`), `:115-119` (the catch-all) | An unauthenticated LLM proxy; and a failure is indistinguishable from a success to the caller |
-| **B-4** | **The legacy `/v2/*` and `/v3/*` surface is mounted at the root** and most of its routes use `get_principal_optional` — anonymous by default. | `services/api/app/routers/v2_v3.py:48` (no prefix), `main.py:83`; `get_principal_optional` at `:288,435,469,504,927,976,996,1011,1020` | Glossaries / style rules / translation memories are reachable without a principal unless the handler adds its own tenant check (asserted only by the non-CI `test_tenant_security_extended.py:19-23`) |
+| **B-4** | **The legacy `/v2/*` and `/v3/*` surface is mounted at the root** and most of its routes take `get_principal_optional` — **but reading every handler shows the tenant routes do reject an anonymous caller** (through `_org_of()`, `v2_v3.py:908`, which raises 401). After checking all 43 routes, only 5 are genuinely public, and all five are capability/utility routes the canonical API also publishes anonymously. The real defects this row uncovered: `GET /v2/usage` had **no auth** and answered with **hardcoded numbers**, and the suite covering the isolation was in no CI lane. | `services/api/app/routers/v2_v3.py:48` (no prefix), `main.py:83`; `get_principal_optional` at `:288,435,469,504,927,976,996,1011,1020`; the tenant check at `:908-914` | **Fixed**: `/v2/usage` now requires a member and reports the ledger; `test_tenant_security_extended.py` is in the CI lane; the surface's auth policy is pinned by `tests/test_v2_v3_surface_auth_hardened.py` |
 | **B-5** | **The inference worker resolves the stale provider tree.** It puts `ai/` **before** `services/api` on `sys.path`, so that process imports the drifted `ai/gt_ai` copy — which has no `airllm` adapter, no cache-first Silero and no DeepL source validation. | `workers/inference-worker/main.py:20-21` (`ai` inserted last ⇒ first) vs `infrastructure/docker/Dockerfile.api:19` (`services/api` first) | The GPU worker is the one process that can build a provider the API cannot, and its Silero path can still clone from GitHub |
 | **B-6** | **The phone-call intake bypasses the provider router** and loads its own Whisper instance. | `services/api/app/routers/translate.py:338` (`WhisperModel("tiny", …)`), with the facade fallback at `:385-388` | Two Whisper code paths; the router's cache gate, readiness filter and attempt deadline do not apply to the direct one |
 
@@ -469,7 +469,14 @@ F-1 a whole duplicate router is dead · F-2 five dead files · F-3 two productio
 
 ### 10.5 Test and gate (details in §7.3–§7.5)
 
-- **T-0** — 9 suites (102 test functions) run in **no CI job**, and they are disproportionately the *security* ones: tenant isolation, BOLA/IDOR, WS authorization, the full auth flow, storage/webhook SSRF, the agent graph, the meeting-media contract, the deployment alignment.
+- **T-0** — 9 suites (102 test functions) ran in **no CI job**, and they were disproportionately the
+  *security* ones: tenant isolation, BOLA/IDOR, WS authorization, the full auth flow, storage/webhook
+  SSRF, the agent graph, the meeting-media contract, the deployment alignment. **They are now wired**
+  into the hardened lane — the tenant isolation, the full auth flow, the cross-tenant checks, the real
+  social verification, the storage/webhook SSRF guards, the agent graph, the meeting-media contract and
+  the deployment alignment (all pass there). The one suite that stays out is
+  `test_realtime_security_hardened.py` — excluded on purpose, for the SQLite lock contention documented
+  in `ci.yml`.
 - T-1 … T-12 — the order-dependence and environment-dependence landmines (the `app.config` reload that forks the `settings` singleton, the shared session SQLite, the `MODEL_CACHE_PATH` leak, the weights-dependent skips, the wall-clock assertions, the process-global Prometheus counters, the stale `__pycache__`).
 
 ---
