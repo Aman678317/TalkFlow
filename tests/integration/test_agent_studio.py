@@ -51,6 +51,16 @@ def test_agent_studio_research_crew(services_app_client, user):
     res = services_app_client.post("/api/v1/agent-studio/research-crew", json=payload, headers=user["headers"])
     assert res.status_code == 200
     data = res.json()
-    assert data["verified"] is True
+    # The fallback placeholder must NOT claim a verified report (issue #109
+    # class 3, day-2 finding B-2): nothing was researched and nothing was
+    # fact-checked, so the honest answer is "not verified" + the reason. On a
+    # deployment where the real bridge runs, a verification IS true — but then
+    # the mode says so and no placeholder note is present.
+    if data["mode"] == "unavailable":
+        assert data["verified"] is False, (
+            "a research result that was never produced must not be reported as verified")
+        assert data.get("note"), "the honest reason must be stated"
+    else:
+        assert data["verified"] is True
     assert len(data["agents"]) >= 3
     assert "report" in data
