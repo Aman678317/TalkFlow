@@ -17,8 +17,16 @@ import logging
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "services" / "api"))
+# ORDER MATTERS: the LAST insert lands at sys.path[0], and the CANONICAL
+# provider tree must win. `ai/gt_ai` is the legacy lane's copy of the same
+# package and it has drifted (8 files differ, 3 exist only in the canonical
+# tree — see docs/ARCHITECTURE_OWNERSHIP.md §8). With `ai` inserted last,
+# the GPU worker imported the stale mirror: no AirLLM adapter (the registry
+# raises KeyError), no cache-first Silero gate, no echo guard — while the
+# worker also imports the canonical app, so the two trees met in one
+# process.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ai"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "services" / "api"))
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("worker.inference")

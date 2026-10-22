@@ -290,14 +290,14 @@ One path, every layer, with the line it happens on. This is the chain the Day-2 
 | Suite | Tests | Area it owns |
 |---|---|---|
 | `tests/test_tenant_security_extended.py` | 18 | tenant isolation & BOLA/IDOR |
-| `tests/test_ai_agent_graph.py` | 17 | the AI-agent state graph's hard guards |
-| `tests/test_meeting_media_contract.py` | 15 | the web ↔ API media contract |
+| `tests/test_ai_agent_graph.py` | 17 | AI-agent graph hard guards — **wired** |
+| `tests/test_meeting_media_contract.py` | 15 | the web ↔ API media contract — **wired** |
 | `tests/test_realtime_security_hardened.py` | 12 | realtime/WS session authorization — **excluded on purpose** (`ci.yml:56-59`, SQLite lock contention) |
-| `tests/test_auth_full_flow.py` | 10 | the end-to-end auth + refresh-rotation flow |
-| `tests/test_cross_tenant_security.py` | 9 | cross-tenant isolation |
-| `tests/test_social_real_verification.py` | 9 | real signed social-provider verification |
-| `tests/test_storage_webhooks.py` | 5 | object storage + webhook SSRF protection |
-| `tests/test_deployment_and_devops_alignment.py` | 5 | compose/k8s/nginx/Dockerfile alignment |
+| `tests/test_auth_full_flow.py` | 10 | end-to-end auth + refresh-rotation flow — **wired** |
+| `tests/test_cross_tenant_security.py` | 9 | cross-tenant isolation — **wired** |
+| `tests/test_social_real_verification.py` | 9 | real signed social-provider verification — **wired** |
+| `tests/test_storage_webhooks.py` | 5 | object storage + webhook SSRF protection — **wired** |
+| `tests/test_deployment_and_devops_alignment.py` | 5 | compose/k8s/nginx/Dockerfile alignment — **wired** |
 
 `tests/deployment/` (2 files, 9 tests) and `tests/browser_e2e/` (1 file, 1 test) are **orphaned directories** — no CI lane references them.
 
@@ -393,8 +393,8 @@ Of the 46 canonical modules, **35 are byte-identical** to their `ai/gt_ai/` twin
 | the API image | the **canonical** package ✓ | `PYTHONPATH=/app/services/api:…` (`Dockerfile.api:19`); the root SDK is not even copied into the image |
 | the Render deploy | the **canonical** package ✓ | `services/api/start.sh` runs from the service directory |
 | pytest | the **canonical** package ✓ | `pyproject.toml:3` puts `services/api` first; `tests/conftest.py:14-15` re-inserts it at index 0 |
-| **the documented dev server** | ✗ the **stale mirror** | `run_api.py:14-15` inserts `services/api` and then `ai` — the second insert lands at index 0, so `ai/gt_ai` wins. `AGENTS.md` and `START_ALL.bat:11` both use this entry point |
-| **the GPU inference worker** | ✗ the **stale mirror** | `workers/inference-worker/main.py:20-21` inserts `services/api` and then `ai` — same order, same result. The worker imports the canonical app *and* the mirror's types in one process (`main.py:34` vs `:49`) |
+| **the documented dev server** | ✓ the **canonical** package (fixed) | `run_api.py` now inserts the canonical path last, so it wins. It used to insert `ai/` last — the last insert lands at `sys.path[0]` — and the dev server ran the stale mirror |
+| **the GPU inference worker** | ✓ the **canonical** package (fixed) | `workers/inference-worker/main.py` now inserts the canonical path last. It used to insert `ai/` last, so the GPU worker ran the stale mirror *and* the canonical app in one process |
 | a plain `python` from the repo root | ✗ the **root SDK** | the cwd is `sys.path[0]`, and the root SDK defines the same 11 class names with an incompatible `Intent` base and **no** `NoPrivateProviderAvailable` — if it ever wins, `app/ai.py:32-35` raises `ImportError` and the whole AI facade dies at startup. The hazard is already acknowledged in `scripts/bench_tts_voices.py:4-7` |
 
 ### 8.3 The deployment that overwrote the canonical tree
@@ -414,7 +414,7 @@ The service root is `services/api`, so **`./gt_ai` *is* the canonical provider t
 | Command | What it actually starts |
 |---|---|
 | `make dev` (`Makefile:22` → `scripts/run_dev.sh:7`) | the **legacy** backend (`uvicorn globaltalk.main:app`, `PYTHONPATH=apps/api:.`) — not the canonical one |
-| `python run_api.py` (`AGENTS.md` "Local Dev", `START_ALL.bat:11`) | the canonical app — but with the **stale provider mirror** on `sys.path` |
+| `python run_api.py` (`AGENTS.md` "Local Dev", `START_ALL.bat:11`) | the canonical app **and** the canonical provider tree (fixed) |
 | `docker compose up` | the canonical app, the canonical providers ✓ |
 | Render / Vercel | the canonical app ✓ — the Vercel build additionally overwrote the provider tree (§8.3) |
 
@@ -498,7 +498,7 @@ Every row is verified with a file + line. **Nothing here was deleted or "fixed"*
 | **O-8** | Two modules named `webhook_service` with different owners. | `app/services/webhook_service.py:39` (org webhooks) vs `app/telephony/webhook_service.py:20` (carrier callbacks) | A naming trap for the matrix and for reviewers |
 <<<<<<< Updated upstream
 =======
-| **O-9** | **Two entry points resolve the stale mirror instead of the canonical provider layer.** `run_api.py` (the documented dev server, `AGENTS.md`, `START_ALL.bat:11`) and the GPU inference worker both insert `ai/` *last* at `sys.path[0]`, so `ai/gt_ai` wins. | `run_api.py:14-15`; `workers/inference-worker/main.py:20-21` (the worker imports the canonical app *and* the mirror's types in one process) | The local dev server and the GPU worker run a provider layer that is 8 files behind the canonical one — while `app/ai.py` still expects the canonical `airllm` adapter, which the mirror's registry never imports |
+| **O-9** | **Two entry points resolved the stale mirror instead of the canonical provider layer — fixed.** `run_api.py` (the documented dev server, `AGENTS.md`, `START_ALL.bat:11`) and the GPU inference worker both inserted `ai/` *last* at `sys.path[0]`, so `ai/gt_ai` won. | `run_api.py:14-15`; `workers/inference-worker/main.py:20-21` — both now insert the canonical path last, and `tests/test_entrypoint_provider_resolution.py` imports each entry point in a subprocess and asserts which `gt_ai` was resolved | The dev server and the GPU worker ran a provider layer 8 files behind the canonical one — no AirLLM adapter, no Silero turn debounce, no DeepL echo guard — while the worker also imported the canonical app |
 | **O-10** | **`make dev` starts the legacy backend, not the canonical one.** | `Makefile:22` → `scripts/run_dev.sh:7` (`PYTHONPATH="apps/api:."`, `uvicorn globaltalk.main:app`) | A developer following the documented command debugs `apps/api/globaltalk`, whose providers come from the legacy `ai/providers` lane — every fix made in `services/api/gt_ai` is invisible locally |
 | **O-11** | **The canonical service declares the mirror as its `gt-ai` dependency.** | `services/api/pyproject.toml:30` + `:41-42` (`[tool.uv.sources] gt-ai = { path = "../../ai" }`); `ai/pyproject.toml:25-26` (`include = ["gt_ai*"]`) | Any `pip install ./services/api` puts the **stale** `ai/gt_ai` into site-packages under the name `gt_ai`; where site-packages precedes the service directory, the wrong copy is imported |
 | **O-12** | Two stale scripts in `scripts/` **mutate source in place** and are referenced by nothing. | `scripts/apply_phase4_hardening.py:52,83,160,194,204` write to `services/api/app/**` without the guard used at `:43` (its pattern no longer matches, so the later blocks rewrite unconditionally); `scripts/update_cross_tests.py:183-188` appends a test that already exists at `tests/test_cross_tenant_security.py:161` | Running either silently rewrites or duplicates canonical source and test files — and CI lints them, so they look maintained |
@@ -520,7 +520,14 @@ F-1 a whole duplicate router is dead · F-2 five dead files · F-3 two productio
 
 ### 10.5 Test and gate (details in §7.3–§7.5)
 
-- **T-0** — 9 suites (102 test functions) run in **no CI job**, and they are disproportionately the *security* ones: tenant isolation, BOLA/IDOR, WS authorization, the full auth flow, storage/webhook SSRF, the agent graph, the meeting-media contract, the deployment alignment.
+- **T-0** — 9 suites (102 test functions) ran in **no CI job**, and they were disproportionately the
+  *security* ones: tenant isolation, BOLA/IDOR, WS authorization, the full auth flow, storage/webhook
+  SSRF, the agent graph, the meeting-media contract, the deployment alignment. **They are now wired**
+  into the hardened lane — the tenant isolation, the full auth flow, the cross-tenant checks, the real
+  social verification, the storage/webhook SSRF guards, the agent graph, the meeting-media contract and
+  the deployment alignment (all pass there). The one suite that stays out is
+  `test_realtime_security_hardened.py` — excluded on purpose, for the SQLite lock contention documented
+  in `ci.yml`.
 - T-1 … T-12 — the order-dependence and environment-dependence landmines (the `app.config` reload that forks the `settings` singleton, the shared session SQLite, the `MODEL_CACHE_PATH` leak, the weights-dependent skips, the wall-clock assertions, the process-global Prometheus counters, the stale `__pycache__`).
 
 ---

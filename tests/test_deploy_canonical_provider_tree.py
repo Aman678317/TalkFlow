@@ -83,3 +83,50 @@ def test_the_canonical_tree_is_the_one_the_service_imports():
     assert (canonical / "translation" / "airllm.py").exists(), (
         "the canonical tree has modules the mirror never had — copying the "
         "mirror over it would delete them from the deployed package")
+
+
+def test_the_serverless_manifest_stays_under_the_function_size_cap():
+    """The Vercel Python function bundle is hard-capped at 225 MB.
+
+    Deployment dpl_BqUUhr2XCpbhCFTptQ9afgf8B5R5 failed with
+    LAMBDA_SIZE_EXCEEDED at 236.27 MB while installing the branch's
+    runtime-crypto fix (pyjwt[crypto] + cryptography) on top of a manifest
+    that also carried the azure Speech SDK and the uvicorn [standard]
+    extras:
+
+    * azure-cognitiveservices-speech ≈ 7.9 MB unpacked + azure-core /
+      requests / urllib3 / charset_normalizer ≈ 1.6 MB — and the SDK is
+      only ever imported inside gt_ai.stt.azure_speech methods, which fail
+      close with a ``pip install azure-cognitiveservices-speech`` hint
+      when it is absent. Vercel has no credentials, so the provider is
+      never selected there anyway.
+    * uvloop ≈ 17 MB and httptools ≈ 1.9 MB unpacked are local-dev
+      conveniences ([standard] extra); the serverless worker does not use
+      them. watchfiles stays pinned so ``uvicorn --reload`` keeps its
+      fast file watcher in dev.
+
+    The prod install path for the SDK remains the `azure` pyproject extra.
+    """
+    reqs = (REPO / "services" / "api" / "requirements.txt").read_text(encoding="utf-8")
+    # Only spec lines pin; prose comments may still name the package in the
+    # install-hint story.
+    deps = [line.strip() for line in reqs.splitlines()
+            if line.strip() and not line.lstrip().startswith("#")]
+    assert not any(dep.startswith("azure-cognitiveservices-speech") for dep in deps), (
+        "the serverless Python manifest must not pin azure-cognitiveservices-"
+        "speech: its native wheel tipped the lambda bundle past the 225 MB "
+        "cap; the provider fails close with an install hint when the SDK is "
+        "absent, and the opt-in pyproject extra remains the install path")
+    assert not any(dep.startswith("uvicorn[") for dep in deps), (
+        "uvloop/httptools are local-dev extras the serverless worker never "
+        "imports; pinning them through [standard] put ~19 MB into an already "
+        "over-cap bundle")
+    assert any(dep.startswith("uvicorn") for dep in deps), (
+        "the uvicorn pin itself must survive the trim — only the extras go")
+    pyproject = (REPO / "services" / "api" / "pyproject.toml").read_text(encoding="utf-8")
+    assert '"azure-cognitiveservices-speech' in pyproject, (
+        "trimming the runtime pin must not remove the opt-in path: the azure "
+        "extra stays the explicit install for credential-bearing hosts")
+    assert any(dep.startswith("watchfiles") for dep in deps), (
+        "uvicorn --reload needs watchfiles for its fast file watcher; the "
+        "manifest keeps it explicitly while the [standard] extras are gone")
