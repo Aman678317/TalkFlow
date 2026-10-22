@@ -289,9 +289,9 @@ One path, every layer, with the line it happens on. This is the chain the Day-2 
 
 | Suite | Tests | Area it owns |
 |---|---|---|
-| `tests/test_tenant_security_extended.py` | 18 | tenant isolation & BOLA/IDOR |
-| `tests/test_ai_agent_graph.py` | 17 | AI-agent graph hard guards — **wired** |
-| `tests/test_meeting_media_contract.py` | 15 | the web ↔ API media contract — **wired** |
+| `tests/test_tenant_security_extended.py` | 18 | tenant isolation & BOLA/IDOR — **wired into the hardened lane** |
+| `tests/test_ai_agent_graph.py` | 17 | the AI-agent state graph's hard guards |
+| `tests/test_meeting_media_contract.py` | 15 | the web ↔ API media contract |
 | `tests/test_realtime_security_hardened.py` | 12 | realtime/WS session authorization — **excluded on purpose** (`ci.yml:56-59`, SQLite lock contention) |
 | `tests/test_auth_full_flow.py` | 10 | end-to-end auth + refresh-rotation flow — **wired** |
 | `tests/test_cross_tenant_security.py` | 9 | cross-tenant isolation — **wired** |
@@ -369,7 +369,6 @@ Of the 46 canonical modules, **35 are byte-identical** to their `ai/gt_ai/` twin
 
 **The rule this map proposes:** the canonical copy is the one that answers "what is authoritative", and the mirror is kept honest by *copying* it (the pattern this session used: `model_router/router.py`, `translation/madlad400.py` and `translation/nllb_ct2.py` were re-mirrored byte-identically in #113/#114/#115), never by re-implementing. Where the two must differ (the legacy lane's own semantics), the difference belongs in the mirror and is listed here.
 
-<<<<<<< Updated upstream
 ### 8.2 The shadowing hazard (a name collision, not a bug)
 
 `gt_ai/` at the repo root and `services/api/gt_ai/` are different packages with the same import name. Which one wins is decided by `sys.path` order, and the order is set differently per entry point:
@@ -383,46 +382,6 @@ Of the 46 canonical modules, **35 are byte-identical** to their `ai/gt_ai/` twin
 | a plain `python` from the repo root | the cwd (the root) is `sys.path[0]` | the **root SDK** ✗ — this is why running a script from the repo root without an explicit `PYTHONPATH` imports the SDK, not the server package |
 
 ### 8.3 The scripts inventory
-=======
-### 8.2 The shadowing hazard (a name collision, plus two entry points that pick the wrong copy)
-
-`gt_ai/` at the repo root and `services/api/gt_ai/` are different packages with the same import name. Which one wins is decided by `sys.path` order, and the order is set differently per entry point:
-
-| Entry point | `gt_ai` resolves to | How |
-|---|---|---|
-| the API image | the **canonical** package ✓ | `PYTHONPATH=/app/services/api:…` (`Dockerfile.api:19`); the root SDK is not even copied into the image |
-| the Render deploy | the **canonical** package ✓ | `services/api/start.sh` runs from the service directory |
-| pytest | the **canonical** package ✓ | `pyproject.toml:3` puts `services/api` first; `tests/conftest.py:14-15` re-inserts it at index 0 |
-| **the documented dev server** | ✓ the **canonical** package (fixed) | `run_api.py` now inserts the canonical path last, so it wins. It used to insert `ai/` last — the last insert lands at `sys.path[0]` — and the dev server ran the stale mirror |
-| **the GPU inference worker** | ✓ the **canonical** package (fixed) | `workers/inference-worker/main.py` now inserts the canonical path last. It used to insert `ai/` last, so the GPU worker ran the stale mirror *and* the canonical app in one process |
-| a plain `python` from the repo root | ✗ the **root SDK** | the cwd is `sys.path[0]`, and the root SDK defines the same 11 class names with an incompatible `Intent` base and **no** `NoPrivateProviderAvailable` — if it ever wins, `app/ai.py:32-35` raises `ImportError` and the whole AI facade dies at startup. The hazard is already acknowledged in `scripts/bench_tts_voices.py:4-7` |
-
-### 8.3 The deployment that overwrote the canonical tree
-
-`vercel.json`'s API install command used to run
-
-```
-pip install ../../ai && python -c "shutil.copytree('../../ai/gt_ai', './gt_ai', dirs_exist_ok=True); …"
-```
-
-The service root is `services/api`, so **`./gt_ai` *is* the canonical provider tree** — the copy merged the legacy lane's mirror over it. Harmless while the two trees were identical (they were, when the command was written); now it reverts the eight diverging canonical files in the serverless build — including the cache-first Silero gate (#113), the `neural_online` echo guard, the AirLLM registration and the `gt_ai.stt` / `gt_ai.translation` exports. `pip install ../../ai` put the same stale package into site-packages under the name `gt_ai` (the mirror's `ai/pyproject.toml` declares `include = ["gt_ai*"]`), even though nothing in `services/api` imports the legacy `ai` package.
-
-**This is finding #1 in the risk register, and it has its own PR** (the install command no longer writes into the canonical tree).
-
-### 8.4 Which entry point is "the app"?
-
-| Command | What it actually starts |
-|---|---|
-| `make dev` (`Makefile:22` → `scripts/run_dev.sh:7`) | the **legacy** backend (`uvicorn globaltalk.main:app`, `PYTHONPATH=apps/api:.`) — not the canonical one |
-| `python run_api.py` (`AGENTS.md` "Local Dev", `START_ALL.bat:11`) | the canonical app **and** the canonical provider tree (fixed) |
-| `docker compose up` | the canonical app, the canonical providers ✓ |
-| Render / Vercel | the canonical app ✓ — the Vercel build additionally overwrote the provider tree (§8.3) |
-
-So there are four different "run the app" paths and **no two of them resolve the same code** — a green local run does not mean the deployed behaviour, and a green Docker run does not mean the local one.
-
-
-### 8.5 The scripts inventory
->>>>>>> Stashed changes
 
 | Script | Referenced by | Note |
 |---|---|---|
@@ -472,15 +431,10 @@ Every row is verified with a file + line. **Nothing here was deleted or "fixed"*
 
 | # | Risk | Evidence | What goes wrong |
 |---|---|---|---|
-<<<<<<< Updated upstream
 | **B-1** | **The metering worker dies on every pass after the first quota threshold.** The threshold markers are written *inside* `quota_json`; the next pass iterates them, so `limit` becomes a dict and `used / limit` raises `TypeError`, which the blanket `except` swallows as "metering pass failed". | `workers/metering-worker/main.py:65-66` writes `qj["_thresholds"] = state`; `:50` iterates `quota.items()`; `:53` divides by `limit`; `:68-69` catches everything | After the first 80 %/100 % threshold crossing the worker never finalizes an invoice and never dispatches a threshold webhook again. The invoice line the page claims comes "from real metering" stops moving |
-=======
-| **B-0** | **The Vercel build overwrites the canonical provider tree with the stale mirror.** `vercel.json`'s install command copied `../../ai/gt_ai` over `./gt_ai` — and the service root is `services/api`, so `./gt_ai` **is** the canonical tree. | `vercel.json` (`services.api.installCommand`), the eight diverging pairs in §8.1 | The serverless deploy silently reverts the cache-first Silero gate (#113), the `neural_online` echo guard, the AirLLM registration and the `gt_ai.stt` / `gt_ai.translation` exports. **Fixed in its own PR** (the install command no longer writes into the canonical tree) |
-| **B-1** | **The metering worker dies on every pass after the first quota threshold.** The threshold markers are written *inside* `quota_json`; the next pass iterates them, so `limit` becomes a dict and `used / limit` raises `TypeError`, which the blanket `except` swallows as "metering pass failed". | `workers/metering-worker/main.py:65-66` writes `qj["_thresholds"] = state`; `:50` iterates `quota.items()`; `:53` divides by `limit`; `:68-69` catches everything | After the first 80 %/100 % threshold crossing the worker never finalizes an invoice and never dispatches a threshold webhook again. The invoice line the page claims comes "from real metering" stops moving. **Fixed in its own PR** |
->>>>>>> Stashed changes
 | **B-2** | **Agent Studio returns fabricated results as if they were real.** The fallback (used whenever the `bridge.py` subprocess is missing or fails) returns a hard-coded report with `"verified": True`, and a hard-coded draft with `"score": 9.2`, `"published_path": "content/published/article.md"`, `"status": "published"`. | `services/api/app/routers/agent_studio.py:114-125` (`_fallback_research`), `:128-139` (`_fallback_content`), used at `:147-166`; `/status` always reports `"ready"` (`:236`) | A caller cannot tell a fabricated "verified" report or a claimed publication from a real one — the exact failure mode the rest of the repo refuses |
 | **B-3** | **The CopilotKit agent endpoints have no auth** and swallow every failure into a canned greeting. | `services/api/app/agent.py:64-74` (no `Depends`), `:115-119` (the catch-all) | An unauthenticated LLM proxy; and a failure is indistinguishable from a success to the caller |
-| **B-4** | **The legacy `/v2/*` and `/v3/*` surface is mounted at the root** and most of its routes use `get_principal_optional` — anonymous by default. | `services/api/app/routers/v2_v3.py:48` (no prefix), `main.py:83`; `get_principal_optional` at `:288,435,469,504,927,976,996,1011,1020` | Glossaries / style rules / translation memories are reachable without a principal unless the handler adds its own tenant check (asserted only by the non-CI `test_tenant_security_extended.py:19-23`) |
+| **B-4** | **The legacy `/v2/*` and `/v3/*` surface is mounted at the root** and most of its routes take `get_principal_optional` — **but reading every handler shows the tenant routes do reject an anonymous caller** (through `_org_of()`, `v2_v3.py:908`, which raises 401). After checking all 43 routes, only 5 are genuinely public, and all five are capability/utility routes the canonical API also publishes anonymously. The real defects this row uncovered: `GET /v2/usage` had **no auth** and answered with **hardcoded numbers**, and the suite covering the isolation was in no CI lane. | `services/api/app/routers/v2_v3.py:48` (no prefix), `main.py:83`; `get_principal_optional` at `:288,435,469,504,927,976,996,1011,1020`; the tenant check at `:908-914` | **Fixed**: `/v2/usage` now requires a member and reports the ledger; `test_tenant_security_extended.py` is in the CI lane; the surface's auth policy is pinned by `tests/test_v2_v3_surface_auth_hardened.py` |
 | **B-5** | **The inference worker resolves the stale provider tree.** It puts `ai/` **before** `services/api` on `sys.path`, so that process imports the drifted `ai/gt_ai` copy — which has no `airllm` adapter, no cache-first Silero and no DeepL source validation. | `workers/inference-worker/main.py:20-21` (`ai` inserted last ⇒ first) vs `infrastructure/docker/Dockerfile.api:19` (`services/api` first) | The GPU worker is the one process that can build a provider the API cannot, and its Silero path can still clone from GitHub |
 | **B-6** | **The phone-call intake bypasses the provider router** and loads its own Whisper instance. | `services/api/app/routers/translate.py:338` (`WhisperModel("tiny", …)`), with the facade fallback at `:385-388` | Two Whisper code paths; the router's cache gate, readiness filter and attempt deadline do not apply to the direct one |
 
@@ -496,13 +450,6 @@ Every row is verified with a file + line. **Nothing here was deleted or "fixed"*
 | **O-6** | `app/workers_runner.py` is an **orphan** worker entry point that duplicates the in-process registration and omits the `default` queue. | `workers_runner.py:31-37` vs `main.py:180-192`; no importer, no Docker/Make target | Two competing "worker" entry points; the standalone one is not what the image runs |
 | **O-7** | Unreachable modules inside the canonical backend: `app/mcp/indic_server.py`, `app/globaltalk_client.py` (whose docstring claims "all callers inject the same singleton" — false), `gt_ai/evaluation/runner.py`, `gt_ai/translation/translator.py` + `gt_ai/stt/recognizer.py` (451 lines, imported only by tests). | `globaltalk_client.py:26-27` vs zero importers; `gt_ai/translation/translator.py` imported only by `tests/unit/test_translation_adapter.py:2` | Dead code that reads as live; the "only place" claim in the docstring is wrong |
 | **O-8** | Two modules named `webhook_service` with different owners. | `app/services/webhook_service.py:39` (org webhooks) vs `app/telephony/webhook_service.py:20` (carrier callbacks) | A naming trap for the matrix and for reviewers |
-<<<<<<< Updated upstream
-=======
-| **O-9** | **Two entry points resolved the stale mirror instead of the canonical provider layer — fixed.** `run_api.py` (the documented dev server, `AGENTS.md`, `START_ALL.bat:11`) and the GPU inference worker both inserted `ai/` *last* at `sys.path[0]`, so `ai/gt_ai` won. | `run_api.py:14-15`; `workers/inference-worker/main.py:20-21` — both now insert the canonical path last, and `tests/test_entrypoint_provider_resolution.py` imports each entry point in a subprocess and asserts which `gt_ai` was resolved | The dev server and the GPU worker ran a provider layer 8 files behind the canonical one — no AirLLM adapter, no Silero turn debounce, no DeepL echo guard — while the worker also imported the canonical app |
-| **O-10** | **`make dev` starts the legacy backend, not the canonical one.** | `Makefile:22` → `scripts/run_dev.sh:7` (`PYTHONPATH="apps/api:."`, `uvicorn globaltalk.main:app`) | A developer following the documented command debugs `apps/api/globaltalk`, whose providers come from the legacy `ai/providers` lane — every fix made in `services/api/gt_ai` is invisible locally |
-| **O-11** | **The canonical service declares the mirror as its `gt-ai` dependency.** | `services/api/pyproject.toml:30` + `:41-42` (`[tool.uv.sources] gt-ai = { path = "../../ai" }`); `ai/pyproject.toml:25-26` (`include = ["gt_ai*"]`) | Any `pip install ./services/api` puts the **stale** `ai/gt_ai` into site-packages under the name `gt_ai`; where site-packages precedes the service directory, the wrong copy is imported |
-| **O-12** | Two stale scripts in `scripts/` **mutate source in place** and are referenced by nothing. | `scripts/apply_phase4_hardening.py:52,83,160,194,204` write to `services/api/app/**` without the guard used at `:43` (its pattern no longer matches, so the later blocks rewrite unconditionally); `scripts/update_cross_tests.py:183-188` appends a test that already exists at `tests/test_cross_tenant_security.py:161` | Running either silently rewrites or duplicates canonical source and test files — and CI lints them, so they look maintained |
->>>>>>> Stashed changes
 
 ### 10.3 Configuration and environment
 
@@ -520,14 +467,7 @@ F-1 a whole duplicate router is dead · F-2 five dead files · F-3 two productio
 
 ### 10.5 Test and gate (details in §7.3–§7.5)
 
-- **T-0** — 9 suites (102 test functions) ran in **no CI job**, and they were disproportionately the
-  *security* ones: tenant isolation, BOLA/IDOR, WS authorization, the full auth flow, storage/webhook
-  SSRF, the agent graph, the meeting-media contract, the deployment alignment. **They are now wired**
-  into the hardened lane — the tenant isolation, the full auth flow, the cross-tenant checks, the real
-  social verification, the storage/webhook SSRF guards, the agent graph, the meeting-media contract and
-  the deployment alignment (all pass there). The one suite that stays out is
-  `test_realtime_security_hardened.py` — excluded on purpose, for the SQLite lock contention documented
-  in `ci.yml`.
+- **T-0** — 9 suites (102 test functions) ran in **no CI job**, and they were disproportionately the *security* ones: tenant isolation, BOLA/IDOR, WS authorization, the full auth flow, storage/webhook SSRF, the agent graph, the meeting-media contract, the deployment alignment. **One is now wired** (`test_tenant_security_extended.py`, 18 tests — the tenant isolation of the v2/v3 surface); the other 8 still need their own check that they pass in CI before they go in.
 - T-1 … T-12 — the order-dependence and environment-dependence landmines (the `app.config` reload that forks the `settings` singleton, the shared session SQLite, the `MODEL_CACHE_PATH` leak, the weights-dependent skips, the wall-clock assertions, the process-global Prometheus counters, the stale `__pycache__`).
 
 ---
