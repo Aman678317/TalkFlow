@@ -76,6 +76,18 @@ language is never "fully supported" just because a model claims it.
   — the compat surface's shape contract holds (registry-derived lists,
   `la`/`sa` only behind explicit include).
 
+## Day-3 plan checklist (30-DAY-ROADMAP §Day 3 vs shipped PR #132, 2026-10-23)
+
+| Plan item (Day 3) | Status | Evidence |
+|---|---|---|
+| Deterministic language-pair matrix (en↔hi, hi↔en, en↔mr, code-switch→en, one unsupported pair) | **PASS for the matrix itself** (registry-derived, 20 languages, 38 hub pairs, diagnostics mirror); **partial** for the raw-input matrix cases — en↔hi pinned end-to-end, en↔mr pinned at registry/diagnostics level, code-switch (Hinglish) cases are open and belong to the day-6 string sweep | `TRANSLATION_ACCEPTANCE.md` + `tests/unit/test_readiness_diagnostics.py`, `tests/integration/test_desi_compatibility.py` |
+| One unsupported pair behaves honestly | **PASS** | phone `xx`/`zz` → 422 (`test_a_call_in_an_unregistered_language_is_rejected`); v2 `XX` → `text:""` + `untranslated_fallback` |
+| Test provider-down and timeouts | **PASS** (existing pins + new) | chain deadline failover (`tests/test_provider_chain_hardened.py`), all-echo chain fails closed (`tests/unit/test_translation_pipeline.py`), failed provider → honest flag (`tests/test_v2_v3_surface_auth_hardened.py`) |
+| Results record source/target, provider/model, latency, flags, fallback status | **PASS** | `TranslationResult` carries `source_lang/target_lang/model/provider/latency_ms/quality_flags` (`gt_ai/types.py:44-57`); v2 items surface `quality_flags`/`untranslated_fallback`; realtime events carry per-segment provenance |
+| Never a false "success translation" | **PASS** | the 10 red proofs → echo guard, v2 fabrication removal, dictionary provenance, document segment honesty (`docs/ARCHITECTURE_OWNERSHIP.md` B-7…B-10, O-13, O-14) |
+| Launch-plan Day-3: record unsupported pairs + disabled features | **PASS** | this document's "What is NOT servable today" section |
+| Launch-plan Day-3: full clean-browser sign-off journey | **OPEN** (documented scope exclusion) | API-path truth proven live on localhost (:8000) this PR; the browser journey is the launch sign-off exit checklist, scheduled with the staging deployment round |
+
 ## Localhost verification (2026-10-23, live, canonical backend on :8000)
 
 Boot contract per `scripts/run_dev.sh` (`#130`): canonical backend
