@@ -73,24 +73,29 @@ jobs:
             tests/test_asterisk_ari_adapter.py \
             tests/test_asterisk_ari_inbound.py \
             tests/test_audit_round3_truthfulness.py \
+            tests/test_auth_full_flow.py \
             tests/test_auth_hardened.py \
             tests/test_bridge_seat_routing.py \
             tests/test_call_gate.py \
             tests/test_call_transcript_api.py \
             tests/test_call_worker.py \
             tests/test_contacts_api.py \
+            tests/test_cross_tenant_security.py \
             tests/test_database_migrations_hardened.py \
             tests/test_deploy_canonical_provider_tree.py \
+            tests/test_deployment_and_devops_alignment.py \
             tests/test_developer_platform_hardened.py \
             tests/test_escalation_board_api.py \
             tests/test_escalation_hooks.py \
             tests/test_escalation_transport.py \
+            tests/test_entrypoint_provider_resolution.py \
             tests/test_external_media.py \
             tests/test_full_qa_and_e2e_hardened.py \
             tests/test_frontend_api_contract_shapes.py \
             tests/test_glossary_mismatch_note_hardened.py \
             tests/test_history_filters_hardened.py \
             tests/test_media_bridge_hygiene.py \
+            tests/test_meeting_media_contract.py \
             tests/test_metering_worker_thresholds_hardened.py \
             tests/test_model_fetch_gates_hardened.py \
             tests/test_observability_and_metrics_hardened.py \
@@ -104,9 +109,12 @@ jobs:
             tests/test_provider_chain_hardened.py \
             tests/test_queue_and_workers_hardened.py \
             tests/test_realtime_pipeline_hardened.py \
+            tests/test_realtime_security.py \
             tests/test_realtime_translation_invariant_hardened.py \
             tests/test_retention_escalations.py \
             tests/test_social_auth_hardened.py \
+            tests/test_social_real_verification.py \
+            tests/test_storage_webhooks.py \
             tests/test_telemetry_tracing_hardened.py \
             tests/test_telephony_ops_admin.py \
             tests/test_telephony_privacy_abuse_gates.py \
