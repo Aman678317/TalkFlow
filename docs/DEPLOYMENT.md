@@ -22,10 +22,15 @@ canonical text fan-out, and Azure Speech TTS returns target-language WAV audio.
 The adapters fail closed when credentials or a supported voice are missing; no
 Azure key is ever placed in `VITE_*` variables or sent to the browser.
 
-Install the normal API dependencies (the Speech SDK is included):
+Install the normal API dependencies, plus the Speech SDK when the controller
+runs with `azure_speech` credentials. The SDK is an opt-in, not a runtime pin:
+its native wheel cannot fit the serverless manifest (Vercel's Python functions
+are capped at 225 MB), credentials select the provider at runtime, and the
+adapter fails closed with an install hint when the SDK is absent:
 
 ```powershell
 python -m pip install -r services/api/requirements.txt
+python -m pip install azure-cognitiveservices-speech
 ```
 
 For a local PowerShell session, set the provider selection and server-only
