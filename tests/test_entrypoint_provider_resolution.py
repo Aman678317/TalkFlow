@@ -84,3 +84,21 @@ def test_the_canonical_tree_is_the_one_that_carries_the_fixes():
     assert not (MIRROR / "translation" / "airllm.py").exists()
     mirror_registry = (MIRROR / "registry.py").read_text(encoding="utf-8")
     assert "gt_ai.translation.airllm" not in mirror_registry
+
+
+def test_the_repo_root_cannot_shadow_the_canonical_package():
+    """The root SDK used to be named ``gt_ai`` and could win the import.
+
+    If the root ever carries a ``gt_ai`` package again, a plain ``python``
+    from the repo root would import the SDK instead of the provider package —
+    and the SDK has no ``NoPrivateProviderAvailable`` and a different
+    ``Intent`` base, so the whole AI facade would fail to import with an
+    ImportError that points nowhere near the cause.
+    """
+    assert not (REPO / "gt_ai").exists(), (
+        "the repo root must not carry a 'gt_ai' package: it shadows the "
+        "canonical provider package (the public SDK is 'gt_ai_sdk')")
+    assert (REPO / "gt_ai_sdk" / "__init__.py").exists(), (
+        "the public SDK must keep its (renamed) package")
+    # and the canonical provider package is where it says it is
+    assert (CANONICAL / "__init__.py").exists()
