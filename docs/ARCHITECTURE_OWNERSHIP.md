@@ -290,14 +290,14 @@ One path, every layer, with the line it happens on. This is the chain the Day-2 
 | Suite | Tests | Area it owns |
 |---|---|---|
 | `tests/test_tenant_security_extended.py` | 18 | tenant isolation & BOLA/IDOR |
-| `tests/test_ai_agent_graph.py` | 17 | the AI-agent state graph's hard guards |
-| `tests/test_meeting_media_contract.py` | 15 | the web ↔ API media contract |
+| `tests/test_ai_agent_graph.py` | 17 | AI-agent graph hard guards — **wired** |
+| `tests/test_meeting_media_contract.py` | 15 | the web ↔ API media contract — **wired** |
 | `tests/test_realtime_security_hardened.py` | 12 | realtime/WS session authorization — **excluded on purpose** (`ci.yml:56-59`, SQLite lock contention) |
-| `tests/test_auth_full_flow.py` | 10 | the end-to-end auth + refresh-rotation flow |
-| `tests/test_cross_tenant_security.py` | 9 | cross-tenant isolation |
-| `tests/test_social_real_verification.py` | 9 | real signed social-provider verification |
-| `tests/test_storage_webhooks.py` | 5 | object storage + webhook SSRF protection |
-| `tests/test_deployment_and_devops_alignment.py` | 5 | compose/k8s/nginx/Dockerfile alignment |
+| `tests/test_auth_full_flow.py` | 10 | end-to-end auth + refresh-rotation flow — **wired** |
+| `tests/test_cross_tenant_security.py` | 9 | cross-tenant isolation — **wired** |
+| `tests/test_social_real_verification.py` | 9 | real signed social-provider verification — **wired** |
+| `tests/test_storage_webhooks.py` | 5 | object storage + webhook SSRF protection — **wired** |
+| `tests/test_deployment_and_devops_alignment.py` | 5 | compose/k8s/nginx/Dockerfile alignment — **wired** |
 
 `tests/deployment/` (2 files, 9 tests) and `tests/browser_e2e/` (1 file, 1 test) are **orphaned directories** — no CI lane references them.
 
@@ -520,7 +520,14 @@ F-1 a whole duplicate router is dead · F-2 five dead files · F-3 two productio
 
 ### 10.5 Test and gate (details in §7.3–§7.5)
 
-- **T-0** — 9 suites (102 test functions) run in **no CI job**, and they are disproportionately the *security* ones: tenant isolation, BOLA/IDOR, WS authorization, the full auth flow, storage/webhook SSRF, the agent graph, the meeting-media contract, the deployment alignment.
+- **T-0** — 9 suites (102 test functions) ran in **no CI job**, and they were disproportionately the
+  *security* ones: tenant isolation, BOLA/IDOR, WS authorization, the full auth flow, storage/webhook
+  SSRF, the agent graph, the meeting-media contract, the deployment alignment. **They are now wired**
+  into the hardened lane — the tenant isolation, the full auth flow, the cross-tenant checks, the real
+  social verification, the storage/webhook SSRF guards, the agent graph, the meeting-media contract and
+  the deployment alignment (all pass there). The one suite that stays out is
+  `test_realtime_security_hardened.py` — excluded on purpose, for the SQLite lock contention documented
+  in `ci.yml`.
 - T-1 … T-12 — the order-dependence and environment-dependence landmines (the `app.config` reload that forks the `settings` singleton, the shared session SQLite, the `MODEL_CACHE_PATH` leak, the weights-dependent skips, the wall-clock assertions, the process-global Prometheus counters, the stale `__pycache__`).
 
 ---
