@@ -1,6 +1,14 @@
 # GlobalTalk AI — Services API runtime dependencies
 fastapi>=0.115.0
-uvicorn[standard]>=0.30.0
+# Plain uvicorn for the serverless runtime: the [standard] extras (uvloop
+# ~17 MB, httptools ~2 MB unpacked) are local-dev conveniences the worker
+# never imports, and pinning them tipped Vercel's 225 MB function cap
+# (dpl_BqUUhr2XCpbhCFTptQ9afgf8B5R5 failed at 236.27 MB). pyproject.toml
+# keeps uvicorn[standard] for local/dev parity.
+uvicorn>=0.30.0
+# Kept explicitly (uvicorn[standard] used to carry it): `--reload`'s fast
+# file watcher for local dev.
+watchfiles>=0.20.0
 pydantic>=2.7.0
 pydantic-settings>=2.3.0
 sqlalchemy[asyncio]>=2.0.30
@@ -41,7 +49,13 @@ livekit-api>=0.8.0
 langid>=1.1.6
 numpy>=1.26.0
 langdetect>=1.0.9
-# Optional at runtime (credentials select the provider); required only when
-# STT_PROVIDER=azure_speech. The REST MT/TTS adapters use existing httpx.
-azure-cognitiveservices-speech>=1.41.1
+# Azure Speech SDK is deliberately NOT pinned in this serverless manifest:
+# its native wheel tipped the Vercel 225 MB function cap over (deployment
+# dpl_BqUUhr2XCpbhCFTptQ9afgf8B5R5 failed at 236.27 MB). It is imported only
+# inside gt_ai/stt/azure_speech.py methods, which fail close with a
+# `pip install azure-cognitiveservices-speech` hint when the SDK is absent,
+# and the provider runs only when credentials select it (serverless hosts
+# carry none). Opt in where the controller actually runs with credentials:
+#   pip install azure-cognitiveservices-speech   (pyproject extra: azure)
+# The REST MT/TTS adapters use existing httpx.
 

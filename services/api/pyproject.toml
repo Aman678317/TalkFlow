@@ -9,6 +9,10 @@ description = "GlobalTalk AI control plane + realtime data plane (FastAPI)"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",
+    # [standard] (uvloop/httptools/watchfiles/…) is for local/dev installs;
+    # the serverless manifest, services/api/requirements.txt, pins plain
+    # uvicorn + watchfiles only — Vercel's 225 MB function cap cannot carry
+    # the uvloop native build.
     "uvicorn[standard]>=0.30",
     "sqlalchemy[asyncio]>=2.0.30",
     "alembic>=1.13",
