@@ -114,7 +114,13 @@ async def metrics(request: Request):
     if not settings.metrics_enabled:
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Metrics endpoint is disabled.")
-    if settings.is_production and settings.metrics_token:
+    # A configured token is ALWAYS enforced — not only in production. The
+    # metrics carry tenant-labelled series and latency histograms, so an
+    # exposed endpoint is an information leak (issue #109 class 3, day-2
+    # finding C-4). In production a token is MANDATORY (the settings
+    # validator refuses to boot without one), so the metrics can never be
+    # served unauthenticated there.
+    if settings.metrics_token:
         import secrets
         auth = request.headers.get("Authorization", "")
         token = auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else request.headers.get("X-Metrics-Token", "")
