@@ -17,14 +17,10 @@ import logging
 import sys
 from pathlib import Path
 
-# ORDER MATTERS: the LAST insert lands at sys.path[0], and the CANONICAL
-# provider tree must win. `ai/gt_ai` is the legacy lane's copy of the same
-# package and it has drifted (8 files differ, 3 exist only in the canonical
-# tree — see docs/ARCHITECTURE_OWNERSHIP.md §8). With `ai` inserted last,
-# the GPU worker imported the stale mirror: no AirLLM adapter (the registry
-# raises KeyError), no cache-first Silero gate, no echo guard — while the
-# worker also imports the canonical app, so the two trees met in one
-# process.
+# ORDER MATTERS: the LAST insert lands at sys.path[0]. The canonical provider
+# tree is services/api/gt_ai — the fork that used to live under ai/ is
+# retired, so `import gt_ai` resolves there whatever the order. `ai/` is
+# still needed for the legacy lane's own modules (ai.providers, ai.warmup).
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ai"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "services" / "api"))
 

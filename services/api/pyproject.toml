@@ -25,7 +25,6 @@ dependencies = [
     "orjson>=3.10",
     "prometheus-client>=0.20",
     "python-dateutil>=2.9",
-    "gt-ai",
     "langchain-core>=0.3",
     "langchain-openai>=0.3",
     "langgraph>=0.2",
@@ -39,10 +38,9 @@ otel = ["opentelemetry-sdk>=1.25", "opentelemetry-exporter-otlp>=1.25", "opentel
 dev = ["pytest", "pytest-asyncio", "ruff"]
 
 [tool.setuptools.packages.find]
-include = ["app*"]
-
-[tool.uv.sources]
-gt-ai = { path = "../../ai" }
+# The canonical provider package lives in services/api/gt_ai and ships WITH
+# the API (issue #109 class 3: the fork that used to live here is retired).
+include = ["app*", "gt_ai*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

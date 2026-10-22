@@ -25,7 +25,6 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 CANONICAL = REPO / "services" / "api" / "gt_ai"
-MIRROR = REPO / "ai" / "gt_ai"
 
 
 def _resolved_gt_ai(code: str) -> str:
@@ -65,25 +64,21 @@ def _silero_class(text: str) -> str:
 
 
 def test_the_canonical_tree_is_the_one_that_carries_the_fixes():
-    """The mirror lacks these; the canonical tree has them.
+    """The canonical provider tree carries the fixes the fork never got.
 
-    If this test starts failing, the mirror was re-synced — and the drift
-    table in docs/ARCHITECTURE_OWNERSHIP.md §8.1 needs a refresh.
+    The fork that used to live at ``ai/gt_ai`` had an older SileroVAD (the
+    threshold-flip version, where a turn could end mid-sentence) and no
+    AirLLM adapter at all. Those fixes live in the canonical tree, which is
+    now the only one.
     """
     canonical = _silero_class((CANONICAL / "vad.py").read_text(encoding="utf-8"))
-    mirror = _silero_class((MIRROR / "vad.py").read_text(encoding="utf-8"))
-    # the canonical SileroVAD carries the turn-debounce rules (#113); the
-    # mirror's is the older threshold-flip version (a turn can end mid-word)
+    # the canonical SileroVAD carries the turn-debounce rules (#113)
     assert "max_speech_ms" in canonical
-    assert "max_speech_ms" not in mirror, (
-        "the mirror's SileroVAD is expected to be the pre-#113 copy — if this "
-        "changes, the mirror was re-synced and the drift table needs a refresh")
-    # the AirLLM adapter exists only in the canonical tree, and the mirror's
-    # registry never imports it — so the mirror cannot build that provider
+    assert "min_silence_ms" in canonical
+    # the AirLLM adapter is part of the canonical tree
     assert (CANONICAL / "translation" / "airllm.py").exists()
-    assert not (MIRROR / "translation" / "airllm.py").exists()
-    mirror_registry = (MIRROR / "registry.py").read_text(encoding="utf-8")
-    assert "gt_ai.translation.airllm" not in mirror_registry
+    registry = (CANONICAL / "registry.py").read_text(encoding="utf-8")
+    assert "gt_ai.translation.airllm" in registry
 
 
 def test_the_repo_root_cannot_shadow_the_canonical_package():
@@ -102,3 +97,19 @@ def test_the_repo_root_cannot_shadow_the_canonical_package():
         "the public SDK must keep its (renamed) package")
     # and the canonical provider package is where it says it is
     assert (CANONICAL / "__init__.py").exists()
+
+
+def test_the_provider_fork_is_retired():
+    """There is ONE provider layer: services/api/gt_ai.
+
+    The fork that used to live at ``ai/gt_ai`` was a drifted copy of it
+    (8 files differed, 3 existed only in the canonical tree) and it was the
+    tree the legacy lane and the GPU worker resolved. A second copy of a
+    provider layer is how the fixes stop reaching one of the lanes.
+    """
+    assert not (REPO / "ai" / "gt_ai").exists(), (
+        "the provider fork must not come back: services/api/gt_ai is the one "
+        "provider layer")
+    # the legacy lane keeps its OWN adapters (a different interface, not a
+    # fork of the provider package) — those stay.
+    assert (REPO / "ai" / "providers" / "vad.py").exists()

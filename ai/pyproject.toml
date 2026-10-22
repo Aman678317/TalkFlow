@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "gt-ai"
+name = "gt-ai-legacy"
 version = "0.1.0"
-description = "GlobalTalk AI provider-agnostic AI layer: STT / MT / TTS / detection / summarization adapters + model router"
+description = "GlobalTalk AI legacy lane: the older provider adapters and the memory guard (the canonical provider layer is services/api/gt_ai)"
 requires-python = ">=3.11"
 dependencies = [
     "numpy>=1.26",
@@ -23,7 +23,8 @@ embeddings = ["sentence-transformers>=3.0"]
 dev = ["pytest", "pytest-asyncio", "httpx"]
 
 [tool.setuptools.packages.find]
-include = ["gt_ai*"]
-
-[tool.setuptools.package-data]
-"gt_ai" = ["evaluation/datasets/*.jsonl"]
+# This distribution ships the legacy lane's OWN modules (the older adapters,
+# the memory guard). It used to ship a fork of the provider package as
+# "gt_ai" — that fork is retired: services/api/gt_ai is the one provider
+# layer (issue #109 class 3).
+include = ["ai*"]
