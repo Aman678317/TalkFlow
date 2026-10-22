@@ -191,7 +191,7 @@ app does not fabricate translated text or audio.
 GlobalTalk AI implements full drop-in compatibility with the official `desi-python` SDK / Desi wire protocol:
 
 ```python
-import gt_ai as desi
+import gt_ai_sdk as desi
 
 client = desi.Client("gtk_live_api_key", server_url="http://127.0.0.1:8088")
 result = client.translate_text("Hello world!", target_lang="DE")
