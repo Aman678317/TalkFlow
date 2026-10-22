@@ -111,9 +111,11 @@ jobs:
             tests/test_telephony_ops_admin.py \
             tests/test_telephony_privacy_abuse_gates.py \
             tests/test_telephony_webhook_security.py \
+            tests/test_tenant_security_extended.py \
             tests/test_translation_fanout.py \
             tests/test_translation_memory_entries_hardened.py \
             tests/test_usage_billing_units_hardened.py \
+            tests/test_v2_v3_surface_auth_hardened.py \
             tests/test_ws_media_protocol.py \
             tests/test_ws_media_server.py -q
       - name: Integration tests (PostgreSQL + Redis + pgvector)

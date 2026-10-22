@@ -36,7 +36,7 @@ from app.config import settings
 from app.db import models as M
 from app.db.base import utcnow
 from app.db.session import get_db
-from app.deps import Principal, get_principal_optional
+from app.deps import Principal, get_principal_optional, require_org_user
 from app.errors import AuthenticationError
 from app.routers.platform import _require_platform_admin
 from app.security import create_session_ticket
@@ -501,21 +501,38 @@ async def v2_write_correct(
 
 @router.get("/v2/usage")
 async def get_usage(
-    principal: Principal | None = Depends(get_principal_optional),
+    principal: Principal = Depends(require_org_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """Check near-real-time character, document, and team document usage and limits.
 
-    Conforms to desi.Usage structure with character, document, and team_document subtypes.
+    Conforms to desi.Usage structure with character, document, and
+    team_document subtypes.
+
+    The numbers come from the immutable usage ledger (the same source the
+    canonical ``/api/v1/usage`` reads) — the endpoint used to answer with
+    HARDCODED placeholders (1250 characters, 5.4 speech minutes) to anyone,
+    authenticated or not (issue #109 class 3, day-2 finding B-4).
     """
+    from app.services import usage_service
+
+    totals = await usage_service.current_period_usage(db, principal.org_id)
+    limits = await usage_service.plan_quotas(db, principal.org_id)
+    characters = float(totals.get("characters", 0.0))
+    document_pages = float(totals.get("document_pages", 0.0))
+    audio_minutes = float(totals.get("audio_seconds", 0.0)) / 60.0
     return {
-        "character_count": 1250,
-        "character_limit": 1_000_000,
-        "document_count": 0,
-        "document_limit": 100,
-        "team_document_count": 0,
-        "team_document_limit": 100,
-        "speech_to_text_minutes": 5.4,
-        "speech_to_speech_minutes": 2.1,
+        "character_count": characters,
+        "character_limit": limits.get("characters"),
+        "document_count": document_pages,
+        "document_limit": limits.get("document_pages"),
+        # the ledger has one document dimension, not a per-team split
+        "team_document_count": document_pages,
+        "team_document_limit": limits.get("document_pages"),
+        "speech_to_text_minutes": audio_minutes,
+        # nothing is metered for a separate speech-to-speech dimension, so
+        # nothing is reported for one
+        "speech_to_speech_minutes": 0.0,
     }
 
 
