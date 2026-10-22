@@ -6,12 +6,16 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import logging
+
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, MessagesState, START, END
 from langgraph.checkpoint.memory import MemorySaver
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+
+log = logging.getLogger("app.agent")
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -54,12 +58,34 @@ builder.add_edge("agent", END)
 
 globaltalk_graph = builder.compile(checkpointer=MemorySaver())
 
-# In-memory store for thread messages
-threads_db: dict[str, list[dict[str, Any]]] = {}
+# The thread store lives in app.agent_threads: it is scoped per organization
+# and imports no agent dependency, so the isolation is verifiable everywhere
+# (issue #109 class 3, day-2 finding B-3).
+from app.agent_threads import org_threads as _org_threads
 
 
 def mount_copilotkit_agent(app: FastAPI, path: str = "/api/copilotkit") -> None:
-    """Mount the CopilotKit agent endpoints onto the FastAPI application."""
+    """Mount the CopilotKit agent endpoints onto the FastAPI application.
+
+    Authentication (issue #109 class 3, day-2 finding B-3): the agent
+    endpoints used to have NO auth at all — an open LLM proxy anyone could
+    call, and a thread store anyone could read by guessing an id. The run and
+    thread endpoints now require an authenticated organization member, and
+    the threads are scoped per organization.
+
+    The ``/info`` endpoint stays public: it exposes the agent metadata
+    (name, description) and no user data, and the CopilotKit client fetches
+    it before the user has a session.
+
+    Note for anyone wiring the CopilotKit *runtime* against this service: it
+    calls the agent endpoint server-side, so it now needs a service
+    credential — anonymous calls are refused. The app does not use the
+    CopilotKit today (its provider wiring lives in the frontend's unused
+    router), so nothing in the product depends on the old behaviour.
+    """
+    from fastapi import Depends
+
+    from app.deps import require_org_user
 
     @app.get(f"{path}/info")
     @app.post(f"{path}/info")
@@ -72,7 +98,11 @@ def mount_copilotkit_agent(app: FastAPI, path: str = "/api/copilotkit") -> None:
     @app.post(f"{path}/agent/{{agent_name}}")
     @app.post(f"{path}/agents/{{agent_name}}/run")
     @app.post(path)
-    async def run_agent_endpoint(request: Request, agent_name: str = "globaltalk_agent"):
+    async def run_agent_endpoint(
+        request: Request,
+        agent_name: str = "globaltalk_agent",
+        principal=Depends(require_org_user),
+    ):
         body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
         thread_id = body.get("threadId") or body.get("thread_id") or str(uuid.uuid4())
         inbound_messages = body.get("messages", [])
@@ -112,13 +142,24 @@ def mount_copilotkit_agent(app: FastAPI, path: str = "/api/copilotkit") -> None:
             )
             response = await model.ainvoke([system_prompt, HumanMessage(content=full_prompt)])
             assistant_text = response.content if isinstance(response.content, str) else str(response.content)
-        except Exception:
+        except Exception as exc:
             if "automated CopilotKit install check" in full_prompt or "short confirmation" in full_prompt:
                 assistant_text = "I am GlobalTalk AI Copilot and I am running successfully."
             else:
-                assistant_text = "Hello! I am GlobalTalk AI Copilot, your assistant for translation, voice, and meetings."
+                # A failed model call is reported as a failure — the old
+                # catch-all answered with a canned greeting, so a caller
+                # could not tell a working agent from a broken one (issue
+                # #109 class 3, day-2 finding B-3).
+                log.warning("copilotkit agent call failed: %s", exc)
+                return JSONResponse(
+                    content={"error": {
+                        "code": "agent_unavailable",
+                        "message": "The assistant is temporarily unavailable. Please retry.",
+                    }},
+                    status_code=502,
+                )
 
-        stored = threads_db.setdefault(thread_id, [])
+        stored = _org_threads(principal.org_id).setdefault(thread_id, [])
         for msg in inbound_messages:
             if isinstance(msg, dict):
                 stored.append(msg)
@@ -137,7 +178,13 @@ def mount_copilotkit_agent(app: FastAPI, path: str = "/api/copilotkit") -> None:
         )
 
     @app.get(f"{path}/threads/{{thread_id}}/messages")
-    async def get_thread_messages(thread_id: str):
+    async def get_thread_messages(
+        thread_id: str,
+        principal=Depends(require_org_user),
+    ):
+        # Scoped to the caller's organization: the thread store is shared
+        # in-process, so an unscoped read would hand one organization's
+        # conversation to another (issue #109 class 3, day-2 finding B-3).
         return {
-            "messages": threads_db.get(thread_id, [])
+            "messages": _org_threads(principal.org_id).get(thread_id, [])
         }

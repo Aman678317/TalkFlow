@@ -97,6 +97,7 @@ jobs:
             tests/test_media_bridge_hygiene.py \
             tests/test_meeting_media_contract.py \
             tests/test_metering_worker_thresholds_hardened.py \
+            tests/test_metrics_exposure_hardened.py \
             tests/test_model_fetch_gates_hardened.py \
             tests/test_observability_and_metrics_hardened.py \
             tests/test_outbound_idempotency.py \
@@ -118,10 +119,13 @@ jobs:
             tests/test_telemetry_tracing_hardened.py \
             tests/test_telephony_ops_admin.py \
             tests/test_telephony_privacy_abuse_gates.py \
+            tests/test_telephony_provider_selection_hardened.py \
             tests/test_telephony_webhook_security.py \
+            tests/test_tenant_security_extended.py \
             tests/test_translation_fanout.py \
             tests/test_translation_memory_entries_hardened.py \
             tests/test_usage_billing_units_hardened.py \
+            tests/test_v2_v3_surface_auth_hardened.py \
             tests/test_ws_media_protocol.py \
             tests/test_ws_media_server.py -q
       - name: Integration tests (PostgreSQL + Redis + pgvector)

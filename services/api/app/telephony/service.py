@@ -48,24 +48,39 @@ class TelephonyService:
         self._providers["asterisk"] = AsteriskARIProvider.from_settings()
 
     def get_provider(self, provider_name: str | None = None) -> BaseTelephonyProvider:
-        """Resolve the active telephony provider."""
+        """Resolve the active telephony provider.
+
+        A carrier lane is never silently substituted (issue #109 class 3,
+        day-2 finding C-2): the old code answered an explicit
+        ``telephony_provider=twilio`` without credentials with the SIMULATED
+        provider outside production, and an ``auto`` lane with a half-set
+        credential set picked the simulator with no word at all — so a
+        half-configured deployment "made calls" that went nowhere, and the
+        log looked like a working lane. The Asterisk lane already refused
+        that substitution; the carrier lanes now behave the same way.
+        """
         req_name = (provider_name or settings.telephony_provider).lower()
 
         if req_name == "twilio":
             if settings.twilio_account_sid and settings.twilio_auth_token:
                 return self._providers["twilio"]
-            if settings.is_production:
-                raise ProviderError("Twilio telephony requested in production but TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN are missing")
-            log.warning("Twilio credentials not configured; falling back to simulated provider")
-            return self._providers["simulated"]
+            raise ProviderError(
+                "Twilio telephony requested but TWILIO_ACCOUNT_SID / "
+                "TWILIO_AUTH_TOKEN are missing. Never silently substituted: a "
+                "real call must not become simulated without an explicit "
+                "operator choice (set telephony_provider=simulated for the "
+                "simulated lane)."
+            )
 
         if req_name == "telnyx":
             if settings.telnyx_api_key:
                 return self._providers["telnyx"]
-            if settings.is_production:
-                raise ProviderError("Telnyx telephony requested in production but TELNYX_API_KEY is missing")
-            log.warning("Telnyx credentials not configured; falling back to simulated provider")
-            return self._providers["simulated"]
+            raise ProviderError(
+                "Telnyx telephony requested but TELNYX_API_KEY is missing. "
+                "Never silently substituted: a real call must not become "
+                "simulated without an explicit operator choice (set "
+                "telephony_provider=simulated for the simulated lane)."
+            )
 
         if req_name == "simulated":
             return self._providers["simulated"]
@@ -82,9 +97,19 @@ class TelephonyService:
                 "an explicit operator choice."
             )
 
-        # auto mode: choose first provider that has credentials, or simulated
-        if settings.twilio_account_sid and settings.twilio_auth_token:
-            return self._providers["twilio"]
+        # auto mode: choose the first provider that has a COMPLETE credential
+        # set, or the simulated lane when no carrier is configured at all.
+        # A half-set credential set is a configuration error, not a reason to
+        # simulate.
+        if settings.twilio_account_sid or settings.twilio_auth_token:
+            if settings.twilio_account_sid and settings.twilio_auth_token:
+                return self._providers["twilio"]
+            raise ProviderError(
+                "Telephony is set to 'auto' and TWILIO credentials are only "
+                "partially configured (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN "
+                "must both be set). Never silently substituted: a real call must "
+                "not become simulated without an explicit operator choice."
+            )
         if settings.telnyx_api_key:
             return self._providers["telnyx"]
 

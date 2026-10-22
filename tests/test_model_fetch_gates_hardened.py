@@ -495,17 +495,9 @@ def test_legacy_vad_cache_only(monkeypatch):
         "absent silero weights + no opt-in, and no GitHub clone happens"
 
 
-async def test_mirror_vad_cache_only(monkeypatch):
-    mirror = _legacy("ai.gt_ai.vad")
-    _both_flags_off(monkeypatch)
-    monkeypatch.setattr(mirror, "_silero_cached", lambda: False)
-    import torch
-    monkeypatch.setattr(torch.hub, "load",
-                        lambda *a, **k: pytest.fail("torch.hub.load is not a cache probe"))
-    with pytest.raises(RuntimeError) as exc:
-        await mirror.SileroVAD().load()
-    assert "GT_ALLOW_MODEL_DOWNLOAD" in str(exc.value), \
-        "the operator sees the honest failure instead of a silent GitHub clone"
+# The fork that used to live at ai/gt_ai is retired (issue #109 class 3):
+# services/api/gt_ai is the one provider layer, and the canonical cases
+# below cover its cache gate.
 
 
 # --------------------------------------------------------------------------- #

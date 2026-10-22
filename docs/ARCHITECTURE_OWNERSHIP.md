@@ -19,7 +19,7 @@ Everything below was **read out of the code** on the commit named in the header 
 ## 0. How to read this document
 
 1. **The API is the contract.** Where the client and the server disagree, the server wins — the client is what gets fixed (see #116).
-2. **The canonical backend is `services/api`.** `apps/api` is a legacy compatibility tree with its own Alembic lineage; the deployed image runs `app.main:app` from `services/api` (§1). The `ai/` tree at the repo root is the *legacy lane* provider package set; `services/api/gt_ai/` is the canonical one; the root-level `gt_ai/` is a **separate public SDK** that can shadow the canonical package on `sys.path` (§8).
+2. **The canonical backend is `services/api`.** `apps/api` is a legacy compatibility tree with its own Alembic lineage; the deployed image runs `app.main:app` from `services/api` (§1). The `ai/` tree at the repo root is the *legacy lane* provider package set; `services/api/gt_ai/` is the canonical one; the root-level `gt_ai_sdk/` is a **separate public SDK** — renamed from `gt_ai` precisely so it can no longer shadow the canonical package on `sys.path` (§8).
 3. **"Test owner" means the file that fails when the area breaks.** An area with no test owner is an area with no safety net.
 4. **"Known risk" is a verified observation**, not a worry: each one names the file and the line, and says what could go wrong.
 
@@ -350,79 +350,35 @@ The repository has **four** Python trees that answer to similar names. Knowing w
 | Tree | What it is | Who loads it |
 |---|---|---|
 | `services/api/gt_ai/` | the **canonical** provider package (46 modules): the base protocol, the registry, the model router, every provider family | the API image (`Dockerfile.api:19` puts `services/api` first), the pytest config (`pyproject.toml:3`), the dev server (`run_api.py:18` chdirs into it) |
-| `ai/gt_ai/` | the **legacy lane's** copy of the same package (43 modules) — the mirror the legacy `apps/api` server imports | the legacy lane; **and the inference worker**, which puts `ai/` first on `sys.path` (`workers/inference-worker/main.py:20-21`) — so the GPU worker resolves the *older* provider tree |
+| ~~`ai/gt_ai/`~~ | the fork of the provider package that used to live here — **retired** (§8.1). The legacy lane's own adapters (`ai/providers/*`, on the legacy `ai.interfaces` contract) are a different implementation, not a copy, and they stay | — |
 | `apps/api/globaltalk/` | the **legacy backend** (its own models, its own Alembic lineage, its own `globaltalk.*` package) | the legacy deployment only; `docs/DATABASE.md` records that it is never run alongside the canonical API |
-| `gt_ai/` (repo root) | the **public SDK** for external consumers (7 files: the client, the HTTP transport, the shared types) — *not* a server package: it has no `model_router/`, no providers | external consumers; the risk is that it **shadows** the canonical package when it lands first on `sys.path` |
+| `gt_ai_sdk/` (repo root) | the **public SDK** for external consumers (6 modules: the client, the HTTP transport, the shared types) — *not* a server package: it has no `model_router/`, no providers | external consumers. It used to be named `gt_ai` and could **shadow** the canonical package when it landed first on `sys.path` — it is now `gt_ai_sdk`, so that hazard is gone |
 
-### 8.1 The mirror drift (measured file by file)
+### 8.1 The provider fork is retired — one provider layer
 
-Of the 46 canonical modules, **35 are byte-identical** to their `ai/gt_ai/` twin. Eleven are not:
+`ai/gt_ai/` used to be a **copy** of the canonical provider package that drifted from it: of the 46 canonical modules, 35 were byte-identical and eleven were not — the fork's `registry.py` had no AirLLM adapter, its `neural_online.py` had no echo guard, its `vad.py` had no cache-first Silero gate, and three modules existed only in the canonical tree. A second copy of a provider layer is how a fix stops reaching one of the lanes, and two processes did resolve it (the legacy lane and the GPU inference worker).
 
-| Module | Relationship | Why it matters |
-|---|---|---|
-| `registry.py` | differs | the mirror's adapter map omits `gt_ai.translation.airllm` → `create("mt", "airllm")` raises `KeyError` in the lane that resolves the mirror |
-| `translation/neural_online.py` | differs | the mirror lacks the DeepL source-text validation the canonical copy has (`services/api/gt_ai/translation/neural_online.py:282-300`) |
-| `vad.py` | differs | the mirror lacks the cache-first Silero gate the canonical copy has (`services/api/gt_ai/vad.py:123-160`) — so a process that imports the mirror can still clone silero-vad from GitHub |
-| `stt/azure_speech.py`, `tts/azure_speech.py`, `translation/azure_translator.py` | differ | the Azure adapters have diverged between the lanes |
-| `stt/__init__.py`, `translation/__init__.py` | differ | the package exports differ (the canonical exports the adapters the mirror does not have) |
-| `stt/recognizer.py`, `translation/translator.py`, `translation/airllm.py` | **canonical only** | `translator.py` and `recognizer.py` are imported **only by tests** (O-7) — production code that only tests reach |
+**The fork is gone.** `services/api/gt_ai/` is the only provider package:
 
-**The rule this map proposes:** the canonical copy is the one that answers "what is authoritative", and the mirror is kept honest by *copying* it (the pattern this session used: `model_router/router.py`, `translation/madlad400.py` and `translation/nllb_ct2.py` were re-mirrored byte-identically in #113/#114/#115), never by re-implementing. Where the two must differ (the legacy lane's own semantics), the difference belongs in the mirror and is listed here.
+- `ai/gt_ai/` is deleted; the legacy lane's own adapters (`ai/providers/*`, on the legacy `ai.interfaces` contract) stay — they were never a copy of the provider package, they are the legacy lane's own implementation;
+- `services/api` now ships the canonical package itself (`include = ["app*", "gt_ai*"]`) and no longer depends on the fork;
+- the `ai/` distribution is renamed `gt-ai-legacy` and ships the legacy lane's own modules;
+- `tests/test_entrypoint_provider_resolution.py` fails if `ai/gt_ai/` ever comes back.
 
-<<<<<<< Updated upstream
-### 8.2 The shadowing hazard (a name collision, not a bug)
+### 8.2 The shadowing hazard — retired with the rename
 
-`gt_ai/` at the repo root and `services/api/gt_ai/` are different packages with the same import name. Which one wins is decided by `sys.path` order, and the order is set differently per entry point:
+The repo root used to carry a public SDK named `gt_ai`: the same import name as the canonical provider package. If it won on `sys.path` (a plain `python` from the repo root puts the cwd first), `app/ai.py:32-35` would have raised `ImportError` — the SDK has no `NoPrivateProviderAvailable` and a different `Intent` base — and the whole AI facade would have died at startup, with an error that pointed nowhere near the cause.
 
-| Entry point | `sys.path` order | resolves |
-|---|---|---|
-| the API image | `services/api` first (`Dockerfile.api:19`) | the **canonical** package ✓ |
-| the dev server | `chdir` into `services/api` + `services/api` inserted at 0 (`run_api.py:14-18`) | the canonical package ✓ |
-| pytest | `pythonpath = ["services/api", "apps/api", "ai", "."]` (`pyproject.toml:3`) | the canonical package ✓ (the root SDK is last) |
-| the **inference worker** | `services/api` inserted, then `ai` inserted at 0 again (`workers/inference-worker/main.py:20-21`) | the **legacy mirror** ✗ |
-| a plain `python` from the repo root | the cwd (the root) is `sys.path[0]` | the **root SDK** ✗ — this is why running a script from the repo root without an explicit `PYTHONPATH` imports the SDK, not the server package |
-
-### 8.3 The scripts inventory
-=======
-### 8.2 The shadowing hazard (a name collision, plus two entry points that pick the wrong copy)
-
-`gt_ai/` at the repo root and `services/api/gt_ai/` are different packages with the same import name. Which one wins is decided by `sys.path` order, and the order is set differently per entry point:
+The SDK is now `gt_ai_sdk`, so it cannot shadow anything. What each entry point resolves:
 
 | Entry point | `gt_ai` resolves to | How |
 |---|---|---|
 | the API image | the **canonical** package ✓ | `PYTHONPATH=/app/services/api:…` (`Dockerfile.api:19`); the root SDK is not even copied into the image |
 | the Render deploy | the **canonical** package ✓ | `services/api/start.sh` runs from the service directory |
 | pytest | the **canonical** package ✓ | `pyproject.toml:3` puts `services/api` first; `tests/conftest.py:14-15` re-inserts it at index 0 |
-| **the documented dev server** | ✓ the **canonical** package (fixed) | `run_api.py` now inserts the canonical path last, so it wins. It used to insert `ai/` last — the last insert lands at `sys.path[0]` — and the dev server ran the stale mirror |
-| **the GPU inference worker** | ✓ the **canonical** package (fixed) | `workers/inference-worker/main.py` now inserts the canonical path last. It used to insert `ai/` last, so the GPU worker ran the stale mirror *and* the canonical app in one process |
-| a plain `python` from the repo root | ✗ the **root SDK** | the cwd is `sys.path[0]`, and the root SDK defines the same 11 class names with an incompatible `Intent` base and **no** `NoPrivateProviderAvailable` — if it ever wins, `app/ai.py:32-35` raises `ImportError` and the whole AI facade dies at startup. The hazard is already acknowledged in `scripts/bench_tts_voices.py:4-7` |
-
-### 8.3 The deployment that overwrote the canonical tree
-
-`vercel.json`'s API install command used to run
-
-```
-pip install ../../ai && python -c "shutil.copytree('../../ai/gt_ai', './gt_ai', dirs_exist_ok=True); …"
-```
-
-The service root is `services/api`, so **`./gt_ai` *is* the canonical provider tree** — the copy merged the legacy lane's mirror over it. Harmless while the two trees were identical (they were, when the command was written); now it reverts the eight diverging canonical files in the serverless build — including the cache-first Silero gate (#113), the `neural_online` echo guard, the AirLLM registration and the `gt_ai.stt` / `gt_ai.translation` exports. `pip install ../../ai` put the same stale package into site-packages under the name `gt_ai` (the mirror's `ai/pyproject.toml` declares `include = ["gt_ai*"]`), even though nothing in `services/api` imports the legacy `ai` package.
-
-**This is finding #1 in the risk register, and it has its own PR** (the install command no longer writes into the canonical tree).
-
-### 8.4 Which entry point is "the app"?
-
-| Command | What it actually starts |
-|---|---|
-| `make dev` (`Makefile:22` → `scripts/run_dev.sh:7`) | the **legacy** backend (`uvicorn globaltalk.main:app`, `PYTHONPATH=apps/api:.`) — not the canonical one |
-| `python run_api.py` (`AGENTS.md` "Local Dev", `START_ALL.bat:11`) | the canonical app **and** the canonical provider tree (fixed) |
-| `docker compose up` | the canonical app, the canonical providers ✓ |
-| Render / Vercel | the canonical app ✓ — the Vercel build additionally overwrote the provider tree (§8.3) |
-
-So there are four different "run the app" paths and **no two of them resolve the same code** — a green local run does not mean the deployed behaviour, and a green Docker run does not mean the local one.
-
-
-### 8.5 The scripts inventory
->>>>>>> Stashed changes
+| the documented dev server | the **canonical** package ✓ | `run_api.py` inserts the canonical path last, so it wins |
+| the GPU inference worker | the **canonical** package ✓ | `workers/inference-worker/main.py` inserts the canonical path last; `ai/` is still on the path for the legacy lane's own modules |
+| a plain `python` from the repo root | the canonical package when `services/api` is on the path, otherwise nothing | the root no longer carries a `gt_ai` package at all — the SDK is `gt_ai_sdk` |
 
 | Script | Referenced by | Note |
 |---|---|---|
@@ -472,15 +428,11 @@ Every row is verified with a file + line. **Nothing here was deleted or "fixed"*
 
 | # | Risk | Evidence | What goes wrong |
 |---|---|---|---|
-<<<<<<< Updated upstream
-| **B-1** | **The metering worker dies on every pass after the first quota threshold.** The threshold markers are written *inside* `quota_json`; the next pass iterates them, so `limit` becomes a dict and `used / limit` raises `TypeError`, which the blanket `except` swallows as "metering pass failed". | `workers/metering-worker/main.py:65-66` writes `qj["_thresholds"] = state`; `:50` iterates `quota.items()`; `:53` divides by `limit`; `:68-69` catches everything | After the first 80 %/100 % threshold crossing the worker never finalizes an invoice and never dispatches a threshold webhook again. The invoice line the page claims comes "from real metering" stops moving |
-=======
-| **B-0** | **The Vercel build overwrites the canonical provider tree with the stale mirror.** `vercel.json`'s install command copied `../../ai/gt_ai` over `./gt_ai` — and the service root is `services/api`, so `./gt_ai` **is** the canonical tree. | `vercel.json` (`services.api.installCommand`), the eight diverging pairs in §8.1 | The serverless deploy silently reverts the cache-first Silero gate (#113), the `neural_online` echo guard, the AirLLM registration and the `gt_ai.stt` / `gt_ai.translation` exports. **Fixed in its own PR** (the install command no longer writes into the canonical tree) |
-| **B-1** | **The metering worker dies on every pass after the first quota threshold.** The threshold markers are written *inside* `quota_json`; the next pass iterates them, so `limit` becomes a dict and `used / limit` raises `TypeError`, which the blanket `except` swallows as "metering pass failed". | `workers/metering-worker/main.py:65-66` writes `qj["_thresholds"] = state`; `:50` iterates `quota.items()`; `:53` divides by `limit`; `:68-69` catches everything | After the first 80 %/100 % threshold crossing the worker never finalizes an invoice and never dispatches a threshold webhook again. The invoice line the page claims comes "from real metering" stops moving. **Fixed in its own PR** |
->>>>>>> Stashed changes
+ | **B-0** | **The Vercel build overwrote the canonical provider tree with the stale fork.** `vercel.json`'s install command copied `../../ai/gt_ai` over `./gt_ai` — and the service root is `services/api`, so `./gt_ai` **is** the canonical tree. | `vercel.json` (`services.api.installCommand`), the diverging pairs in §8.1 | The serverless deploy silently reverted the cache-first Silero gate (#113), the `neural_online` echo guard, the AirLLM registration and the `gt_ai.stt` / `gt_ai.translation` exports. **Fixed** — the install command no longer writes into the canonical tree |
+| **B-1** | **The metering worker died on every pass after the first quota threshold.** The threshold markers are written *inside* `quota_json`; the next pass iterates them, so `limit` becomes a dict and `used / limit` raises `TypeError`, which the blanket `except` swallows as "metering pass failed". | `workers/metering-worker/main.py:65-66` writes `qj["_thresholds"] = state`; `:50` iterates `quota.items()`; `:53` divides by `limit`; `:68-69` catches everything | After the first 80 %/100 % threshold crossing the worker never finalized an invoice and never dispatched a threshold webhook again. The invoice line the page claims comes "from real metering" stopped moving. **Fixed** |
 | **B-2** | **Agent Studio returns fabricated results as if they were real.** The fallback (used whenever the `bridge.py` subprocess is missing or fails) returns a hard-coded report with `"verified": True`, and a hard-coded draft with `"score": 9.2`, `"published_path": "content/published/article.md"`, `"status": "published"`. | `services/api/app/routers/agent_studio.py:114-125` (`_fallback_research`), `:128-139` (`_fallback_content`), used at `:147-166`; `/status` always reports `"ready"` (`:236`) | A caller cannot tell a fabricated "verified" report or a claimed publication from a real one — the exact failure mode the rest of the repo refuses |
 | **B-3** | **The CopilotKit agent endpoints have no auth** and swallow every failure into a canned greeting. | `services/api/app/agent.py:64-74` (no `Depends`), `:115-119` (the catch-all) | An unauthenticated LLM proxy; and a failure is indistinguishable from a success to the caller |
-| **B-4** | **The legacy `/v2/*` and `/v3/*` surface is mounted at the root** and most of its routes use `get_principal_optional` — anonymous by default. | `services/api/app/routers/v2_v3.py:48` (no prefix), `main.py:83`; `get_principal_optional` at `:288,435,469,504,927,976,996,1011,1020` | Glossaries / style rules / translation memories are reachable without a principal unless the handler adds its own tenant check (asserted only by the non-CI `test_tenant_security_extended.py:19-23`) |
+| **B-4** | **The legacy `/v2/*` and `/v3/*` surface is mounted at the root** and most of its routes take `get_principal_optional` — **but reading every handler shows the tenant routes do reject an anonymous caller** (through `_org_of()`, `v2_v3.py:908`, which raises 401). After checking all 43 routes, only 5 are genuinely public, and all five are capability/utility routes the canonical API also publishes anonymously. The real defects this row uncovered: `GET /v2/usage` had **no auth** and answered with **hardcoded numbers**, and the suite covering the isolation was in no CI lane. | `services/api/app/routers/v2_v3.py:48` (no prefix), `main.py:83`; `get_principal_optional` at `:288,435,469,504,927,976,996,1011,1020`; the tenant check at `:908-914` | **Fixed**: `/v2/usage` now requires a member and reports the ledger; `test_tenant_security_extended.py` is in the CI lane; the surface's auth policy is pinned by `tests/test_v2_v3_surface_auth_hardened.py` |
 | **B-5** | **The inference worker resolves the stale provider tree.** It puts `ai/` **before** `services/api` on `sys.path`, so that process imports the drifted `ai/gt_ai` copy — which has no `airllm` adapter, no cache-first Silero and no DeepL source validation. | `workers/inference-worker/main.py:20-21` (`ai` inserted last ⇒ first) vs `infrastructure/docker/Dockerfile.api:19` (`services/api` first) | The GPU worker is the one process that can build a provider the API cannot, and its Silero path can still clone from GitHub |
 | **B-6** | **The phone-call intake bypasses the provider router** and loads its own Whisper instance. | `services/api/app/routers/translate.py:338` (`WhisperModel("tiny", …)`), with the facade fallback at `:385-388` | Two Whisper code paths; the router's cache gate, readiness filter and attempt deadline do not apply to the direct one |
 
@@ -488,21 +440,15 @@ Every row is verified with a file + line. **Nothing here was deleted or "fixed"*
 
 | # | Risk | Evidence | What goes wrong |
 |---|---|---|---|
-| **O-1** | The `ai/` tree and `services/api/gt_ai/` are mirrors that have **drifted** (8 files differ; 3 exist only in the canonical copy; `ai/gt_ai/registry.py` omits the `airllm` adapter; `ai/gt_ai/vad.py` lacks the cache-first Silero fix; `ai/gt_ai/translation/neural_online.py` lacks the DeepL source-text validation). | `services/api/gt_ai/registry.py:62` vs `ai/gt_ai/registry.py`; `services/api/gt_ai/vad.py:123-160` vs `ai/gt_ai/vad.py`; `services/api/gt_ai/translation/neural_online.py:282-300` | Two answers to "where does the provider layer live" — and the older one is what one worker imports (B-5) |
-| **O-2** | The root-level `gt_ai/` **SDK** shares a name with the canonical package. | `gt_ai/` at the repo root vs `services/api/gt_ai/`; `pyproject.toml:3` puts `services/api` first for pytest, but `run_api.py:15` and `workers/inference-worker/main.py:20-21` manipulate the order themselves | Whichever copy is first on `sys.path` wins — the canonical one for the API image, the legacy one for the inference worker |
+| **O-1** | The `ai/` tree carried a **fork** of the provider package that had drifted (8 files differ; 3 exist only in the canonical copy) — **fixed: the fork is retired**, and `services/api/gt_ai/` is the one provider layer. | the fork's `registry.py` had no `airllm` adapter, its `vad.py` no cache-first Silero gate, its `neural_online.py` no echo guard; `tests/test_entrypoint_provider_resolution.py` fails if it comes back | Two answers to "where does the provider layer live" — and the older one is what the legacy lane and the GPU worker used to import |
+| **O-2** | The root-level `gt_ai/` **SDK** shared a name with the canonical package — **fixed**: it is now `gt_ai_sdk`. | `gt_ai_sdk/` at the repo root vs `services/api/gt_ai/`; `pyproject.toml:3` puts `services/api` first for pytest | The root can no longer shadow the provider package; `tests/test_entrypoint_provider_resolution.py` fails if a root `gt_ai/` package reappears |
 | **O-3** | Two realtime fan-out engines with different semantics. | `app/realtime/translation_fanout.py:132` is imported only by the telephony bridge (`telephony/bidirectional_bridge.py:26`); the meeting pipeline runs its own (`pipeline.py:894,940`) | The invariant test (`test_translation_fanout.py`, 10 tests) covers the telephony one; the pipeline's is covered by a different suite |
 | **O-4** | Staleness / barge-in logic exists twice in the same room. | `agents/supervisor.py:158,218,222` vs `pipeline.py:1241` (`_is_stale`), `:516` (`_handle_barge_in`), `:466` (`_split_running_utterance`) | Two sources of truth; `test_realtime_barge_in.py` covers the pipeline path, `test_realtime_agents_trace.py` the agent path |
 | **O-5** | `/api/v1` prefix ownership is split across **seven** router modules. | `translate.py:30`, `write.py:15`, `customization.py:30`, `orgs.py:22`, `meetings.py:33`, `assistant.py:25-26`, `platform.py:32` | No single owner for the prefix; a new route can collide with seven modules' expectations |
 | **O-6** | `app/workers_runner.py` is an **orphan** worker entry point that duplicates the in-process registration and omits the `default` queue. | `workers_runner.py:31-37` vs `main.py:180-192`; no importer, no Docker/Make target | Two competing "worker" entry points; the standalone one is not what the image runs |
 | **O-7** | Unreachable modules inside the canonical backend: `app/mcp/indic_server.py`, `app/globaltalk_client.py` (whose docstring claims "all callers inject the same singleton" — false), `gt_ai/evaluation/runner.py`, `gt_ai/translation/translator.py` + `gt_ai/stt/recognizer.py` (451 lines, imported only by tests). | `globaltalk_client.py:26-27` vs zero importers; `gt_ai/translation/translator.py` imported only by `tests/unit/test_translation_adapter.py:2` | Dead code that reads as live; the "only place" claim in the docstring is wrong |
 | **O-8** | Two modules named `webhook_service` with different owners. | `app/services/webhook_service.py:39` (org webhooks) vs `app/telephony/webhook_service.py:20` (carrier callbacks) | A naming trap for the matrix and for reviewers |
-<<<<<<< Updated upstream
-=======
-| **O-9** | **Two entry points resolved the stale mirror instead of the canonical provider layer — fixed.** `run_api.py` (the documented dev server, `AGENTS.md`, `START_ALL.bat:11`) and the GPU inference worker both inserted `ai/` *last* at `sys.path[0]`, so `ai/gt_ai` won. | `run_api.py:14-15`; `workers/inference-worker/main.py:20-21` — both now insert the canonical path last, and `tests/test_entrypoint_provider_resolution.py` imports each entry point in a subprocess and asserts which `gt_ai` was resolved | The dev server and the GPU worker ran a provider layer 8 files behind the canonical one — no AirLLM adapter, no Silero turn debounce, no DeepL echo guard — while the worker also imported the canonical app |
-| **O-10** | **`make dev` started the legacy backend, not the canonical one — fixed.** | `Makefile:22` → `scripts/run_dev.sh:7` (`PYTHONPATH="apps/api:."`, `uvicorn globaltalk.main:app`); the runner now starts the canonical `app.main:app` and the legacy lane has its own target (`make dev-legacy`) | A developer following the documented command used to debug `apps/api/globaltalk`, whose providers come from the legacy `ai/providers` lane — every fix made in `services/api/gt_ai` was invisible locally |
-| **O-11** | **The canonical service declares the mirror as its `gt-ai` dependency.** | `services/api/pyproject.toml:30` + `:41-42` (`[tool.uv.sources] gt-ai = { path = "../../ai" }`); `ai/pyproject.toml:25-26` (`include = ["gt_ai*"]`) | Any `pip install ./services/api` puts the **stale** `ai/gt_ai` into site-packages under the name `gt_ai`; where site-packages precedes the service directory, the wrong copy is imported |
 | **O-12** | Two stale scripts in `scripts/` **mutate source in place** and are referenced by nothing. | `scripts/apply_phase4_hardening.py:52,83,160,194,204` write to `services/api/app/**` without the guard used at `:43` (its pattern no longer matches, so the later blocks rewrite unconditionally); `scripts/update_cross_tests.py:183-188` appends a test that already exists at `tests/test_cross_tenant_security.py:161` | Running either silently rewrites or duplicates canonical source and test files — and CI lints them, so they look maintained |
->>>>>>> Stashed changes
 
 ### 10.3 Configuration and environment
 
@@ -539,7 +485,7 @@ Each row is **filed, not applied** — a docs-only PR should follow the same rev
 | # | File:line | Says | Reality |
 |---|---|---|---|
 | D-1 | `docs/ARCHITECTURE.md:74` | "`apps/api` — FastAPI control+data plane" | the deployed plane is `services/api` (`infrastructure/docker/Dockerfile.api:19,36` → `app.main:app`); `apps/api` is the legacy tree |
-| D-2 | `docs/ARCHITECTURE.md:73-84` | the repository layout | it omits `services/api` as canonical, the root `gt_ai/` SDK, `apps/amazon-connect-v2v`, `mcp/`, `sdk/`, `cli/`, `workers/*` |
+| D-2 | `docs/ARCHITECTURE.md:73-84` | the repository layout | it omits `services/api` as canonical, the root `gt_ai_sdk/` SDK, `apps/amazon-connect-v2v`, `mcp/`, `sdk/`, `cli/`, `workers/*` |
 | D-3 | `docs/AI.md:7-17` | the provider abstraction is `ai/interfaces.py` + `ai/providers/**` + `ai/model_router` | those paths exist but are the **legacy lane**; the canonical is `services/api/gt_ai/{base.py,registry.py,model_router/router.py}` — the doc never says which tree is authoritative |
 | D-4 | `AGENTS.md:42` | "Tests use `services/api/conftest.py` fixtures" | that file does not exist; the canonical fixtures are in `tests/conftest.py` |
 | D-5 | `docs/AI.md`, `docs/API.md`, `docs/REALTIME.md` | — | they do not mention the surfaces this cycle added: the `*_HTTP_PRIVATE` flags, `GET /api/v1/billing/plans`, the `private_only` / `tenant_private_only` request fields, the meeting/call privacy flags, the canonical dimension vocabulary |
