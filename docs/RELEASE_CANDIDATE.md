@@ -53,7 +53,7 @@
 - Scope exclusions + observed faults: day-3 exclusions (capture permissions; SPA lane connect-loop), ja source-only, en→mr unconfigured lane, session-environment boot-contract findings (`docs/TRANSLATION_ACCEPTANCE.md` lines 201–208: CWD-relative DB path trap; CPython 3.14 faster-whisper warmup crash with proven `sitecustomize` mitigation; vite `detectBackendPort` race; duplicate-email signup under the fresh-DB condition).
 - The fake-provider fairness benchmark (`scripts/benchmark_translation_fanout.py`, 7.11× dispatch-overhead metric) measures scheduler overhead only — **never** a production-latency claim (`docs/LOAD_CAPACITY_ENVELOPE.md` §1.1).
 - Day-6 envelope is a local-machine characterization; absolute capacity claims require production re-measurement with the same harness.
-- **Post-freeze remediation note (2026-10-23):** R5 (CI secret-scan) is realized after the freeze — `.github/workflows/ci.yml` runs a digest-pinned gitleaks v8.30.1 full-history scan, with the 34 audited historical placeholders pinned in `.gitleaksignore`. The open-gate sentence above records the freeze-date state.
+- **Post-freeze remediation note (2026-10-23):** R5 (CI secret-scan) is realized after the freeze — `.github/workflows/ci.yml` runs a digest-pinned gitleaks v8.30.1 full-history scan, with the 34 audited historical placeholders pinned in `.gitleaksignore` (PR #142, CI run `39936233786` on `6e62caf` green). The open-gate sentence above records the freeze-date state.
 
 ## 6. Freeze rule (binding from this tag)
 
