@@ -1,7 +1,11 @@
 """Realtime latency benchmark harness (docs/TESTING.md).
 
-Drives N synthetic utterances through a RUNNING server via the golden-demo
-WebSocket path and reports per-stage p50/p95 from `latency.report` events.
+Drives N synthetic utterances through a RUNNING server via the WebSocket path
+and reports per-stage p50/p95 from `quality.latency` events — the audio path
+emits them to translated-audio listeners per target language (text is
+injected with `transcript.inject`, so this harness measures MT→TTS→delivery;
+the STT stage is exercised by the audio-path drill:
+`scripts/load_drill_realtime.py`).
 
 Usage:
     python tests/realtime/bench_latency.py [--base http://127.0.0.1:8000]
@@ -88,9 +92,12 @@ async def main() -> int:
             seen = len(traces)
             while time.time() < deadline:
                 for e in sink_b:
-                    if e.get("type") == "latency.report":
-                        tr = e["data"]
-                        if tr.get("target_lang") == args.hear and len(traces) == seen:
+                    if e.get("type") == "quality.latency":
+                        tr = dict(e)
+                        # historic wire shape kept a nested payload; accept both
+                        if isinstance(tr.get("data"), dict):
+                            tr.update(tr.pop("data"))
+                        if tr.get("target_language") == args.hear and len(traces) == seen:
                             tr["wall_ms"] = (time.perf_counter() - t0) * 1000
                             traces.append(tr)
                 if len(traces) > seen:
