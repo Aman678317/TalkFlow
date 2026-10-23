@@ -57,6 +57,7 @@ If any item is unchecked, fix it before beginning the launch phase or explicitly
 - Verify transcript/recording consent, user-visible indicators, retention and deletion behavior.
 - Check logs and telemetry for credentials and unnecessary customer content.
 - Review privacy notice, terms and data-processing/subprocessor description with the responsible owner.
+- Status (2026-10-23, in progress): the provider-health/configuration-truth chunk is shipped and CI-verified — router/chain/diagnostics truth + removal of the `private_only` cloud-delegate egress leak (14 pinned hardened tests; `docs/TRANSLATION_ACCEPTANCE.md` §"Day-4 plan checklist"), with the DEV-inject offline surface opened and the `webrtc-smoke` gate green (`bd993cb`, CI run 39885303973 + E2E run 39885304046). Open for this day: the full security re-run (auth/RBAC/tenant isolation, rate limits, upload validation, WS authorization, CSRF/CORS, secret scan, webhook signatures), consent/indicator/retention/deletion verification, log/telemetry content review and the privacy-notice owner sign-off.
 
 **Exit:** No open critical/high security finding; any legal/privacy review requirement is completed by the responsible qualified reviewer.
 
