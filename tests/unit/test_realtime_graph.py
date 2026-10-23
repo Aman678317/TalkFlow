@@ -149,7 +149,7 @@ def test_voice_gate_requests_tts_only_for_a_successful_translation():
         "event_type": "translation.ready",
         "translation_ok": True,
         "translated_text": "Hello",
-        "target_languages": ["en"],
+        "target_language": "en",
     })
     ready = _voice_gate(good)
 
