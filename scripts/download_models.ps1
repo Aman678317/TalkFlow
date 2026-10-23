@@ -24,7 +24,8 @@ import argostranslate.package as pkg
 pkg.update_package_index()
 available = pkg.get_available_packages()
 installed = {(p.from_code, p.to_code) for p in pkg.get_installed_packages()}
-wanted = [('en','hi'),('hi','en'),('en','ja'),('ja','en'),('en','zh'),('zh','en'),('en','es'),('es','en')]
+wanted = [('en','hi'),('hi','en'),('en','ja'),('ja','en'),('en','zh'),('zh','en'),('en','es'),('es','en'),
+          ('en','mr'),('mr','en'),('en','de'),('de','en'),('en','fr'),('fr','en')]
 for pair in wanted:
     if pair in installed:
         print('[OK] argos', pair); continue

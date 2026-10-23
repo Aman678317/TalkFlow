@@ -12,6 +12,7 @@ import {
   FileText,
   Globe,
   Mic,
+  Radio,
   Sparkles,
   Trash2,
   Volume2,
@@ -20,7 +21,12 @@ import {
 } from "lucide-react";
 import { api, friendlyMessage } from "../lib/api";
 import type { NormalizedTranslation } from "../lib/types";
-import { translateCanonical } from "../lib/translation";
+import {
+  isUsableTranslation,
+  normalizeTranslationResponse,
+  translateCanonical,
+} from "../lib/translation";
+import { streamLiveTranslation } from "../lib/liveTranslation";
 import { useShortcuts } from "../lib/shortcuts";
 import { LanguagePicker } from "../components/LanguagePicker";
 import { SelectionTranslate } from "../components/SelectionTranslate";
@@ -443,6 +449,18 @@ export default function TranslatePage() {
   const [isSpeaking, setIsSpeaking] = React.useState(false);
   const audioRef = React.useRef<HTMLAudioElement | null>(null);
 
+  // Live translation (SSE): a provisional draft appears as soon as the stable
+  // prefix is translated, then the final pass revises it. The previous result
+  // stays on screen until a newer one arrives, so typing never flickers.
+  const [live, setLive] = React.useState(true);
+  const [draft, setDraft] = React.useState<NormalizedTranslation | null>(null);
+  const [livePhase, setLivePhase] = React.useState<"idle" | "waiting" | "streaming">("idle");
+  const [liveError, setLiveError] = React.useState<{ message: string; code?: string } | null>(null);
+  const [liveStats, setLiveStats] = React.useState<{ ttfd_ms: number | null; total_ms: number } | null>(null);
+  const liveAbort = React.useRef<AbortController | null>(null);
+  const liveSeq = React.useRef(0);
+  const liveLastKey = React.useRef("");
+
   // Recent translations (persisted client-side)
   const [recents, setRecents] = React.useState<RecentTranslation[]>(() => loadRecents());
 
@@ -451,7 +469,7 @@ export default function TranslatePage() {
   const [dictLoading, setDictLoading] = React.useState(false);
   const [showDict, setShowDict] = React.useState(false);
 
-  // Debounce
+  // Debounce (legacy path only — live mode streams on its own timer below)
   React.useEffect(() => {
     const t = window.setTimeout(() => setDebounced(source), 700);
     return () => window.clearTimeout(t);
@@ -484,7 +502,8 @@ export default function TranslatePage() {
       }
       return response;
     },
-    onMutate: () => setResult(null),
+    // Keep the previous translation visible while a new one is in flight
+    // (DeepL-style stale-while-revalidate); clearing it here caused flicker.
     onSuccess: (normalized: NormalizedTranslation) => {
       setResult(normalized);
       const trimmed = source.trim();
@@ -497,13 +516,145 @@ export default function TranslatePage() {
   });
 
   React.useEffect(() => {
+    if (live) return;
     if (debounced.trim().length >= 2) {
       translate.mutate(debounced);
     } else {
       setResult(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debounced, srcLang, tgtLang, glossaryId, styleId, domain, intent, formality]);
+  }, [debounced, srcLang, tgtLang, glossaryId, styleId, domain, intent, formality, live]);
+
+  /** Start a live (SSE) translation; supersedes any in-flight request. */
+  async function runLiveSource(text: string) {
+    const controller = new AbortController();
+    liveAbort.current?.abort();
+    liveAbort.current = controller;
+    const seq = ++liveSeq.current;
+    const current = () => seq === liveSeq.current && !controller.signal.aborted;
+    const trimmed = text.trim();
+    if (!trimmed) return;
+
+    setLivePhase("streaming");
+    setLiveError(null);
+
+    try {
+      await streamLiveTranslation(
+        {
+          text: trimmed,
+          source_language: srcLang.toLowerCase() === "auto" ? "AUTO" : srcLang,
+          target_language: tgtLang,
+          glossary_id: glossaryId || null,
+          style_profile_id: styleId || null,
+          domain,
+          intent,
+          formality,
+        },
+        {
+          onMeta: (meta) => {
+            if (!current()) return;
+            if (srcLang.toLowerCase() === "auto" && meta.phase === "ready") {
+              setDetectedLanguage(meta.source_language);
+              setDetectedConfidence(meta.detected_confidence);
+            }
+          },
+          onDraft: (d) => {
+            if (!current()) return;
+            const normalized = normalizeTranslationResponse({
+              request_id: d.request_id,
+              translations: [{
+                translation_id: d.request_id,
+                source_language: d.source_language,
+                target_language: d.target_language,
+                source_text: trimmed,
+                translated_text: d.text,
+                model: d.model,
+                provider: d.provider,
+                latency_ms: d.latency_ms,
+                quality_flags: d.quality_flags,
+              }],
+            });
+            if (isUsableTranslation(normalized, trimmed, srcLang, tgtLang)) {
+              setDraft(normalized);
+            }
+          },
+          onDone: (done) => {
+            if (!current()) return;
+            const normalized = normalizeTranslationResponse({
+              request_id: done.request_id,
+              translations: done.translations,
+              detected_confidence: done.detected_confidence ?? undefined,
+            });
+            setDraft(null);
+            setLiveError(null);
+            setLiveStats({ ttfd_ms: done.ttfd_ms, total_ms: done.total_ms });
+            setLivePhase("idle");
+            setResult(normalized);
+            if (srcLang.toLowerCase() === "auto" && normalized.source_language) {
+              setDetectedLanguage(normalized.source_language);
+            }
+            if (trimmed.split(/\s+/).length <= 2) lookupDictionary(trimmed);
+          },
+          onError: (err) => {
+            if (!current()) return;
+            setDraft(null);
+            setLivePhase("idle");
+            setLiveError({ message: err.message || "Translation failed.", code: err.code });
+          },
+        },
+        controller.signal,
+      );
+    } catch (err) {
+      if (controller.signal.aborted || seq !== liveSeq.current) return;
+      liveLastKey.current = "";
+      setDraft(null);
+      setLivePhase("idle");
+      setLiveError({ message: friendlyMessage(err), code: (err as any)?.code });
+    }
+  }
+
+  // Live mode: every edit supersedes the in-flight stream, then the settled
+  // text is translated after a short pause (not a 700 ms submit-style wait).
+  React.useEffect(() => {
+    const stop = () => {
+      liveAbort.current?.abort();
+      liveAbort.current = null;
+      liveSeq.current += 1;
+    };
+
+    if (!live) {
+      liveLastKey.current = "";
+      stop();
+      return;
+    }
+
+    const text = source.trim();
+    if (text.length < 2) {
+      liveLastKey.current = "";
+      stop();
+      setDraft(null);
+      setLiveError(null);
+      setLiveStats(null);
+      setLivePhase("idle");
+      setResult(null);
+      return;
+    }
+
+    // A duplicated change event (same text, same pair) must not abort and
+    // restart a stream that is already in flight for it.
+    const key = `${srcLang}|${tgtLang}|${glossaryId}|${styleId}|${domain}|${intent}|${formality}|${text}`;
+    if (key === liveLastKey.current) return;
+    liveLastKey.current = key;
+
+    stop();
+    setLiveError(null);
+    setLivePhase("waiting");
+    const timer = window.setTimeout(() => { void runLiveSource(text); }, 350);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source, srcLang, tgtLang, glossaryId, styleId, domain, intent, formality, live]);
+
+  React.useEffect(() => () => { liveAbort.current?.abort(); }, []);
 
   // Audio output is always provider-backed. The browser never synthesizes or
   // substitutes speech when the server-side TTS provider is unavailable.
@@ -639,6 +790,10 @@ export default function TranslatePage() {
   function clearAll() {
     setSource("");
     setResult(null);
+    setDraft(null);
+    setLiveError(null);
+    setLiveStats(null);
+    setLivePhase("idle");
   }
 
   // Persist recents whenever they change (keeps state updaters pure).
@@ -658,7 +813,11 @@ export default function TranslatePage() {
   // languages, copy translation, clear, and submit with Ctrl/Cmd+Enter.
   useShortcuts(
     {
-      submit: () => { if (source.trim()) translate.mutate(source); },
+      submit: () => {
+        if (!source.trim()) return;
+        if (live) void runLiveSource(source);
+        else translate.mutate(source);
+      },
       swap: () => { swap(); },
       copy: () => { copyOut(); },
       clear: () => { clearAll(); },
@@ -668,6 +827,18 @@ export default function TranslatePage() {
 
   const activeGlossaries = (glossaries ?? []).filter((g) => g.status === "active");
   const caps = langs ?? [];
+
+  const working = live ? livePhase !== "idle" : translate.isPending;
+  const displayError = live
+    ? liveError
+    : translate.isError
+      ? { message: friendlyMessage(translate.error), code: (translate.error as any)?.code as string | undefined }
+      : null;
+  const retryTranslation = () => {
+    if (!source.trim()) return;
+    if (live) void runLiveSource(source);
+    else translate.mutate(source);
+  };
 
   return (
     <div className="flex flex-col min-h-full lg:h-full bg-[#F8F9FA]">
@@ -830,10 +1001,40 @@ export default function TranslatePage() {
               </button>
             </div>
 
-            <span className="text-xs text-dl-faint select-none tabular-nums">
-              {source.trim() ? `${source.trim().split(/\s+/).length.toLocaleString()} words · ` : ""}
-              {source.length.toLocaleString()} chars
-            </span>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !live;
+                  setLive(next);
+                  if (!next) {
+                    liveAbort.current?.abort();
+                    setDraft(null);
+                    setLiveError(null);
+                    setLivePhase("idle");
+                  }
+                }}
+                aria-pressed={live}
+                title={live
+                  ? "Live translation is on — results update while you type"
+                  : "Turn on live translation"}
+                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-colors ${
+                  live
+                    ? "border-dl-blue/40 bg-dl-blue-light text-dl-blue"
+                    : "border-dl-border bg-white text-dl-muted hover:text-dl-navy"
+                }`}
+              >
+                <Radio className="h-3.5 w-3.5" />
+                Live
+                {live && livePhase !== "idle" && (
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-dl-blue" />
+                )}
+              </button>
+              <span className="text-xs text-dl-faint select-none tabular-nums">
+                {source.trim() ? `${source.trim().split(/\s+/).length.toLocaleString()} words · ` : ""}
+                {source.length.toLocaleString()} chars
+              </span>
+            </div>
           </div>
         </div>
 
@@ -887,25 +1088,35 @@ export default function TranslatePage() {
             aria-live="polite"
             aria-label="Translated text"
           >
-            {translate.isPending && !result ? (
+            {working && !result && !draft ? (
               <div className="space-y-3 pt-1">
                 <div className="skeleton h-5 w-full" />
                 <div className="skeleton h-5 w-5/6" />
                 <div className="skeleton h-5 w-4/6" />
               </div>
-            ) : translate.isError ? (
+            ) : displayError && !draft ? (
               <ErrorState
-                message={(translate.error as any)?.message ?? "Translation failed"}
-                code={(translate.error as any)?.code}
-                onRetry={() => source && translate.mutate(source)}
+                message={displayError.message}
+                code={displayError.code}
+                onRetry={retryTranslation}
               />
+            ) : draft ? (
+              <div className="space-y-3">
+                <p className="whitespace-pre-wrap select-text text-base leading-relaxed text-dl-navy">
+                  {draft.translated_text}
+                </p>
+                <div className="flex items-center gap-2 text-[11px] font-medium text-dl-muted">
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-dl-blue" />
+                  Translating live… the final version follows
+                </div>
+              </div>
             ) : result && result.quality_flags?.some((flag) =>
               /(?:untranslated|dev_provider|dev_echo|source_fallback|empty_translation)/i.test(flag),
             ) ? (
               <ErrorState
                 title="Translation unavailable"
                 detail="The provider did not return a verified translation. Your original text is still available on the left."
-                onRetry={() => source && translate.mutate(source)}
+                onRetry={retryTranslation}
               />
             ) : result ? (
               <div className="space-y-4">
@@ -934,7 +1145,9 @@ export default function TranslatePage() {
                 )}
               </div>
             ) : (
-              <p className="select-none text-dl-faint">Translation appears here…</p>
+              <p className="select-none text-dl-faint">
+                {live ? "Translation appears here as you type…" : "Translation appears here…"}
+              </p>
             )}
           </div>
 
@@ -976,7 +1189,17 @@ export default function TranslatePage() {
             </div>
 
             {result && (
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                {live && liveStats && (
+                  <span
+                    className="text-[11px] tabular-nums text-dl-muted"
+                    title="Time to the first provisional draft, then the final pass"
+                  >
+                    live · first draft {liveStats.ttfd_ms === null
+                      ? "—"
+                      : `${Math.round(liveStats.ttfd_ms)} ms`} · final {Math.round(liveStats.total_ms)} ms
+                  </span>
+                )}
                 <span className="text-[11px] text-dl-faint">
                   {Math.round(result.latency_ms ?? 0)} ms {result.model ? `· ${result.model}` : ""}
                 </span>

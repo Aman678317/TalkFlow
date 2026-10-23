@@ -4,26 +4,36 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 import logging
+import time
 import uuid
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import models as M
-from app.db.session import get_db
+from app.db.session import db_session, get_db
 from app.deps import Principal, require_permission, require_scope, rl_translate
-from app.errors import AuthenticationError, AuthorizationError, NotFoundError, ProviderError, ValidationError
+from app.errors import (
+    AppError, AuthenticationError, AuthorizationError, NotFoundError,
+    ProviderError, UnsupportedLanguageError, ValidationError,
+)
 from app.schemas import (
     DetectRequest, DetectResponse, LanguageOut, PageTranslateRequest,
-    PageTranslateResponse, TranslateRequest, TranslateResponse, TranslationOut,
+    PageTranslateResponse, TranslateRequest, TranslateResponse,
+    TranslateStreamRequest, TranslationOut,
 )
 from app.services import audit_service
 from gt_ai.types import Intent
 from app.services.page_fetch import PageFetchError, fetch_page
-from app.services.translation_service import TranslateContext, translate_text
+from app.services.translation_service import (
+    TranslateContext, split_stable_prefix, translate_text, validate_pair,
+)
 
 log = logging.getLogger("app.routers.translate")
 
@@ -40,10 +50,9 @@ def _ctx(principal: Principal | None, body: TranslateRequest, product: str = "te
         intent=body.intent, formality=body.formality, product=product)
 
 
-@router.post("/translate", response_model=TranslateResponse)
-async def translate(body: TranslateRequest,
-                    principal: Principal | None = Depends(rl_translate),
-                    db: AsyncSession = Depends(get_db)):
+async def _authorize_translate(principal: Principal | None, body: TranslateRequest,
+                               db: AsyncSession, texts: list[str]) -> None:
+    """Shared auth/scope/quota/resource checks for /translate and its stream."""
     if principal is None:
         raise AuthenticationError("Authentication required.")
     if principal.kind == "api_key" and principal.api_key is not None:
@@ -51,11 +60,10 @@ async def translate(body: TranslateRequest,
         if "translate" not in scopes and "*" not in scopes:
             raise AuthorizationError("API key lacks scope 'translate'.")
     principal.require("use_translate")
-    texts = body.text if isinstance(body.text, list) else [body.text]
     if len(texts) > 1 and not body.batch:
         raise ValidationError("Multiple texts require batch=true.")
     # Cross-tenant validation: ensure referenced resources belong to caller's org
-    if principal and principal.org_id:
+    if principal.org_id:
         if body.style_profile_id:
             sp = await db.get(M.StyleProfile, body.style_profile_id)
             # Global profiles (org_id NULL) are intentionally listable and usable by every org.
@@ -71,7 +79,7 @@ async def translate(body: TranslateRequest,
                 raise NotFoundError("Translation memory not found.")
     # quota pre-check on characters
     from app.services import usage_service
-    if principal and principal.org_id:
+    if principal.org_id:
         await usage_service.check_quota(
             db, principal.org_id, "characters", sum(len(t) for t in texts))
         # the translation volume is metered as "translation_requests" — the
@@ -79,29 +87,216 @@ async def translate(body: TranslateRequest,
         # trip (issue #109 class 4)
         await usage_service.check_quota(
             db, principal.org_id, "translation_requests", len(texts))
+
+
+def _translation_out(body: TranslateRequest, text: str, out) -> TranslationOut:
+    return TranslationOut(
+        translation_id=out.translation_id,
+        source_language=out.result.source_lang,
+        target_language=out.result.target_lang,
+        source_text=text,
+        translated_text=out.result.text,
+        model=out.result.model,
+        provider=out.result.provider,
+        latency_ms=round(out.result.latency_ms, 1),
+        quality_flags=out.result.quality_flags,
+        tm_match=out.tm_match,
+        domain=body.domain,
+        alternatives=getattr(out.result, "alternatives", []),
+        glossary_note=out.glossary_note,
+    )
+
+
+@router.post("/translate", response_model=TranslateResponse)
+async def translate(body: TranslateRequest,
+                    principal: Principal | None = Depends(rl_translate),
+                    db: AsyncSession = Depends(get_db)):
+    texts = body.text if isinstance(body.text, list) else [body.text]
+    await _authorize_translate(principal, body, db, texts)
     ctx = _ctx(principal, body)
     outputs = []
     for text in texts:
         out = await translate_text(db, text, body.source_language,
                                    body.target_language, ctx)
-        outputs.append(TranslationOut(
-            translation_id=out.translation_id,
-            source_language=out.result.source_lang,
-            target_language=out.result.target_lang,
-            source_text=text,
-            translated_text=out.result.text,
-            model=out.result.model,
-            provider=out.result.provider,
-            latency_ms=round(out.result.latency_ms, 1),
-            quality_flags=out.result.quality_flags,
-            tm_match=out.tm_match,
-            domain=body.domain,
-            alternatives=getattr(out.result, "alternatives", []),
-            glossary_note=out.glossary_note,
-        ))
+        outputs.append(_translation_out(body, text, out))
     from app import context
     return TranslateResponse(translations=outputs,
                              request_id=context.current().request_id)
+
+
+def _sse(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False, default=str)}\n\n"
+
+
+async def _run_translation(text: str, source: str, target: str, ctx: TranslateContext):
+    # Own session: FastAPI may tear down the request-scoped dependency before
+    # a StreamingResponse generator finishes.
+    async with db_session() as db:
+        return await translate_text(db, text, source, target, ctx)
+
+
+async def _translate_stream_events(request: Request, body: TranslateStreamRequest,
+                                   ctx: TranslateContext, request_id: str):
+    """SSE producer for live translation.
+
+    Emits a fast provisional draft of the stable prefix, then the final
+    translation produced by the normal pipeline (TM, glossary, QA, persist).
+    Every provider call is cancelled when the client aborts, so superseded
+    keystrokes do not occupy workers.
+    """
+    import dataclasses
+
+    from app.ai import ai
+
+    started = time.perf_counter()
+    target = body.target_language.lower()
+    resolved = (body.source_language or "AUTO").lower()
+    confidence: float | None = None
+    ttfd_ms: float | None = None
+    draft_used = False
+
+    def elapsed_ms() -> float:
+        return round((time.perf_counter() - started) * 1000, 1)
+
+    try:
+        if resolved in ("auto", ""):
+            yield _sse("meta", {
+                "request_id": request_id,
+                "source_language": resolved,
+                "target_language": target,
+                "detected_confidence": None,
+                "phase": "detecting",
+            })
+            detection = await ai.detect_language(body.text)
+            resolved = detection.language
+            confidence = detection.confidence
+
+        yield _sse("meta", {
+            "request_id": request_id,
+            "source_language": resolved,
+            "target_language": target,
+            "detected_confidence": confidence,
+            "phase": "ready",
+        })
+
+        if resolved == target:
+            raise UnsupportedLanguageError(
+                "Detected source language equals the target language.",
+                details={"detected": resolved}, recoverable=True)
+        async with db_session() as check_db:
+            await validate_pair(check_db, resolved, target)
+
+        prefix, _tail = split_stable_prefix(body.text) if body.draft else ("", body.text)
+        draft_ctx = dataclasses.replace(ctx, persist=False, meter=False)
+
+        final_task = asyncio.create_task(
+            _run_translation(body.text, resolved, target, ctx))
+        draft_task = (
+            asyncio.create_task(_run_translation(prefix, resolved, target, draft_ctx))
+            if prefix else None
+        )
+        pending = {final_task} | ({draft_task} if draft_task is not None else set())
+
+        try:
+            while pending:
+                if await request.is_disconnected():
+                    return
+                done, pending = await asyncio.wait(
+                    pending, timeout=10, return_when=asyncio.FIRST_COMPLETED)
+                if not done:
+                    yield _sse("ping", {"elapsed_ms": elapsed_ms()})
+                    continue
+
+                if draft_task is not None and draft_task in done:
+                    try:
+                        draft_out = draft_task.result()
+                    except Exception as exc:  # draft failure must not kill the final pass
+                        log.debug("live translation draft failed: %s", exc)
+                    else:
+                        if final_task not in done:
+                            draft_used = True
+                            if ttfd_ms is None:
+                                ttfd_ms = elapsed_ms()
+                            yield _sse("draft", {
+                                "request_id": request_id,
+                                "text": draft_out.result.text,
+                                "source_language": draft_out.result.source_lang,
+                                "target_language": draft_out.result.target_lang,
+                                "model": draft_out.result.model,
+                                "provider": draft_out.result.provider,
+                                "quality_flags": draft_out.result.quality_flags,
+                                "latency_ms": round(draft_out.result.latency_ms, 1),
+                                "elapsed_ms": elapsed_ms(),
+                            })
+
+                if final_task in done:
+                    out = final_task.result()
+                    final = _translation_out(body, body.text, out)
+                    yield _sse("done", {
+                        "request_id": request_id,
+                        "translations": [final.model_dump(mode="json")],
+                        "detected_confidence": confidence,
+                        "ttfd_ms": ttfd_ms,
+                        "total_ms": elapsed_ms(),
+                        "draft_used": draft_used,
+                    })
+                    return
+        finally:
+            # Client aborts, superseded streams and exceptions must not leave
+            # provider calls running past the request.
+            for task in (final_task, draft_task):
+                if task is not None and not task.done():
+                    task.cancel()
+            for task in (final_task, draft_task):
+                if task is not None:
+                    with contextlib.suppress(BaseException):
+                        await task
+    except asyncio.CancelledError:
+        raise
+    except AppError as exc:
+        yield _sse("error", {
+            "request_id": request_id,
+            "code": exc.code,
+            "message": exc.message,
+            "recoverable": exc.recoverable,
+            "details": exc.details,
+        })
+    except Exception as exc:
+        log.exception("live translation failed: %s", exc)
+        yield _sse("error", {
+            "request_id": request_id,
+            "code": "internal_error",
+            "message": "Translation failed. Please retry.",
+            "recoverable": True,
+        })
+
+
+@router.post("/translate/stream")
+async def translate_stream(body: TranslateStreamRequest,
+                           request: Request,
+                           principal: Principal | None = Depends(rl_translate),
+                           db: AsyncSession = Depends(get_db)):
+    """Live translation over Server-Sent Events.
+
+    Mirrors DeepL's while-you-type contract: translate before the sentence is
+    finished, revise the result as more text arrives, and never require a
+    submit button. The client aborts on the next edit; only the final pass is
+    persisted and metered.
+    """
+    await _authorize_translate(principal, body, db, [body.text])
+    ctx = _ctx(principal, body)
+    # Capture the id while the request middleware's context is still active:
+    # a StreamingResponse body runs after that context may have unwound.
+    from app import context as req_context
+    request_id = req_context.current().request_id
+    return StreamingResponse(
+        _translate_stream_events(request, body, ctx, request_id),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/translate/page", response_model=PageTranslateResponse)
