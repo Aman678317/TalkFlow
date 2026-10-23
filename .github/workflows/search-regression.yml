@@ -35,7 +35,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install canonical query service dependencies
-        run: pip install pytest pytest-asyncio sqlalchemy aiosqlite pydantic pydantic-settings fastapi email-validator regex
+        run: pip install pytest pytest-asyncio 'sqlalchemy[asyncio]' aiosqlite pydantic pydantic-settings fastapi email-validator regex
       - name: Run search query unit tests
         run: python -m pytest tests/test_search_query.py -q
       - name: Compile changed Python modules
