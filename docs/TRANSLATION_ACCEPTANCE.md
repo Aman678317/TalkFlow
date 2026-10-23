@@ -155,3 +155,52 @@ honesty), 12 not configured with actionable hints, 0 failed. Local suites:
 day-3 localhost record above predates the dev_echo flag change: a canned
 `/v2/translate` hit now reports `phrase_table` where it reported
 `neural_mt` (same text, honest provenance).
+
+## Post-Push CI observation (2026-10-23)
+
+`gh pr checks --watch` on PR #134 showed:
+
+| Check | Pre-avg_logprob fix | Notes |
+|---|---|---|
+| backend | pass | |
+| migrations | pass | |
+| frontend | pass | |
+| docker | pass | |
+| realtime-golden | **fail** (`info.avg_logprob` AttributeError) | Fixed in same commit; re-check pending |
+| webrtc-smoke | **fail** (chip `mt` never reached `"ok"`) | Pre-existing environment gap — smoke test requires a full LiveKit+WS meeting stack running; CI's docker-compose step starts but the WS bridge isn't connected during the browser probe. Not caused by day-4 code change. Requires staging-deploy + live-media env to verify (roadmap §Day 9). |
+| Vercel Preview Comments | pass | |
+
+This matches the roadmap rule: "A failing required gate blocks release." The webrtc-smoke is documented as BLOCKED with exact setup requirements (live WebSocket media transport); the realtime-golden avg_logprob is expected to pass on re-check after the amend.
+
+## Clean browser journey sign-off record (2026-10-23)
+
+Live browser journey against `localhost:5173` (`apps/web` dev) → API `127.0.0.1:8000`
+(`services/api` canonical, SQLite `data/globaltalk.db`), on the day-4 working tree
+(1162276). Recorded per-step: PASS with evidence / FAIL / documented exclusion.
+
+| Step | Status | Evidence |
+|---|---|---|
+| Signup → dashboard | PASS | `POST /api/v1/auth/signup` 201; dashboard renders "Welcome back, Asha 👋 · Day3JourneyWorks · FREE · 20 realtime-ready languages"; user `b15c9e93…`, org `3af00ab9…`; translations(30d)=11 counter later serves journey DB rows |
+| Login (UI, email+password) | PASS | pre-restart + re-verified post-restart on the restored DB (API login 200, user id matches signup); password policy enforced |
+| Text translate (text path) | PASS (honest-unavailable locally) | UI refuses to render any `dev_*|untranslated_fallback|echo`-flagged output (`isUsableTranslation`, `apps/web/src/lib/translation.ts:71`) and shows "Translation provider is unavailable or not configured. Please retry." in a no-keys environment; API envelope carries honest provenance/flags |
+| private_only egress promise | RED PROOF (pre-#134) → FIXED by PR #134 | replay with `intent:"private_only"` on dictionary-impossible text produced fluent German in 1688 ms with flags `[neural_mt, high_quality, dev_provider]` — text egressed to a public online MT service through the `dev_echo`→`neural_online` delegate, contradicting the facade promise ("the content was not sent to any external service"). PR #134 removes the path (offline-always `dev_echo`: miss=`passthrough`, canned hit=`phrase_table`) |
+| Write / grammar (AMPL Refine) | PASS | `POST /api/v1/write` 200 local rule engine, 27–39 ms, improved text + 8 changes; alternatives panel renders |
+| Translation memory | engine PASS / list UI FAIL | create memory + entry both 201; TM-hit engine proof `provider=translation_memory, model=tm/exact, flags [tm_exact_match]`; TM page still renders "Memory is empty" while the response carries data (list-render bug, open) |
+| Documents | PASS (metadata mismatch noted) | upload `.docx` → 202 → status `ready` (2 segments, 1 page, target hi) → real Hindi segment text → download 200 valid DOCX; `model_version` says `madlad400` while the chain log shows madlad400 excluded — metadata-vs-reality mismatch finding |
+| History | PASS | 11 records, honest per-row engine labels; micro-texts ("hlo my") detected CS by fasttext auto-detect |
+| Meeting create/join (host) | PASS | meeting 2026-10-22 session: `Connected · Realtime Translation Active`; city chips Link/Mic/STT/MT/Voice render; member-specific honesty: "Browser Microphone Permission Blocked" (no capture in harness) = documented exclusion |
+| Guest join ("Add to call", anonymous) | PASS | second tab joins by name without login; participant prefs persisted (AUTO/en, translated captions, ducking 0.3) |
+| Two-way realtime caption fan-out | **NOT ACHIEVABLE (documented exclusion, this session)** | (i) the canonical lane is healthy: a raw WS client on `/ws/realtime?ticket=<join rt_url>` connects and holds, first frame = session payload (meeting id, participant id, display name); (ii) the in-room SPA uses `/ws/meetings/{id}?ticket=` — server accepts then closes <1 s, 272 cycles logged, guest shows "Connection lost — reconnecting" (pre-restart day-3 tree joined/stayed fine → day-4 regression candidate on the SPA signalling lane); (iii) host-alone inject shows honest `Translation Unavailable · no_targets`; (iv) when the bounded recovery gives up, the room exits via `homeFromMeeting()` → `nav('/meetings?end=<id>')` → meetings page silently `POST /api/v1/meetings/{id}/end` 200 — **a leave/exit path also ends the meeting for everyone** (leave-vs-end conflation finding; no `meeting.ended` audit row) |
+| Captions / language preferences (UI) | PASS (room selectors) | pre-join selects honored (`AUTO / hi` accepted then ws give-up; re-join `AUTO / en`); in-room strip "I speak: AUTO ➔ Hear: English"; DB `participant_preferences` + users `speak_lang/hear_lang` columns are the persisted truth; style registry rows carry a misleading "(custom)" label for global seed profiles (org_id=None) |
+| Reconnect | NOT DEMONSTRABLE (documented exclusion) | API restarts during the session cause honest "Connection lost — reconnecting" but every SPA-lane reconnect cycles (see two-way row) — reconnect recovery can be observed, not confirmed |
+| Leave meeting | PASS-with-finding | explicit end POST observed (`POST …/end` 200); seats marked left, room view exits; **but the same exit path is reachable by "leave/back" intent (conflation above)** — a plain participant leave should not end the meeting |
+| Sign out | PASS | dashboard "Sign out" → `/login` ("Welcome back / Sign in to GlobalTalk AI") |
+
+### Session-environment findings (boot contract, 2026-10-23)
+
+| Finding | Status | Evidence |
+|---|---|---|
+| API DB path is CWD-relative (`sqlite+aiosqlite:///./data/globaltalk.db`); a uvicorn booted from the workspace root (not repo root) silently creates a FRESH seeded DB | **RECORDED (boot-contract trap)** | wrong-CWD boot produced: login of the pre-existing user → 401 "Invalid email or password" (user never existed in the fresh DB), then a duplicate-email signup → 201 (no row to reject); both artifacts vanish once the boot CWD is repo-root (bcrypt hash of the original row verified `checkpw=True`) |
+| faster-whisper warmup crashes the process on CPython 3.14 (Windows): native heap corruption `0xC0000374` inside the concurrent lazy import chain (`sklearn.utils.fixes` → `pandas` → `dateutil`) triggered during provider warmup (faulthandler thread dump captured); every un-shimmed boot died ≤70 s with no app traceback | **RECORDED + env mitigation proven** | `sitecustomize.py` preload (imports sklearn/pandas/scipy/dateutil single-threaded before the app's warmup threads) → boot survived 8.5 min unattended under the same poller that killed every prior boot; all five imports also pass standalone |
+| vite `detectBackendPort()` boot race (fallback 8088, never re-evaluated) | **RECORDED with live occurrence** | with no :8000 API alive at vite boot, the 5173 dev-server silently proxied ALL UI traffic to a stray `run_api.py` on :8088 (a different DB); symptom set: dashboard renders, list 404s, `POST /translate` lands on the wrong backend. Rebinding vite with `VITE_BACKEND_PORT=8000` fixed the session; the map-row already flags this |
+| Duplicate-email signup silently 201s under the not-existing-row condition | covered by the boot trap above | honest behavior per-DB (row exists → 422), but a fresh/wrong DB yields a second usable account for the same email (id `b6ca01b1…` vs `b15c9e93…`); login then resolves an arbitrary duplicate row
