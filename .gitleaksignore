@@ -1,0 +1,39 @@
+# Audited false positives from the full-history gitleaks scan (2026-10-23, v8.30.1).
+# Every entry below was inspected: CI/test/doc placeholders and machine-local tool
+# artifacts, not live credentials. Fingerprints pin the introducing commit, file,
+# rule and line, so any new or relocated secret still fails the CI secret-scan job.
+# Format: <commit>:<path>:<rule-id>:<line>
+0abfe37f8b696902289c4eccb5e3838dfc110af2:.github/workflows/ci.yml:generic-api-key:48
+0f605a4af96b1c60a74e9aff63a0b3a94dd517ae:.github/workflows/ci.yml:generic-api-key:148
+0f605a4af96b1c60a74e9aff63a0b3a94dd517ae:.github/workflows/ci.yml:generic-api-key:64
+7096851da291152bb2808ebde9bc2a3a7bb33159:tests/test_telephony_provider_selection_hardened.py:generic-api-key:84
+947573e7b10a68fff6d681b0378ea90eddf4e02e:apps/web/src/pages/ApiKeys.tsx:curl-auth-header:144
+947573e7b10a68fff6d681b0378ea90eddf4e02e:apps/web/src/pages/DocsPage.tsx:curl-auth-header:105
+99dbb2656453801908176dac5d004a11536c1294:docs/PRODUCTION_RUNBOOK.md:generic-api-key:44
+99dbb2656453801908176dac5d004a11536c1294:tests/test_developer_platform_hardened.py:generic-api-key:209
+99dbb2656453801908176dac5d004a11536c1294:tests/test_realtime_security_hardened.py:generic-api-key:185
+a30fc85646de3f19e0f36108f8d9f267c34722d5:.github/workflows/ci.yml:generic-api-key:39
+a30fc85646de3f19e0f36108f8d9f267c34722d5:.github/workflows/ci.yml:generic-api-key:48
+a30fc85646de3f19e0f36108f8d9f267c34722d5:conftest.py:generic-api-key:19
+a30fc85646de3f19e0f36108f8d9f267c34722d5:tests/conftest.py:generic-api-key:33
+a30fc85646de3f19e0f36108f8d9f267c34722d5:tests/conftest.py:generic-api-key:34
+b4a2e19509ad684296e9df358f3ebade144e33ed:.github/workflows/ci.yml:generic-api-key:138
+b4a2e19509ad684296e9df358f3ebade144e33ed:.github/workflows/ci.yml:generic-api-key:139
+b4a2e19509ad684296e9df358f3ebade144e33ed:.github/workflows/ci.yml:generic-api-key:73
+e2181a66e48f51cb07e84d023a448704245763c4:tests/test_telephony_provider_selection_hardened.py:generic-api-key:84
+f8a499cc77f01fbb3666329c7d8e24e7be2b6574:.mimosa/hook-state/sess_965ee462-79d2-42fa-97ab-9ef789142e1e.munjfd08-17248-4bfd39e002.baseline/1c0c6c0aca8dd35bcc08be2f367b1b9df53cc33790816c3a2f69376e9663d4e5.source:generic-api-key:59
+f8a499cc77f01fbb3666329c7d8e24e7be2b6574:.mimosa/hook-state/sess_965ee462-79d2-42fa-97ab-9ef789142e1e.munjfd08-17248-4bfd39e002.baseline/a31c7ed5d35f5ed8233994868c54d625b18e6bacb6794344c4531e62bd9dde59.source:generic-api-key:20
+f8a499cc77f01fbb3666329c7d8e24e7be2b6574:.mimosa/hook-state/sess_965ee462-79d2-42fa-97ab-9ef789142e1e.munjfd08-17248-4bfd39e002.baseline/b803fcb7f17ed9235f1e5cb1fcd2f5d3b2838429d4368ae4c57ce4436577f03f.source:generic-api-key:39
+f8a499cc77f01fbb3666329c7d8e24e7be2b6574:.mimosa/hook-state/sess_965ee462-79d2-42fa-97ab-9ef789142e1e.munjfd08-17248-4bfd39e002.baseline/b803fcb7f17ed9235f1e5cb1fcd2f5d3b2838429d4368ae4c57ce4436577f03f.source:generic-api-key:48
+f8a499cc77f01fbb3666329c7d8e24e7be2b6574:.mimosa/hook-state/sess_965ee462-79d2-42fa-97ab-9ef789142e1e.munjfd08-17248-4bfd39e002.baseline/e52e4ddd58b7ef887ab03c04116e676f6280b824ab7469d5d3080e5cba4f2128.source:generic-api-key:34
+f8a499cc77f01fbb3666329c7d8e24e7be2b6574:.mimosa/hook-state/sess_965ee462-79d2-42fa-97ab-9ef789142e1e.munjfd08-17248-4bfd39e002.baseline/e52e4ddd58b7ef887ab03c04116e676f6280b824ab7469d5d3080e5cba4f2128.source:generic-api-key:35
+f8a499cc77f01fbb3666329c7d8e24e7be2b6574:api-specs/openapi.json:generic-api-key:1423
+f8a499cc77f01fbb3666329c7d8e24e7be2b6574:api-specs/openapi.yaml:generic-api-key:967
+f8a499cc77f01fbb3666329c7d8e24e7be2b6574:cli/desi-cli/tests/unit/config.test.ts:generic-api-key:59
+f8a499cc77f01fbb3666329c7d8e24e7be2b6574:developer-docs/api-reference/voice-realtime.mdx:generic-api-key:44
+f8a499cc77f01fbb3666329c7d8e24e7be2b6574:developer-docs/documentation/authentication.mdx:generic-api-key:27
+f8a499cc77f01fbb3666329c7d8e24e7be2b6574:developer-docs/documentation/authentication.mdx:generic-api-key:34
+f8a499cc77f01fbb3666329c7d8e24e7be2b6574:developer-docs/documentation/mcp-server.mdx:generic-api-key:25
+f8a499cc77f01fbb3666329c7d8e24e7be2b6574:developer-docs/documentation/mcp-server.mdx:generic-api-key:42
+f8a499cc77f01fbb3666329c7d8e24e7be2b6574:developer-docs/documentation/quickstart.mdx:generic-api-key:17
+f8a499cc77f01fbb3666329c7d8e24e7be2b6574:developer-docs/documentation/quickstart.mdx:generic-api-key:19
