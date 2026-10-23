@@ -1,5 +1,3 @@
-import re
-
 import pytest
 
 from app.services.search_service import build_tsquery, normalize_query, query_terms
@@ -22,8 +20,8 @@ def test_normalize_query_is_bounded():
     assert len(normalize_query("x" * 500)) == 200
 
 
-def test_build_tsquery_creates_prefix_conjunction():
-    assert build_tsquery("hello world") == "hello:* & world:*"
+def test_build_tsquery_creates_quoted_prefix_conjunction():
+    assert build_tsquery("hello world") == "'hello':* & 'world':*"
 
 
 @pytest.mark.parametrize("query", ["!!!", "&&&", "::: ((( ))", ""])
@@ -35,7 +33,7 @@ def test_build_tsquery_does_not_pass_tsquery_operators_through():
     built = build_tsquery("hello & !world:*)")
     assert "& !" not in built
     assert ":*)" not in built
-    assert built == "hello:* & world:*"
+    assert built == "'hello':* & 'world':*"
 
 
 def test_query_terms_preserves_unicode_words():
