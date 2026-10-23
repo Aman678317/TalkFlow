@@ -36,6 +36,7 @@ If any item is unchecked, fix it before beginning the launch phase or explicitly
 - Create a release issue and owner list.
 
 **Exit:** Candidate is reproducible and the precise features/languages included in launch are listed.
+- Status (2026-10-23, realized as checkpoint remediation R1): tag **`launch-candidate-1`** @ main `45c15b9` pushed; freeze record in **`docs/RELEASE_CANDIDATE.md`** (candidate identity + PR-run 39908976764 green on the tree content + main-run 39909886180; dependency lockfiles; config rules; migration head `f4e2a9c1d8b7`; model/weights inventory; the precise launch scope (features + validated languages + exclusions); known limitations). The freeze rule now binds: focused, reviewed fixes only. The **owner-list registry in issue #80 remains open** — R1 closes fully when the owner names the registry (proposed owners/dates in GO_NO_GO_CHECKPOINT §8).
 
 ### Day 2 — Production deployment rehearsal
 - Deploy candidate to staging using production-like database, Redis, storage, TLS/WSS, LiveKit/TURN and workers.
