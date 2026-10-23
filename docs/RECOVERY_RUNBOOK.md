@@ -2,7 +2,8 @@
 
 Status (2026-10-23): **drill executed this day on every stateful surface** — source-of-truth
 map fixed below, isolated-restore procedures proven live (§2), repeatable SQLite audit asset
-shipped (`scripts/drill_backup_restore_sqlite.py`). Production-true RTO/RPO numbers and the
+shipped (`scripts/drill_backup_restore_sqlite.py`). CI-verified on PR #137 (run 39897189021,
+head `56f4c9c`). Production-true RTO/RPO numbers and the
 runbook's owner approval are RECORDED owner items (§5) — code-side Day-5 scope is exhausted,
 nothing here is waved away.
 
