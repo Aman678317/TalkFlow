@@ -83,6 +83,7 @@ If any item is unchecked, fix it before beginning the launch phase or explicitly
 - Only proceed if all entry/Day 1–6 release blockers pass.
 
 **Exit:** Written GO decision or a time-boxed NO-GO remediation list. Do not advance by silently waiving P0 blockers.
+- Status (2026-10-23, first checkpoint — decision recorded: **NO-GO**, time-boxed remediation): verdict and all consolidated gates in **`docs/GO_NO_GO_CHECKPOINT.md`** — Day-3/4/5/6 day-exits are code-side PASS with their owner gates carried as R-items; **Day-1 (candidate freeze record) and Day-2 (staging deployment + restart/recovery evidence) were never executed** (only tag `v0.1.0` @ `da0f435` pre-dates the phase; `PRODUCTION_VERIFICATION_REPORT.md` is a 0-byte stub); the day-4 legal/privacy sign-off and a named support owner are also unmet, and P0 #53 (browser per-listener translated audio) is open — so Days 8–14 do not start until the doc's §8 gates (R1–R10, owners + proposed complete-by dates 2026-10-26/–28) carry evidence and the checkpoint is re-run. Open-defect register consolidated in the doc §5 (#53/#109/#100/#102, session-environment boot-contract findings, recorded exclusions/owner items). CI on the candidate main `b92ed66`: run 39907324861 green (pages 39907323904 green).
 
 ## Days 8–14 — Private pilot
 
