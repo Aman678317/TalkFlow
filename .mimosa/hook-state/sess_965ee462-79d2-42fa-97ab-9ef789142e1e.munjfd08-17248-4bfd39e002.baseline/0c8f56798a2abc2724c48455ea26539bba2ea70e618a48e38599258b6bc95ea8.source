@@ -1,6 +1,0 @@
-/** Compatibility re-export for ../stores/toast */
-import Toaster from '../components/layout/Toaster';
-
-export * from './toasts';
-export const ToastHost = Toaster;
-export { Toaster };

@@ -31,3 +31,8 @@ apps/web/.agents/
 .vercel
 .vercel/
 model_cache/
+
+# day-4 secret-scan hygiene: IDE index binaries + machine-local spec-kit state
+.vs/
+.specify/integrations/
+.specify/integration.json
