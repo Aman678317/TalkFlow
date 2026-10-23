@@ -49,10 +49,12 @@
 
 ## 5. Known limitations recorded at freeze
 
-- **GO_NO_GO_CHECKPOINT.md R1–R10 open gates** (privacy sign-off, CI secret-scan step, GDPR deletion decision, standalone translation-history retention, CORS wildcard pin, staging rehearsal + first staging backup + runbook approval, caps approval, support owner, P0 #53 pilot-scope decision) — the NO-GO verdict and its re-checkpoint rule govern advancement.
+- **GO_NO_GO_CHECKPOINT.md R1–R10 open gates** (privacy sign-off, CI secret-scan step, GDPR deletion decision, standalone translation-history retention, CORS wildcard pin, hosted TLS/WSS staging + first staging backup + runbook approval, caps approval, support owner, P0 #53 pilot-scope decision) — the NO-GO verdict and its re-checkpoint rule govern advancement. R2's isolated production-mode rehearsal is saved (`docs/STAGING_REHEARSAL.md`), with the hosted/TLS staging and deferred browser-round residuals recorded there.
+- **MinIO image pullability (found during R2, 2026-10-23):** `docker-compose.yml` pins `minio/minio:RELEASE.2024-06-13T22-53-53Z`, but the upstream Docker Hub repository is no longer served — a cold start of the compose stack cannot pull MinIO. The rehearsal used the Bitnami legacy mirror of MinIO 2024.6.13 (pinned digest) in the drill overlay only; a production image-source decision is required (owner).
 - Scope exclusions + observed faults: day-3 exclusions (capture permissions; SPA lane connect-loop), ja source-only, en→mr unconfigured lane, session-environment boot-contract findings (`docs/TRANSLATION_ACCEPTANCE.md` lines 201–208: CWD-relative DB path trap; CPython 3.14 faster-whisper warmup crash with proven `sitecustomize` mitigation; vite `detectBackendPort` race; duplicate-email signup under the fresh-DB condition).
 - The fake-provider fairness benchmark (`scripts/benchmark_translation_fanout.py`, 7.11× dispatch-overhead metric) measures scheduler overhead only — **never** a production-latency claim (`docs/LOAD_CAPACITY_ENVELOPE.md` §1.1).
 - Day-6 envelope is a local-machine characterization; absolute capacity claims require production re-measurement with the same harness.
+- **Post-freeze remediation note (2026-10-23):** R5 (CI secret-scan) is realized after the freeze — `.github/workflows/ci.yml` runs a digest-pinned gitleaks v8.30.1 full-history scan, with the 34 audited historical placeholders pinned in `.gitleaksignore` (PR #142, CI run `39936233786` on `6e62caf` green). The open-gate sentence above records the freeze-date state.
 
 ## 6. Freeze rule (binding from this tag)
 
