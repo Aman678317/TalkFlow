@@ -103,6 +103,57 @@ def _lexical_similarity(a: str, b: str) -> float:
     return 2 * len(A & B) / (len(A) + len(B))
 
 
+_SENTENCE_END = ".!?。！？…\n"
+_CLOSERS = "\"'”’)]}"
+
+
+def split_stable_prefix(text: str, *, min_prefix: int = 32) -> tuple[str, str]:
+    """Split text into a stable prefix and the still-changing tail.
+
+    A live editor needs *something* on screen before the whole input exists.
+    The prefix ends at the last sentence boundary that can no longer change
+    (everything except the final sentence), so a provisional translation of
+    it can be produced while the tail is still being typed. Returns
+    ``("", text)`` when there is no prefix worth translating.
+    """
+    body = text.rstrip()
+    if len(body) < min_prefix + 2:
+        return "", body
+
+    boundaries: list[int] = []
+    i = 0
+    while i < len(body):
+        if body[i] not in _SENTENCE_END:
+            i += 1
+            continue
+        j = i + 1
+        while j < len(body) and body[j] in _CLOSERS:
+            j += 1
+        # Require a boundary after the terminator so decimals ("3.14") and
+        # abbreviations ("e.g.") are not mistaken for sentence ends.
+        if j >= len(body) or body[j].isspace():
+            boundaries.append(j)
+        i = j
+
+    if not boundaries:
+        return "", body
+    if boundaries[-1] < len(body):
+        # Last sentence is incomplete: every complete sentence is stable.
+        cut = boundaries[-1]
+    else:
+        # Last sentence is complete but could still be edited; leave it to
+        # the final pass and draft the sentences before it.
+        if len(boundaries) < 2:
+            return "", body
+        cut = boundaries[-2]
+
+    prefix = body[:cut].strip()
+    tail = body[cut:].strip()
+    if len(prefix) < min_prefix or not tail:
+        return "", body
+    return prefix, tail
+
+
 # --------------------------------------------------------------------------- #
 # Capability validation
 # --------------------------------------------------------------------------- #

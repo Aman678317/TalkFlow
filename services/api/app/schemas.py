@@ -187,6 +187,16 @@ class TranslateRequest(BaseModel):
         return v
 
 
+class TranslateStreamRequest(TranslateRequest):
+    """Single-text input for the live (SSE) translation endpoint.
+
+    ``draft`` enables the provisional stable-prefix pass that makes text
+    appear before the whole document has been translated.
+    """
+    text: str  # type: ignore[assignment]
+    draft: bool = True
+
+
 class TranslationOut(BaseModel):
     translation_id: uuid.UUID
     source_language: str

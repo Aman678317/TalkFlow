@@ -1,0 +1,204 @@
+"""Live (SSE) translation endpoint: /api/v1/translate/stream.
+
+Covers the contract the UI depends on: a fast provisional draft of the
+stable prefix, superseded edits cancelled, the final pass persisted and
+metered, and honest error events instead of a broken stream.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import uuid
+
+import pytest
+
+from app.services.translation_service import TranslateOutput, split_stable_prefix
+from app.routers import translate as translate_router
+from gt_ai.types import TranslationResult
+
+
+def _parse_sse(payload: str) -> list[tuple[str, dict]]:
+    events: list[tuple[str, dict]] = []
+    for block in payload.split("\n\n"):
+        if not block.strip():
+            continue
+        event = "message"
+        data_lines: list[str] = []
+        for line in block.splitlines():
+            if line.startswith("event:"):
+                event = line[len("event:"):].strip()
+            elif line.startswith("data:"):
+                data_lines.append(line[len("data:"):].strip())
+        if data_lines:
+            events.append((event, json.loads("\n".join(data_lines))))
+    return events
+
+
+def _fake_output(text: str, *, model: str = "fake-live-v1",
+                 provider: str = "fake_live") -> TranslateOutput:
+    return TranslateOutput(
+        result=TranslationResult(
+            text=text,
+            source_lang="en",
+            target_lang="de",
+            model=model,
+            provider=provider,
+            latency_ms=1.0,
+            quality_flags=["live"],
+        ),
+        translation_id=uuid.uuid4(),
+        tm_match=None,
+        source_lang="en",
+    )
+
+
+# ── split_stable_prefix ────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_prefix"),
+    [
+        ("One short.", ""),  # below min_prefix → no provisional draft
+        ("First complete sentence is here. Second is still being typed",
+         "First complete sentence is here."),
+        # Nothing after the last sentence: everything is already stable, so
+        # the final pass alone is enough and no draft is worth sending.
+        ("First complete sentence. Second complete sentence.", ""),
+        ("One complete sentence. Two complete sentence. Tail still typing",
+         "One complete sentence. Two complete sentence."),
+        ("No boundary at all in this text", ""),
+    ],
+)
+def test_split_stable_prefix(text: str, expected_prefix: str) -> None:
+    prefix, tail = split_stable_prefix(text)
+    assert prefix == expected_prefix
+    if prefix:
+        assert prefix + " " + tail == text
+    else:
+        assert tail == text.rstrip()
+
+
+def test_split_stable_prefix_is_lossless() -> None:
+    text = "Deploy the service. Then verify the health endpoint is green. and watch it"
+    prefix, tail = split_stable_prefix(text)
+    assert prefix == "Deploy the service. Then verify the health endpoint is green."
+    assert prefix + " " + tail == text
+
+
+# ── endpoint contract ──────────────────────────────────────────────────
+
+
+def test_stream_requires_authentication(services_app_client) -> None:
+    response = services_app_client.post(
+        "/api/v1/translate/stream",
+        json={"text": "hello world", "source_language": "en", "target_language": "de"},
+    )
+    assert response.status_code == 401
+
+
+def test_stream_emits_meta_then_done(services_app_client, user) -> None:
+    response = services_app_client.post(
+        "/api/v1/translate/stream",
+        headers=user["headers"],
+        json={
+            "text": "hello world",
+            "source_language": "en",
+            "target_language": "de",
+            "draft": False,
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+
+    events = _parse_sse(response.text)
+    names = [name for name, _ in events]
+    assert names[0] == "meta"
+    assert names[-1] == "done"
+    assert "error" not in names
+
+    meta = events[0][1]
+    assert meta["phase"] == "ready"
+    assert meta["source_language"] == "en"
+    assert meta["target_language"] == "de"
+
+    done = events[-1][1]
+    assert done["request_id"] == meta["request_id"]
+    assert done["draft_used"] is False
+    assert done["ttfd_ms"] is None  # no draft requested
+    translation = done["translations"][0]
+    assert translation["translated_text"] == "Hallo Welt"
+    assert translation["source_language"] == "en"
+    assert translation["target_language"] == "de"
+    assert done["total_ms"] >= 0
+
+
+def test_stream_draft_arrives_before_final(services_app_client, user, monkeypatch) -> None:
+    text = ("This is the first sentence of the document. "
+            "and the tail keeps being typed")
+    prefix, _tail = split_stable_prefix(text)
+    assert prefix == "This is the first sentence of the document."
+
+    async def fake_run(body_text: str, source: str, target: str, ctx):
+        if body_text == prefix:
+            return _fake_output("Dies ist der erste Satz des Dokuments.")
+        await asyncio.sleep(0.15)  # the final pass is slower than the draft
+        return _fake_output(f"FINAL:{body_text}")
+
+    monkeypatch.setattr(translate_router, "_run_translation", fake_run)
+
+    response = services_app_client.post(
+        "/api/v1/translate/stream",
+        headers=user["headers"],
+        json={"text": text, "source_language": "en", "target_language": "de"},
+    )
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+    names = [name for name, _ in events]
+    assert "draft" in names and "done" in names
+    assert names.index("draft") < names.index("done")
+
+    draft = next(data for name, data in events if name == "draft")
+    assert draft["text"] == "Dies ist der erste Satz des Dokuments."
+
+    done = events[-1][1]
+    assert done["draft_used"] is True
+    assert done["ttfd_ms"] is not None
+    assert done["translations"][0]["translated_text"] == f"FINAL:{text}"
+
+
+def test_stream_emits_error_event_for_same_language(services_app_client, user) -> None:
+    response = services_app_client.post(
+        "/api/v1/translate/stream",
+        headers=user["headers"],
+        json={"text": "hello world", "source_language": "en", "target_language": "en"},
+    )
+    # The SSE headers are already flushed when the error is discovered, so
+    # the failure is reported as an `error` event, not an HTTP status.
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+    names = [name for name, _ in events]
+    assert names[-1] == "error"
+    error = events[-1][1]
+    assert error["code"] == "unsupported_language"
+    assert error["recoverable"] is True
+
+
+def test_stream_auto_detects_source(services_app_client, user) -> None:
+    response = services_app_client.post(
+        "/api/v1/translate/stream",
+        headers=user["headers"],
+        json={
+            "text": "hello world, this is a longer english sentence for detection",
+            "source_language": "AUTO",
+            "target_language": "de",
+            "draft": False,
+        },
+    )
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+    names = [name for name, _ in events]
+    assert names[:2] == ["meta", "meta"]
+    assert events[0][1]["phase"] == "detecting"
+    assert events[1][1]["phase"] == "ready"
+    assert events[1][1]["source_language"] == "en"
+    assert events[1][1]["detected_confidence"] is not None

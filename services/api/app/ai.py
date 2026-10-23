@@ -717,6 +717,21 @@ class AIFacade:
                 await self.provider(task, name).warmup()
             except Exception as e:
                 log.info("warmup %s/%s skipped: %s", task, name, e)
+            # The configured provider is normally a hosted API, so warming only
+            # it leaves the offline packs cold: argos' first request paid 7-9 s
+            # of model load on CPU. Private providers that report themselves
+            # ready are the ones local traffic actually lands on.
+            for candidate in AUTO_PROVIDER_ORDER[task]:
+                if candidate == name or candidate.startswith("dev_"):
+                    continue
+                try:
+                    provider = self.provider(task, candidate)
+                    if not getattr(provider, "private", False) or not provider.runtime_ready():
+                        continue
+                    await provider.warmup()
+                    log.info("warmup %s/%s complete", task, candidate)
+                except Exception as e:
+                    log.info("warmup %s/%s skipped: %s", task, candidate, e)
         await asyncio.gather(*[_warm(t) for t in TASKS], return_exceptions=True)
 
     async def health(self) -> dict[str, Any]:
