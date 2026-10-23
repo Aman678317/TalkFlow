@@ -40,10 +40,15 @@ def query_terms(query: str) -> list[str]:
 
 
 def build_tsquery(query: str) -> str:
-    """Build a conjunction of prefix terms; empty/operator-only queries return ''."""
+    """Build a conjunction of safely quoted prefix terms.
+
+    Quoting each normalized token ensures punctuation supplied by a user is
+    never interpreted as a tsquery operator. Apostrophes are normalized to
+    token boundaries before quoting.
+    """
     terms = query_terms(query)
     safe_terms = [re.sub(r"[^\w]", "", term, flags=re.UNICODE) for term in terms]
-    return " & ".join(f"{term}:*" for term in safe_terms if term)
+    return " & ".join(f"'{term}':*" for term in safe_terms if term)
 
 
 class SearchBackend(Protocol):
