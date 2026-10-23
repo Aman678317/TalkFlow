@@ -85,3 +85,20 @@ Ship additive, tenant-safe improvements without rebuilding auth, changing databa
 ## Rollback
 
 Revert the search-service commit(s) on `AMAN`. No schema migration is included in the initial improvement. Existing endpoint and response contracts are retained to avoid stranding clients on a new wire format.
+
+
+## Current implementation snapshot (2026-10-23)
+
+This snapshot documents the first implementation slice, not completion of all ten planned days.
+
+- Branch: `AMAN`
+- Base: `main`
+- Current head: `895b1c356b336426b9977c4208c9228c73f591af`
+- Added files: this plan, `docs/NOTES_SEARCH_REVERSE_ENGINEERING.md`, `docs/SEARCH_TEST_MATRIX.md`, `.github/workflows/search-regression.yml`, and `services/api/tests/test_search_query.py`.
+- Modified file: `services/api/app/services/search_service.py`.
+- Focused CI: [Search Regression Tests — success](https://github.com/Aman678317/TalkFlow/actions/runs/39967147811); 13 query normalization/parser tests passed and Python compilation passed.
+- Full repository CI on the prior `main` SHA `e8a90f76b52e9ffc7c670b5b19c018cddfef75fe`: [success](https://github.com/Aman678317/TalkFlow/actions/runs/39941914439). This is baseline evidence and is not a test of this feature branch.
+- Full feature-branch backend/frontend/E2E CI has not yet been run. The focused workflow covers query parsing/normalization and module compilation only.
+- UI integration, database-backed translated-segment query tests, cross-tenant regression fixtures, Postgres integration, performance baselines, and mobile/accessibility verification remain part of the 10-day acceptance plan.
+
+Release status: **NO-GO for production claim until the remaining acceptance gates are completed.** The branch is pushed for review; it is not merged into `main`.
