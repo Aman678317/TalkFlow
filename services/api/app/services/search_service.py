@@ -35,7 +35,14 @@ def query_terms(query: str) -> list[str]:
     Terms are escaped by allowing Unicode letters/numbers and underscore only.
     This prevents operator syntax in user input from being interpreted as tsquery.
     """
-    tokens = re.findall(r"[^\W_]+(?:['’-][^\W_]+)*|_+", query, flags=re.UNICODE)
+    # Python's Unicode \w excludes combining marks (category M), which occur
+    # in Devanagari and many other scripts. Include marks after a letter/number
+    # so a word such as "नमस्ते" remains a single search term.
+    tokens = re.findall(
+        r"[^\W_](?:[^\W_]|[\u0300-\u036f\u0900-\u0903\u093a-\u094f\u0951-\u0957\u0962-\u0963])*",
+        query,
+        flags=re.UNICODE,
+    )
     return [token for token in tokens if token.strip("_")][:MAX_QUERY_TERMS]
 
 
