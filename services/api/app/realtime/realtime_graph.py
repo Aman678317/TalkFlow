@@ -24,6 +24,7 @@ class RealtimeControlState(TypedDict, total=False):
     segment_id: str
     source_language: str
     target_languages: list[str]
+    target_language: str
     transcript_text: str
     translated_text: str
     is_final: bool
@@ -60,6 +61,7 @@ _DEFAULTS: dict[str, Any] = {
     "segment_id": "",
     "source_language": "",
     "target_languages": [],
+    "target_language": "",
     "transcript_text": "",
     "translated_text": "",
     "is_final": False,
@@ -254,7 +256,7 @@ def _translation_gate(state: RealtimeControlState) -> dict[str, Any]:
 def _voice_gate(state: RealtimeControlState) -> dict[str, Any]:
     """Schedule synthesis only after a successful translation result."""
     text = str(state.get("translated_text") or "").strip()
-    target = str((state.get("target_languages") or [""])[0] or "").strip()
+    target = str(state.get("target_language") or "").strip() or str((state.get("target_languages") or [""])[0] or "").strip()
     if not state.get("translation_ok", True) or not text:
         return {
             "route": "end",
