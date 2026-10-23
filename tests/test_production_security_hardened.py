@@ -79,6 +79,48 @@ def test_cors_production_guardrail_rejects_wildcard():
     assert "https://app.globaltalk.ai" in prod_s.cors_origins
 
 
+def test_production_app_cors_uses_exact_origins_only(monkeypatch):
+    """Production must not reflect *.vercel.app/devtunnel/localhost via the dev regex."""
+    from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.testclient import TestClient
+
+    import app.main as main_module
+
+    prod = Settings(
+        app_env="production",
+        secret_key="x" * 32,
+        jwt_secret="y" * 32,
+        redis_url="redis://localhost:6379/0",
+        database_url="postgresql+asyncpg://user:pass@localhost:5432/dbname",
+        cors_origins=["https://app.globaltalk.ai"],
+        metrics_enabled=False,
+    )
+    assert prod.cors_allow_origin_regex is None
+
+    monkeypatch.setattr(main_module, "settings", prod)
+    app = main_module.create_app()
+    cors = next(m for m in app.user_middleware if m.cls is CORSMiddleware)
+    assert cors.kwargs["allow_origin_regex"] is None
+    assert cors.kwargs["allow_origins"] == ["https://app.globaltalk.ai"]
+
+    client = TestClient(app)
+    preflight = {
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "Authorization,Content-Type",
+    }
+    for origin in ("https://evil.vercel.app", "http://localhost:5173"):
+        blocked = client.options("/api/v1/translate", headers={"Origin": origin, **preflight})
+        assert blocked.headers.get("access-control-allow-origin") is None
+    allowed = client.options(
+        "/api/v1/translate",
+        headers={"Origin": "https://app.globaltalk.ai", **preflight},
+    )
+    assert allowed.headers.get("access-control-allow-origin") == "https://app.globaltalk.ai"
+
+    dev = Settings(app_env="test", cors_origins=["http://localhost:5173"])
+    assert dev.cors_allow_origin_regex is not None
+
+
 def test_cors_preflight_and_origin_validation(services_app_client):
     """CORS preflight requests must validate origin against allowed origins."""
     # Preflight from allowed local origin

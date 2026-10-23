@@ -350,6 +350,14 @@ class Settings(BaseSettings):
     def is_production(self) -> bool:
         return self.app_env == "production"
 
+    @property
+    def cors_allow_origin_regex(self) -> str | None:
+        # Dev conveniences (localhost, devtunnels, any *.vercel.app) must never
+        # widen credentialed CORS in production; only exact CORS_ORIGINS apply.
+        if self.is_production:
+            return None
+        return r"^https?://([a-zA-Z0-9-]+\.)*(devtunnels\.ms|localhost|127\.0\.0\.1|vercel\.app)(:\d+)?$"
+
     @model_validator(mode="after")
     def _validate_production_secrets(self) -> Settings:
         if self.app_env == "production":
