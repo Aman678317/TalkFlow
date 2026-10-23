@@ -9,6 +9,13 @@ Every result carries quality_flags=["dev_provider"] and model="dev-echo-v1"
 so downstream systems, analytics and users can always tell it apart from a
 real model translation. Production deployments configure madlad400 /
 nllb_ct2 / argos / mt_http instead.
+
+OFFLINE, always (roadmap day 4, 2026-10-23): this provider is classified
+private and rides even private_only chains as the final hop, so it must
+never hand the caller's text to an external service. It used to forward
+non-canned text to the online provider and relabel the cloud result as
+``provider=dev_echo`` — a privacy leak and a false provenance record. Now
+a cache miss degrades honestly to flagged passthrough.
 """
 from __future__ import annotations
 
@@ -54,6 +61,11 @@ COMMON_TRANSLATIONS: dict[tuple[str, str], dict[str, str]] = {
         "hello!": "नमस्ते!",
         "hello world": "नमस्ते दुनिया",
         "hello world!": "नमस्ते दुनिया!",
+        # DEV inject payloads (MeetingRoom "Inject canned transcript" panel)
+        # — keep in sync; the offline lane must serve every payload it can
+        # inject or the realtime turn honestly fails with translation.failed.
+        "hello, world.": "नमस्ते, दुनिया।",
+        "the meeting starts at 3pm.": "बैठक दोपहर 3 बजे शुरू होती है।",
         "hello world! welcome to globaltalk ai.": "नमस्ते दुनिया! GlobalTalk AI में आपका स्वागत है।",
         "good morning": "शुभ प्रभात",
         "good morning!": "शुभ प्रभात!",
@@ -74,6 +86,8 @@ COMMON_TRANSLATIONS: dict[tuple[str, str], dict[str, str]] = {
         "नमस्ते!": "Hello!",
         "नमस्ते दुनिया": "Hello world",
         "नमस्ते दुनिया!": "Hello world!",
+        "नमस्ते दुनिया।": "Hello world.",
+        "नमस्ते, दुनिया।": "Hello, world.",
         "शुभ प्रभात": "Good morning",
         "शुभ प्रभात!": "Good morning!",
         "आप कैसे हैं?": "How are you?",
@@ -83,6 +97,14 @@ COMMON_TRANSLATIONS: dict[tuple[str, str], dict[str, str]] = {
         "स्वागत है": "Welcome",
         "यह एक परीक्षण बैठक है": "This is a test meeting",
         "globaltalk ai में आपका स्वागत है": "Welcome to GlobalTalk AI",
+    },
+    # DEV inject payload (MeetingRoom "ZH→Hindi") — Chinese had no offline
+    # coverage at all before this.
+    ("zh", "hi"): {
+        "你好世界。": "नमस्ते दुनिया।",
+    },
+    ("zh", "en"): {
+        "你好世界。": "Hello world.",
     },
     ("de", "en"): {
         "hallo welt": "Hello world",
@@ -128,22 +150,16 @@ class DevEchoTranslationProvider(BaseProvider):
         pair = (src, tgt)
         if pair in COMMON_TRANSLATIONS and norm in COMMON_TRANSLATIONS[pair]:
             out = COMMON_TRANSLATIONS[pair][norm]
-            flags = ["neural_mt", "dev_provider"]
+            flags = ["phrase_table", "dev_provider"]
             alts = []
         else:
-            try:
-                from gt_ai.translation.neural_online import NeuralOnlineTranslationProvider
-                neural = NeuralOnlineTranslationProvider()
-                res = await neural.translate(req)
-                if "dev_provider" not in res.quality_flags:
-                    res.quality_flags.append("dev_provider")
-                res.model = "dev-echo-v1"
-                res.provider = self.name
-                return res
-            except Exception:
-                out = text
-                flags = ["untranslated_fallback", "dev_provider"]
-                alts = []
+            # Offline, always (roadmap day 4): forwarding to the online
+            # provider from inside the chain's final hop sent the caller's
+            # text to a public API from a provider the router classifies
+            # private, and relabelled the cloud output as dev_echo.
+            out = text
+            flags = ["untranslated_fallback", "dev_provider"]
+            alts = []
 
         out, glossary_flags = apply_glossary_to_output(out, text, req.glossary or {})
         flags.extend(glossary_flags)

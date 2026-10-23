@@ -48,6 +48,7 @@ If any item is unchecked, fix it before beginning the launch phase or explicitly
 - Run a clean browser-profile journey: signup/login, create/join/leave meeting, mic/camera, two-way translation, captions, language preferences, reconnect, text translation, grammar correction and representative document upload/download.
 - Verify every offered feature in the actual target configuration.
 - Record unsupported pairs and intentionally disabled features.
+- Status (2026-10-23): journey executed live (`docs/TRANSLATION_ACCEPTANCE.md` §"Clean browser journey sign-off record"); signup/login, text translation, write, TM engine, documents, history, meeting create/join/leave and sign-out PASS; two-way realtime caption fan-out and mic/camera are documented scope exclusions recorded there (no grantable capture permission in this harness; SPA realtime signalling lane connect-loop observed — canonical `/ws/realtime` lane verified healthy raw).
 
 **Exit:** Test checklist is all PASS or has a documented scope exclusion approved for launch.
 

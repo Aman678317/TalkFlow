@@ -163,8 +163,12 @@ class AIFacade:
                 "api_url": getattr(settings, "deepl_api_url", "https://api-free.deepl.com/v2/translate"),
             }
         elif task == Task.MT and name == "madlad400":
-            kwargs = {"model_id": settings.translation_model or "google/madlad-400-3b-mt",
-                      "cache_dir": cache}
+            # No cache_dir override: the HF_HOME policy (app.config) points
+            # every HF artifact at MODEL_CACHE_PATH/hf — the root
+            # scripts/download_models.sh fills. A download_root under
+            # MODEL_CACHE_PATH made the adapter re-download weights that were
+            # already provisioned one directory over (roadmap day 4).
+            kwargs = {"model_id": settings.translation_model or "google/madlad-400-3b-mt"}
         elif task == Task.MT and name == "airllm":
             kwargs = {
                 "model_id": settings.airllm_model_id or settings.translation_model,
@@ -183,8 +187,13 @@ class AIFacade:
                 "api_version": settings.azure_translator_api_version,
             }
         elif task == Task.STT and name == "faster_whisper":
+            # No cache_dir override: faster-whisper resolves weights through
+            # HF_HOME (MODEL_CACHE_PATH/hf, set by app.config) — the root
+            # scripts/download_models.sh provisions. The old download_root=
+            # MODEL_CACHE_PATH made the canonical app miss a provisioned
+            # cache and re-download (roadmap day 4).
             kwargs = {"model_size": settings.stt_model, "device": settings.stt_device,
-                      "compute_type": settings.stt_compute_type, "cache_dir": cache}
+                      "compute_type": settings.stt_compute_type}
         elif task == Task.STT and name == "stt_http":
             kwargs = {"url": settings.stt_http_url}
         elif task == Task.STT and name in ("azure_speech", "azure_stt", "azure_speech_stt"):
@@ -769,12 +778,25 @@ class AIFacade:
                 elif task == Task.TTS:
                     model_info = settings.tts_model
 
+            # Day-4 (2026-10-23): configured / available / supported /
+            # production-validated are four different states the diagnostics
+            # used to collapse into `healthy`. Supported languages and
+            # validated pairs come from the loaded registry specs — the
+            # operator's evidence — not from model self-claims.
+            spec = next((s for s in (self._specs.get(task) or [])
+                         if s.name == cfg_name), None)
+
             task_diags[task.value] = {
                 "configured_provider": cfg_name,
                 "active_provider": cfg_name,
                 "model": model_info,
                 "healthy": is_healthy,
                 "weights_present": weights_loaded,
+                "supported_languages": (sorted(spec.languages)
+                                        if spec is not None and spec.languages is not None
+                                        else None),
+                "validated_pairs": ([f"{s}->{t}" for s, t in sorted(spec.validated_pairs)]
+                                    if spec is not None else []),
                 "fallback_chain": fallbacks,
             }
 
