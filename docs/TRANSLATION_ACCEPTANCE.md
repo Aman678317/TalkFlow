@@ -205,4 +205,46 @@ Live browser journey against `localhost:5173` (`apps/web` dev) → API `127.0.0.
 | API DB path is CWD-relative (`sqlite+aiosqlite:///./data/globaltalk.db`); a uvicorn booted from the workspace root (not repo root) silently creates a FRESH seeded DB | **RECORDED (boot-contract trap)** | wrong-CWD boot produced: login of the pre-existing user → 401 "Invalid email or password" (user never existed in the fresh DB), then a duplicate-email signup → 201 (no row to reject); both artifacts vanish once the boot CWD is repo-root (bcrypt hash of the original row verified `checkpw=True`) |
 | faster-whisper warmup crashes the process on CPython 3.14 (Windows): native heap corruption `0xC0000374` inside the concurrent lazy import chain (`sklearn.utils.fixes` → `pandas` → `dateutil`) triggered during provider warmup (faulthandler thread dump captured); every un-shimmed boot died ≤70 s with no app traceback | **RECORDED + env mitigation proven** | `sitecustomize.py` preload (imports sklearn/pandas/scipy/dateutil single-threaded before the app's warmup threads) → boot survived 8.5 min unattended under the same poller that killed every prior boot; all five imports also pass standalone |
 | vite `detectBackendPort()` boot race (fallback 8088, never re-evaluated) | **RECORDED with live occurrence** | with no :8000 API alive at vite boot, the 5173 dev-server silently proxied ALL UI traffic to a stray `run_api.py` on :8088 (a different DB); symptom set: dashboard renders, list 404s, `POST /translate` lands on the wrong backend. Rebinding vite with `VITE_BACKEND_PORT=8000` fixed the session; the map-row already flags this |
-| Duplicate-email signup silently 201s under the not-existing-row condition | covered by the boot trap above | honest behavior per-DB (row exists → 422), but a fresh/wrong DB yields a second usable account for the same email (id `b6ca01b1…` vs `b15c9e93…`); login then resolves an arbitrary duplicate row
+| Duplicate-email signup silently 201s under the not-existing-row condition | covered by the boot trap above | honest behavior per-DB (row exists → 422), but a fresh/wrong DB yields a second usable account for the same email (id `b6ca01b1…` vs `b15c9e93…`); login then resolves an arbitrary duplicate row |
+
+## Day-4 security, privacy and data-retention sign-off record (2026-10-23)
+
+Execution of 30-DAY-ROADMAP §Day 4 on the launch-candidate tree (`b98cd47`,
+`fix/day4-provider-health-config`, PR #134). Method: re-run every named
+security surface that exists as a suite, audit the code paths the suites
+cannot see (retention sweeps, deletion wiring, CSP/CORS config, log/telemetry
+content, tracked-file secrets), fix what is deterministically fixable inside
+the freeze rules, and RECORDED the owner-decision items — none disguised.
+
+**Security re-run (local, SQLite lane, 82.4 s):** 157 passed across
+`test_auth_hardened` · `test_auth_full_flow` (CSRF cookie/protection) ·
+`test_tenant_security_extended` · `test_cross_tenant_security` ·
+`test_v2_v3_surface_auth_hardened` · `test_social_auth_hardened` ·
+`test_copilotkit_auth_hardened` · `test_realtime_security_hardened` +
+`test_realtime_security` (WS authorization) · `test_production_security_hardened` ·
+`test_production_readiness_hardened` · `test_telephony_webhook_security` ·
+`test_storage_webhooks` · `test_retention_escalations` · `test_call_gate`
+(consent/DNC/disclosure) · `test_telephony_privacy_abuse_gates` ·
+`test_developer_platform_hardened` (api-key rate limiter, 429 + retry-after) ·
+`integration/test_resilience_failures` (rate-limit fail-open on cache outage).
+
+| Day-4 audit item | Status | Evidence |
+|---|---|---|
+| **Retention advertised schedules are never enforced** — `config` promises `retention_transcript_days` (365, "0 = forever") and the module docstring promises "audio goes first", but `sweep()` never touched transcripts: meeting transcript TEXT and each segment's per-segment `audio_object_key` lived forever, and the audio bucket with a `0` window swept EVERY audio object instead of none | **FIXED (`b98cd47`, red→green)** | new transcript buckets: text sweep deletes rows past the transcript window (stale non-final fragments included), translation fan-outs die with their source, transcript-audio keys age on the same audio schedule, keys orphaned by a row deletion are purged, meeting rows survive; `0` guarded to "forever" per the config's own contract. Pinned in `tests/test_retention_transcripts_hardened.py` (4 tests, id-scoped seeds + exact-row `finally` purge for the shared-DB lane) + the escalations counts-shape pin updated; retention + escalations suites 7 passed (22.5 s) |
+| Deletion behavior | **PASS + RECORDED finding** | per-object deletion exists and is permission-gated (`DELETE contacts/{id}`, glossaries/TM/style-profiles, `DELETE /me/identities/{provider}`); transcript export is `principal.require("view_transcript")` + audited (`transcript.exported`). **RECORDED:** `delete_user_data`/`delete_org_data` exist in `retention_service.py` with ZERO callers — no GDPR-style anonymization endpoint is wired; owner decision needed (self-service account deletion vs delete-on-request flow) before public pilot |
+| Standalone translation rows outlive their windows | **RECORDED (product decision)** | `TranslationSegment` rows with `segment_id NULL` (product text/document/chat — one-off history) are outside the transcript window by design decision, not retention fallout; document-derived rows also outlive their document's `expires_at` sweep. Owner call: should document/text history follow the document/usage schedules? |
+| CORS / CSRF / security headers | **PASS + hardening note** | explicit origin allowlist (`settings.cors_origins` + narrow regex) + bounded methods + `allow_credentials=True`; CSRF middleware runs ahead of CORS; headers nosniff / HSTS (2y, includeSubDomains) / CSP (`default-src 'self'; frame-ancestors 'none'`; docs paths only excepted). **RECORDED (low):** the CORS regex allows any `*.vercel.app` origin with credentials — browser third-party/CSRF defenses mitigate, but pin exact preview domains |
+| Upload validation | **PASS (pinned)** | `validate_upload` (app/storage.py) rejects executables/MIME mismatches and sanitizes `../../etc/passwd.pdf`; `malware_scan` hook wired; pinned in `test_storage_webhooks.py` |
+| **Secret scan** | **CLEAN + RECORDED CI gap + hygiene executed** | CI has NO secret-scan step (only dummy `JWT_SECRET` values in `ci.yml`) — owner decision to adopt gitleaks/trufflehog. Local scan: 12 high-signal patterns (AWS AKIA, GitHub tokens, Stripe live keys, OpenAI/Anthropic-style keys, Slack tokens/hooks, Google AIza, private-key blocks, Twilio account SIDs, DeepL) over all 1 624 tracked files → **zero real credentials in source**; only hits were tracked tool/IDE artifacts (`.vs` index binaries, `.mimosa` hook state, `.specify` integration manifests — sha256 inventories; the Twilio-pattern hits are hash substrings). Verified clean individually: `apps/web/.env.production` (two public `VITE_*` URLs) and `plugins/desi-claude-plugin/.mcp.json` (env-var indirection, no embedded key). Hygiene committed `eb0234d`: 442 machine-local files untracked + ignore rules (`.vs/`, spec-kit local registry; `.mimosa/` was already ignored) |
+| Logs / telemetry content | **PASS (+ 2 minor notes)** | no transcript text, tokens or credentials are logged anywhere (grep over all logging sites in `services/api/app`); realtime transcript delivery is the WS channel by design, not logs. Notes: 3 error paths log provider response bodies (`indic_server` `resp.text`, `twilio_token` `res.text` ×2) and `translate.py` logs transcription failure exceptions — error-path content only |
+| Consent & user-visible indicators | **PASS** | telephony: recording **disabled by default**, two-party consent mandatory and un-disableable at graph build (`prompt_composer` L1 platform rule) — pinned by call-gate + telephony privacy/abuse suites; disclosure text surfaced in agent prompts. Meetings: **no recording surface exists** (grep clean) — captions/transcripts are the core feature, visible on screen to every participant by design; transcript retention now genuinely enforced (row 1 above) |
+| Hourly sweep wiring | **PASS** | `_retention_loop` task in lifespan (`main.py:283`), sleeps 3600 s between sweeps, exceptions logged and never fatal |
+
+**Owner actions (documented exclusions — code-side day-4 scope is exhausted):**
+privacy notice + data-processing description review by the responsible
+qualified reviewer (the roadmap's own exit criterion); adopt a CI secret-scan
+step; decide the GDPR deletion-endpoint story; decide standalone-translation
+retention policy; pin the `*.vercel.app` CORS allowlist. The day-4 exit
+criterion ("no open critical/high security finding") is met on the code side:
+the one critical-class gap found (retention unenforcement) is fixed and
+pinned; owner items carry no unmanaged code risk into Day 5.
