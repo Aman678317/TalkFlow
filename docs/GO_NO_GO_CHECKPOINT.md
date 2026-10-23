@@ -83,7 +83,7 @@ Dates are **proposed timeboxes** for the owner to adopt (they shift the 30-day s
 
 | # | Gate to clear | Evidence required | Owner | Proposed by |
 |---|---|---|---|---|
-| R1 | Execute **Day-1** for real | Tag the candidate on (a successor of) `b92ed66`; record commit SHA, dependency lockfiles, config version, migration head (`f4e2a9c1d8b7`), provider/model versions, known limitations; add the owner list to issue #80 | owner | 2026-10-26 |
+| R1 | Execute **Day-1** for real | Tag the candidate on (a successor of) `b92ed66`; record commit SHA, dependency lockfiles, config version, migration head (`f4e2a9c1d8b7`), provider/model versions, known limitations; add the owner list to issue #80 → **partially realized 2026-10-23**: tagged `launch-candidate-1` @ `45c15b9`, record in `docs/RELEASE_CANDIDATE.md`; the owner-names-into-#80 half is still open | owner | 2026-10-26 |
 | R2 | Execute **Day-2** staging rehearsal | Deploy the candidate to a staging-like environment; save `/health`, `/ready`, migrations, worker connectivity, secrets-injection evidence **and** API/worker restart-recovery evidence (also unblocks the deferred launch sign-off browser round) | owner + dev | 2026-10-28 |
 | R3 | Day-4 legal/privacy sign-off | Privacy notice + data-processing/subprocessor description reviewed and signed by the responsible qualified reviewer | owner (qualified reviewer) | 2026-10-28 |
 | R4 | GDPR deletion story + standalone translation-history retention policy | Written decision wired or scheduled in the retention plan | owner | 2026-10-28 |
