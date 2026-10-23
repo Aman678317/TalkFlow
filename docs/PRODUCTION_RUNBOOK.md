@@ -109,12 +109,18 @@ alembic downgrade -1
 ```
 
 ### 4.3 Database Backup & Restore
+
+Full procedures with executed-drill evidence live in **`docs/RECOVERY_RUNBOOK.md`** (30-DAY-ROADMAP
+§Day 5): source-of-truth map, isolated restore steps, verification gates (`alembic current`/`check`
+must pass before repointing), Redis/queue rebuild safety and the owner items. Quick reference:
+
 ```bash
-# Backup
+# Backup (always inside the server/container; never redirect dump bytes through a shell pipe)
 pg_dump -U postgres -d globaltalk -F c -b -v -f /backups/globaltalk_$(date +%Y%m%d_%H%M%S).dump
 
-# Restore
-pg_restore -U postgres -d globaltalk -v -c /backups/globaltalk_20261004.dump
+# Restore — NEVER over the live instance; fresh isolated database first
+createdb -U postgres restored && pg_restore -U postgres -d restored --no-owner /backups/globaltalk_<ts>.dump
+alembic current && alembic check    # both must pass before repointing DATABASE_URL
 ```
 
 ---
