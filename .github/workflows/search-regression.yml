@@ -1,0 +1,43 @@
+name: Search Regression Tests
+
+on:
+  push:
+    branches: ["AMAN"]
+    paths:
+      - "services/api/app/services/search_service.py"
+      - "services/api/tests/test_search_query.py"
+      - ".github/workflows/search-regression.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "services/api/app/services/search_service.py"
+      - "services/api/tests/test_search_query.py"
+      - ".github/workflows/search-regression.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  search-unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: services/api
+    env:
+      APP_ENV: test
+      CACHE_BACKEND: memory
+      REDIS_URL: ""
+      JWT_SECRET: ci-jwt-secret-0123456789abcdef0123456789
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install canonical API dependencies
+        run: pip install -r requirements.txt pytest pytest-asyncio
+      - name: Run search query unit tests
+        run: python -m pytest tests/test_search_query.py -q
+      - name: Compile changed Python modules
+        run: python -m compileall -q app/services/search_service.py tests/test_search_query.py
