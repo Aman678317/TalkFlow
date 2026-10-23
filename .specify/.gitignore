@@ -7,3 +7,7 @@ feature.json
 
 # Per-machine extension config overrides.
 extensions/*/local-config.yml
+
+# per-machine integration registry (hash inventories + pointer).
+integrations/
+integration.json
