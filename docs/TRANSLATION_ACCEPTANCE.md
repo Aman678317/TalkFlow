@@ -134,7 +134,8 @@ Audit of the canonical router/chain/health surface
 (`gt_ai/model_router/router.py`, `app/ai.py`, `app/routers/health.py`,
 `scripts/verify_ai_stack.py`) found and fixed four truths the stack was
 getting wrong. Everything here is pinned in
-`tests/test_day4_provider_config_hardened.py` (13 tests).
+`tests/test_day4_provider_config_hardened.py` (14 tests — 13 from the audit
+plus the DEV-inject payload pin added with `bd993cb`).
 
 | Finding (day-4 audit) | Status | Evidence |
 |---|---|---|
@@ -144,6 +145,7 @@ getting wrong. Everything here is pinned in
 | `/api/v1/system/diagnostics` collapsed configured / available / supported / production-validated into one `healthy` boolean | **FIXED** | per-task diagnostics now carry `supported_languages` and `validated_pairs` from the loaded registry specs (`test_diagnostics_report_supported_languages_and_validated_pairs`); secrets asserted absent from the payload |
 | Router coverage filters (`validated_pairs`, `languages`) are decisive only while another candidate survives them; the last-resort ladder reintroduces a filtered-out candidate when nothing else remains | **PINNED (documented behavior)** | the provider adapter rejects an unvalidated pair at execution time and the chain fails over honestly; pinned by `test_last_resort_ladder_reintroduces_a_filtered_candidate` so any change is deliberate (revisit for day-7 quality gates) |
 | faster-whisper's default `vad_filter=True` needs `onnxruntime`, which no requirements file pins (the meeting pipeline segments with `gt_ai.vad`, not the STT-internal VAD) | **RECORDED** | probe reports honest NOT_CONFIGURED with the install hint; adapter-default decision deferred to day 9 (speech detection/segmentation) |
+| Post-fix CI exposure: `webrtc-smoke` guest-flow failed deterministically because the DEV inject payloads were phrase-table **misses** in the now-offline `dev_echo` (`नमस्ते दुनिया।` with trailing danda, `Hello, world.`, `The meeting starts at 3pm.`, `你好世界。`) — an honest flagged passthrough that the realtime translation agent refuses to ship, so chip `mt` never reached ok | **FIXED** | all four payloads (+ comma-greeting inverse, zh→hi/zh→en coverage) added as real offline `phrase_table` entries (`bd993cb`); pinned red→green by `test_dev_echo_serves_every_dev_inject_payload_offline` with a keep-in-sync note against the MeetingRoom inject panel; webrtc-smoke **PASS** run 39885304046 (5m45s), full CI success run 39885303973 |
 
 Verification (this workstation, 2026-10-23): `verify_ai_stack.py` full run
 exit 0 — 16 probes, 4 ok (router, GPU profile, STT weights, dev-fallback
@@ -166,11 +168,11 @@ day-3 localhost record above predates the dev_echo flag change: a canned
 | migrations | pass | |
 | frontend | pass | |
 | docker | pass | |
-| realtime-golden | **fail** (`info.avg_logprob` AttributeError) | Fixed in same commit; re-check pending |
-| webrtc-smoke | **fail** (chip `mt` never reached `"ok"`) | Pre-existing environment gap — smoke test requires a full LiveKit+WS meeting stack running; CI's docker-compose step starts but the WS bridge isn't connected during the browser probe. Not caused by day-4 code change. Requires staging-deploy + live-media env to verify (roadmap §Day 9). |
+| realtime-golden | **pass** (re-check on `bd993cb`) | avg_logprob fix confirmed — CI run 39885303973 green (migrations, frontend, realtime-golden, backend, docker) |
+| webrtc-smoke | **pass** after root-cause fix on `bd993cb` (run 39885304046, 5m45s) | the "environment gap" reading above was **wrong and is corrected here** (not waved away): chip `mt` never reached ok because post-day-4 offline `dev_echo` returns an honest flagged passthrough on a phrase-table miss — which `agents/translation.py` refuses to ship as a translation — and the DEV inject payloads were misses; fixture drift previously masked by the removed cloud delegate, not a WS-bridge/compose gap. Fixed by offline phrase-table entries + a pinned inject contract (see the day-4 table above) |
 | Vercel Preview Comments | pass | |
 
-This matches the roadmap rule: "A failing required gate blocks release." The webrtc-smoke is documented as BLOCKED with exact setup requirements (live WebSocket media transport); the realtime-golden avg_logprob is expected to pass on re-check after the amend.
+This matches the roadmap rule: "A failing required gate blocks release." Update (2026-10-23, `bd993cb`): both gates now pass on CI — realtime-golden inside run 39885303973 (all five jobs) and webrtc-smoke run 39885304046 (browser smoke ✓, guest-flow/livekit lanes green). The BLOCKED note above is superseded, not waived: the failure was root-caused offline with a red→green hardened pin — fixing the real inject-fixture defect instead of re-running against a wrong environment guess.
 
 ## Clean browser journey sign-off record (2026-10-23)
 
