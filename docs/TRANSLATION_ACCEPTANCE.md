@@ -251,3 +251,17 @@ retention policy; pin the `*.vercel.app` CORS allowlist. The day-4 exit
 criterion ("no open critical/high security finding") is met on the code side:
 the one critical-class gap found (retention unenforcement) is fixed and
 pinned; owner items carry no unmanaged code risk into Day 5.
+
+## Follow-up PR #135 CI observation (2026-10-23)
+
+PR #135 re-delivers the webrtc-smoke record correction plus the day-4
+security/privacy/retention payload after PR #134's squash-merge
+(`ad4523b`, head `bd993cb`) — the post-merge pushes missed CI, so every
+commit here rides this PR's own gates. Both ran on the PR head
+`5737a21` (the commit carrying the retargeted record; the row below is
+docs-only, the verified code delta is unchanged):
+
+| Gate | Result | Evidence |
+|---|---|---|
+| CI run 39891734822 | **success** (02:50:13Z → 02:57:03Z UTC) | all five jobs pass: backend, migrations, frontend, realtime-golden, docker — first CI verification of the retention fix (`10fb1b2`), the secret-scan hygiene (`7e37d79`) and the webrtc record correction (`5d8aa39`) |
+| E2E (browser WebRTC smoke) run 39891734835 | **success** (02:50:13Z → 02:56:20Z UTC) | `webrtc-smoke` job pass on the same head |
