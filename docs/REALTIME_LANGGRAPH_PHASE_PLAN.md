@@ -15,6 +15,8 @@ The realtime pipeline already contains four logical agents under `services/api/a
 
 ## Architecture
 
+![TalkFlow realtime pipeline and optional LangGraph control plane](images/realtime-langgraph-control-plane.svg)
+
 ```mermaid
 flowchart LR
     Browser["Browser / video call"] -->|"PCM16 binary + protocol events"| WS["realtime/ws.py"]
