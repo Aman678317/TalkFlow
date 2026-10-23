@@ -34,8 +34,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install test runtime dependencies
-        run: pip install pytest pytest-asyncio regex
+      - name: Install canonical query service dependencies
+        run: pip install pytest pytest-asyncio sqlalchemy aiosqlite pydantic pydantic-settings fastapi email-validator regex
       - name: Run search query unit tests
         run: python -m pytest tests/test_search_query.py -q
       - name: Compile changed Python modules
