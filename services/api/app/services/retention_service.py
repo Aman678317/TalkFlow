@@ -35,20 +35,23 @@ def policy_for(org: M.Organization | None) -> dict:
 async def sweep(db: AsyncSession) -> dict:
     """Run one cleanup pass. Returns counts for observability."""
     counts = {"audio_objects": 0, "documents": 0, "usage": 0, "expired_tokens": 0,
-              "escalations": 0}
+              "escalations": 0, "transcripts": 0, "translations": 0}
 
-    # 1) audio objects past retention (audio_sessions rows keep metadata)
-    cutoff_audio = utcnow() - timedelta(days=max(0, settings.retention_audio_days))
-    res = await db.execute(select(M.AudioSession).where(
-        M.AudioSession.audio_object_key.is_not(None),
-        M.AudioSession.created_at < cutoff_audio))
-    for s in res.scalars().all():
-        try:
-            await storage().delete(s.audio_object_key)
-            s.audio_object_key = None
-            counts["audio_objects"] += 1
-        except Exception as e:
-            log.warning("audio cleanup failed for %s: %s", s.id, e)
+    # 1) audio objects past retention (audio_sessions rows keep metadata).
+    #    0 = forever is the buckets' own contract (the config's comment) —
+    #    an unguarded 0 window used to sweep every audio object at once.
+    if settings.retention_audio_days:
+        cutoff_audio = utcnow() - timedelta(days=settings.retention_audio_days)
+        res = await db.execute(select(M.AudioSession).where(
+            M.AudioSession.audio_object_key.is_not(None),
+            M.AudioSession.created_at < cutoff_audio))
+        for s in res.scalars().all():
+            try:
+                await storage().delete(s.audio_object_key)
+                s.audio_object_key = None
+                counts["audio_objects"] += 1
+            except Exception as e:
+                log.warning("audio cleanup failed for %s: %s", s.id, e)
 
     # 2) expired documents + their objects
     res = await db.execute(select(M.Document).where(
@@ -78,6 +81,51 @@ async def sweep(db: AsyncSession) -> dict:
     counts["expired_tokens"] += r.rowcount or 0
     r = await db.execute(delete(M.MemoryItem).where(
         M.MemoryItem.expires_at.is_not(None), M.MemoryItem.expires_at < utcnow()))
+
+    # 4b) transcript-segment audio obeys the same audio schedule as
+    #     session audio ("audio goes first": largest, least durable value).
+    #     A per-segment key older than the audio window is deleted while
+    #     the TEXT itself keeps living under its own transcript window.
+    if settings.retention_audio_days:
+        cutoff_taudio = utcnow() - timedelta(days=settings.retention_audio_days)
+        res = await db.execute(select(M.TranscriptSegment).where(
+            M.TranscriptSegment.audio_object_key.is_not(None),
+            M.TranscriptSegment.created_at < cutoff_taudio))
+        for s in res.scalars().all():
+            try:
+                await storage().delete(s.audio_object_key)
+                s.audio_object_key = None
+                counts["audio_objects"] += 1
+            except Exception as e:
+                log.warning("transcript audio cleanup failed for %s: %s",
+                            s.id, e)
+
+    # 4c) transcript TEXT past the transcript window (0 = forever): the
+    #     canonical source row goes, any audio key it still carries is
+    #     purged first so the storage object cannot live on orphaned, and
+    #     the translation fan-out rows cannot outlive the text they claim
+    #     to translate. Stale non-final fragments age with the same
+    #     window. The meeting row and its metadata are NOT transcript
+    #     data and survive. Standalone one-off translations
+    #     (segment_id NULL, product text/document/chat) are NOT this
+    #     window's business.
+    if settings.retention_transcript_days:
+        cutoff_tr = utcnow() - timedelta(days=settings.retention_transcript_days)
+        doomed = (await db.execute(select(M.TranscriptSegment).where(
+            M.TranscriptSegment.created_at < cutoff_tr))).scalars().all()
+        keys_purged = 0
+        for s in doomed:
+            if s.audio_object_key:
+                try:
+                    await storage().delete(s.audio_object_key)
+                    keys_purged += 1
+                except Exception as e:
+                    log.warning("transcript audio purge failed for %s: %s",
+                                s.id, e)
+            await db.delete(s)
+        counts["transcripts"] = len(doomed)
+        counts["translations"] = sum(len(s.translations) for s in doomed)
+        counts["audio_objects"] += keys_purged
 
     # 5) resolved escalation tickets past retention (queue E2 durable
     # transport audit rows — §P4 ops honesty). Only RESOLVED rows are swept
