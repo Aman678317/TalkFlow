@@ -435,3 +435,43 @@ class TestNeuralOnlineFallback:
                 text="This sentence has no offline template.", source_lang="en", target_lang="hi",
                 intent=Intent.LATENCY_OPTIMIZED,
             ))
+
+    @pytest.mark.asyncio
+    async def test_an_auto_source_all_echoed_fallbacks_fail_closed(self, monkeypatch) -> None:
+        """Day-3 (2026-10-23): the echo guard short-circuited to ``True`` for any
+        unknown source language, so a provider that answered HTTP 200 with the
+        input text again shipped the source as the translation. For non-Latin
+        targets the script check caught Latin echoes incidentally — the hole
+        was load-bearing exactly on Latin-script targets, where
+        ``_is_script_valid`` is skipped (es/fr/de...). Auto never licenses an
+        echo: the guard must compare the text itself."""
+        import gt_ai.translation.neural_online as module
+        from gt_ai.translation.neural_online import NeuralOnlineTranslationProvider
+        from gt_ai.types import Intent, ProviderUnavailable, TranslationRequest
+
+        async def echoed(*_args, **_kwargs):
+            return "Auto-detection never licenses an echo.", []
+
+        monkeypatch.setattr(module, "query_mymemory", echoed)
+        monkeypatch.setattr(module, "query_google_web", echoed)
+        provider = NeuralOnlineTranslationProvider(api_key="", api_url="")
+
+        with pytest.raises(ProviderUnavailable):
+            await provider.translate(TranslationRequest(
+                text="Auto-detection never licenses an echo.", source_lang="auto", target_lang="es",
+                intent=Intent.LATENCY_OPTIMIZED,
+            ))
+
+
+def test_the_echo_guard_compares_text_even_when_the_source_is_unknown():
+    """Pure-unit pin for the same hole: with an ``auto``/empty source the
+    guard used to return ``True`` for ANY candidate — including the verbatim
+    source text — because it compared languages, not text. A distinct-looking
+    candidate must still pass; a verbatim echo must now be rejected."""
+    from gt_ai.translation.neural_online import _is_distinct_translation
+
+    assert _is_distinct_translation("Hello world.", "नमस्ते दुनिया।", "auto", "hi") is True
+    assert _is_distinct_translation("Hello world.", "hello world.", "auto", "hi") is False
+    assert _is_distinct_translation("Hello world.", "Hello world.", "", "hi") is False
+    # a real unknown-source translation still passes the guard
+    assert _is_distinct_translation("Hello world.", "Bonjour le monde.", "auto", "fr") is True

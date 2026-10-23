@@ -809,15 +809,18 @@ class AIFacade:
         except Exception as e:
             ocr_status["details"] = f"PyMuPDF not available: {e}"
 
-        core_pairs = [
-            ("en", "hi"), ("hi", "en"),
-            ("en", "mr"), ("mr", "en"),
-            ("en", "es"), ("es", "en"),
-            ("en", "fr"), ("fr", "en"),
-            ("en", "de"), ("de", "en"),
-            ("en", "ja"), ("ja", "en"),
-            ("en", "zh"), ("zh", "en"),
-        ]
+        # Day-3 (2026-10-23): the diagnostics pair matrix must be the
+        # capability registry, not a frozen hand-written seven-language
+        # sample. Hub-and-spoke en<->X covers every translation-supported
+        # registry language; the count is the size of the advertised matrix.
+        from gt_ai.capabilities import DEFAULT_LANGUAGES
+        supported = [lc.code for lc in DEFAULT_LANGUAGES if lc.translation_supported]
+        core_pairs: list[tuple[str, str]] = []
+        for code in supported:
+            if code == "en":
+                continue
+            core_pairs.append(("en", code))
+            core_pairs.append((code, "en"))
 
         return {
             "status": "ready" if all(t["healthy"] for t in task_diags.values()) else "degraded",
@@ -830,6 +833,7 @@ class AIFacade:
             "language_pairs": {
                 "supported_count": len(core_pairs),
                 "core_sample": [f"{s}->{t}" for s, t in core_pairs],
+                "languages": sorted(supported),
             },
         }
 

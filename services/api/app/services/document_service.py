@@ -612,8 +612,16 @@ async def _run_pipeline(db: AsyncSession, doc: M.Document, resume: bool = False)
 
         for b, res in zip(batch, results):
             if isinstance(res, Exception):
-                log.warning("segment %d translation failed: %s; falling back to source", b.index, res)
-                b.translated = b.text
+                # Day-3 (2026-10-23): a failed segment must stay MISSING. The
+                # old code wrote the source text into the segment and marked
+                # the document for reconstruct + "ready" — shipping English
+                # text inside the translated document and defeating both the
+                # missing-segment gate and the empty-segment gate below. The
+                # quality gate then fails the document with an honest reason
+                # (process_document_job marks it failed and dispatches
+                # document.failed).
+                log.warning("segment %d translation failed: %s; kept missing for the quality gate",
+                            b.index, res)
             else:
                 b.translated = res
                 recent.append(b.translated)

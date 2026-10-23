@@ -273,12 +273,21 @@ _DEV_COMMON_TRANSLATIONS: dict[tuple[str, str], dict[str, str]] = {
 }
 
 
-def _dev_fallback_translate(text: str, source_lang: str, target_lang: str) -> str:
-    pair = (source_lang.upper().split("-")[0], target_lang.upper().split("-")[0])
+def _apply_dev_dictionary(text: str, detected: str, target_lang: str) -> str | None:
+    """The canned phrase dictionary is a DEV-ONLY refinement.
+
+    It may rewrite a result that the dev provider produced (a ``"[XX] ..."``
+    tag prefix) into a human phrase — it must never replace a real provider
+    translation, and when the provider path fails nothing is fabricated at
+    all (day-3, 2026-10-23: ``_dev_fallback_translate`` used to return
+    ``"[DE] <source text>"``, a fake translation indistinguishable from a
+    real one). Returns None when the dictionary has no entry.
+    """
+    pair = (detected.upper().split("-")[0], target_lang.upper().split("-")[0])
     norm = text.strip().lower()
     if pair in _DEV_COMMON_TRANSLATIONS and norm in _DEV_COMMON_TRANSLATIONS[pair]:
         return _DEV_COMMON_TRANSLATIONS[pair][norm]
-    return f"[{target_lang.upper()}] {text}"
+    return None
 
 
 @router.post("/v2/translate")
@@ -363,19 +372,29 @@ async def v2_translate(
 
     results = []
     for item in raw_texts:
+        item_flags: list[str] = []
         try:
             out = await translate_text(db, item, src, tgt, ctx)
             detected = (out.source_lang or "en").upper()
             translated = out.result.text
-            # If dev provider produced placeholder tag prefix, refine with common dictionary if available
-            pair = (detected.split("-")[0], tgt.upper().split("-")[0])
-            norm = item.strip().lower()
-            if pair in _DEV_COMMON_TRANSLATIONS and norm in _DEV_COMMON_TRANSLATIONS[pair]:
-                translated = _DEV_COMMON_TRANSLATIONS[pair][norm]
+            if out.result.quality_flags:
+                item_flags.extend(out.result.quality_flags)
+            if out.result.is_dev:
+                # Dev stand-in provenance is machine-visible, and the canned
+                # dictionary may refine ONLY this kind of result (day-3:
+                # a real provider result used to be silently swapped for a
+                # dictionary phrase whenever the source matched a key).
+                refined = _apply_dev_dictionary(item, detected, tgt.upper())
+                if refined is not None:
+                    translated = refined
         except Exception as e:
-            log.warning("translate_text failed (%s); using resilient fallback", e)
+            # Day-3 honesty: no fabricated "[DE] text", no source-as-
+            # translation. Empty text + an untranslated_fallback flag is the
+            # contract shape with an honest, machine-checkable failure.
+            log.warning("translate_text failed (%s); answering without a fabricated fallback", e)
             detected = (src if src != "auto" else "EN").upper()
-            translated = _dev_fallback_translate(item, detected, tgt.upper())
+            translated = ""
+            item_flags.append("untranslated_fallback")
 
         # In-memory glossary terms lookup fallback if provided via v2/v3 glossaries.
         # Phase 3: only the caller's own tenant records may be applied — foreign or
@@ -407,6 +426,10 @@ async def v2_translate(
             "text": translated,
             "billed_characters": len(item),
         }
+        if item_flags:
+            res_item["quality_flags"] = sorted(set(item_flags))
+            if "untranslated_fallback" in res_item["quality_flags"]:
+                res_item["untranslated_fallback"] = True
         if model_type:
             res_item["model_type_used"] = model_type
         if tag_handling:
@@ -540,210 +563,36 @@ async def get_usage(
 # 4. /v2/languages & /v3/languages
 # --------------------------------------------------------------------------- #
 
-SUPPORTED_SOURCE_LANGUAGES = [
-    # Global & European
-    {"language": "AF", "name": "Afrikaans"},
-    {"language": "SQ", "name": "Albanian"},
-    {"language": "AM", "name": "Amharic"},
-    {"language": "AR", "name": "Arabic"},
-    {"language": "HY", "name": "Armenian"},
-    {"language": "AS", "name": "Assamese"},
-    {"language": "AZ", "name": "Azerbaijani"},
-    {"language": "EU", "name": "Basque"},
-    {"language": "BE", "name": "Belarusian"},
-    {"language": "BN", "name": "Bengali"},
-    {"language": "BS", "name": "Bosnian"},
-    {"language": "BG", "name": "Bulgarian"},
-    {"language": "MY", "name": "Burmese"},
-    {"language": "CA", "name": "Catalan"},
-    {"language": "ZH", "name": "Chinese (Simplified)"},
-    {"language": "ZH-HANT", "name": "Chinese (Traditional)"},
-    {"language": "HR", "name": "Croatian"},
-    {"language": "CS", "name": "Czech"},
-    {"language": "DA", "name": "Danish"},
-    {"language": "NL", "name": "Dutch"},
-    {"language": "EN", "name": "English"},
-    {"language": "EO", "name": "Esperanto"},
-    {"language": "ET", "name": "Estonian"},
-    {"language": "FI", "name": "Finnish"},
-    {"language": "FR", "name": "French"},
-    {"language": "GL", "name": "Galician"},
-    {"language": "KA", "name": "Georgian"},
-    {"language": "DE", "name": "German"},
-    {"language": "EL", "name": "Greek"},
-    {"language": "GU", "name": "Gujarati"},
-    {"language": "HT", "name": "Haitian Creole"},
-    {"language": "HA", "name": "Hausa"},
-    {"language": "HE", "name": "Hebrew"},
-    {"language": "HI", "name": "Hindi"},
-    {"language": "HU", "name": "Hungarian"},
-    {"language": "IS", "name": "Icelandic"},
-    {"language": "IG", "name": "Igbo"},
-    {"language": "ID", "name": "Indonesian"},
-    {"language": "GA", "name": "Irish"},
-    {"language": "IT", "name": "Italian"},
-    {"language": "JA", "name": "Japanese"},
-    {"language": "KN", "name": "Kannada"},
-    {"language": "KS", "name": "Kashmiri"},
-    {"language": "KK", "name": "Kazakh"},
-    {"language": "KM", "name": "Khmer"},
-    {"language": "KO", "name": "Korean"},
-    {"language": "KU", "name": "Kurdish"},
-    {"language": "LO", "name": "Lao"},
-    {"language": "LA", "name": "Latin"},
-    {"language": "LV", "name": "Latvian"},
-    {"language": "LT", "name": "Lithuanian"},
-    {"language": "MK", "name": "Macedonian"},
-    {"language": "MG", "name": "Malagasy"},
-    {"language": "MS", "name": "Malay"},
-    {"language": "ML", "name": "Malayalam"},
-    {"language": "MT", "name": "Maltese"},
-    {"language": "MI", "name": "Maori"},
-    {"language": "MR", "name": "Marathi"},
-    {"language": "MN", "name": "Mongolian"},
-    {"language": "NE", "name": "Nepali"},
-    {"language": "NB", "name": "Norwegian (Bokmål)"},
-    {"language": "NN", "name": "Norwegian (Nynorsk)"},
-    {"language": "OR", "name": "Odia"},
-    {"language": "PS", "name": "Pashto"},
-    {"language": "FA", "name": "Persian (Farsi)"},
-    {"language": "PL", "name": "Polish"},
-    {"language": "PT", "name": "Portuguese"},
-    {"language": "PA", "name": "Punjabi"},
-    {"language": "RO", "name": "Romanian"},
-    {"language": "RU", "name": "Russian"},
-    {"language": "SM", "name": "Samoan"},
-    {"language": "SA", "name": "Sanskrit"},
-    {"language": "SR", "name": "Serbian"},
-    {"language": "SD", "name": "Sindhi"},
-    {"language": "SI", "name": "Sinhala"},
-    {"language": "SK", "name": "Slovak"},
-    {"language": "SL", "name": "Slovenian"},
-    {"language": "SO", "name": "Somali"},
-    {"language": "ES", "name": "Spanish"},
-    {"language": "SW", "name": "Swahili"},
-    {"language": "SV", "name": "Swedish"},
-    {"language": "TL", "name": "Tagalog (Filipino)"},
-    {"language": "TG", "name": "Tajik"},
-    {"language": "TA", "name": "Tamil"},
-    {"language": "TE", "name": "Telugu"},
-    {"language": "TH", "name": "Thai"},
-    {"language": "TR", "name": "Turkish"},
-    {"language": "TK", "name": "Turkmen"},
-    {"language": "UK", "name": "Ukrainian"},
-    {"language": "UR", "name": "Urdu"},
-    {"language": "UZ", "name": "Uzbek"},
-    {"language": "VI", "name": "Vietnamese"},
-    {"language": "CY", "name": "Welsh"},
-    {"language": "XH", "name": "Xhosa"},
-    {"language": "YI", "name": "Yiddish"},
-    {"language": "YO", "name": "Yoruba"},
-    {"language": "ZU", "name": "Zulu"},
-]
+# Day-3 (2026-10-23): the advertised language list is the capability
+# registry. It used to be a hand-written ~95-entry DeepL-shaped list
+# (Latin, Esperanto, Amharic ...) that no adapter, no registry row and no
+# provider serves. The registry (gt_ai.capabilities.DEFAULT_LANGUAGES) is
+# the runtime source of truth; la (beta) and sa (external) remain available
+# only when the caller explicitly asks for them via ?include=.
+from gt_ai.capabilities import DEFAULT_LANGUAGES
+from gt_ai.translation.neural_online import FORMALITY_RULES
 
-SUPPORTED_TARGET_LANGUAGES = [
-    # Global & European
-    {"language": "AF", "name": "Afrikaans", "supports_formality": False},
-    {"language": "SQ", "name": "Albanian", "supports_formality": False},
-    {"language": "AM", "name": "Amharic", "supports_formality": False},
-    {"language": "AR", "name": "Arabic", "supports_formality": False},
-    {"language": "HY", "name": "Armenian", "supports_formality": False},
-    {"language": "AS", "name": "Assamese", "supports_formality": True},
-    {"language": "AZ", "name": "Azerbaijani", "supports_formality": False},
-    {"language": "EU", "name": "Basque", "supports_formality": False},
-    {"language": "BE", "name": "Belarusian", "supports_formality": False},
-    {"language": "BN", "name": "Bengali", "supports_formality": True},
-    {"language": "BS", "name": "Bosnian", "supports_formality": False},
-    {"language": "BG", "name": "Bulgarian", "supports_formality": False},
-    {"language": "MY", "name": "Burmese", "supports_formality": False},
-    {"language": "CA", "name": "Catalan", "supports_formality": False},
-    {"language": "ZH", "name": "Chinese (Simplified)", "supports_formality": False},
-    {"language": "ZH-HANS", "name": "Chinese (Simplified)", "supports_formality": False},
-    {"language": "ZH-HANT", "name": "Chinese (Traditional)", "supports_formality": False},
-    {"language": "HR", "name": "Croatian", "supports_formality": False},
-    {"language": "CS", "name": "Czech", "supports_formality": False},
-    {"language": "DA", "name": "Danish", "supports_formality": False},
-    {"language": "NL", "name": "Dutch", "supports_formality": True},
-    {"language": "EN-GB", "name": "English (British)", "supports_formality": False},
-    {"language": "EN-US", "name": "English (American)", "supports_formality": False},
-    {"language": "EO", "name": "Esperanto", "supports_formality": False},
-    {"language": "ET", "name": "Estonian", "supports_formality": False},
-    {"language": "FI", "name": "Finnish", "supports_formality": False},
-    {"language": "FR", "name": "French", "supports_formality": True},
-    {"language": "GL", "name": "Galician", "supports_formality": False},
-    {"language": "KA", "name": "Georgian", "supports_formality": False},
-    {"language": "DE", "name": "German", "supports_formality": True},
-    {"language": "EL", "name": "Greek", "supports_formality": False},
-    {"language": "GU", "name": "Gujarati", "supports_formality": True},
-    {"language": "HT", "name": "Haitian Creole", "supports_formality": False},
-    {"language": "HA", "name": "Hausa", "supports_formality": False},
-    {"language": "HE", "name": "Hebrew", "supports_formality": False},
-    {"language": "HI", "name": "Hindi", "supports_formality": True},
-    {"language": "HU", "name": "Hungarian", "supports_formality": False},
-    {"language": "IS", "name": "Icelandic", "supports_formality": False},
-    {"language": "IG", "name": "Igbo", "supports_formality": False},
-    {"language": "ID", "name": "Indonesian", "supports_formality": False},
-    {"language": "GA", "name": "Irish", "supports_formality": False},
-    {"language": "IT", "name": "Italian", "supports_formality": True},
-    {"language": "JA", "name": "Japanese", "supports_formality": True},
-    {"language": "KN", "name": "Kannada", "supports_formality": True},
-    {"language": "KS", "name": "Kashmiri", "supports_formality": True},
-    {"language": "KK", "name": "Kazakh", "supports_formality": False},
-    {"language": "KM", "name": "Khmer", "supports_formality": False},
-    {"language": "KO", "name": "Korean", "supports_formality": True},
-    {"language": "KU", "name": "Kurdish", "supports_formality": False},
-    {"language": "LO", "name": "Lao", "supports_formality": False},
-    {"language": "LA", "name": "Latin", "supports_formality": False},
-    {"language": "LV", "name": "Latvian", "supports_formality": False},
-    {"language": "LT", "name": "Lithuanian", "supports_formality": False},
-    {"language": "MK", "name": "Macedonian", "supports_formality": False},
-    {"language": "MG", "name": "Malagasy", "supports_formality": False},
-    {"language": "MS", "name": "Malay", "supports_formality": False},
-    {"language": "ML", "name": "Malayalam", "supports_formality": True},
-    {"language": "MT", "name": "Maltese", "supports_formality": False},
-    {"language": "MI", "name": "Maori", "supports_formality": False},
-    {"language": "MR", "name": "Marathi", "supports_formality": True},
-    {"language": "MN", "name": "Mongolian", "supports_formality": False},
-    {"language": "NE", "name": "Nepali", "supports_formality": True},
-    {"language": "NB", "name": "Norwegian (Bokmål)", "supports_formality": False},
-    {"language": "NN", "name": "Norwegian (Nynorsk)", "supports_formality": False},
-    {"language": "OR", "name": "Odia", "supports_formality": True},
-    {"language": "PS", "name": "Pashto", "supports_formality": False},
-    {"language": "FA", "name": "Persian (Farsi)", "supports_formality": False},
-    {"language": "PL", "name": "Polish", "supports_formality": True},
-    {"language": "PT-BR", "name": "Portuguese (Brazilian)", "supports_formality": True},
-    {"language": "PT-PT", "name": "Portuguese (European)", "supports_formality": True},
-    {"language": "PA", "name": "Punjabi", "supports_formality": True},
-    {"language": "RO", "name": "Romanian", "supports_formality": False},
-    {"language": "RU", "name": "Russian", "supports_formality": True},
-    {"language": "SM", "name": "Samoan", "supports_formality": False},
-    {"language": "SA", "name": "Sanskrit", "supports_formality": True},
-    {"language": "SR", "name": "Serbian", "supports_formality": False},
-    {"language": "SD", "name": "Sindhi", "supports_formality": True},
-    {"language": "SI", "name": "Sinhala", "supports_formality": False},
-    {"language": "SK", "name": "Slovak", "supports_formality": False},
-    {"language": "SL", "name": "Slovenian", "supports_formality": False},
-    {"language": "SO", "name": "Somali", "supports_formality": False},
-    {"language": "ES", "name": "Spanish", "supports_formality": True},
-    {"language": "SW", "name": "Swahili", "supports_formality": False},
-    {"language": "SV", "name": "Swedish", "supports_formality": False},
-    {"language": "TL", "name": "Tagalog (Filipino)", "supports_formality": False},
-    {"language": "TG", "name": "Tajik", "supports_formality": False},
-    {"language": "TA", "name": "Tamil", "supports_formality": True},
-    {"language": "TE", "name": "Telugu", "supports_formality": True},
-    {"language": "TH", "name": "Thai", "supports_formality": False},
-    {"language": "TR", "name": "Turkish", "supports_formality": False},
-    {"language": "TK", "name": "Turkmen", "supports_formality": False},
-    {"language": "UK", "name": "Ukrainian", "supports_formality": False},
-    {"language": "UR", "name": "Urdu", "supports_formality": True},
-    {"language": "UZ", "name": "Uzbek", "supports_formality": False},
-    {"language": "VI", "name": "Vietnamese", "supports_formality": False},
-    {"language": "CY", "name": "Welsh", "supports_formality": False},
-    {"language": "XH", "name": "Xhosa", "supports_formality": False},
-    {"language": "YI", "name": "Yiddish", "supports_formality": False},
-    {"language": "YO", "name": "Yoruba", "supports_formality": False},
-    {"language": "ZU", "name": "Zulu", "supports_formality": False},
-]
+_FORMALITY_CODES = sorted({lang.upper() for lang, _formal in FORMALITY_RULES})
+
+
+def _registry_source_entries() -> list[dict[str, Any]]:
+    """Source languages = registry languages with translation enabled."""
+    return [{"language": lc.code.upper(), "name": lc.name}
+            for lc in DEFAULT_LANGUAGES if lc.translation_supported]
+
+
+def _registry_target_entries() -> list[dict[str, Any]]:
+    """Target languages = registry languages with translation enabled, with
+    formality claimed only where the formality rules actually exist."""
+    return [{
+        "language": lc.code.upper(),
+        "name": lc.name,
+        "supports_formality": lc.code.upper() in _FORMALITY_CODES,
+    } for lc in DEFAULT_LANGUAGES if lc.translation_supported]
+
+
+SUPPORTED_SOURCE_LANGUAGES = _registry_source_entries()
+SUPPORTED_TARGET_LANGUAGES = _registry_target_entries()
 
 
 LANGUAGE_RESOURCES = [
@@ -891,29 +740,20 @@ async def get_language_resources():
 
 @router.get("/v2/glossary-language-pairs")
 async def v2_glossary_language_pairs():
-    """Retrieve supported language pairs for glossaries."""
-    pairs = [
-        {"source_lang": "EN", "target_lang": "DE"},
-        {"source_lang": "DE", "target_lang": "EN"},
-        {"source_lang": "EN", "target_lang": "ES"},
-        {"source_lang": "ES", "target_lang": "EN"},
-        {"source_lang": "EN", "target_lang": "FR"},
-        {"source_lang": "FR", "target_lang": "EN"},
-        {"source_lang": "EN", "target_lang": "JA"},
-        {"source_lang": "JA", "target_lang": "EN"},
-        {"source_lang": "EN", "target_lang": "IT"},
-        {"source_lang": "IT", "target_lang": "EN"},
-        {"source_lang": "EN", "target_lang": "NL"},
-        {"source_lang": "NL", "target_lang": "EN"},
-        {"source_lang": "EN", "target_lang": "PL"},
-        {"source_lang": "PL", "target_lang": "EN"},
-        {"source_lang": "EN", "target_lang": "PT"},
-        {"source_lang": "PT", "target_lang": "EN"},
-        {"source_lang": "EN", "target_lang": "RU"},
-        {"source_lang": "RU", "target_lang": "EN"},
-        {"source_lang": "EN", "target_lang": "ZH"},
-        {"source_lang": "ZH", "target_lang": "EN"},
-    ]
+    """Retrieve supported language pairs for glossaries.
+
+    Day-3 (2026-10-23): derived from the capability registry instead of a
+    hand-written list, and hub-and-spoke (EN <-> X) so the response stays a
+    usable catalog — every pair whose two languages the registry carries."""
+    from gt_ai.capabilities import DEFAULT_LANGUAGES
+
+    serving = [lc.code.upper() for lc in DEFAULT_LANGUAGES if lc.translation_supported]
+    pairs: list[dict[str, str]] = []
+    for code in serving:
+        if code == "EN":
+            continue
+        pairs.append({"source_lang": "EN", "target_lang": code})
+        pairs.append({"source_lang": code, "target_lang": "EN"})
     return {"supported_languages": pairs}
 
 
@@ -2179,11 +2019,15 @@ async def v2_desi_translate(
     for item in texts:
         detected = source_lang.upper() if source_lang != "auto" else "EN"
         norm = item.strip().lower()
+        item_flags: list[str] = []
 
-        # Check standard dictionary first
+        # Day-3 (2026-10-23): the phrase dictionary runs BEFORE the provider by
+        # design here, but every provenance must be visible to the caller
+        # (the answer used to ship with no provenance at all).
         pair = (detected.split("-")[0], target_lang.upper().split("-")[0])
         if pair in _DEV_COMMON_TRANSLATIONS and norm in _DEV_COMMON_TRANSLATIONS[pair]:
             translated = _DEV_COMMON_TRANSLATIONS[pair][norm]
+            provenance = "dictionary"
         else:
             try:
                 ctx = TranslateContext(
@@ -2194,8 +2038,14 @@ async def v2_desi_translate(
                 out = await translate_text(db, item, source_lang, target_lang, ctx)
                 translated = out.result.text
                 detected = (out.source_lang or source_lang).upper()
+                provenance = "provider"
+                if out.result.quality_flags:
+                    item_flags.extend(out.result.quality_flags)
             except Exception:
-                translated = _dev_fallback_translate(item, detected, target_lang.upper())
+                # No fabricated "[HI] text", no source-as-translation.
+                translated = ""
+                provenance = "provider"
+                item_flags.append("untranslated_fallback")
 
         # Apply Desi honorific transformations
         if target_lang in ("hi", "mr", "pa", "ur"):
@@ -2230,8 +2080,13 @@ async def v2_desi_translate(
             "script": script_name,
             "honorific_applied": honorific,
             "domain": domain,
+            "translated_by": provenance,
             "billed_characters": len(item),
         })
+        if item_flags:
+            results[-1]["quality_flags"] = sorted(set(item_flags))
+            if "untranslated_fallback" in results[-1]["quality_flags"]:
+                results[-1]["untranslated_fallback"] = True
 
     return {"translations": results}
 
