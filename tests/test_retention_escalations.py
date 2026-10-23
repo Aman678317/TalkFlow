@@ -135,4 +135,5 @@ async def test_counts_bucket_shape_is_stable(services_app_client, user,
         counts = await retention_service.sweep(db)
 
     assert set(counts) == {"audio_objects", "documents", "usage",
-                           "expired_tokens", "escalations"}
+                           "expired_tokens", "escalations", "transcripts",
+                           "translations"}
