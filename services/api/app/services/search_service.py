@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 import uuid
 from typing import Any, Protocol
 
@@ -35,15 +36,26 @@ def query_terms(query: str) -> list[str]:
     Terms are escaped by allowing Unicode letters/numbers and underscore only.
     This prevents operator syntax in user input from being interpreted as tsquery.
     """
-    # Python's Unicode \w excludes combining marks (category M), which occur
-    # in Devanagari and many other scripts. Include marks after a letter/number
-    # so a word such as "नमस्ते" remains a single search term.
-    tokens = re.findall(
-        r"[^\W_](?:[^\W_]|[\u0300-\u036f\u0900-\u0903\u093a-\u094f\u0951-\u0957\u0962-\u0963])*",
-        query,
-        flags=re.UNICODE,
-    )
-    return [token for token in tokens if token.strip("_")][:MAX_QUERY_TERMS]
+    # Python's standard re \w excludes all Unicode combining marks. Build
+    # tokens by Unicode general category so Indic and other combining-mark
+    # scripts remain intact without adding a runtime regex dependency.
+    tokens: list[str] = []
+    current: list[str] = []
+    for char in query:
+        category = unicodedata.category(char)
+        if category[0] in {"L", "N"}:
+            current.append(char)
+        elif category[0] == "M" and current:
+            current.append(char)
+        elif char == "_" and current:
+            current.append(char)
+        else:
+            if current:
+                tokens.append("".join(current))
+                current = []
+    if current:
+        tokens.append("".join(current))
+    return tokens[:MAX_QUERY_TERMS]
 
 
 def build_tsquery(query: str) -> str:
@@ -53,9 +65,11 @@ def build_tsquery(query: str) -> str:
     never interpreted as a tsquery operator. Apostrophes are normalized to
     token boundaries before quoting.
     """
+    # query_terms emits only Unicode letters, numbers, combining marks, and
+    # internal underscores. Do not run these through re \w: it strips marks
+    # from scripts such as Devanagari and would change the query semantics.
     terms = query_terms(query)
-    safe_terms = [re.sub(r"[^\w]", "", term, flags=re.UNICODE) for term in terms]
-    return " & ".join(f"'{term}':*" for term in safe_terms if term)
+    return " & ".join(f"'{term}':*" for term in terms if term.strip("_"))
 
 
 class SearchBackend(Protocol):
