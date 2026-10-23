@@ -9,6 +9,13 @@ Every result carries quality_flags=["dev_provider"] and model="dev-echo-v1"
 so downstream systems, analytics and users can always tell it apart from a
 real model translation. Production deployments configure madlad400 /
 nllb_ct2 / argos / mt_http instead.
+
+OFFLINE, always (roadmap day 4, 2026-10-23): this provider is classified
+private and rides even private_only chains as the final hop, so it must
+never hand the caller's text to an external service. It used to forward
+non-canned text to the online provider and relabel the cloud result as
+``provider=dev_echo`` — a privacy leak and a false provenance record. Now
+a cache miss degrades honestly to flagged passthrough.
 """
 from __future__ import annotations
 
@@ -128,22 +135,16 @@ class DevEchoTranslationProvider(BaseProvider):
         pair = (src, tgt)
         if pair in COMMON_TRANSLATIONS and norm in COMMON_TRANSLATIONS[pair]:
             out = COMMON_TRANSLATIONS[pair][norm]
-            flags = ["neural_mt", "dev_provider"]
+            flags = ["phrase_table", "dev_provider"]
             alts = []
         else:
-            try:
-                from gt_ai.translation.neural_online import NeuralOnlineTranslationProvider
-                neural = NeuralOnlineTranslationProvider()
-                res = await neural.translate(req)
-                if "dev_provider" not in res.quality_flags:
-                    res.quality_flags.append("dev_provider")
-                res.model = "dev-echo-v1"
-                res.provider = self.name
-                return res
-            except Exception:
-                out = text
-                flags = ["untranslated_fallback", "dev_provider"]
-                alts = []
+            # Offline, always (roadmap day 4): forwarding to the online
+            # provider from inside the chain's final hop sent the caller's
+            # text to a public API from a provider the router classifies
+            # private, and relabelled the cloud output as dev_echo.
+            out = text
+            flags = ["untranslated_fallback", "dev_provider"]
+            alts = []
 
         out, glossary_flags = apply_glossary_to_output(out, text, req.glossary or {})
         flags.extend(glossary_flags)

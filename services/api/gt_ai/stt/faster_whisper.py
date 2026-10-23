@@ -150,7 +150,7 @@ class FasterWhisperProvider(BaseProvider):
             is_final=True,
             start_ms=0,
             end_ms=int(t_end * 1000),
-            confidence=float(info.avg_logprob) if info and info.avg_logprob else None,
+            confidence=None,  # TranscriptionInfo has no avg_logprob / logprob; per-segment seg.avg_logprob exists but is noisy for a single-pass segment
             model=self.model_size,
             provider=self.name,
         )

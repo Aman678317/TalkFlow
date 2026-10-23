@@ -127,3 +127,31 @@ Authed mutation probes (call creation against the registry, 422 mapping) are
 pinned deterministically in `tests/test_outbound_idempotency.py`; visible
 degradation here is recorded above.
 
+
+## Day-4 plan checklist (30-DAY-ROADMAP §Day 4 — model router, provider health, configuration, 2026-10-23)
+
+Audit of the canonical router/chain/health surface
+(`gt_ai/model_router/router.py`, `app/ai.py`, `app/routers/health.py`,
+`scripts/verify_ai_stack.py`) found and fixed four truths the stack was
+getting wrong. Everything here is pinned in
+`tests/test_day4_provider_config_hardened.py` (13 tests).
+
+| Finding (day-4 audit) | Status | Evidence |
+|---|---|---|
+| `dev_echo` — the private-classified final hop — forwarded non-canned text to the public MyMemory/LibreTranslate endpoints via `neural_online` and relabelled the cloud result `provider=dev_echo`, `neural_mt` | **FIXED** | the smuggle is removed; a cache miss is flagged passthrough (`untranslated_fallback`+`dev_provider`), a canned hit is flagged `phrase_table` — never `neural_mt`; the online provider is asserted-never-called (`test_dev_echo_never_calls_the_online_provider`) |
+| Canonical HF-weight root split: `scripts/download_models.sh` provisions `MODEL_CACHE_PATH/hf` (HF_HOME), while the canonical adapters loaded with `download_root=MODEL_CACHE_PATH` — a provisioned host reported NOT_CONFIGURED and would re-download | **FIXED** | `app.config` pins `HF_HOME=MODEL_CACHE_PATH/hf` at settings load; faster-whisper/madlad400 no longer override the HF root (`test_provider_kwargs_do_not_override_the_hf_root`); local proof: whisper probe flipped NOT_CONFIGURED → PASS on the existing provisioned cache |
+| `make verify-ai-stack` probed the LEGACY lane (`ai/providers/*` + apps/api `globaltalk` config), not the deployed `services/api/gt_ai` tree | **FIXED** | script rewritten against `app.ai`/`gt_ai` — 16 probes, every non-PASS row names the setting/command that flips it, quick mode runs import+filesystem only; no secrets or URLs in output |
+| `/api/v1/system/diagnostics` collapsed configured / available / supported / production-validated into one `healthy` boolean | **FIXED** | per-task diagnostics now carry `supported_languages` and `validated_pairs` from the loaded registry specs (`test_diagnostics_report_supported_languages_and_validated_pairs`); secrets asserted absent from the payload |
+| Router coverage filters (`validated_pairs`, `languages`) are decisive only while another candidate survives them; the last-resort ladder reintroduces a filtered-out candidate when nothing else remains | **PINNED (documented behavior)** | the provider adapter rejects an unvalidated pair at execution time and the chain fails over honestly; pinned by `test_last_resort_ladder_reintroduces_a_filtered_candidate` so any change is deliberate (revisit for day-7 quality gates) |
+| faster-whisper's default `vad_filter=True` needs `onnxruntime`, which no requirements file pins (the meeting pipeline segments with `gt_ai.vad`, not the STT-internal VAD) | **RECORDED** | probe reports honest NOT_CONFIGURED with the install hint; adapter-default decision deferred to day 9 (speech detection/segmentation) |
+
+Verification (this workstation, 2026-10-23): `verify_ai_stack.py` full run
+exit 0 — 16 probes, 4 ok (router, GPU profile, STT weights, dev-fallback
+honesty), 12 not configured with actionable hints, 0 failed. Local suites:
+`test_day4_provider_config_hardened.py` (13), `test_provider_chain_hardened`
++ `test_private_only_guarantee_hardened` + `tests/unit/test_ai_layer.py`
+(69), `test_model_fetch_gates_hardened` + `test_argos_cache_dir` (26),
+`test_realtime_translation_invariant_hardened` (13) — all green. The
+day-3 localhost record above predates the dev_echo flag change: a canned
+`/v2/translate` hit now reports `phrase_table` where it reported
+`neural_mt` (same text, honest provenance).

@@ -520,6 +520,14 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     s = Settings()
     s.ensure_dirs()
+    # One HF-cache policy for every task (roadmap day 4): HF weights live
+    # under MODEL_CACHE_PATH/hf — the same root scripts/download_models.sh
+    # fills — never in $HOME. Without this, faster-whisper / madlad400
+    # resolved the HF default (~/.cache/huggingface) at load time while the
+    # provisioned weights sat unread under the model cache, and every probe
+    # honestly reported NOT_CONFIGURED on a fully provisioned host.
+    os.environ.setdefault(
+        "HF_HOME", str((Path(s.model_cache_path).resolve()) / "hf"))
     return s
 
 
