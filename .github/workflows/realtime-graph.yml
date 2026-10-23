@@ -31,8 +31,10 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-      - name: Install focused test dependencies
-        run: python -m pip install --upgrade pip pytest "langgraph>=0.2"
+      - name: Install API and focused test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r services/api/requirements.txt pytest pytest-asyncio greenlet "langgraph>=0.2"
       - name: Test deterministic planner and compiled graph
         env:
           PYTHONPATH: services/api
