@@ -61,6 +61,11 @@ COMMON_TRANSLATIONS: dict[tuple[str, str], dict[str, str]] = {
         "hello!": "नमस्ते!",
         "hello world": "नमस्ते दुनिया",
         "hello world!": "नमस्ते दुनिया!",
+        # DEV inject payloads (MeetingRoom "Inject canned transcript" panel)
+        # — keep in sync; the offline lane must serve every payload it can
+        # inject or the realtime turn honestly fails with translation.failed.
+        "hello, world.": "नमस्ते, दुनिया।",
+        "the meeting starts at 3pm.": "बैठक दोपहर 3 बजे शुरू होती है।",
         "hello world! welcome to globaltalk ai.": "नमस्ते दुनिया! GlobalTalk AI में आपका स्वागत है।",
         "good morning": "शुभ प्रभात",
         "good morning!": "शुभ प्रभात!",
@@ -81,6 +86,8 @@ COMMON_TRANSLATIONS: dict[tuple[str, str], dict[str, str]] = {
         "नमस्ते!": "Hello!",
         "नमस्ते दुनिया": "Hello world",
         "नमस्ते दुनिया!": "Hello world!",
+        "नमस्ते दुनिया।": "Hello world.",
+        "नमस्ते, दुनिया।": "Hello, world.",
         "शुभ प्रभात": "Good morning",
         "शुभ प्रभात!": "Good morning!",
         "आप कैसे हैं?": "How are you?",
@@ -90,6 +97,14 @@ COMMON_TRANSLATIONS: dict[tuple[str, str], dict[str, str]] = {
         "स्वागत है": "Welcome",
         "यह एक परीक्षण बैठक है": "This is a test meeting",
         "globaltalk ai में आपका स्वागत है": "Welcome to GlobalTalk AI",
+    },
+    # DEV inject payload (MeetingRoom "ZH→Hindi") — Chinese had no offline
+    # coverage at all before this.
+    ("zh", "hi"): {
+        "你好世界。": "नमस्ते दुनिया।",
+    },
+    ("zh", "en"): {
+        "你好世界。": "Hello world.",
     },
     ("de", "en"): {
         "hallo welt": "Hello world",

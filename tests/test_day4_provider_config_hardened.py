@@ -67,6 +67,46 @@ async def test_dev_echo_canned_hit_carries_the_phrase_table_flag():
     assert "dev_provider" in res.quality_flags
 
 
+# The payloads the DEV "Inject canned transcript" panel (MeetingRoom) can
+# drive into the realtime pipeline. Once dev_echo went offline, a payload
+# missing from the phrase table comes back as flagged passthrough and
+# agents/translation honestly refuses to ship it (translation.failed →
+# the e2e chip mt never reaches ok). Pin them so the panel and the
+# offline dictionary cannot drift apart again.
+_DEV_INJECT_PAYLOADS: list[tuple[str, str, str, str]] = [
+    ("Hello, world.", "en", "hi", "नमस्ते, दुनिया।"),
+    ("The meeting starts at 3pm.", "en", "hi", "बैठक दोपहर 3 बजे शुरू होती है।"),
+    ("你好世界。", "zh", "hi", "नमस्ते दुनिया।"),
+    ("你好世界。", "zh", "en", "Hello world."),
+    ("नमस्ते दुनिया।", "hi", "en", "Hello world."),
+    ("नमस्ते, दुनिया।", "hi", "en", "Hello, world."),
+]
+
+
+@pytest.mark.asyncio
+async def test_dev_echo_serves_every_dev_inject_payload_offline():
+    """Every canned inject payload must resolve to a real offline phrase
+    table entry — a passthrough here fails the whole realtime turn, so the
+    fixture surface is a contract, not an accident."""
+    from gt_ai.translation.dev_echo import (
+        COMMON_TRANSLATIONS,
+        DevEchoTranslationProvider,
+    )
+
+    provider = DevEchoTranslationProvider()
+    for text, src, tgt, expected in _DEV_INJECT_PAYLOADS:
+        label = f"[{src}->{tgt}] {text!r}"
+        res = await provider.translate(TranslationRequest(
+            text=text, source_lang=src, target_lang=tgt))
+        assert res.text == expected, (
+            f"{label}: inject payload must be translated offline")
+        assert "untranslated_fallback" not in res.quality_flags, label
+        assert "phrase_table" in res.quality_flags, label
+        assert "dev_provider" in res.quality_flags, label
+        norm = text.strip().lower()
+        assert norm in COMMON_TRANSLATIONS[(src, tgt)], label
+
+
 # --------------------------------------------------------------------------- #
 # 2. the HF cache root: one policy, shared with the download script
 # --------------------------------------------------------------------------- #
