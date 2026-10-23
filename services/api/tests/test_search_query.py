@@ -24,6 +24,10 @@ def test_build_tsquery_creates_quoted_prefix_conjunction():
     assert build_tsquery("hello world") == "'hello':* & 'world':*"
 
 
+def test_build_tsquery_preserves_devanagari_combining_marks():
+    assert build_tsquery("नमस्ते 世界") == "'नमस्ते':* & '世界':*"
+
+
 @pytest.mark.parametrize("query", ["!!!", "&&&", "::: ((( ))", ""])
 def test_build_tsquery_punctuation_only_is_empty(query):
     assert build_tsquery(query) == ""
