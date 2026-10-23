@@ -44,6 +44,7 @@ If any item is unchecked, fix it before beginning the launch phase or explicitly
 - Restart API/worker and confirm jobs and meetings recover gracefully.
 
 **Exit:** Staging deployment and restart/recovery evidence is saved.
+- Status (2026-10-23, R2 rehearsal realized — hosted staging + browser round open): the isolated `tts-staging-drill` stack ran `APP_ENV=production` with PostgreSQL 16, Redis, S3/MinIO and workers; clean run 15/15 PASS (~64 s) — `/health` 200, `/ready` 200 (database/cache/queue/storage all true), migrations at head `f4e2a9c1d8b7` + `alembic check` clean, document-worker queue consumer up, metrics bare 401 / bearer 200, secrets probe `production 55 54 48 True`, API restart `/health` 200 in 6.1 s + `/ready` 200 + re-login 200 + meeting row survives, worker restart, teardown zero-residual with the canonical stack untouched. Evidence + boundaries (TLS/WSS off, no hosted/cloud staging, drill-scale timings) in **`docs/STAGING_REHEARSAL.md`**; the deferred launch sign-off browser round is unblocked but still not executed.
 
 ### Day 3 — End-to-end functional sign-off
 - Run a clean browser-profile journey: signup/login, create/join/leave meeting, mic/camera, two-way translation, captions, language preferences, reconnect, text translation, grammar correction and representative document upload/download.
@@ -85,6 +86,7 @@ If any item is unchecked, fix it before beginning the launch phase or explicitly
 
 **Exit:** Written GO decision or a time-boxed NO-GO remediation list. Do not advance by silently waiving P0 blockers.
 - Status (2026-10-23, first checkpoint — decision recorded: **NO-GO**, time-boxed remediation): verdict and all consolidated gates in **`docs/GO_NO_GO_CHECKPOINT.md`** — Day-3/4/5/6 day-exits are code-side PASS with their owner gates carried as R-items; **Day-1 (candidate freeze record) and Day-2 (staging deployment + restart/recovery evidence) were never executed** (only tag `v0.1.0` @ `da0f435` pre-dates the phase; `PRODUCTION_VERIFICATION_REPORT.md` is a 0-byte stub); the day-4 legal/privacy sign-off and a named support owner are also unmet, and P0 #53 (browser per-listener translated audio) is open — so Days 8–14 do not start until the doc's §8 gates (R1–R10, owners + proposed complete-by dates 2026-10-26/–28) carry evidence and the checkpoint is re-run. Open-defect register consolidated in the doc §5 (#53/#109/#100/#102, session-environment boot-contract findings, recorded exclusions/owner items). CI on the candidate main `b92ed66`: run 39907324861 green (pages 39907323904 green).
+- Remediation progress (2026-10-23): **R1** mechanical half realized (tag `launch-candidate-1` @ `45c15b9` + `docs/RELEASE_CANDIDATE.md`; the owner registry in issue #80 remains open) and **R2** rehearsal evidence saved (`docs/STAGING_REHEARSAL.md`). **The NO-GO verdict stands** — R3–R10 and the R1 owner registry remain open; the §8 re-checkpoint rule governs advancement.
 
 ## Days 8–14 — Private pilot
 
@@ -94,6 +96,7 @@ If any item is unchecked, fix it before beginning the launch phase or explicitly
 - Provide a short onboarding guide, supported-language list, data-handling details, known limitations and a support contact.
 
 **Exit:** Pilot cohort and enabled features are known; participants understand the beta scope.
+- Status (2026-10-23, first checkpoint — NO-GO gates active): Onboarding cannot start until the Day-7 checkpoint's R1–R10 gates clear. Key blockers: R3 (privacy notice review by qualified reviewer), R4 (GDPR deletion-endpoint decision), R9 (support owner named), R10 (P0 #53 pilot-scope decision: fix or explicitly narrow with disclosed limitation). Owner items from the checkpoint (complete-by 2026-10-26/28) are recorded in docs/GO_NO_GO_CHECKPOINT.md R-list. Once R1–R10 carry evidence, the pilot cohort can be assembled with the supported-language list (validated pairs: en→hi/zh, hi→en/zh, zh→en/hi; ja source-only; en→mr degradation lane), the onboarding guide, data-handling details and known limitations (capture-permission exclusion, SPA lane connect-loop, per-listener audio limits). Defect register items (#53/#109/#100/#102) also feed into the pilot scope disclosure.
 
 ### Day 9 — Observe real meetings
 - Run supervised opt-in sessions across the launch language pairs and realistic audio conditions (headsets, laptop microphones, background noise, accents, interruptions).

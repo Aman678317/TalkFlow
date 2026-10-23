@@ -1,0 +1,100 @@
+name: tts-staging-drill
+# Launch-phase remediation R2 (roadmap Day-2) — ISOLATED staging-rehearsal stack.
+#
+# NEVER invoked without its own project name and obsolete-file exclusion; the
+# canonical local dev stack (project `globaltalk-ai`) must never be started,
+# stopped or shadowed by this drill:
+#   docker compose -p tts-staging-drill -f docker-compose.yml \
+#     -f docker-compose.staging-rehearse.yml up -d \
+#     postgres redis minio minio-init livekit api worker
+#
+# Honesty boundaries of this environment (recorded in docs/STAGING_REHEARSAL.md):
+# - APP_ENV=production: every production-mode config gate (_validate_production_
+#   secrets in services/api/app/config.py) must pass at boot, including the
+#   >=32-char non-default SECRET_KEY/JWT_SECRET, non-sqlite DATABASE_URL,
+#   non-wildcard CORS, redis requirement and the fail-closed pre-applied-
+#   migrations rule (production boot REFUSES an uninitialized schema).
+# - LIVEKIT_ENABLED=false: this box has no TLS-terminating browser endpoint, so
+#   the browser-facing wss:// rule cannot be met truthfully. The lane is turned
+#   OFF in this rehearsal and the TLS/WSS gap stays a recorded exclusion (the
+#   browser/WebRTC path remains CI-verified in the webrtc-smoke workflow).
+# - All "drill" secret strings below are REHEARSAL-ONLY dummies (not real
+#   credentials; long, clearly labeled, never used anywhere else).
+# - Host-published ports are remapped (5xxxx) for zero collision with anything
+#   else on this box; the in-network service ports stay production-shaped.
+x-api-env-drill: &api-env-drill
+  APP_ENV: production
+  DATABASE_URL: postgresql+asyncpg://globaltalk:globaltalk@postgres:5432/globaltalk
+  REDIS_URL: redis://redis:6379/0
+  CACHE_BACKEND: redis
+  S3_ENABLED: "true"
+  S3_ENDPOINT: http://minio:9000
+  S3_BUCKET: globaltalk
+  S3_ACCESS_KEY: minioadmin
+  S3_SECRET_KEY: minioadmin
+  LOCAL_STORAGE_PATH: /data/storage
+  LIVEKIT_ENABLED: "false"
+  LIVEKIT_URL: ws://livekit:7880
+  LIVEKIT_PUBLIC_URL: ws://localhost:7880
+  LIVEKIT_API_KEY: ""
+  LIVEKIT_API_SECRET: ""
+  SECRET_KEY: tts-staging-drill-secret-key-0123456789abcdef0123456789
+  JWT_SECRET: tts-staging-drill-jwt-secret-0123456789abcdef012345678
+  METRICS_TOKEN: tts-staging-drill-metrics-token-0123456789abcdef
+  METRICS_ENABLED: "true"
+  TELEPHONY_PROVIDER: simulated
+  TELEPHONY_VERIFY_WEBHOOK_SIGNATURES: "true"
+  WEB_ORIGIN: http://localhost:5173
+  CORS_ORIGINS: http://localhost:5173
+  MODEL_CACHE_PATH: /models
+  HF_HOME: /models/hf
+  OMP_NUM_THREADS: "1"
+
+services:
+  api:
+    environment: *api-env-drill
+    ports: ["58080:8000"]
+    volumes:
+      - ./model_cache:/models
+      - apidata:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 120s
+
+  worker:
+    environment: *api-env-drill
+    volumes:
+      - ./model_cache:/models
+      - apidata:/data
+
+  postgres:
+    ports: ["55432:5432"]
+
+  redis:
+    ports: ["56379:6379"]
+
+  minio:
+    # Upstream discontinued the minio/minio Docker Hub repository (the tag
+    # pinned in docker-compose.yml no longer resolves). The drill therefore
+    # uses the Bitnami legacy mirror of the same MinIO 2024.6.13 server —
+    # rehearsal-only dependency, not a candidate change. Pinned by digest in
+    # docs/STAGING_REHEARSAL.md; the native entrypoint is used because the
+    # Bitnami wrapper would not forward the base compose command.
+    image: bitnamilegacy/minio:2024.6.13
+    user: "0"
+    entrypoint: ["/opt/bitnami/minio/bin/minio"]
+    command: ["server", "/data", "--console-address", ":9001"]
+    ports: ["59000:9000", "59001:9001"]
+
+  minio-init:
+    image: bitnamilegacy/minio:2024.6.13
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "mc alias set local http://minio:9000 minioadmin minioadmin && mc mb --ignore-existing local/globaltalk && echo 'bucket ready'"
+
+  livekit:
+    # healthy infra presence only — API-side LiveKit lane off (see header).
+    ports: ["57880:7880", "57881:7881", "57882:7882/udp"]
