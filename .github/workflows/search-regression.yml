@@ -20,7 +20,7 @@ permissions:
 jobs:
   search-unit:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 8
     defaults:
       run:
         working-directory: services/api
@@ -34,9 +34,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
-      - name: Install canonical API dependencies
-        run: pip install -r requirements.txt pytest pytest-asyncio
+      - name: Install test runtime dependencies
+        run: pip install pytest pytest-asyncio regex
       - name: Run search query unit tests
         run: python -m pytest tests/test_search_query.py -q
       - name: Compile changed Python modules
