@@ -293,10 +293,24 @@ async def translate_text(
         detect_conf = det.confidence
         log.debug("detected lang=%s conf=%.2f provider=%s",
                   det.language, det.confidence, det.provider)
-    if detected == target_language:
-        raise UnsupportedLanguageError(
-            "Detected source language equals the target language.",
-            details={"detected": detected}, recoverable=True)
+
+    detected_norm = normalize_lang(detected) or detected
+    target_norm = normalize_lang(target_language) or target_language
+
+    # DeepL parity: When source language equals target language (explicitly or via detection),
+    # return the text as an identity pass-through immediately rather than raising an error.
+    if (source_language != "auto" and source_language == target_language) or (detected_norm == target_norm):
+        result = TranslationResult(
+            text=text,
+            source_lang=detected_norm or target_norm,
+            target_lang=target_norm,
+            model="identity/same_language",
+            provider="identity",
+            latency_ms=round((time.perf_counter() - t0) * 1000, 1),
+            quality_flags=["source_equals_target"],
+            confidence=detect_conf,
+        )
+        return await _persist(db, text, result, ctx, tm_match=None, glossary=None)
 
     # 2) capability validation -------------------------------------------- #
     await validate_pair(db, detected, target_language)

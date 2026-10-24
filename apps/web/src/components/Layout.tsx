@@ -6,7 +6,7 @@ import { PageTransition } from "./Motion";
 import { springSoft } from "../lib/motion";
 
 import {
-  LayoutDashboard, ArrowLeftRight, PenLine, Mic2, FileText,
+  LayoutDashboard, ArrowLeftRight, PenLine, BookmarkCheck, Mic2, FileText,
   Video, MessageSquare, Clock, BookOpen, Database, Sliders,
   KeyRound, BarChart2, CreditCard, Users, Settings, Shield,
   ChevronDown, LogOut, ExternalLink, PhoneCall, PhoneIncoming,
@@ -20,6 +20,7 @@ const NAV = [
   { to: "/dashboard",          label: "Dashboard",          Icon: LayoutDashboard },
   { to: "/translate",          label: "AMPL Translate",     Icon: ArrowLeftRight },
   { to: "/write",              label: "AMPL Refine",        Icon: PenLine },
+  { to: "/notes",              label: "Notes & Search",     Icon: BookmarkCheck },
   { to: "/voice",              label: "AMPL Voice",         Icon: Mic2 },
   { to: "/documents",          label: "AMPL Documents",     Icon: FileText },
   { to: "/meetings",           label: "Meetings",           Icon: Video },
@@ -41,7 +42,7 @@ const NAV = [
 const NAV_GROUPS = [
   {
     label: "Translate",
-    items: ["/dashboard", "/translate", "/write", "/documents", "/history"],
+    items: ["/dashboard", "/translate", "/write", "/notes", "/documents", "/history"],
   },
   {
     label: "Communication",

@@ -78,7 +78,7 @@ def create_app() -> FastAPI:
     from app.routers import (
         assistant as assistant_routers,
         auth, contacts, documents, health, meetings, orgs, platform, translate,
-        customization, write, v2_v3, telephony, agent_studio,
+        customization, write, v2_v3, telephony, agent_studio, notes,
     )
     app.include_router(v2_v3.router)
     app.include_router(health.router)
@@ -87,6 +87,7 @@ def create_app() -> FastAPI:
     app.include_router(translate.router)
     app.include_router(write.router)
     app.include_router(customization.router)
+    app.include_router(notes.router, prefix="/api/v1")
     app.include_router(documents.router)
     app.include_router(meetings.router)
     app.include_router(meetings.voice_router)

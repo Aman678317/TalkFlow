@@ -18,7 +18,14 @@ import {
   Volume2,
   X,
   Upload,
+  Columns2,
+  Rows2,
+  Zap,
+  Info,
+  BookmarkPlus,
+  BookmarkCheck,
 } from "lucide-react";
+import { TranslationBenchmarkModal } from "../components/TranslationBenchmarkModal";
 import { api, friendlyMessage } from "../lib/api";
 import type { NormalizedTranslation } from "../lib/types";
 import {
@@ -143,20 +150,41 @@ function LangBar({
   detectedConfidence?: number | null;
   right?: React.ReactNode;
 }) {
+  // If selected language is not in default QUICK_LANGS (and not AUTO), dynamically include it in the tab bar
+  const selectedLangObj = React.useMemo(() => {
+    if (selected === "AUTO") return null;
+    return langs.find((l) => l.code === selected);
+  }, [selected, langs]);
+
+  const quickItems = React.useMemo(() => {
+    const list = [...QUICK_LANGS.slice(0, showAuto ? 3 : 4)];
+    if (selectedLangObj && !list.some((q) => q.code === selectedLangObj.code)) {
+      list.push({
+        code: selectedLangObj.code,
+        name: selectedLangObj.native_name && selectedLangObj.native_name !== selectedLangObj.name
+          ? `${selectedLangObj.name} (${selectedLangObj.native_name})`
+          : selectedLangObj.name,
+      });
+    }
+    return list;
+  }, [selectedLangObj, showAuto]);
+
   return (
     <div className="flex flex-wrap items-center justify-between gap-2 border-b border-dl-border bg-[#FAFBFC] px-4 py-2.5">
       <div className="flex flex-wrap items-center gap-0.5">
         {showAuto && (
           <button
+            type="button"
             onClick={() => onSelect("AUTO")}
             className={selected === "AUTO" ? "lang-pill-active" : "lang-pill"}
           >
             Detect language
           </button>
         )}
-        {QUICK_LANGS.slice(0, showAuto ? 3 : 4).map((ql) => (
+        {quickItems.map((ql) => (
           <button
             key={ql.code}
+            type="button"
             onClick={() => onSelect(ql.code)}
             className={selected === ql.code ? "lang-pill-active" : "lang-pill"}
           >
@@ -438,6 +466,27 @@ export default function TranslatePage() {
   const [tgtLang, setTgtLang] = React.useState("de");
   const [detectedLanguage, setDetectedLanguage] = React.useState("");
   const [detectedConfidence, setDetectedConfidence] = React.useState<number | null>(null);
+
+  const handleSelectSrcLang = (code: string) => {
+    if (code !== "AUTO" && code === tgtLang) {
+      const prevSrc = srcLang !== "AUTO" && srcLang !== code ? srcLang : "en";
+      const fallbackTarget = prevSrc === code ? (code === "en" ? "es" : "en") : prevSrc;
+      setTgtLang(fallbackTarget);
+    }
+    setSrcLang(code);
+  };
+
+  const handleSelectTgtLang = (code: string) => {
+    if (srcLang !== "AUTO" && code === srcLang) {
+      const nextSrc = tgtLang !== code ? tgtLang : (code === "en" ? "es" : "en");
+      setSrcLang(nextSrc);
+    } else if (srcLang === "AUTO" && detectedLanguage && code.toLowerCase() === detectedLanguage.toLowerCase()) {
+      const altTarget = code === "en" ? "es" : "en";
+      setSrcLang(code);
+      code = altTarget;
+    }
+    setTgtLang(code);
+  };
   const [formality, setFormality] = React.useState<"default" | "formal" | "informal">("default");
   const [glossaryId, setGlossaryId] = React.useState("");
   const [styleId, setStyleId] = React.useState("");
@@ -511,8 +560,29 @@ export default function TranslatePage() {
         lookupDictionary(trimmed);
       }
     },
-    onError: (e: unknown) =>
-      toast.error("Translation unavailable", friendlyMessage(e)),
+    onError: (e: unknown) => {
+      const msg = friendlyMessage(e).toLowerCase();
+      if (msg.includes("equals the target") || msg.includes("must differ")) {
+        const trimmed = source.trim();
+        setResult({
+          translation_id: "identity",
+          from_translation_memory: false,
+          source_language: srcLang === "AUTO" ? (detectedLanguage || tgtLang) : srcLang,
+          target_language: tgtLang,
+          source_text: trimmed,
+          translated_text: trimmed,
+          model: "identity/same_language",
+          provider: "identity",
+          latency_ms: 0,
+          quality_flags: ["source_equals_target"],
+          detected_confidence: 1.0,
+          alternatives: [],
+          glossary_note: null,
+        });
+        return;
+      }
+      toast.error("Translation unavailable", friendlyMessage(e));
+    },
   });
 
   React.useEffect(() => {
@@ -720,16 +790,13 @@ export default function TranslatePage() {
   };
 
   function swap() {
-    if (srcLang === "AUTO") {
-      if (result) {
-        setSrcLang(result.source_language);
-        setTgtLang(result.source_language === tgtLang ? "en" : tgtLang);
-      }
-      return;
+    const curSrc = srcLang === "AUTO" ? (detectedLanguage || (result ? result.source_language : "en")) : srcLang;
+    const curTgt = tgtLang;
+    setSrcLang(curTgt);
+    setTgtLang(curSrc === curTgt ? (curTgt === "en" ? "es" : "en") : curSrc);
+    if (result?.translated_text) {
+      setSource(result.translated_text);
     }
-    setSrcLang(tgtLang);
-    setTgtLang(srcLang);
-    setSource(result?.translated_text ?? source);
   }
 
   async function copyOut() {
@@ -860,6 +927,7 @@ export default function TranslatePage() {
             if (v === "file") navigate("/documents");
             if (v === "write") navigate("/write");
             if (v === "page") navigate("/translate/page");
+            if (v === "notes") navigate("/notes");
           }}
           tabs={[
             { value: "text",  label: "Translate text",  icon: <FileText  className="h-4 w-4" /> },
@@ -867,11 +935,52 @@ export default function TranslatePage() {
               badge: <span className="ml-1 rounded-full bg-dl-blue-light px-2 py-0.5 text-[10px] font-bold text-dl-blue">PDF · DOCX</span> },
             { value: "page",  label: "Web page",       icon: <Globe     className="h-4 w-4 text-emerald-600" /> },
             { value: "write", label: "AI Write",        icon: <Sparkles  className="h-4 w-4 text-amber-500" /> },
+            { value: "notes", label: "Notes & Search",  icon: <BookmarkCheck className="h-4 w-4 text-blue-600" /> },
           ]}
         />
 
-        {/* Enterprise options */}
+        {/* Enterprise options & DeepL layout/benchmark tools */}
         <div className="flex flex-wrap items-center gap-2">
+          {/* Layout orientation toggle */}
+          <div className="flex items-center gap-0.5 rounded-lg border border-dl-border bg-white p-0.5 shadow-2xs">
+            <button
+              type="button"
+              onClick={() => updateLayout("side-by-side")}
+              title="Side-by-side layout (Left: Source / Right: Target)"
+              className={`flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
+                layoutMode === "side-by-side"
+                  ? "bg-dl-blue text-white shadow-xs font-semibold"
+                  : "text-dl-muted hover:text-dl-navy hover:bg-slate-50"
+              }`}
+            >
+              <Columns2 className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Side-by-Side</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => updateLayout("stacked")}
+              title="Stacked layout (Upper: Source / Lower: Target like DeepL)"
+              className={`flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
+                layoutMode === "stacked"
+                  ? "bg-dl-blue text-white shadow-xs font-semibold"
+                  : "text-dl-muted hover:text-dl-navy hover:bg-slate-50"
+              }`}
+            >
+              <Rows2 className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Upper / Lower</span>
+            </button>
+          </div>
+
+          {/* Benchmark trigger */}
+          <button
+            type="button"
+            onClick={() => setShowBenchmark(true)}
+            title="Run DeepL-grade Live Speed Benchmark"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-900 hover:bg-amber-100 transition-colors shadow-2xs"
+          >
+            <Zap className="h-3.5 w-3.5 text-amber-600 fill-amber-500" />
+            <span>Speed Benchmark</span>
+          </button>
           <select
             aria-label="Glossary"
             value={glossaryId}
@@ -924,15 +1033,15 @@ export default function TranslatePage() {
         </div>
       </div>
 
-      {/* ── Dual panel workspace ─────────────────────────────────── */}
-      <div className="flex flex-1 min-h-0 flex-col lg:flex-row">
-
-        {/* SOURCE PANEL */}
-        <div className="flex flex-1 flex-col bg-white min-h-0">
-          {/* Language bar */}
+      {/* ── Dual panel workspace (Side-by-side or Stacked Upper/Lower) ───────── */}
+      {layoutMode === "side-by-side" ? (
+        <div className="flex flex-1 min-h-0 flex-col lg:flex-row">
+          {/* SOURCE PANEL */}
+          <div className="flex flex-1 flex-col bg-white min-h-0">
+{/* Language bar */}
           <LangBar
             selected={srcLang}
-            onSelect={setSrcLang}
+            onSelect={handleSelectSrcLang}
             showAuto
             langs={caps}
             detected={
@@ -1046,31 +1155,404 @@ export default function TranslatePage() {
               </span>
             </div>
           </div>
-        </div>
 
-        {/* SWAP BUTTON (divider) */}
-        <div className="flex items-center justify-center bg-[#F8F9FA] px-0 py-3 lg:px-2 lg:py-0">
-          <button
-            onClick={swap}
-            aria-label="Swap languages"
-            className="
-              flex h-10 w-10 items-center justify-center rounded-full
-              border border-dl-border bg-white text-dl-muted shadow-xs
-              hover:border-dl-blue/60 hover:bg-dl-blue-light hover:text-dl-blue
-              transition-all duration-200 active:scale-95
-            "
-          >
-            <ArrowLeftRight className="h-4 w-4" />
-          </button>
-        </div>
-
-        {/* TARGET PANEL */}
-        <div className="flex flex-1 flex-col bg-[#FAFBFE] min-h-0 border-t border-dl-border lg:border-t-0 lg:border-l">
-
-          {/* Language bar with formality pills */}
+          {/* TARGET PANEL */}
+          <div className="flex flex-1 flex-col bg-[#FAFBFE] min-h-0 border-t border-dl-border lg:border-t-0 lg:border-l">
+{/* Language bar with formality pills */}
           <LangBar
             selected={tgtLang}
-            onSelect={setTgtLang}
+            onSelect={handleSelectTgtLang}
+            langs={caps.filter((c: any) => c.translation_supported)}
+            right={
+              <div className="ml-auto flex items-center gap-0.5 rounded-lg bg-dl-border/60 p-0.5">
+                {(["default", "formal", "informal"] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    onClick={() => setFormality(mode)}
+                    className={`
+                      rounded-md px-2.5 py-1 text-[11px] font-medium capitalize transition-all
+                      ${formality === mode
+                        ? "bg-white text-dl-navy shadow-xs"
+                        : "text-dl-muted hover:text-dl-navy"}
+                    `}
+                  >
+                    {mode}
+                  </button>
+                ))}
+              </div>
+            }
+          />
+
+          {/* Translation display */}
+          <div
+            className="flex-1 min-h-[200px] p-5 text-[15px] leading-relaxed text-dl-navy"
+            aria-live="polite"
+            aria-label="Translated text"
+          >
+            {working && !result && !draft ? (
+              <div className="space-y-3 pt-1">
+                <div className="skeleton h-5 w-full" />
+                <div className="skeleton h-5 w-5/6" />
+                <div className="skeleton h-5 w-4/6" />
+              </div>
+            ) : displayError && !draft ? (
+              isSameLangError(displayError) ? (
+                <div className="flex flex-col gap-3 rounded-xl border border-blue-200 bg-blue-50/90 p-5 text-sm text-blue-900 shadow-xs">
+                  <div className="flex items-center gap-2 font-semibold">
+                    <Info className="h-5 w-5 shrink-0 text-blue-600" />
+                    <span>Source and target languages are identical ({tgtLang.toUpperCase()})</span>
+                  </div>
+                  <p className="text-xs text-blue-700">
+                    To translate your text, select a different target language from the top bar or pick one below:
+                  </p>
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    {[
+                      { code: "bho", name: "Bhojpuri (भोजपुरी)" },
+                      { code: "es", name: "Spanish (Español)" },
+                      { code: "de", name: "German (Deutsch)" },
+                      { code: "fr", name: "French (Français)" },
+                      { code: "hi", name: "Hindi (हिन्दी)" },
+                      { code: "ja", name: "Japanese (日本語)" },
+                      { code: "ar", name: "Arabic (العربية)" },
+                    ].filter((l) => l.code !== tgtLang).map((l) => (
+                      <button
+                        key={l.code}
+                        type="button"
+                        onClick={() => handleSelectTgtLang(l.code)}
+                        className="rounded-lg border border-blue-300 bg-white px-3 py-1.5 text-xs font-semibold text-blue-800 shadow-2xs hover:bg-blue-100/80 transition-colors"
+                      >
+                        {l.name}
+                      </button>
+                    ))}
+                  </div>
+                  {source.trim() && (
+                    <div className="mt-3 border-t border-blue-200/60 pt-3">
+                      <span className="text-[11px] font-semibold uppercase tracking-wider text-blue-600 block mb-1">Original Text:</span>
+                      <p className="whitespace-pre-wrap select-text text-sm text-dl-navy">{source}</p>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <ErrorState
+                  message={displayError.message}
+                  code={displayError.code}
+                  onRetry={retryTranslation}
+                />
+              )
+            ) : draft ? (
+              <div className="space-y-3">
+                <p dir={targetRtl ? "rtl" : "ltr"} className="whitespace-pre-wrap select-text text-base leading-relaxed text-dl-navy">
+                  {draft.translated_text}
+                </p>
+                <div className="flex items-center gap-2 text-[11px] font-medium text-dl-muted">
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-dl-blue" />
+                  Translating live… the final version follows
+                </div>
+              </div>
+            ) : result && result.quality_flags?.some((flag) =>
+              /(?:untranslated|dev_provider|dev_echo|source_fallback|empty_translation)/i.test(flag),
+            ) ? (
+              <ErrorState
+                title="Translation unavailable"
+                detail="The provider did not return a verified translation. Your original text is still available on the left."
+                onRetry={retryTranslation}
+              />
+            ) : result ? (
+              <div className="space-y-4">
+                {result.quality_flags?.includes("source_equals_target") && (
+                  <div className="flex flex-col gap-2 rounded-lg bg-blue-50/90 border border-blue-200/80 p-3 text-xs text-blue-800">
+                    <div className="flex items-center gap-2">
+                      <Info className="h-4 w-4 shrink-0 text-blue-600" />
+                      <span>Source and target languages are identical ({tgtLang.toUpperCase()}). Select a language to translate:</span>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5 pt-0.5">
+                      {[
+                        { code: "bho", name: "Bhojpuri (भोजपुरी)" },
+                        { code: "es", name: "Spanish (Español)" },
+                        { code: "de", name: "German (Deutsch)" },
+                        { code: "fr", name: "French (Français)" },
+                        { code: "hi", name: "Hindi (हिन्दी)" },
+                        { code: "ja", name: "Japanese (日本語)" },
+                      ].filter((l) => l.code !== tgtLang).map((l) => (
+                        <button
+                          key={l.code}
+                          type="button"
+                          onClick={() => handleSelectTgtLang(l.code)}
+                          className="rounded-md border border-blue-300 bg-white px-2 py-0.5 text-[11px] font-medium text-blue-800 shadow-2xs hover:bg-blue-100/70 transition-colors"
+                        >
+                          {l.name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <p dir={targetRtl ? "rtl" : "ltr"} className="whitespace-pre-wrap select-text text-base leading-relaxed text-dl-navy">{result.translated_text}</p>
+                {result.from_translation_memory && (
+                  <Badge tone="good">Matched in translation memory (100%)</Badge>
+                )}
+                {result.alternatives && result.alternatives.length > 0 && (
+                  <div className="pt-3 border-t border-dl-border/60">
+                    <span className="text-[11px] font-semibold text-dl-muted uppercase tracking-wider block mb-1.5">
+                      Alternatives (click to use)
+                    </span>
+                    <div className="flex flex-wrap gap-2">
+                      {result.alternatives.map((alt, idx) => (
+                        <button
+                          key={idx}
+                          type="button"
+                          dir={targetRtl ? "rtl" : "ltr"}
+                          onClick={() => setResult({ ...result, translated_text: alt })}
+                          className="text-xs px-2.5 py-1 rounded-md bg-white border border-dl-border text-dl-navy hover:border-dl-blue hover:text-dl-blue hover:bg-dl-blue-light/30 transition-all text-start shadow-2xs"
+                        >
+                          {alt}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="select-none text-dl-faint">
+                {live ? "Translation appears here as you type…" : "Translation appears here…"}
+              </p>
+            )}
+          </div>
+
+          {/* Footer toolbar */}
+          <div className="flex flex-wrap items-center justify-between border-t border-dl-border px-4 py-2.5">
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => result && void speakText(result.translated_text, tgtLang)}
+                disabled={!result}
+                title={isSpeaking ? "Stop audio" : "Listen with server audio"}
+                className={`icon-btn ${isSpeaking ? "text-dl-blue" : ""}`}
+              >
+                <Volume2 className="h-4 w-4" />
+              </button>
+
+              <button
+                type="button"
+                onClick={copyOut}
+                disabled={!result}
+                className={`tool-btn ${copied ? "text-emerald-600 hover:text-emerald-700" : ""}`}
+              >
+                {copied ? (
+                  <><Check className="h-4 w-4" /><span>Copied</span></>
+                ) : (
+                  <><Copy className="h-4 w-4" /><span>Copy</span></>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={download}
+                disabled={!result}
+                className="tool-btn"
+              >
+                <Download className="h-4 w-4" />
+                <span>Download</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={openSaveNoteModal}
+                disabled={!result}
+                title="Save translation to Notes library"
+                className="tool-btn hover:text-blue-600"
+              >
+                <BookmarkPlus className="h-4 w-4" />
+                <span>Save Note</span>
+              </button>
+            </div>
+
+            {result && (
+              <div className="flex flex-wrap items-center gap-2">
+                {live && liveStats && (
+                  <span
+                    className="text-[11px] tabular-nums text-dl-muted"
+                    title="Time to the first provisional draft, then the final pass"
+                  >
+                    live · first draft {liveStats.ttfd_ms === null
+                      ? "—"
+                      : `${Math.round(liveStats.ttfd_ms)} ms`} · final {Math.round(liveStats.total_ms)} ms
+                  </span>
+                )}
+                <span className="text-[11px] text-dl-faint">
+                  {Math.round(result.latency_ms ?? 0)} ms {result.model ? `· ${result.model}` : ""}
+                </span>
+                {(result.quality_flags ?? [])
+                  .filter((f) => f !== "dev_provider")
+                  .slice(0, 1)
+                  .map((f) => (
+                    <Badge
+                      key={f}
+                      tone={
+                        f.includes("untranslated") || f.includes("failed")
+                          ? "bad"
+                          : f.includes("neural") || f.includes("high") || f.includes("verified")
+                          ? "good"
+                          : f.includes("pivoted")
+                          ? "warn"
+                          : "neutral"
+                      }
+                    >
+                      {f.replace(/_/g, " ")}
+                    </Badge>
+                  ))}
+                {result.glossary_note && (
+                  <Badge tone="warn">{result.glossary_note}</Badge>
+                )}
+              </div>
+            )}
+          </div>
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-1 min-h-0 flex-col max-w-5xl w-full mx-auto p-4 sm:p-6 gap-3 overflow-y-auto">
+          {/* UPPER SOURCE CARD */}
+          <div className="flex flex-col bg-white rounded-2xl border border-dl-border shadow-xs overflow-hidden">
+{/* Language bar */}
+          <LangBar
+            selected={srcLang}
+            onSelect={handleSelectSrcLang}
+            showAuto
+            langs={caps}
+            detected={
+              srcLang === "AUTO" ? (detectedLanguage || (result ? result.source_language : undefined)) : undefined
+            }
+            detectedConfidence={srcLang === "AUTO" ? detectedConfidence : null}
+          />
+
+          {/* Textarea */}
+          <div className="relative flex-1 p-5">
+            <textarea
+              ref={sourceRef}
+              dir={sourceRtl ? "rtl" : "ltr"}
+              className="w-full h-full min-h-[200px] resize-none border-0 bg-transparent p-0 text-[15px] leading-relaxed text-dl-navy focus:outline-none focus:ring-0 placeholder:text-dl-faint"
+              placeholder="Type or paste text…"
+              value={source}
+              aria-label="Source text"
+              onChange={(e) => setSource(e.target.value)}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                const text = e.dataTransfer.getData("text/plain");
+                if (text) setSource(text);
+              }}
+            />
+
+            {/* Translate just the selected phrase (reference parity, 2026-10-21). */}
+            <SelectionTranslate
+              editorRef={sourceRef}
+              sourceLanguage={srcLang}
+              targetLanguage={tgtLang}
+            />
+
+            {/* Clear button */}
+            {source && (
+              <button
+                onClick={() => { setSource(""); setResult(null); }}
+                className="absolute right-4 top-4 flex h-7 w-7 items-center justify-center rounded-full bg-dl-bg-alt text-dl-muted hover:bg-dl-border hover:text-dl-navy transition-colors"
+                title="Clear text"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+
+          {/* Footer toolbar */}
+          <div className="flex items-center justify-between border-t border-dl-border px-4 py-2.5">
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => void speakText(source, srcLang === "AUTO" ? (result?.source_language || "en") : srcLang)}
+                disabled={!source.trim()}
+                title={isSpeaking ? "Stop audio" : "Listen with server audio"}
+                className={`icon-btn ${isSpeaking ? "text-dl-blue" : ""}`}
+              >
+                <Volume2 className="h-4 w-4" />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => navigate("/voice?tab=live")}
+                title="Open server-backed voice mode"
+                className="tool-btn"
+              >
+                <Mic className="h-4 w-4" /><span>Voice mode</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => lookupDictionary(source.slice(0, 30))}
+                disabled={!source.trim()}
+                className="tool-btn"
+              >
+                <BookOpen className="h-4 w-4 text-dl-blue" />
+                <span>Dictionary</span>
+              </button>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !live;
+                  setLive(next);
+                  if (!next) {
+                    liveAbort.current?.abort();
+                    setDraft(null);
+                    setLiveError(null);
+                    setLivePhase("idle");
+                  }
+                }}
+                aria-pressed={live}
+                title={live
+                  ? "Live translation is on — results update while you type"
+                  : "Turn on live translation"}
+                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-colors ${
+                  live
+                    ? "border-dl-blue/40 bg-dl-blue-light text-dl-blue"
+                    : "border-dl-border bg-white text-dl-muted hover:text-dl-navy"
+                }`}
+              >
+                <Radio className="h-3.5 w-3.5" />
+                Live
+                {live && livePhase !== "idle" && (
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-dl-blue" />
+                )}
+              </button>
+              <span className="text-xs text-dl-faint select-none tabular-nums">
+                {source.trim() ? `${source.trim().split(/\s+/).length.toLocaleString()} words · ` : ""}
+                {source.length.toLocaleString()} chars
+              </span>
+            </div>
+          </div>
+          </div>
+
+          {/* CENTER SWAP DIVIDER */}
+          <div className="flex items-center justify-center -my-2 relative z-10">
+            <button
+              onClick={swap}
+              aria-label="Swap languages"
+              className="
+                flex h-10 w-10 items-center justify-center rounded-full
+                border border-dl-border bg-white text-dl-muted shadow-sm
+                hover:border-dl-blue/60 hover:bg-dl-blue-light hover:text-dl-blue
+                transition-all duration-200 active:scale-95
+              "
+            >
+              <ArrowLeftRight className="h-4 w-4" />
+            </button>
+          </div>
+
+          {/* LOWER TARGET CARD */}
+          <div className="flex flex-col bg-[#FAFBFE] rounded-2xl border border-dl-border shadow-xs overflow-hidden">
+{/* Language bar with formality pills */}
+          <LangBar
+            selected={tgtLang}
+            onSelect={handleSelectTgtLang}
             langs={caps.filter((c: any) => c.translation_supported)}
             right={
               <div className="ml-auto flex items-center gap-0.5 rounded-lg bg-dl-border/60 p-0.5">
@@ -1197,6 +1679,17 @@ export default function TranslatePage() {
                 <Download className="h-4 w-4" />
                 <span>Download</span>
               </button>
+
+              <button
+                type="button"
+                onClick={openSaveNoteModal}
+                disabled={!result}
+                title="Save translation to Notes library"
+                className="tool-btn hover:text-blue-600"
+              >
+                <BookmarkPlus className="h-4 w-4" />
+                <span>Save Note</span>
+              </button>
             </div>
 
             {result && (
@@ -1239,8 +1732,9 @@ export default function TranslatePage() {
               </div>
             )}
           </div>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* ── Recent translations strip ───────────────────────────── */}
       {recents.length > 0 && (
@@ -1402,6 +1896,156 @@ export default function TranslatePage() {
           </div>
         </div>
       )}
+      {/* ── Save Note Modal ─────────────────────────────────────────── */}
+      {showNoteModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-xl border border-dl-border space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-dl-border pb-3">
+              <h2 className="text-base font-bold text-dl-navy flex items-center gap-2">
+                <BookmarkPlus className="h-5 w-5 text-blue-600" />
+                <span>Save to Notes & Annotations</span>
+              </h2>
+              <button
+                type="button"
+                onClick={() => setShowNoteModal(false)}
+                className="text-dl-muted hover:text-dl-navy p-1"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div className="rounded-xl bg-slate-50 p-3 border border-slate-200/60 space-y-2">
+                <div className="flex items-center justify-between text-[11px] font-semibold text-dl-muted uppercase">
+                  <span>Language Pair</span>
+                  <span className="text-blue-600">{(result?.source_language || srcLang).toUpperCase()} → {(result?.target_language || tgtLang).toUpperCase()}</span>
+                </div>
+                <div className="text-xs text-dl-navy font-medium line-clamp-2">
+                  {source}
+                </div>
+                {result && (
+                  <div className="text-xs text-blue-700 font-semibold line-clamp-2 border-t border-slate-200/50 pt-1.5">
+                    {result.translated_text}
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <label className="font-semibold text-dl-navy block mb-1">
+                  Title (optional)
+                </label>
+                <input
+                  type="text"
+                  className="w-full h-9 rounded-lg border border-dl-border px-3 text-xs"
+                  placeholder="e.g. Legal phrase, Bhojpuri dialect"
+                  value={noteTitle}
+                  onChange={(e) => setNoteTitle(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className="font-semibold text-dl-navy block mb-1">
+                  Personal Note & Explanations
+                </label>
+                <textarea
+                  className="w-full h-20 rounded-lg border border-dl-border p-2.5 text-xs text-dl-navy focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  placeholder="Add grammar notes, context explanations, dialect variations…"
+                  value={noteContent}
+                  onChange={(e) => setNoteContent(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className="font-semibold text-dl-navy block mb-1">Tags</label>
+                <div className="flex items-center gap-2 mb-2">
+                  <input
+                    type="text"
+                    className="flex-1 h-8 rounded-lg border border-dl-border px-2.5 text-xs"
+                    placeholder="Type tag (e.g. legal, vocabulary) and press Enter"
+                    value={noteTagInput}
+                    onChange={(e) => setNoteTagInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        const t = noteTagInput.trim().replace(/^#/, "");
+                        if (t && !noteTags.includes(t)) {
+                          setNoteTags([...noteTags, t]);
+                          setNoteTagInput("");
+                        }
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const t = noteTagInput.trim().replace(/^#/, "");
+                      if (t && !noteTags.includes(t)) {
+                        setNoteTags([...noteTags, t]);
+                        setNoteTagInput("");
+                      }
+                    }}
+                    className="h-8 px-3 rounded-lg bg-slate-100 hover:bg-slate-200 text-xs font-medium text-dl-navy"
+                  >
+                    Add
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {noteTags.map((tag) => (
+                    <span
+                      key={tag}
+                      className="inline-flex items-center gap-1 rounded-md bg-blue-50 border border-blue-200/80 px-2 py-0.5 text-xs text-blue-800"
+                    >
+                      #{tag}
+                      <button
+                        type="button"
+                        onClick={() => setNoteTags(noteTags.filter((x) => x !== tag))}
+                        className="text-blue-400 hover:text-blue-700"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between pt-3 border-t border-dl-border">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowNoteModal(false);
+                  navigate("/notes");
+                }}
+                className="text-xs text-blue-600 hover:underline font-medium"
+              >
+                View all notes →
+              </button>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowNoteModal(false)}
+                  className="px-3 py-1.5 rounded-lg border border-dl-border text-xs font-medium text-dl-muted hover:text-dl-navy"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveNote}
+                  disabled={savingNote}
+                  className="px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow-xs disabled:opacity-60"
+                >
+                  {savingNote ? "Saving…" : "Save Note"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <TranslationBenchmarkModal
+        isOpen={showBenchmark}
+        onClose={() => setShowBenchmark(false)}
+      />
     </div>
   );
 }
