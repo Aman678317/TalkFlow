@@ -1125,3 +1125,30 @@ class AgentEscalation(Base, UUIDPkMixin, TimestampMixin):
     resolved_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
     resolved_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
     resolution: Mapped[str | None] = mapped_column(String(120), nullable=True)
+
+
+class TranslationNote(Base, UUIDPkMixin, TimestampMixin):
+    """DeepL-style Saved Translation, Note, and Text Annotation model.
+
+    Allows saving translated text across all 119+ languages with custom notes,
+    rich inline text span annotations, categorical tags, and favorites.
+    Supports instant multilingual full-text and substring search across all scripts.
+    """
+    __tablename__ = "translation_notes"
+
+    org_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    translation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("translation_segments.id", ondelete="SET NULL"), nullable=True, index=True)
+
+    title: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    source_text: Mapped[str] = mapped_column(Text, nullable=False)
+    translated_text: Mapped[str] = mapped_column(Text, nullable=False)
+    source_lang: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    target_lang: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    note: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    tags_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    annotations_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    is_favorite: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)

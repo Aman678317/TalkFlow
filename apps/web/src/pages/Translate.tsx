@@ -22,6 +22,8 @@ import {
   Rows2,
   Zap,
   Info,
+  BookmarkPlus,
+  BookmarkCheck,
 } from "lucide-react";
 import { TranslationBenchmarkModal } from "../components/TranslationBenchmarkModal";
 import { api, friendlyMessage } from "../lib/api";
@@ -479,6 +481,63 @@ export default function TranslatePage() {
     }
   });
   const [showBenchmark, setShowBenchmark] = React.useState(false);
+
+  // Notes & Annotations Save Modal State
+  const [showNoteModal, setShowNoteModal] = React.useState(false);
+  const [noteTitle, setNoteTitle] = React.useState("");
+  const [noteContent, setNoteContent] = React.useState("");
+  const [noteTagInput, setNoteTagInput] = React.useState("");
+  const [noteTags, setNoteTags] = React.useState<string[]>(["vocabulary"]);
+  const [savingNote, setSavingNote] = React.useState(false);
+
+  // Restore prefilled text/languages when directed from /notes
+  React.useEffect(() => {
+    const pSrc = sessionStorage.getItem("talkflow_prefill_source");
+    const pSrcL = sessionStorage.getItem("talkflow_prefill_src_lang");
+    const pTgtL = sessionStorage.getItem("talkflow_prefill_tgt_lang");
+    if (pSrc) {
+      setSource(pSrc);
+      if (pSrcL) setSrcLang(pSrcL);
+      if (pTgtL) setTgtLang(pTgtL);
+      sessionStorage.removeItem("talkflow_prefill_source");
+      sessionStorage.removeItem("talkflow_prefill_src_lang");
+      sessionStorage.removeItem("talkflow_prefill_tgt_lang");
+    }
+  }, []);
+
+  const openSaveNoteModal = () => {
+    if (!result) return;
+    setNoteTitle(source.slice(0, 40));
+    setNoteContent("");
+    setNoteTags(["vocabulary"]);
+    setShowNoteModal(true);
+  };
+
+  const handleSaveNote = async () => {
+    if (!result) return;
+    setSavingNote(true);
+    try {
+      await api("/api/v1/notes", {
+        method: "POST",
+        body: {
+          title: noteTitle.trim() || source.slice(0, 40),
+          source_text: source.trim(),
+          translated_text: result.translated_text.trim(),
+          source_lang: result.source_language || (srcLang === "AUTO" ? (detectedLanguage || "en") : srcLang),
+          target_lang: result.target_language || tgtLang,
+          note: noteContent.trim(),
+          tags: noteTags,
+          is_favorite: true,
+        },
+      });
+      toast.success("Note & translation saved to library!");
+      setShowNoteModal(false);
+    } catch (err) {
+      toast.error("Failed to save note", friendlyMessage(err));
+    } finally {
+      setSavingNote(false);
+    }
+  };
 
   const updateLayout = (mode: "side-by-side" | "stacked") => {
     setLayoutMode(mode);
@@ -959,6 +1018,7 @@ export default function TranslatePage() {
             if (v === "file") navigate("/documents");
             if (v === "write") navigate("/write");
             if (v === "page") navigate("/translate/page");
+            if (v === "notes") navigate("/notes");
           }}
           tabs={[
             { value: "text",  label: "Translate text",  icon: <FileText  className="h-4 w-4" /> },
@@ -966,6 +1026,7 @@ export default function TranslatePage() {
               badge: <span className="ml-1 rounded-full bg-dl-blue-light px-2 py-0.5 text-[10px] font-bold text-dl-blue">PDF · DOCX</span> },
             { value: "page",  label: "Web page",       icon: <Globe     className="h-4 w-4 text-emerald-600" /> },
             { value: "write", label: "AI Write",        icon: <Sparkles  className="h-4 w-4 text-amber-500" /> },
+            { value: "notes", label: "Notes & Search",  icon: <BookmarkCheck className="h-4 w-4 text-blue-600" /> },
           ]}
         />
 
@@ -1341,6 +1402,17 @@ export default function TranslatePage() {
                 <Download className="h-4 w-4" />
                 <span>Download</span>
               </button>
+
+              <button
+                type="button"
+                onClick={openSaveNoteModal}
+                disabled={!result}
+                title="Save translation to Notes library"
+                className="tool-btn hover:text-blue-600"
+              >
+                <BookmarkPlus className="h-4 w-4" />
+                <span>Save Note</span>
+              </button>
             </div>
 
             {result && (
@@ -1662,6 +1734,17 @@ export default function TranslatePage() {
                 <Download className="h-4 w-4" />
                 <span>Download</span>
               </button>
+
+              <button
+                type="button"
+                onClick={openSaveNoteModal}
+                disabled={!result}
+                title="Save translation to Notes library"
+                className="tool-btn hover:text-blue-600"
+              >
+                <BookmarkPlus className="h-4 w-4" />
+                <span>Save Note</span>
+              </button>
             </div>
 
             {result && (
@@ -1868,6 +1951,152 @@ export default function TranslatePage() {
           </div>
         </div>
       )}
+      {/* ── Save Note Modal ─────────────────────────────────────────── */}
+      {showNoteModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-xl border border-dl-border space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-dl-border pb-3">
+              <h2 className="text-base font-bold text-dl-navy flex items-center gap-2">
+                <BookmarkPlus className="h-5 w-5 text-blue-600" />
+                <span>Save to Notes & Annotations</span>
+              </h2>
+              <button
+                type="button"
+                onClick={() => setShowNoteModal(false)}
+                className="text-dl-muted hover:text-dl-navy p-1"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div className="rounded-xl bg-slate-50 p-3 border border-slate-200/60 space-y-2">
+                <div className="flex items-center justify-between text-[11px] font-semibold text-dl-muted uppercase">
+                  <span>Language Pair</span>
+                  <span className="text-blue-600">{(result?.source_language || srcLang).toUpperCase()} → {(result?.target_language || tgtLang).toUpperCase()}</span>
+                </div>
+                <div className="text-xs text-dl-navy font-medium line-clamp-2">
+                  {source}
+                </div>
+                {result && (
+                  <div className="text-xs text-blue-700 font-semibold line-clamp-2 border-t border-slate-200/50 pt-1.5">
+                    {result.translated_text}
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <label className="font-semibold text-dl-navy block mb-1">
+                  Title (optional)
+                </label>
+                <input
+                  type="text"
+                  className="w-full h-9 rounded-lg border border-dl-border px-3 text-xs"
+                  placeholder="e.g. Legal phrase, Bhojpuri dialect"
+                  value={noteTitle}
+                  onChange={(e) => setNoteTitle(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className="font-semibold text-dl-navy block mb-1">
+                  Personal Note & Explanations
+                </label>
+                <textarea
+                  className="w-full h-20 rounded-lg border border-dl-border p-2.5 text-xs text-dl-navy focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  placeholder="Add grammar notes, context explanations, dialect variations…"
+                  value={noteContent}
+                  onChange={(e) => setNoteContent(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className="font-semibold text-dl-navy block mb-1">Tags</label>
+                <div className="flex items-center gap-2 mb-2">
+                  <input
+                    type="text"
+                    className="flex-1 h-8 rounded-lg border border-dl-border px-2.5 text-xs"
+                    placeholder="Type tag (e.g. legal, vocabulary) and press Enter"
+                    value={noteTagInput}
+                    onChange={(e) => setNoteTagInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        const t = noteTagInput.trim().replace(/^#/, "");
+                        if (t && !noteTags.includes(t)) {
+                          setNoteTags([...noteTags, t]);
+                          setNoteTagInput("");
+                        }
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const t = noteTagInput.trim().replace(/^#/, "");
+                      if (t && !noteTags.includes(t)) {
+                        setNoteTags([...noteTags, t]);
+                        setNoteTagInput("");
+                      }
+                    }}
+                    className="h-8 px-3 rounded-lg bg-slate-100 hover:bg-slate-200 text-xs font-medium text-dl-navy"
+                  >
+                    Add
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {noteTags.map((tag) => (
+                    <span
+                      key={tag}
+                      className="inline-flex items-center gap-1 rounded-md bg-blue-50 border border-blue-200/80 px-2 py-0.5 text-xs text-blue-800"
+                    >
+                      #{tag}
+                      <button
+                        type="button"
+                        onClick={() => setNoteTags(noteTags.filter((x) => x !== tag))}
+                        className="text-blue-400 hover:text-blue-700"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between pt-3 border-t border-dl-border">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowNoteModal(false);
+                  navigate("/notes");
+                }}
+                className="text-xs text-blue-600 hover:underline font-medium"
+              >
+                View all notes →
+              </button>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowNoteModal(false)}
+                  className="px-3 py-1.5 rounded-lg border border-dl-border text-xs font-medium text-dl-muted hover:text-dl-navy"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveNote}
+                  disabled={savingNote}
+                  className="px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow-xs disabled:opacity-60"
+                >
+                  {savingNote ? "Saving…" : "Save Note"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <TranslationBenchmarkModal
         isOpen={showBenchmark}
         onClose={() => setShowBenchmark(false)}
