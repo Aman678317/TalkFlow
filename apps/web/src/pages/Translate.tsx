@@ -21,6 +21,7 @@ import {
   Columns2,
   Rows2,
   Zap,
+  Info,
 } from "lucide-react";
 import { TranslationBenchmarkModal } from "../components/TranslationBenchmarkModal";
 import { api, friendlyMessage } from "../lib/api";
@@ -442,6 +443,22 @@ export default function TranslatePage() {
   const [tgtLang, setTgtLang] = React.useState("de");
   const [detectedLanguage, setDetectedLanguage] = React.useState("");
   const [detectedConfidence, setDetectedConfidence] = React.useState<number | null>(null);
+
+  const handleSelectSrcLang = (code: string) => {
+    if (code !== "AUTO" && code === tgtLang) {
+      const prevSrc = srcLang !== "AUTO" && srcLang !== code ? srcLang : "en";
+      setTgtLang(prevSrc === code ? "es" : prevSrc);
+    }
+    setSrcLang(code);
+  };
+
+  const handleSelectTgtLang = (code: string) => {
+    if (srcLang !== "AUTO" && code === srcLang) {
+      const nextSrc = tgtLang !== code ? tgtLang : (code === "en" ? "es" : "en");
+      setSrcLang(nextSrc);
+    }
+    setTgtLang(code);
+  };
   const [formality, setFormality] = React.useState<"default" | "formal" | "informal">("default");
   const [glossaryId, setGlossaryId] = React.useState("");
   const [styleId, setStyleId] = React.useState("");
@@ -532,8 +549,29 @@ export default function TranslatePage() {
         lookupDictionary(trimmed);
       }
     },
-    onError: (e: unknown) =>
-      toast.error("Translation unavailable", friendlyMessage(e)),
+    onError: (e: unknown) => {
+      const msg = friendlyMessage(e).toLowerCase();
+      if (msg.includes("equals the target") || msg.includes("must differ")) {
+        const trimmed = source.trim();
+        setResult({
+          translation_id: "identity",
+          from_translation_memory: false,
+          source_language: srcLang === "AUTO" ? (detectedLanguage || tgtLang) : srcLang,
+          target_language: tgtLang,
+          source_text: trimmed,
+          translated_text: trimmed,
+          model: "identity/same_language",
+          provider: "identity",
+          latency_ms: 0,
+          quality_flags: ["source_equals_target"],
+          detected_confidence: 1.0,
+          alternatives: [],
+          glossary_note: null,
+        });
+        return;
+      }
+      toast.error("Translation unavailable", friendlyMessage(e));
+    },
   });
 
   React.useEffect(() => {
@@ -620,6 +658,26 @@ export default function TranslatePage() {
             if (!current()) return;
             setDraft(null);
             setLivePhase("idle");
+            const msg = (err.message || "").toLowerCase();
+            if (msg.includes("equals the target") || msg.includes("must differ") || err.code === "unsupported_language") {
+              setLiveError(null);
+              setResult({
+                translation_id: "identity",
+          from_translation_memory: false,
+                source_language: srcLang === "AUTO" ? (detectedLanguage || tgtLang) : srcLang,
+                target_language: tgtLang,
+                source_text: trimmed,
+                translated_text: trimmed,
+                model: "identity/same_language",
+                provider: "identity",
+                latency_ms: 0,
+                quality_flags: ["source_equals_target"],
+                detected_confidence: 1.0,
+                alternatives: [],
+                glossary_note: null,
+              });
+              return;
+            }
             setLiveError({ message: err.message || "Translation failed.", code: err.code });
           },
         },
@@ -630,6 +688,26 @@ export default function TranslatePage() {
       liveLastKey.current = "";
       setDraft(null);
       setLivePhase("idle");
+      const msg = friendlyMessage(err).toLowerCase();
+      if (msg.includes("equals the target") || msg.includes("must differ") || (err as any)?.code === "unsupported_language") {
+        setLiveError(null);
+        setResult({
+          translation_id: "identity",
+          from_translation_memory: false,
+          source_language: srcLang === "AUTO" ? (detectedLanguage || tgtLang) : srcLang,
+          target_language: tgtLang,
+          source_text: trimmed,
+          translated_text: trimmed,
+          model: "identity/same_language",
+          provider: "identity",
+          latency_ms: 0,
+          quality_flags: ["source_equals_target"],
+          detected_confidence: 1.0,
+          alternatives: [],
+          glossary_note: null,
+        });
+        return;
+      }
       setLiveError({ message: friendlyMessage(err), code: (err as any)?.code });
     }
   }
@@ -993,7 +1071,7 @@ export default function TranslatePage() {
 {/* Language bar */}
           <LangBar
             selected={srcLang}
-            onSelect={setSrcLang}
+            onSelect={handleSelectSrcLang}
             showAuto
             langs={caps}
             detected={
@@ -1130,7 +1208,7 @@ export default function TranslatePage() {
 {/* Language bar with formality pills */}
           <LangBar
             selected={tgtLang}
-            onSelect={setTgtLang}
+            onSelect={handleSelectTgtLang}
             langs={caps.filter((c: any) => c.translation_supported)}
             right={
               <div className="ml-auto flex items-center gap-0.5 rounded-lg bg-dl-border/60 p-0.5">
@@ -1190,6 +1268,12 @@ export default function TranslatePage() {
               />
             ) : result ? (
               <div className="space-y-4">
+                {result.quality_flags?.includes("source_equals_target") && (
+                  <div className="flex items-center gap-2 rounded-lg bg-blue-50/90 border border-blue-200/80 px-3 py-2 text-xs text-blue-800">
+                    <Info className="h-4 w-4 shrink-0 text-blue-600" />
+                    <span>Source and target languages are identical. Select a different target language to translate.</span>
+                  </div>
+                )}
                 <p dir={targetRtl ? "rtl" : "ltr"} className="whitespace-pre-wrap select-text text-base leading-relaxed text-dl-navy">{result.translated_text}</p>
                 {result.from_translation_memory && (
                   <Badge tone="good">Matched in translation memory (100%)</Badge>
@@ -1308,7 +1392,7 @@ export default function TranslatePage() {
 {/* Language bar */}
           <LangBar
             selected={srcLang}
-            onSelect={setSrcLang}
+            onSelect={handleSelectSrcLang}
             showAuto
             langs={caps}
             detected={
@@ -1445,7 +1529,7 @@ export default function TranslatePage() {
 {/* Language bar with formality pills */}
           <LangBar
             selected={tgtLang}
-            onSelect={setTgtLang}
+            onSelect={handleSelectTgtLang}
             langs={caps.filter((c: any) => c.translation_supported)}
             right={
               <div className="ml-auto flex items-center gap-0.5 rounded-lg bg-dl-border/60 p-0.5">
@@ -1505,6 +1589,12 @@ export default function TranslatePage() {
               />
             ) : result ? (
               <div className="space-y-4">
+                {result.quality_flags?.includes("source_equals_target") && (
+                  <div className="flex items-center gap-2 rounded-lg bg-blue-50/90 border border-blue-200/80 px-3 py-2 text-xs text-blue-800">
+                    <Info className="h-4 w-4 shrink-0 text-blue-600" />
+                    <span>Source and target languages are identical. Select a different target language to translate.</span>
+                  </div>
+                )}
                 <p dir={targetRtl ? "rtl" : "ltr"} className="whitespace-pre-wrap select-text text-base leading-relaxed text-dl-navy">{result.translated_text}</p>
                 {result.from_translation_memory && (
                   <Badge tone="good">Matched in translation memory (100%)</Badge>
