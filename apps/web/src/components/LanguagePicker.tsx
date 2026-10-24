@@ -120,8 +120,14 @@ export function LanguagePicker({
           "flex h-8 items-center gap-1.5 rounded-lg border border-dl-border bg-white px-3 text-xs font-medium text-dl-muted hover:border-dl-blue/40 focus:outline-none focus:ring-2 focus:ring-dl-blue/20"
         }
       >
-        {current ? languageOptionLabel(current) : triggerLabel ?? "Select language"}
-        <span aria-hidden className="text-[10px]">▾</span>
+        {triggerLabel ? (
+          triggerLabel
+        ) : (
+          <>
+            {current ? languageOptionLabel(current) : "Select language"}
+            <span aria-hidden className="text-[10px]">▾</span>
+          </>
+        )}
       </button>
 
       {open && (

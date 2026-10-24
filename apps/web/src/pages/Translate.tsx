@@ -150,20 +150,41 @@ function LangBar({
   detectedConfidence?: number | null;
   right?: React.ReactNode;
 }) {
+  // If selected language is not in default QUICK_LANGS (and not AUTO), dynamically include it in the tab bar
+  const selectedLangObj = React.useMemo(() => {
+    if (selected === "AUTO") return null;
+    return langs.find((l) => l.code === selected);
+  }, [selected, langs]);
+
+  const quickItems = React.useMemo(() => {
+    const list = [...QUICK_LANGS.slice(0, showAuto ? 3 : 4)];
+    if (selectedLangObj && !list.some((q) => q.code === selectedLangObj.code)) {
+      list.push({
+        code: selectedLangObj.code,
+        name: selectedLangObj.native_name && selectedLangObj.native_name !== selectedLangObj.name
+          ? `${selectedLangObj.name} (${selectedLangObj.native_name})`
+          : selectedLangObj.name,
+      });
+    }
+    return list;
+  }, [selectedLangObj, showAuto]);
+
   return (
     <div className="flex flex-wrap items-center justify-between gap-2 border-b border-dl-border bg-[#FAFBFC] px-4 py-2.5">
       <div className="flex flex-wrap items-center gap-0.5">
         {showAuto && (
           <button
+            type="button"
             onClick={() => onSelect("AUTO")}
             className={selected === "AUTO" ? "lang-pill-active" : "lang-pill"}
           >
             Detect language
           </button>
         )}
-        {QUICK_LANGS.slice(0, showAuto ? 3 : 4).map((ql) => (
+        {quickItems.map((ql) => (
           <button
             key={ql.code}
+            type="button"
             onClick={() => onSelect(ql.code)}
             className={selected === ql.code ? "lang-pill-active" : "lang-pill"}
           >
@@ -449,7 +470,8 @@ export default function TranslatePage() {
   const handleSelectSrcLang = (code: string) => {
     if (code !== "AUTO" && code === tgtLang) {
       const prevSrc = srcLang !== "AUTO" && srcLang !== code ? srcLang : "en";
-      setTgtLang(prevSrc === code ? "es" : prevSrc);
+      const fallbackTarget = prevSrc === code ? (code === "en" ? "es" : "en") : prevSrc;
+      setTgtLang(fallbackTarget);
     }
     setSrcLang(code);
   };
@@ -458,6 +480,10 @@ export default function TranslatePage() {
     if (srcLang !== "AUTO" && code === srcLang) {
       const nextSrc = tgtLang !== code ? tgtLang : (code === "en" ? "es" : "en");
       setSrcLang(nextSrc);
+    } else if (srcLang === "AUTO" && detectedLanguage && code.toLowerCase() === detectedLanguage.toLowerCase()) {
+      const altTarget = code === "en" ? "es" : "en";
+      setSrcLang(code);
+      code = altTarget;
     }
     setTgtLang(code);
   };
@@ -674,6 +700,10 @@ export default function TranslatePage() {
             if (srcLang.toLowerCase() === "auto" && meta.phase === "ready") {
               setDetectedLanguage(meta.source_language);
               setDetectedConfidence(meta.detected_confidence);
+              if (meta.source_language && meta.source_language.toLowerCase() === tgtLang.toLowerCase()) {
+                const alt = tgtLang.toLowerCase() === "en" ? "es" : "en";
+                setTgtLang(alt);
+              }
             }
           },
           onDraft: (d) => {
@@ -878,16 +908,13 @@ export default function TranslatePage() {
   };
 
   function swap() {
-    if (srcLang === "AUTO") {
-      if (result) {
-        setSrcLang(result.source_language);
-        setTgtLang(result.source_language === tgtLang ? "en" : tgtLang);
-      }
-      return;
+    const curSrc = srcLang === "AUTO" ? (detectedLanguage || (result ? result.source_language : "en")) : srcLang;
+    const curTgt = tgtLang;
+    setSrcLang(curTgt);
+    setTgtLang(curSrc === curTgt ? (curTgt === "en" ? "es" : "en") : curSrc);
+    if (result?.translated_text) {
+      setSource(result.translated_text);
     }
-    setSrcLang(tgtLang);
-    setTgtLang(srcLang);
-    setSource(result?.translated_text ?? source);
   }
 
   async function copyOut() {
@@ -996,6 +1023,12 @@ export default function TranslatePage() {
   const targetRtl = isRtl(tgtLang);
 
   const working = live ? livePhase !== "idle" : translate.isPending;
+  const isSameLangError = (err: { message?: string; code?: string } | null) => {
+    if (!err) return false;
+    const msg = (err.message || "").toLowerCase();
+    return msg.includes("equals the target") || msg.includes("must differ") || (err.code === "unsupported_language" && (msg.includes("language") || msg.includes("target")));
+  };
+
   const displayError = live
     ? liveError
     : translate.isError
@@ -1304,11 +1337,49 @@ export default function TranslatePage() {
                 <div className="skeleton h-5 w-4/6" />
               </div>
             ) : displayError && !draft ? (
-              <ErrorState
-                message={displayError.message}
-                code={displayError.code}
-                onRetry={retryTranslation}
-              />
+              isSameLangError(displayError) ? (
+                <div className="flex flex-col gap-3 rounded-xl border border-blue-200 bg-blue-50/90 p-5 text-sm text-blue-900 shadow-xs">
+                  <div className="flex items-center gap-2 font-semibold">
+                    <Info className="h-5 w-5 shrink-0 text-blue-600" />
+                    <span>Source and target languages are identical ({tgtLang.toUpperCase()})</span>
+                  </div>
+                  <p className="text-xs text-blue-700">
+                    To translate your text, select a different target language from the top bar or pick one below:
+                  </p>
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    {[
+                      { code: "bho", name: "Bhojpuri (भोजपुरी)" },
+                      { code: "es", name: "Spanish (Español)" },
+                      { code: "de", name: "German (Deutsch)" },
+                      { code: "fr", name: "French (Français)" },
+                      { code: "hi", name: "Hindi (हिन्दी)" },
+                      { code: "ja", name: "Japanese (日本語)" },
+                      { code: "ar", name: "Arabic (العربية)" },
+                    ].filter((l) => l.code !== tgtLang).map((l) => (
+                      <button
+                        key={l.code}
+                        type="button"
+                        onClick={() => handleSelectTgtLang(l.code)}
+                        className="rounded-lg border border-blue-300 bg-white px-3 py-1.5 text-xs font-semibold text-blue-800 shadow-2xs hover:bg-blue-100/80 transition-colors"
+                      >
+                        {l.name}
+                      </button>
+                    ))}
+                  </div>
+                  {source.trim() && (
+                    <div className="mt-3 border-t border-blue-200/60 pt-3">
+                      <span className="text-[11px] font-semibold uppercase tracking-wider text-blue-600 block mb-1">Original Text:</span>
+                      <p className="whitespace-pre-wrap select-text text-sm text-dl-navy">{source}</p>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <ErrorState
+                  message={displayError.message}
+                  code={displayError.code}
+                  onRetry={retryTranslation}
+                />
+              )
             ) : draft ? (
               <div className="space-y-3">
                 <p dir={targetRtl ? "rtl" : "ltr"} className="whitespace-pre-wrap select-text text-base leading-relaxed text-dl-navy">
@@ -1330,9 +1401,30 @@ export default function TranslatePage() {
             ) : result ? (
               <div className="space-y-4">
                 {result.quality_flags?.includes("source_equals_target") && (
-                  <div className="flex items-center gap-2 rounded-lg bg-blue-50/90 border border-blue-200/80 px-3 py-2 text-xs text-blue-800">
-                    <Info className="h-4 w-4 shrink-0 text-blue-600" />
-                    <span>Source and target languages are identical. Select a different target language to translate.</span>
+                  <div className="flex flex-col gap-2 rounded-lg bg-blue-50/90 border border-blue-200/80 p-3 text-xs text-blue-800">
+                    <div className="flex items-center gap-2">
+                      <Info className="h-4 w-4 shrink-0 text-blue-600" />
+                      <span>Source and target languages are identical ({tgtLang.toUpperCase()}). Select a language to translate:</span>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5 pt-0.5">
+                      {[
+                        { code: "bho", name: "Bhojpuri (भोजपुरी)" },
+                        { code: "es", name: "Spanish (Español)" },
+                        { code: "de", name: "German (Deutsch)" },
+                        { code: "fr", name: "French (Français)" },
+                        { code: "hi", name: "Hindi (हिन्दी)" },
+                        { code: "ja", name: "Japanese (日本語)" },
+                      ].filter((l) => l.code !== tgtLang).map((l) => (
+                        <button
+                          key={l.code}
+                          type="button"
+                          onClick={() => handleSelectTgtLang(l.code)}
+                          className="rounded-md border border-blue-300 bg-white px-2 py-0.5 text-[11px] font-medium text-blue-800 shadow-2xs hover:bg-blue-100/70 transition-colors"
+                        >
+                          {l.name}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 )}
                 <p dir={targetRtl ? "rtl" : "ltr"} className="whitespace-pre-wrap select-text text-base leading-relaxed text-dl-navy">{result.translated_text}</p>
@@ -1636,11 +1728,49 @@ export default function TranslatePage() {
                 <div className="skeleton h-5 w-4/6" />
               </div>
             ) : displayError && !draft ? (
-              <ErrorState
-                message={displayError.message}
-                code={displayError.code}
-                onRetry={retryTranslation}
-              />
+              isSameLangError(displayError) ? (
+                <div className="flex flex-col gap-3 rounded-xl border border-blue-200 bg-blue-50/90 p-5 text-sm text-blue-900 shadow-xs">
+                  <div className="flex items-center gap-2 font-semibold">
+                    <Info className="h-5 w-5 shrink-0 text-blue-600" />
+                    <span>Source and target languages are identical ({tgtLang.toUpperCase()})</span>
+                  </div>
+                  <p className="text-xs text-blue-700">
+                    To translate your text, select a different target language from the top bar or pick one below:
+                  </p>
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    {[
+                      { code: "bho", name: "Bhojpuri (भोजपुरी)" },
+                      { code: "es", name: "Spanish (Español)" },
+                      { code: "de", name: "German (Deutsch)" },
+                      { code: "fr", name: "French (Français)" },
+                      { code: "hi", name: "Hindi (हिन्दी)" },
+                      { code: "ja", name: "Japanese (日本語)" },
+                      { code: "ar", name: "Arabic (العربية)" },
+                    ].filter((l) => l.code !== tgtLang).map((l) => (
+                      <button
+                        key={l.code}
+                        type="button"
+                        onClick={() => handleSelectTgtLang(l.code)}
+                        className="rounded-lg border border-blue-300 bg-white px-3 py-1.5 text-xs font-semibold text-blue-800 shadow-2xs hover:bg-blue-100/80 transition-colors"
+                      >
+                        {l.name}
+                      </button>
+                    ))}
+                  </div>
+                  {source.trim() && (
+                    <div className="mt-3 border-t border-blue-200/60 pt-3">
+                      <span className="text-[11px] font-semibold uppercase tracking-wider text-blue-600 block mb-1">Original Text:</span>
+                      <p className="whitespace-pre-wrap select-text text-sm text-dl-navy">{source}</p>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <ErrorState
+                  message={displayError.message}
+                  code={displayError.code}
+                  onRetry={retryTranslation}
+                />
+              )
             ) : draft ? (
               <div className="space-y-3">
                 <p dir={targetRtl ? "rtl" : "ltr"} className="whitespace-pre-wrap select-text text-base leading-relaxed text-dl-navy">
@@ -1662,9 +1792,30 @@ export default function TranslatePage() {
             ) : result ? (
               <div className="space-y-4">
                 {result.quality_flags?.includes("source_equals_target") && (
-                  <div className="flex items-center gap-2 rounded-lg bg-blue-50/90 border border-blue-200/80 px-3 py-2 text-xs text-blue-800">
-                    <Info className="h-4 w-4 shrink-0 text-blue-600" />
-                    <span>Source and target languages are identical. Select a different target language to translate.</span>
+                  <div className="flex flex-col gap-2 rounded-lg bg-blue-50/90 border border-blue-200/80 p-3 text-xs text-blue-800">
+                    <div className="flex items-center gap-2">
+                      <Info className="h-4 w-4 shrink-0 text-blue-600" />
+                      <span>Source and target languages are identical ({tgtLang.toUpperCase()}). Select a language to translate:</span>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5 pt-0.5">
+                      {[
+                        { code: "bho", name: "Bhojpuri (भोजपुरी)" },
+                        { code: "es", name: "Spanish (Español)" },
+                        { code: "de", name: "German (Deutsch)" },
+                        { code: "fr", name: "French (Français)" },
+                        { code: "hi", name: "Hindi (हिन्दी)" },
+                        { code: "ja", name: "Japanese (日本語)" },
+                      ].filter((l) => l.code !== tgtLang).map((l) => (
+                        <button
+                          key={l.code}
+                          type="button"
+                          onClick={() => handleSelectTgtLang(l.code)}
+                          className="rounded-md border border-blue-300 bg-white px-2 py-0.5 text-[11px] font-medium text-blue-800 shadow-2xs hover:bg-blue-100/70 transition-colors"
+                        >
+                          {l.name}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 )}
                 <p dir={targetRtl ? "rtl" : "ltr"} className="whitespace-pre-wrap select-text text-base leading-relaxed text-dl-navy">{result.translated_text}</p>
