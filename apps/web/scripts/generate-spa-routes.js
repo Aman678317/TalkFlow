@@ -22,6 +22,7 @@ const routes = [
   'agent-studio',
   'translate',
   'write',
+  'notes',
   'voice',
   'meetings',
   'meeting',

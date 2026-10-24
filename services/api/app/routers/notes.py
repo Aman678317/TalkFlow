@@ -6,12 +6,13 @@ import time
 import unicodedata
 import uuid
 from datetime import datetime, timezone
+from html import escape as html_escape
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, desc, select
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import models as M
@@ -102,22 +103,75 @@ class NoteSearchResponse(BaseModel):
 # --------------------------------------------------------------------------- #
 
 def _normalize_search(s: str) -> str:
-    """NFC normalization and lowercase for universal cross-script search."""
+    """Normalize text for forgiving multilingual search.
+
+    Search should not depend on casing, accents, or punctuation.  Unicode
+    letters and numbers are preserved (including Devanagari, Arabic, CJK, and
+    Cyrillic); punctuation and symbols become token boundaries.
+    """
     if not s:
         return ""
-    # NFC preserves Devanagari, Arabic, CJK, and Cyrillic composition cleanly
-    return unicodedata.normalize("NFC", s).strip().lower()
+    decomposed = unicodedata.normalize("NFKD", s)
+    normalized: list[str] = []
+    for char in decomposed:
+        if unicodedata.combining(char):
+            continue
+        category = unicodedata.category(char)
+        if char.isspace() or category.startswith(("P", "S")):
+            normalized.append(" ")
+        else:
+            normalized.append(char.lower())
+    return " ".join("".join(normalized).split())
 
 
 def _highlight_text(text: str, query: str) -> str:
-    """Surrounds occurrences of query terms with <mark> tags, preserving casing."""
+    """Return escaped text with normalized query terms wrapped in ``<mark>``.
+
+    The Notes UI renders highlights as React nodes, but the API keeps these
+    fields for existing clients.  Escape stored text here so those clients
+    cannot accidentally interpret note content as HTML.  Matching is
+    accent-insensitive, just like the search predicate, so ``creme`` still
+    highlights ``Crème``.
+    """
     if not text or not query:
-        return text
-    q_terms = [re.escape(t) for t in query.split() if len(t) > 0]
+        return html_escape(text, quote=False)
+    q_terms = [_normalize_search(term) for term in query.split() if term.strip()]
     if not q_terms:
-        return text
-    pattern = re.compile(f"({'|'.join(q_terms)})", re.IGNORECASE)
-    return pattern.sub(r"<mark>\1</mark>", text)
+        return html_escape(text, quote=False)
+
+    parts: list[str] = []
+    cursor = 0
+    # Highlight whole searchable tokens. This preserves original casing and
+    # accents while avoiding a second normalization-to-source index map.
+    token_pattern = re.compile(r"[^\W_]+(?:['’][^\W_]+)*", re.UNICODE)
+    for match in token_pattern.finditer(text):
+        parts.append(html_escape(text[cursor : match.start()], quote=False))
+        token = match.group(0)
+        normalized_token = _normalize_search(token)
+        if any(term in normalized_token for term in q_terms):
+            parts.append(f"<mark>{html_escape(token, quote=False)}</mark>")
+        else:
+            parts.append(html_escape(token, quote=False))
+        cursor = match.end()
+    parts.append(html_escape(text[cursor:], quote=False))
+    return "".join(parts)
+
+
+def _searchable_fields(row: M.TranslationNote) -> dict[str, str]:
+    """Return every user-visible field that participates in Notes search."""
+    annotations = " ".join(
+        f"{annotation.get('text', '')} {annotation.get('comment', '')}"
+        for annotation in (row.annotations_json or [])
+        if isinstance(annotation, dict)
+    )
+    return {
+        "title": row.title or "",
+        "note": row.note or "",
+        "source": row.source_text or "",
+        "translation": row.translated_text or "",
+        "tags": " ".join(str(tag) for tag in (row.tags_json or [])),
+        "annotations": annotations,
+    }
 
 
 def _row_to_out(n: M.TranslationNote, q: str | None = None) -> NoteOut:
@@ -152,7 +206,10 @@ def _row_to_out(n: M.TranslationNote, q: str | None = None) -> NoteOut:
 
 @router.get("", response_model=NoteSearchResponse)
 async def list_and_search_notes(
-    q: str | None = Query(None, description="Search query across note, source, and translation"),
+    q: str | None = Query(
+        None,
+        description="Search query across title, note, source, translation, tags, and annotations",
+    ),
     source_lang: str | None = Query(None, description="Filter by source language code"),
     target_lang: str | None = Query(None, description="Filter by target language code"),
     tag: str | None = Query(None, description="Filter by tag name"),
@@ -162,7 +219,13 @@ async def list_and_search_notes(
     db: AsyncSession = Depends(get_db),
     principal: Principal | None = Depends(optional_principal),
 ):
-    """DeepL-style fast multilingual search across all saved translations and notes."""
+    """Search saved translations newest-first across all note metadata.
+
+    Every normalized query term must occur somewhere in the combined title,
+    source, translation, personal note, tags, or annotation text.  This keeps
+    multi-word searches predictable while still allowing a term to match a
+    different field for each word.
+    """
     t0 = time.perf_counter()
 
     stmt = select(M.TranslationNote).order_by(desc(M.TranslationNote.created_at))
@@ -202,15 +265,8 @@ async def list_and_search_notes(
             filtered.append(row)
             continue
 
-        haystack = " ".join([
-            row.title or "",
-            row.note or "",
-            row.source_text or "",
-            row.translated_text or "",
-            " ".join(row.tags_json or []),
-            " ".join([a.get("text", "") + " " + a.get("comment", "") for a in (row.annotations_json or [])]),
-        ])
-        norm_haystack = _normalize_search(haystack)
+        fields = _searchable_fields(row)
+        norm_haystack = _normalize_search(" ".join(fields.values()))
 
         if all(token in norm_haystack for token in q_tokens):
             filtered.append(row)

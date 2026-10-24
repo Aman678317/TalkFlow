@@ -527,12 +527,13 @@ export default function NotesPage() {
                         </button>
                       </div>
                     </div>
-                    <div
-                      className="text-sm text-dl-navy leading-relaxed break-words [&_mark]:bg-amber-200 [&_mark]:text-amber-900 [&_mark]:px-0.5 [&_mark]:rounded"
-                      dangerouslySetInnerHTML={{
-                        __html: item.highlight_source || item.source_text,
-                      }}
-                    />
+                    <div className="text-sm text-dl-navy leading-relaxed break-words [&_mark]:bg-amber-200 [&_mark]:text-amber-900 [&_mark]:px-0.5 [&_mark]:rounded">
+                      {item.highlight_source ? (
+                        <span dangerouslySetInnerHTML={{ __html: item.highlight_source }} />
+                      ) : (
+                        item.source_text
+                      )}
+                    </div>
                   </div>
 
                   {/* Translated Side */}
@@ -558,12 +559,13 @@ export default function NotesPage() {
                         </button>
                       </div>
                     </div>
-                    <div
-                      className="text-sm text-dl-navy leading-relaxed font-medium break-words [&_mark]:bg-amber-200 [&_mark]:text-amber-900 [&_mark]:px-0.5 [&_mark]:rounded"
-                      dangerouslySetInnerHTML={{
-                        __html: item.highlight_target || item.translated_text,
-                      }}
-                    />
+                    <div className="text-sm text-dl-navy leading-relaxed font-medium break-words [&_mark]:bg-amber-200 [&_mark]:text-amber-900 [&_mark]:px-0.5 [&_mark]:rounded">
+                      {item.highlight_target ? (
+                        <span dangerouslySetInnerHTML={{ __html: item.highlight_target }} />
+                      ) : (
+                        item.translated_text
+                      )}
+                    </div>
                   </div>
                 </div>
 
@@ -641,12 +643,17 @@ export default function NotesPage() {
                       </div>
                     </div>
                   ) : (
-                    <div
-                      className="mt-1 text-xs text-amber-950 leading-relaxed [&_mark]:bg-amber-300 [&_mark]:px-0.5 [&_mark]:rounded"
-                      dangerouslySetInnerHTML={{
-                        __html: item.highlight_note || item.note || '<span class="text-amber-600/70 italic">No notes added. Click edit to add explanation.</span>',
-                      }}
-                    />
+                    <div className="mt-1 text-xs text-amber-950 leading-relaxed [&_mark]:bg-amber-300 [&_mark]:px-0.5 [&_mark]:rounded">
+                      {item.highlight_note ? (
+                        <span dangerouslySetInnerHTML={{ __html: item.highlight_note }} />
+                      ) : item.note ? (
+                        item.note
+                      ) : (
+                        <span className="text-amber-600/70 italic">
+                          No notes added. Click edit to add explanation.
+                        </span>
+                      )}
+                    </div>
                   )}
                 </div>
 
