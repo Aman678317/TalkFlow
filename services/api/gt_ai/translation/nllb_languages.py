@@ -85,7 +85,6 @@ NLLB_LANGUAGES: tuple[NllbLanguage, ...] = (
     _L("bg", "bul_Cyrl", "Bulgarian", "Български"),
     _L("bn", "ben_Beng", "Bengali", "বাংলা"),
     _L("bho", "bho_Deva", "Bhojpuri", "भोजपुरी"),
-    _L("bos", "bos_Latn", "Bosnian", "Bosanski"),
     _L("br", "bre_Latn", "Breton", "Brezhoneg"),
     _L("bs", "bos_Latn", "Bosnian", "Bosanski"),
     _L("ca", "cat_Latn", "Catalan", "Català"),
