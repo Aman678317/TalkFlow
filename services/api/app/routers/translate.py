@@ -61,7 +61,11 @@ async def _authorize_translate(principal: Principal | None, body: TranslateReque
                                db: AsyncSession, texts: list[str]) -> None:
     """Shared auth/scope/quota/resource checks for /translate and its stream."""
     if principal is None:
-        raise AuthenticationError("Authentication required.")
+        if body.glossary_id or body.style_profile_id or body.translation_memory_id:
+            raise AuthenticationError("Authentication required for custom glossaries, styles, and memory.")
+        if len(texts) > 1 and not body.batch:
+            raise ValidationError("Multiple texts require batch=true.")
+        return
     if principal.kind == "api_key" and principal.api_key is not None:
         scopes = principal.api_key.scopes or []
         if "translate" not in scopes and "*" not in scopes:

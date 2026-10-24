@@ -18,7 +18,11 @@ import {
   Volume2,
   X,
   Upload,
+  Columns2,
+  Rows2,
+  Zap,
 } from "lucide-react";
+import { TranslationBenchmarkModal } from "../components/TranslationBenchmarkModal";
 import { api, friendlyMessage } from "../lib/api";
 import type { NormalizedTranslation } from "../lib/types";
 import {
@@ -449,6 +453,23 @@ export default function TranslatePage() {
   const [isSpeaking, setIsSpeaking] = React.useState(false);
   const audioRef = React.useRef<HTMLAudioElement | null>(null);
 
+  // Layout mode (DeepL side-by-side or upper/lower stacked)
+  const [layoutMode, setLayoutMode] = React.useState<"side-by-side" | "stacked">(() => {
+    try {
+      return (localStorage.getItem("talkflow_translate_layout") as "side-by-side" | "stacked") || "side-by-side";
+    } catch {
+      return "side-by-side";
+    }
+  });
+  const [showBenchmark, setShowBenchmark] = React.useState(false);
+
+  const updateLayout = (mode: "side-by-side" | "stacked") => {
+    setLayoutMode(mode);
+    try {
+      localStorage.setItem("talkflow_translate_layout", mode);
+    } catch {}
+  };
+
   // Live translation (SSE): a provisional draft appears as soon as the stable
   // prefix is translated, then the final pass revises it. The previous result
   // stays on screen until a newer one arrives, so typing never flickers.
@@ -649,7 +670,7 @@ export default function TranslatePage() {
     stop();
     setLiveError(null);
     setLivePhase("waiting");
-    const timer = window.setTimeout(() => { void runLiveSource(text); }, 350);
+    const timer = window.setTimeout(() => { void runLiveSource(text); }, 180);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source, srcLang, tgtLang, glossaryId, styleId, domain, intent, formality, live]);
@@ -870,8 +891,48 @@ export default function TranslatePage() {
           ]}
         />
 
-        {/* Enterprise options */}
+        {/* Enterprise options & DeepL layout/benchmark tools */}
         <div className="flex flex-wrap items-center gap-2">
+          {/* Layout orientation toggle */}
+          <div className="flex items-center gap-0.5 rounded-lg border border-dl-border bg-white p-0.5 shadow-2xs">
+            <button
+              type="button"
+              onClick={() => updateLayout("side-by-side")}
+              title="Side-by-side layout (Left: Source / Right: Target)"
+              className={`flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
+                layoutMode === "side-by-side"
+                  ? "bg-dl-blue text-white shadow-xs font-semibold"
+                  : "text-dl-muted hover:text-dl-navy hover:bg-slate-50"
+              }`}
+            >
+              <Columns2 className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Side-by-Side</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => updateLayout("stacked")}
+              title="Stacked layout (Upper: Source / Lower: Target like DeepL)"
+              className={`flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
+                layoutMode === "stacked"
+                  ? "bg-dl-blue text-white shadow-xs font-semibold"
+                  : "text-dl-muted hover:text-dl-navy hover:bg-slate-50"
+              }`}
+            >
+              <Rows2 className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Upper / Lower</span>
+            </button>
+          </div>
+
+          {/* Benchmark trigger */}
+          <button
+            type="button"
+            onClick={() => setShowBenchmark(true)}
+            title="Run DeepL-grade Live Speed Benchmark"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-900 hover:bg-amber-100 transition-colors shadow-2xs"
+          >
+            <Zap className="h-3.5 w-3.5 text-amber-600 fill-amber-500" />
+            <span>Speed Benchmark</span>
+          </button>
           <select
             aria-label="Glossary"
             value={glossaryId}
@@ -924,12 +985,12 @@ export default function TranslatePage() {
         </div>
       </div>
 
-      {/* ── Dual panel workspace ─────────────────────────────────── */}
-      <div className="flex flex-1 min-h-0 flex-col lg:flex-row">
-
-        {/* SOURCE PANEL */}
-        <div className="flex flex-1 flex-col bg-white min-h-0">
-          {/* Language bar */}
+      {/* ── Dual panel workspace (Side-by-side or Stacked Upper/Lower) ───────── */}
+      {layoutMode === "side-by-side" ? (
+        <div className="flex flex-1 min-h-0 flex-col lg:flex-row">
+          {/* SOURCE PANEL */}
+          <div className="flex flex-1 flex-col bg-white min-h-0">
+{/* Language bar */}
           <LangBar
             selected={srcLang}
             onSelect={setSrcLang}
@@ -1046,28 +1107,27 @@ export default function TranslatePage() {
               </span>
             </div>
           </div>
-        </div>
+          </div>
 
-        {/* SWAP BUTTON (divider) */}
-        <div className="flex items-center justify-center bg-[#F8F9FA] px-0 py-3 lg:px-2 lg:py-0">
-          <button
-            onClick={swap}
-            aria-label="Swap languages"
-            className="
-              flex h-10 w-10 items-center justify-center rounded-full
-              border border-dl-border bg-white text-dl-muted shadow-xs
-              hover:border-dl-blue/60 hover:bg-dl-blue-light hover:text-dl-blue
-              transition-all duration-200 active:scale-95
-            "
-          >
-            <ArrowLeftRight className="h-4 w-4" />
-          </button>
-        </div>
+          {/* SWAP BUTTON (vertical divider) */}
+          <div className="flex items-center justify-center bg-[#F8F9FA] px-0 py-3 lg:px-2 lg:py-0">
+            <button
+              onClick={swap}
+              aria-label="Swap languages"
+              className="
+                flex h-10 w-10 items-center justify-center rounded-full
+                border border-dl-border bg-white text-dl-muted shadow-xs
+                hover:border-dl-blue/60 hover:bg-dl-blue-light hover:text-dl-blue
+                transition-all duration-200 active:scale-95
+              "
+            >
+              <ArrowLeftRight className="h-4 w-4" />
+            </button>
+          </div>
 
-        {/* TARGET PANEL */}
-        <div className="flex flex-1 flex-col bg-[#FAFBFE] min-h-0 border-t border-dl-border lg:border-t-0 lg:border-l">
-
-          {/* Language bar with formality pills */}
+          {/* TARGET PANEL */}
+          <div className="flex flex-1 flex-col bg-[#FAFBFE] min-h-0 border-t border-dl-border lg:border-t-0 lg:border-l">
+{/* Language bar with formality pills */}
           <LangBar
             selected={tgtLang}
             onSelect={setTgtLang}
@@ -1239,8 +1299,324 @@ export default function TranslatePage() {
               </div>
             )}
           </div>
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="flex flex-1 min-h-0 flex-col max-w-5xl w-full mx-auto p-4 sm:p-6 gap-3 overflow-y-auto">
+          {/* UPPER SOURCE CARD */}
+          <div className="flex flex-col bg-white rounded-2xl border border-dl-border shadow-xs overflow-hidden">
+{/* Language bar */}
+          <LangBar
+            selected={srcLang}
+            onSelect={setSrcLang}
+            showAuto
+            langs={caps}
+            detected={
+              srcLang === "AUTO" ? (detectedLanguage || (result ? result.source_language : undefined)) : undefined
+            }
+            detectedConfidence={srcLang === "AUTO" ? detectedConfidence : null}
+          />
+
+          {/* Textarea */}
+          <div className="relative flex-1 p-5">
+            <textarea
+              ref={sourceRef}
+              dir={sourceRtl ? "rtl" : "ltr"}
+              className="w-full h-full min-h-[200px] resize-none border-0 bg-transparent p-0 text-[15px] leading-relaxed text-dl-navy focus:outline-none focus:ring-0 placeholder:text-dl-faint"
+              placeholder="Type or paste text…"
+              value={source}
+              aria-label="Source text"
+              onChange={(e) => setSource(e.target.value)}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                const text = e.dataTransfer.getData("text/plain");
+                if (text) setSource(text);
+              }}
+            />
+
+            {/* Translate just the selected phrase (reference parity, 2026-10-21). */}
+            <SelectionTranslate
+              editorRef={sourceRef}
+              sourceLanguage={srcLang}
+              targetLanguage={tgtLang}
+            />
+
+            {/* Clear button */}
+            {source && (
+              <button
+                onClick={() => { setSource(""); setResult(null); }}
+                className="absolute right-4 top-4 flex h-7 w-7 items-center justify-center rounded-full bg-dl-bg-alt text-dl-muted hover:bg-dl-border hover:text-dl-navy transition-colors"
+                title="Clear text"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+
+          {/* Footer toolbar */}
+          <div className="flex items-center justify-between border-t border-dl-border px-4 py-2.5">
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => void speakText(source, srcLang === "AUTO" ? (result?.source_language || "en") : srcLang)}
+                disabled={!source.trim()}
+                title={isSpeaking ? "Stop audio" : "Listen with server audio"}
+                className={`icon-btn ${isSpeaking ? "text-dl-blue" : ""}`}
+              >
+                <Volume2 className="h-4 w-4" />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => navigate("/voice?tab=live")}
+                title="Open server-backed voice mode"
+                className="tool-btn"
+              >
+                <Mic className="h-4 w-4" /><span>Voice mode</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => lookupDictionary(source.slice(0, 30))}
+                disabled={!source.trim()}
+                className="tool-btn"
+              >
+                <BookOpen className="h-4 w-4 text-dl-blue" />
+                <span>Dictionary</span>
+              </button>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !live;
+                  setLive(next);
+                  if (!next) {
+                    liveAbort.current?.abort();
+                    setDraft(null);
+                    setLiveError(null);
+                    setLivePhase("idle");
+                  }
+                }}
+                aria-pressed={live}
+                title={live
+                  ? "Live translation is on — results update while you type"
+                  : "Turn on live translation"}
+                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-colors ${
+                  live
+                    ? "border-dl-blue/40 bg-dl-blue-light text-dl-blue"
+                    : "border-dl-border bg-white text-dl-muted hover:text-dl-navy"
+                }`}
+              >
+                <Radio className="h-3.5 w-3.5" />
+                Live
+                {live && livePhase !== "idle" && (
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-dl-blue" />
+                )}
+              </button>
+              <span className="text-xs text-dl-faint select-none tabular-nums">
+                {source.trim() ? `${source.trim().split(/\s+/).length.toLocaleString()} words · ` : ""}
+                {source.length.toLocaleString()} chars
+              </span>
+            </div>
+          </div>
+          </div>
+
+          {/* CENTER SWAP DIVIDER */}
+          <div className="flex items-center justify-center -my-2 relative z-10">
+            <button
+              onClick={swap}
+              aria-label="Swap languages"
+              className="
+                flex h-10 w-10 items-center justify-center rounded-full
+                border border-dl-border bg-white text-dl-muted shadow-sm
+                hover:border-dl-blue/60 hover:bg-dl-blue-light hover:text-dl-blue
+                transition-all duration-200 active:scale-95
+              "
+            >
+              <ArrowLeftRight className="h-4 w-4" />
+            </button>
+          </div>
+
+          {/* LOWER TARGET CARD */}
+          <div className="flex flex-col bg-[#FAFBFE] rounded-2xl border border-dl-border shadow-xs overflow-hidden">
+{/* Language bar with formality pills */}
+          <LangBar
+            selected={tgtLang}
+            onSelect={setTgtLang}
+            langs={caps.filter((c: any) => c.translation_supported)}
+            right={
+              <div className="ml-auto flex items-center gap-0.5 rounded-lg bg-dl-border/60 p-0.5">
+                {(["default", "formal", "informal"] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    onClick={() => setFormality(mode)}
+                    className={`
+                      rounded-md px-2.5 py-1 text-[11px] font-medium capitalize transition-all
+                      ${formality === mode
+                        ? "bg-white text-dl-navy shadow-xs"
+                        : "text-dl-muted hover:text-dl-navy"}
+                    `}
+                  >
+                    {mode}
+                  </button>
+                ))}
+              </div>
+            }
+          />
+
+          {/* Translation display */}
+          <div
+            className="flex-1 min-h-[200px] p-5 text-[15px] leading-relaxed text-dl-navy"
+            aria-live="polite"
+            aria-label="Translated text"
+          >
+            {working && !result && !draft ? (
+              <div className="space-y-3 pt-1">
+                <div className="skeleton h-5 w-full" />
+                <div className="skeleton h-5 w-5/6" />
+                <div className="skeleton h-5 w-4/6" />
+              </div>
+            ) : displayError && !draft ? (
+              <ErrorState
+                message={displayError.message}
+                code={displayError.code}
+                onRetry={retryTranslation}
+              />
+            ) : draft ? (
+              <div className="space-y-3">
+                <p dir={targetRtl ? "rtl" : "ltr"} className="whitespace-pre-wrap select-text text-base leading-relaxed text-dl-navy">
+                  {draft.translated_text}
+                </p>
+                <div className="flex items-center gap-2 text-[11px] font-medium text-dl-muted">
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-dl-blue" />
+                  Translating live… the final version follows
+                </div>
+              </div>
+            ) : result && result.quality_flags?.some((flag) =>
+              /(?:untranslated|dev_provider|dev_echo|source_fallback|empty_translation)/i.test(flag),
+            ) ? (
+              <ErrorState
+                title="Translation unavailable"
+                detail="The provider did not return a verified translation. Your original text is still available on the left."
+                onRetry={retryTranslation}
+              />
+            ) : result ? (
+              <div className="space-y-4">
+                <p dir={targetRtl ? "rtl" : "ltr"} className="whitespace-pre-wrap select-text text-base leading-relaxed text-dl-navy">{result.translated_text}</p>
+                {result.from_translation_memory && (
+                  <Badge tone="good">Matched in translation memory (100%)</Badge>
+                )}
+                {result.alternatives && result.alternatives.length > 0 && (
+                  <div className="pt-3 border-t border-dl-border/60">
+                    <span className="text-[11px] font-semibold text-dl-muted uppercase tracking-wider block mb-1.5">
+                      Alternatives (click to use)
+                    </span>
+                    <div className="flex flex-wrap gap-2">
+                      {result.alternatives.map((alt, idx) => (
+                        <button
+                          key={idx}
+                          type="button"
+                          dir={targetRtl ? "rtl" : "ltr"}
+                          onClick={() => setResult({ ...result, translated_text: alt })}
+                          className="text-xs px-2.5 py-1 rounded-md bg-white border border-dl-border text-dl-navy hover:border-dl-blue hover:text-dl-blue hover:bg-dl-blue-light/30 transition-all text-start shadow-2xs"
+                        >
+                          {alt}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="select-none text-dl-faint">
+                {live ? "Translation appears here as you type…" : "Translation appears here…"}
+              </p>
+            )}
+          </div>
+
+          {/* Footer toolbar */}
+          <div className="flex flex-wrap items-center justify-between border-t border-dl-border px-4 py-2.5">
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => result && void speakText(result.translated_text, tgtLang)}
+                disabled={!result}
+                title={isSpeaking ? "Stop audio" : "Listen with server audio"}
+                className={`icon-btn ${isSpeaking ? "text-dl-blue" : ""}`}
+              >
+                <Volume2 className="h-4 w-4" />
+              </button>
+
+              <button
+                type="button"
+                onClick={copyOut}
+                disabled={!result}
+                className={`tool-btn ${copied ? "text-emerald-600 hover:text-emerald-700" : ""}`}
+              >
+                {copied ? (
+                  <><Check className="h-4 w-4" /><span>Copied</span></>
+                ) : (
+                  <><Copy className="h-4 w-4" /><span>Copy</span></>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={download}
+                disabled={!result}
+                className="tool-btn"
+              >
+                <Download className="h-4 w-4" />
+                <span>Download</span>
+              </button>
+            </div>
+
+            {result && (
+              <div className="flex flex-wrap items-center gap-2">
+                {live && liveStats && (
+                  <span
+                    className="text-[11px] tabular-nums text-dl-muted"
+                    title="Time to the first provisional draft, then the final pass"
+                  >
+                    live · first draft {liveStats.ttfd_ms === null
+                      ? "—"
+                      : `${Math.round(liveStats.ttfd_ms)} ms`} · final {Math.round(liveStats.total_ms)} ms
+                  </span>
+                )}
+                <span className="text-[11px] text-dl-faint">
+                  {Math.round(result.latency_ms ?? 0)} ms {result.model ? `· ${result.model}` : ""}
+                </span>
+                {(result.quality_flags ?? [])
+                  .filter((f) => f !== "dev_provider")
+                  .slice(0, 1)
+                  .map((f) => (
+                    <Badge
+                      key={f}
+                      tone={
+                        f.includes("untranslated") || f.includes("failed")
+                          ? "bad"
+                          : f.includes("neural") || f.includes("high") || f.includes("verified")
+                          ? "good"
+                          : f.includes("pivoted")
+                          ? "warn"
+                          : "neutral"
+                      }
+                    >
+                      {f.replace(/_/g, " ")}
+                    </Badge>
+                  ))}
+                {result.glossary_note && (
+                  <Badge tone="warn">{result.glossary_note}</Badge>
+                )}
+              </div>
+            )}
+          </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Recent translations strip ───────────────────────────── */}
       {recents.length > 0 && (
@@ -1402,6 +1778,10 @@ export default function TranslatePage() {
           </div>
         </div>
       )}
+      <TranslationBenchmarkModal
+        isOpen={showBenchmark}
+        onClose={() => setShowBenchmark(false)}
+      />
     </div>
   );
 }

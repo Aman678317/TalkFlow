@@ -316,6 +316,8 @@ class AIFacade:
                 for s in task_specs:
                     if not s.private:
                         s.priority -= 2000
+                    if s.name.startswith("dev_"):
+                        s.priority -= 5000
 
     async def load_registry(self, db: AsyncSession) -> None:
         """Load provider specs from the DB model registry (source of truth),
