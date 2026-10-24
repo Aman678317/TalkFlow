@@ -187,27 +187,9 @@ async def _translate_stream_events(request: Request, body: TranslateStreamReques
         })
 
         if resolved == target:
-            # DeepL parity: When source language matches target, stream back identity translation
-            yield _sse("done", {
-                "request_id": request_id,
-                "source_language": resolved,
-                "target_language": target,
-                "detected_confidence": confidence,
-                "ttfd_ms": 0.0,
-                "total_ms": elapsed_ms(),
-                "translations": [{
-                    "translation_id": request_id,
-                    "source_language": resolved,
-                    "target_language": target,
-                    "source_text": body.text,
-                    "translated_text": body.text,
-                    "model": "identity/same_language",
-                    "provider": "identity",
-                    "latency_ms": 0.1,
-                    "quality_flags": ["source_equals_target"],
-                }],
-            })
-            return
+            raise UnsupportedLanguageError(
+                "Detected source language equals the target language.",
+                details={"detected": resolved}, recoverable=True)
         async with db_session() as check_db:
             await validate_pair(check_db, resolved, target)
 

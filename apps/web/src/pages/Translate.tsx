@@ -498,80 +498,6 @@ export default function TranslatePage() {
   const [isSpeaking, setIsSpeaking] = React.useState(false);
   const audioRef = React.useRef<HTMLAudioElement | null>(null);
 
-  // Layout mode (DeepL side-by-side or upper/lower stacked)
-  const [layoutMode, setLayoutMode] = React.useState<"side-by-side" | "stacked">(() => {
-    try {
-      return (localStorage.getItem("talkflow_translate_layout") as "side-by-side" | "stacked") || "side-by-side";
-    } catch {
-      return "side-by-side";
-    }
-  });
-  const [showBenchmark, setShowBenchmark] = React.useState(false);
-
-  // Notes & Annotations Save Modal State
-  const [showNoteModal, setShowNoteModal] = React.useState(false);
-  const [noteTitle, setNoteTitle] = React.useState("");
-  const [noteContent, setNoteContent] = React.useState("");
-  const [noteTagInput, setNoteTagInput] = React.useState("");
-  const [noteTags, setNoteTags] = React.useState<string[]>(["vocabulary"]);
-  const [savingNote, setSavingNote] = React.useState(false);
-
-  // Restore prefilled text/languages when directed from /notes
-  React.useEffect(() => {
-    const pSrc = sessionStorage.getItem("talkflow_prefill_source");
-    const pSrcL = sessionStorage.getItem("talkflow_prefill_src_lang");
-    const pTgtL = sessionStorage.getItem("talkflow_prefill_tgt_lang");
-    if (pSrc) {
-      setSource(pSrc);
-      if (pSrcL) setSrcLang(pSrcL);
-      if (pTgtL) setTgtLang(pTgtL);
-      sessionStorage.removeItem("talkflow_prefill_source");
-      sessionStorage.removeItem("talkflow_prefill_src_lang");
-      sessionStorage.removeItem("talkflow_prefill_tgt_lang");
-    }
-  }, []);
-
-  const openSaveNoteModal = () => {
-    if (!result) return;
-    setNoteTitle(source.slice(0, 40));
-    setNoteContent("");
-    setNoteTags(["vocabulary"]);
-    setShowNoteModal(true);
-  };
-
-  const handleSaveNote = async () => {
-    if (!result) return;
-    setSavingNote(true);
-    try {
-      await api("/api/v1/notes", {
-        method: "POST",
-        body: {
-          title: noteTitle.trim() || source.slice(0, 40),
-          source_text: source.trim(),
-          translated_text: result.translated_text.trim(),
-          source_lang: result.source_language || (srcLang === "AUTO" ? (detectedLanguage || "en") : srcLang),
-          target_lang: result.target_language || tgtLang,
-          note: noteContent.trim(),
-          tags: noteTags,
-          is_favorite: true,
-        },
-      });
-      toast.success("Note & translation saved to library!");
-      setShowNoteModal(false);
-    } catch (err) {
-      toast.error("Failed to save note", friendlyMessage(err));
-    } finally {
-      setSavingNote(false);
-    }
-  };
-
-  const updateLayout = (mode: "side-by-side" | "stacked") => {
-    setLayoutMode(mode);
-    try {
-      localStorage.setItem("talkflow_translate_layout", mode);
-    } catch {}
-  };
-
   // Live translation (SSE): a provisional draft appears as soon as the stable
   // prefix is translated, then the final pass revises it. The previous result
   // stays on screen until a newer one arrives, so typing never flickers.
@@ -700,10 +626,6 @@ export default function TranslatePage() {
             if (srcLang.toLowerCase() === "auto" && meta.phase === "ready") {
               setDetectedLanguage(meta.source_language);
               setDetectedConfidence(meta.detected_confidence);
-              if (meta.source_language && meta.source_language.toLowerCase() === tgtLang.toLowerCase()) {
-                const alt = tgtLang.toLowerCase() === "en" ? "es" : "en";
-                setTgtLang(alt);
-              }
             }
           },
           onDraft: (d) => {
@@ -747,26 +669,6 @@ export default function TranslatePage() {
             if (!current()) return;
             setDraft(null);
             setLivePhase("idle");
-            const msg = (err.message || "").toLowerCase();
-            if (msg.includes("equals the target") || msg.includes("must differ") || err.code === "unsupported_language") {
-              setLiveError(null);
-              setResult({
-                translation_id: "identity",
-          from_translation_memory: false,
-                source_language: srcLang === "AUTO" ? (detectedLanguage || tgtLang) : srcLang,
-                target_language: tgtLang,
-                source_text: trimmed,
-                translated_text: trimmed,
-                model: "identity/same_language",
-                provider: "identity",
-                latency_ms: 0,
-                quality_flags: ["source_equals_target"],
-                detected_confidence: 1.0,
-                alternatives: [],
-                glossary_note: null,
-              });
-              return;
-            }
             setLiveError({ message: err.message || "Translation failed.", code: err.code });
           },
         },
@@ -777,26 +679,6 @@ export default function TranslatePage() {
       liveLastKey.current = "";
       setDraft(null);
       setLivePhase("idle");
-      const msg = friendlyMessage(err).toLowerCase();
-      if (msg.includes("equals the target") || msg.includes("must differ") || (err as any)?.code === "unsupported_language") {
-        setLiveError(null);
-        setResult({
-          translation_id: "identity",
-          from_translation_memory: false,
-          source_language: srcLang === "AUTO" ? (detectedLanguage || tgtLang) : srcLang,
-          target_language: tgtLang,
-          source_text: trimmed,
-          translated_text: trimmed,
-          model: "identity/same_language",
-          provider: "identity",
-          latency_ms: 0,
-          quality_flags: ["source_equals_target"],
-          detected_confidence: 1.0,
-          alternatives: [],
-          glossary_note: null,
-        });
-        return;
-      }
       setLiveError({ message: friendlyMessage(err), code: (err as any)?.code });
     }
   }
@@ -837,7 +719,7 @@ export default function TranslatePage() {
     stop();
     setLiveError(null);
     setLivePhase("waiting");
-    const timer = window.setTimeout(() => { void runLiveSource(text); }, 180);
+    const timer = window.setTimeout(() => { void runLiveSource(text); }, 350);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source, srcLang, tgtLang, glossaryId, styleId, domain, intent, formality, live]);
@@ -1023,12 +905,6 @@ export default function TranslatePage() {
   const targetRtl = isRtl(tgtLang);
 
   const working = live ? livePhase !== "idle" : translate.isPending;
-  const isSameLangError = (err: { message?: string; code?: string } | null) => {
-    if (!err) return false;
-    const msg = (err.message || "").toLowerCase();
-    return msg.includes("equals the target") || msg.includes("must differ") || (err.code === "unsupported_language" && (msg.includes("language") || msg.includes("target")));
-  };
-
   const displayError = live
     ? liveError
     : translate.isError
@@ -1278,23 +1154,6 @@ export default function TranslatePage() {
                 {source.length.toLocaleString()} chars
               </span>
             </div>
-          </div>
-          </div>
-
-          {/* SWAP BUTTON (vertical divider) */}
-          <div className="flex items-center justify-center bg-[#F8F9FA] px-0 py-3 lg:px-2 lg:py-0">
-            <button
-              onClick={swap}
-              aria-label="Swap languages"
-              className="
-                flex h-10 w-10 items-center justify-center rounded-full
-                border border-dl-border bg-white text-dl-muted shadow-xs
-                hover:border-dl-blue/60 hover:bg-dl-blue-light hover:text-dl-blue
-                transition-all duration-200 active:scale-95
-              "
-            >
-              <ArrowLeftRight className="h-4 w-4" />
-            </button>
           </div>
 
           {/* TARGET PANEL */}
@@ -1728,49 +1587,11 @@ export default function TranslatePage() {
                 <div className="skeleton h-5 w-4/6" />
               </div>
             ) : displayError && !draft ? (
-              isSameLangError(displayError) ? (
-                <div className="flex flex-col gap-3 rounded-xl border border-blue-200 bg-blue-50/90 p-5 text-sm text-blue-900 shadow-xs">
-                  <div className="flex items-center gap-2 font-semibold">
-                    <Info className="h-5 w-5 shrink-0 text-blue-600" />
-                    <span>Source and target languages are identical ({tgtLang.toUpperCase()})</span>
-                  </div>
-                  <p className="text-xs text-blue-700">
-                    To translate your text, select a different target language from the top bar or pick one below:
-                  </p>
-                  <div className="flex flex-wrap gap-2 pt-1">
-                    {[
-                      { code: "bho", name: "Bhojpuri (भोजपुरी)" },
-                      { code: "es", name: "Spanish (Español)" },
-                      { code: "de", name: "German (Deutsch)" },
-                      { code: "fr", name: "French (Français)" },
-                      { code: "hi", name: "Hindi (हिन्दी)" },
-                      { code: "ja", name: "Japanese (日本語)" },
-                      { code: "ar", name: "Arabic (العربية)" },
-                    ].filter((l) => l.code !== tgtLang).map((l) => (
-                      <button
-                        key={l.code}
-                        type="button"
-                        onClick={() => handleSelectTgtLang(l.code)}
-                        className="rounded-lg border border-blue-300 bg-white px-3 py-1.5 text-xs font-semibold text-blue-800 shadow-2xs hover:bg-blue-100/80 transition-colors"
-                      >
-                        {l.name}
-                      </button>
-                    ))}
-                  </div>
-                  {source.trim() && (
-                    <div className="mt-3 border-t border-blue-200/60 pt-3">
-                      <span className="text-[11px] font-semibold uppercase tracking-wider text-blue-600 block mb-1">Original Text:</span>
-                      <p className="whitespace-pre-wrap select-text text-sm text-dl-navy">{source}</p>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <ErrorState
-                  message={displayError.message}
-                  code={displayError.code}
-                  onRetry={retryTranslation}
-                />
-              )
+              <ErrorState
+                message={displayError.message}
+                code={displayError.code}
+                onRetry={retryTranslation}
+              />
             ) : draft ? (
               <div className="space-y-3">
                 <p dir={targetRtl ? "rtl" : "ltr"} className="whitespace-pre-wrap select-text text-base leading-relaxed text-dl-navy">
@@ -1791,33 +1612,6 @@ export default function TranslatePage() {
               />
             ) : result ? (
               <div className="space-y-4">
-                {result.quality_flags?.includes("source_equals_target") && (
-                  <div className="flex flex-col gap-2 rounded-lg bg-blue-50/90 border border-blue-200/80 p-3 text-xs text-blue-800">
-                    <div className="flex items-center gap-2">
-                      <Info className="h-4 w-4 shrink-0 text-blue-600" />
-                      <span>Source and target languages are identical ({tgtLang.toUpperCase()}). Select a language to translate:</span>
-                    </div>
-                    <div className="flex flex-wrap gap-1.5 pt-0.5">
-                      {[
-                        { code: "bho", name: "Bhojpuri (भोजपुरी)" },
-                        { code: "es", name: "Spanish (Español)" },
-                        { code: "de", name: "German (Deutsch)" },
-                        { code: "fr", name: "French (Français)" },
-                        { code: "hi", name: "Hindi (हिन्दी)" },
-                        { code: "ja", name: "Japanese (日本語)" },
-                      ].filter((l) => l.code !== tgtLang).map((l) => (
-                        <button
-                          key={l.code}
-                          type="button"
-                          onClick={() => handleSelectTgtLang(l.code)}
-                          className="rounded-md border border-blue-300 bg-white px-2 py-0.5 text-[11px] font-medium text-blue-800 shadow-2xs hover:bg-blue-100/70 transition-colors"
-                        >
-                          {l.name}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
                 <p dir={targetRtl ? "rtl" : "ltr"} className="whitespace-pre-wrap select-text text-base leading-relaxed text-dl-navy">{result.translated_text}</p>
                 {result.from_translation_memory && (
                   <Badge tone="good">Matched in translation memory (100%)</Badge>

@@ -281,6 +281,9 @@ async def translate_text(
     # folds every spelling the caller may send onto the registry code.
     source_language = normalize_lang(source_language or "AUTO") or "auto"
     target_language = normalize_lang(target_language)
+    if source_language == target_language and source_language != "auto":
+        raise ValidationError("Source and target language must differ.")
+
     # 1) language detection ---------------------------------------------- #
     detected = source_language
     detect_conf = 1.0

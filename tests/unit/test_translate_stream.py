@@ -298,29 +298,21 @@ def test_stream_rate_limit_stream_bucket_is_separate(monkeypatch) -> None:
     assert seen["spec"] == settings.rate_limit_translate
 
 
-def test_stream_returns_identity_for_same_language(services_app_client, user) -> None:
+def test_stream_emits_error_event_for_same_language(services_app_client, user) -> None:
     response = services_app_client.post(
         "/api/v1/translate/stream",
         headers=user["headers"],
         json={"text": "hello world", "source_language": "en", "target_language": "en"},
     )
-    # DeepL parity: a matched pair is not an error, it is the text back again,
-    # flagged so the UI can say so. The whole exchange stays inside the stream,
-    # so the SSE headers are already flushed and no HTTP status carries it.
+    # The SSE headers are already flushed when the error is discovered, so
+    # the failure is reported as an `error` event, not an HTTP status.
     assert response.status_code == 200
     events = _parse_sse(response.text)
     names = [name for name, _ in events]
-    assert "error" not in names
-    assert names[0] == "meta"
-    assert names[-1] == "done"
-
-    done = events[-1][1]
-    translation = done["translations"][0]
-    assert translation["translated_text"] == "hello world"
-    assert translation["source_language"] == "en"
-    assert translation["target_language"] == "en"
-    assert translation["provider"] == "identity"
-    assert "source_equals_target" in translation["quality_flags"]
+    assert names[-1] == "error"
+    error = events[-1][1]
+    assert error["code"] == "unsupported_language"
+    assert error["recoverable"] is True
 
 
 def test_stream_auto_detects_source(services_app_client, user) -> None:

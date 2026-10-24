@@ -202,27 +202,18 @@ async def realtime_ws(
         # without touching the proven audio transport logic.
         meeting = await db.get(M.Meeting, participant.meeting_id) if participant_id is not None else None
         if meeting is not None:
-            try:
-                # Imported here, not at module scope: `langgraph` is declared only in
-                # pyproject.toml, and the serverless/Docker images install from
-                # requirements.txt, where it is deliberately absent (bundle cap).
-                from app.realtime.langgraph_orchestrator import (
-                    build_langgraph_orchestrator, make_checkpoint_config)
-            except ImportError:
-                log.info("LangGraph control plane disabled: pip install langgraph")
-            else:
-                lg_app = build_langgraph_orchestrator(
-                    listening_agent=pl.get_pipeline(session).listening,
-                    translating_agent=pl.get_pipeline(session).translating,
-                    voice_agent=pl.get_pipeline(session).voice,
-                    supervisor=pl.get_pipeline(session).supervisor,
-                    audio_mode=p_data.get("audio_mode", "translated"),
-                    speaking_language=p_data.get("speak_lang", "AUTO"),
-                    listening_language=p_data.get("hear_lang", "en"),
-                )
-                # Store on session for access in the receive loop
-                session._langgraph_orchestrator = lg_app
-                session._lg_config = make_checkpoint_config(session.session_id, db_seq)
+            lg_app = build_langgraph_orchestrator(
+                listening_agent=pl.get_pipeline(session).listening,
+                translating_agent=pl.get_pipeline(session).translating,
+                voice_agent=pl.get_pipeline(session).voice,
+                supervisor=pl.get_pipeline(session).supervisor,
+                audio_mode=p_data.get("audio_mode", "translated"),
+                speaking_language=p_data.get("speak_lang", "AUTO"),
+                listening_language=p_data.get("hear_lang", "en"),
+            )
+            # Store on session for access in the receive loop
+            session._langgraph_orchestrator = lg_app
+            session._lg_config = make_checkpoint_config(session.session_id, db_seq)
     else:
         resumed = True
 

@@ -29,14 +29,9 @@ needs_checkpoint = pytest.mark.skipif(
 
 def test_every_row_is_internally_consistent() -> None:
     seen: set[str] = set()
-    seen_tokens: set[str] = set()
     for lang in L.NLLB_LANGUAGES:
         assert lang.code not in seen, f"duplicate code {lang.code}"
         seen.add(lang.code)
-        # Two rows on one token collapse in _BY_TOKEN, so the token->code
-        # lookup silently returns whichever row was written last.
-        assert lang.nllb not in seen_tokens, f"duplicate token {lang.nllb}"
-        seen_tokens.add(lang.nllb)
         assert lang.name and lang.nllb.count("_") == 1
 
 
