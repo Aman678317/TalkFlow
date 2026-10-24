@@ -255,6 +255,8 @@ export class AudioPlayer {
   private playedCount = 0;
   private playingTurn: string | null = null;
 
+  private gainNode: GainNode | null = null;
+
   constructor(
     /** Decode/resume failures must reach the UI — a silent player is the bug we are fixing. */
     private onPlaybackError?: (message: string) => void,
@@ -263,8 +265,47 @@ export class AudioPlayer {
       turn: string,
       state: "playing" | "played" | "dropped",
     ) => void,
+    /** State changes of AudioContext (e.g. suspended vs running on mobile devices). */
+    private onContextState?: (state: AudioContextState) => void,
   ) {
     this.ctx = new AudioContext();
+    if (typeof this.ctx.createGain === "function") {
+      this.gainNode = this.ctx.createGain();
+      this.gainNode.connect(this.ctx.destination);
+    }
+    if (typeof this.ctx.addEventListener === "function") {
+      this.ctx.addEventListener("statechange", () => {
+        this.onContextState?.(this.ctx.state);
+      });
+    }
+  }
+
+  get isSuspended(): boolean {
+    return this.ctx.state === "suspended";
+  }
+
+  get contextState(): AudioContextState {
+    return this.ctx.state;
+  }
+
+  /** Set playback volume (0.0 to 1.0) */
+  setVolume(vol: number) {
+    if (this.gainNode) {
+      const v = Math.max(0, Math.min(1, vol));
+      this.gainNode.gain.setValueAtTime(v, this.ctx.currentTime);
+    }
+  }
+
+  /** Duck audio smoothly during local speech interruption to prevent acoustic feedback */
+  setDucking(ducked: boolean) {
+    if (this.gainNode) {
+      const targetGain = ducked ? 0.2 : 1.0;
+      if (typeof this.gainNode.gain.setTargetAtTime === "function") {
+        this.gainNode.gain.setTargetAtTime(targetGain, this.ctx.currentTime, 0.05);
+      } else {
+        this.gainNode.gain.value = targetGain;
+      }
+    }
   }
 
   /** One transition per turn: chunks of a turn are silent, and a cut turn is dropped. */
@@ -597,7 +638,11 @@ export class AudioPlayer {
       await this.resumeContext();
       const src = this.ctx.createBufferSource();
       src.buffer = item.buffer;
-      src.connect(this.ctx.destination);
+      if (this.gainNode) {
+        src.connect(this.gainNode);
+      } else {
+        src.connect(this.ctx.destination);
+      }
       this.current = src;
       this.playingTag = item.tag;
       this.playedCount++;

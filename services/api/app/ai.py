@@ -162,6 +162,13 @@ class AIFacade:
                 "api_key": getattr(settings, "deepl_api_key", ""),
                 "api_url": getattr(settings, "deepl_api_url", "https://api-free.deepl.com/v2/translate"),
             }
+        elif task == Task.MT and name == "nllb_ct2":
+            # The adapter's own default is a path relative to the process CWD;
+            # resolving it through MODEL_CACHE_PATH keeps a relocated cache and
+            # scripts/provision_nllb_ct2.py writing the same directory.
+            import os.path
+
+            kwargs = {"model_dir": os.path.join(cache, "nllb-200-600m-ct2-int8")}
         elif task == Task.MT and name == "madlad400":
             # No cache_dir override: the HF_HOME policy (app.config) points
             # every HF artifact at MODEL_CACHE_PATH/hf — the root
@@ -309,6 +316,8 @@ class AIFacade:
                 for s in task_specs:
                     if not s.private:
                         s.priority -= 2000
+                    if s.name.startswith("dev_"):
+                        s.priority -= 5000
 
     async def load_registry(self, db: AsyncSession) -> None:
         """Load provider specs from the DB model registry (source of truth),
@@ -354,12 +363,76 @@ class AIFacade:
                         private=provider_is_private(explicit, self._http_private_overrides())))
         # The operator-preference policy (explicit boost / local-first under
         # `auto`) is applied once, to the assembled specs.
+        self._apply_language_coverage(specs)
         self._apply_priority_policy(specs)
         self._specs = specs
         health = self.router.health if self.router else {}
-        self.router = ModelRouter(specs, gpu_available=settings.gpu_available, health=health)
+        self.router = ModelRouter(specs, gpu_available=settings.gpu_available,
+                                  health=health,
+                                  reprobe_after_s=settings.provider_reprobe_after_s)
         log.info("model registry loaded: %s",
                  {t.value: [s.name for s in specs[t]] for t in TASKS})
+
+    def _apply_language_coverage(self, specs: dict[Task, list[ProviderSpec]]) -> None:
+        """Fill a spec's language set from the checkpoint that is on disk.
+
+        A registry row with no languages means "all" to the router, which lets
+        an out-of-coverage request reach a provider that can only fail on it.
+        The installed NLLB vocabulary is evidence of the same class the Day-4
+        diagnostics comment asks for — measured on this machine, not claimed by
+        a paper — so it is recorded on the spec here. A set the operator already
+        seeded is never overridden, and a provider whose coverage is not loaded
+        yet reports an empty set, which is skipped rather than stored as
+        "supports nothing"."""
+        for task, task_specs in specs.items():
+            for spec in task_specs:
+                if spec.languages is not None:
+                    continue
+                codes = self._provider_languages(task, spec.name)
+                if codes:
+                    spec.languages = codes
+
+    def _provider_languages(self, task: Task, name: str) -> set[str] | None:
+        """Codes the named provider reports serving, or None when it declares
+        no coverage at all (a hosted API we cannot bound)."""
+        if name.startswith("dev_"):
+            return set()
+        try:
+            provider = self.provider(task, name)
+        except Exception:
+            return None
+        codes = getattr(provider, "supported_languages", None)
+        if codes is None:
+            return None
+        try:
+            if not provider.runtime_ready():
+                return set()
+        except Exception:
+            return None
+        return set(codes)
+
+    def served_languages(self, task: Task = Task.MT) -> set[str] | None:
+        """What this install can translate right now.
+
+        None means "cannot be bounded" — a ready provider that declares no
+        coverage (a hosted API), or no provider we can read coverage from — and
+        callers must not filter on it. Otherwise the union of the codes the
+        runtime-ready providers serve, which is what keeps the language picker
+        honest: an advertised language has a model behind it on this machine.
+        """
+        if not self._specs:
+            return None
+        served: set[str] = set()
+        bounded = False
+        for spec in self._specs.get(task) or []:
+            codes = self._provider_languages(task, spec.name)
+            if codes is None:
+                return None
+            if not codes:
+                continue
+            bounded = True
+            served |= codes
+        return served if bounded else None
 
     # ------------------------------------------------------------------ #
     # Routed execution with failover
@@ -497,14 +570,21 @@ class AIFacade:
                 "not sent to any external service.",
                 details={"task": task.value, "error": str(e)},
             ) from e
-        timeout_s = settings.provider_attempt_timeout_s
         for decision in decisions:
             t0 = time.perf_counter()
+            timeout_s = settings.provider_attempt_timeout_s
             try:
                 provider = self._chain_provider_cache.get(
                     (task.value, decision.provider))
                 if provider is None:
                     provider = self.provider(task, decision.provider)
+                # A self-hosted model has no network to be slow; its budget is
+                # the decode. Measured 2026-10-24, a low-resource NLLB target
+                # takes 3-14 s on this CPU box, which the generic 20 s attempt
+                # deadline turned into "no real provider served this" whenever
+                # the machine was busy. Local MT gets its own, longer budget.
+                if task == Task.MT and getattr(provider, "private", False):
+                    timeout_s = settings.mt_local_attempt_timeout_s
                 attempt = call(provider)
                 if timeout_s > 0:
                     # Deadline-first failover (#109(a) P0): a provider attempt
@@ -717,6 +797,21 @@ class AIFacade:
                 await self.provider(task, name).warmup()
             except Exception as e:
                 log.info("warmup %s/%s skipped: %s", task, name, e)
+            # The configured provider is normally a hosted API, so warming only
+            # it leaves the offline packs cold: argos' first request paid 7-9 s
+            # of model load on CPU. Private providers that report themselves
+            # ready are the ones local traffic actually lands on.
+            for candidate in AUTO_PROVIDER_ORDER[task]:
+                if candidate == name or candidate.startswith("dev_"):
+                    continue
+                try:
+                    provider = self.provider(task, candidate)
+                    if not getattr(provider, "private", False) or not provider.runtime_ready():
+                        continue
+                    await provider.warmup()
+                    log.info("warmup %s/%s complete", task, candidate)
+                except Exception as e:
+                    log.info("warmup %s/%s skipped: %s", task, candidate, e)
         await asyncio.gather(*[_warm(t) for t in TASKS], return_exceptions=True)
 
     async def health(self) -> dict[str, Any]:

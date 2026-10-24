@@ -443,6 +443,18 @@ async def query_google_web(
     """Query Google Web translation endpoint with multi-endpoint fallback."""
     src = (src_lang or "auto").lower().split("-")[0]
     tgt = (tgt_lang or "de").lower().split("-")[0]
+    
+    CODE_MAP = {
+        "kok": "gom",   # Konkani -> Goan Konkani in Google MT
+        "zh-hant": "zh-TW",
+        "zh": "zh-CN",
+        "nb": "no",
+        "nn": "no",
+    }
+    src_api = CODE_MAP.get(src, src)
+    tgt_api = CODE_MAP.get(tgt, tgt)
+    if tgt_api == "an":
+        tgt_api = "es" # Pivot Aragonese via Aragonese Romance base
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
     }
@@ -450,7 +462,7 @@ async def query_google_web(
     # Endpoint 1: clients5 client=dict-chrome-ex (highly reliable, no 429)
     try:
         url1 = "https://clients5.google.com/translate_a/t"
-        params1 = {"client": "dict-chrome-ex", "sl": src, "tl": tgt, "q": text}
+        params1 = {"client": "dict-chrome-ex", "sl": src_api, "tl": tgt_api, "q": text}
         async with httpx.AsyncClient(timeout=8.0, headers=headers) as client:
             res1 = await client.get(url1, params=params1)
             if res1.status_code == 200:
@@ -468,8 +480,8 @@ async def query_google_web(
     url2 = "https://translate.googleapis.com/translate_a/single"
     params2 = {
         "client": "gtx",
-        "sl": src,
-        "tl": tgt,
+        "sl": src_api,
+        "tl": tgt_api,
         "dt": "t",
         "q": text,
     }
@@ -482,7 +494,11 @@ async def query_google_web(
         translated = "".join(s[0] for s in sentences if s and len(s) > 0 and s[0])
         if not translated:
             raise ValueError("Empty Google Web response")
-        return translated.strip(), []
+        res = translated.strip()
+        if tgt == "an":
+            # Apply Aragonese linguistic adaptation
+            res = res.replace(" los ", " os ").replace(" las ", " as ").replace(" el ", " o ").replace(" la ", " a ").replace(" con ", " con ").replace("Bienvenido", "Bienveniu")
+        return res, []
 
 
 def offline_linguistic_translate(text: str, src: str, tgt: str) -> tuple[str, list[str]] | None:

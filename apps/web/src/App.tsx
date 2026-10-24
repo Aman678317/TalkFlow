@@ -19,6 +19,7 @@ const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Translate = lazy(() => import('./pages/Translate'));
 const TranslateWebPage = lazy(() => import('./pages/TranslateWebPage'));
 const WritePage = lazy(() => import('./pages/Write'));
+const NotesPage = lazy(() => import('./pages/Notes'));
 const Documents = lazy(() => import('./pages/Documents'));
 const Voice = lazy(() => import('./pages/Voice'));
 const Meetings = lazy(() => import('./pages/Meetings'));
@@ -87,6 +88,7 @@ export default function App() {
             <Route path="/translate" element={<Translate />} />
             <Route path="/translate/page" element={<TranslateWebPage />} />
             <Route path="/write" element={<WritePage />} />
+            <Route path="/notes" element={<NotesPage />} />
             <Route path="/agents" element={<AgentStudio />} />
             <Route path="/agent-studio" element={<AgentStudio />} />
             <Route path="/docs" element={<DocsPage />} />

@@ -4,30 +4,47 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 import logging
+import time
 import uuid
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import models as M
-from app.db.session import get_db
-from app.deps import Principal, require_permission, require_scope, rl_translate
-from app.errors import AuthenticationError, AuthorizationError, NotFoundError, ProviderError, ValidationError
+from app.db.session import db_session, get_db
+from app.deps import Principal, require_permission, require_scope, rl_translate, rl_translate_stream
+from app.errors import (
+    AppError, AuthenticationError, AuthorizationError, NotFoundError,
+    ProviderError, UnsupportedLanguageError, ValidationError,
+)
 from app.schemas import (
     DetectRequest, DetectResponse, LanguageOut, PageTranslateRequest,
-    PageTranslateResponse, TranslateRequest, TranslateResponse, TranslationOut,
+    PageTranslateResponse, TranslateRequest, TranslateResponse,
+    TranslateStreamRequest, TranslationOut,
 )
 from app.services import audit_service
+from gt_ai.translation.nllb_languages import normalize_lang
 from gt_ai.types import Intent
 from app.services.page_fetch import PageFetchError, fetch_page
-from app.services.translation_service import TranslateContext, translate_text
+from app.services.translation_service import (
+    TranslateContext, split_stable_prefix, translate_text, validate_pair,
+)
 
 log = logging.getLogger("app.routers.translate")
 
 router = APIRouter(prefix="/api/v1", tags=["translation"])
+
+# Beyond this length a "no stable prefix yet" full-text draft would re-decode
+# the tail twice per edit on the CPU model, so it only covers the
+# typing-your-first-sentence window; long documents always have a stable
+# prefix for split_stable_prefix to draft.
+_FULL_DRAFT_MAX_CHARS = 400
 
 
 def _ctx(principal: Principal | None, body: TranslateRequest, product: str = "text") -> TranslateContext:
@@ -40,10 +57,9 @@ def _ctx(principal: Principal | None, body: TranslateRequest, product: str = "te
         intent=body.intent, formality=body.formality, product=product)
 
 
-@router.post("/translate", response_model=TranslateResponse)
-async def translate(body: TranslateRequest,
-                    principal: Principal | None = Depends(rl_translate),
-                    db: AsyncSession = Depends(get_db)):
+async def _authorize_translate(principal: Principal | None, body: TranslateRequest,
+                               db: AsyncSession, texts: list[str]) -> None:
+    """Shared auth/scope/quota/resource checks for /translate and its stream."""
     if principal is None:
         raise AuthenticationError("Authentication required.")
     if principal.kind == "api_key" and principal.api_key is not None:
@@ -51,11 +67,10 @@ async def translate(body: TranslateRequest,
         if "translate" not in scopes and "*" not in scopes:
             raise AuthorizationError("API key lacks scope 'translate'.")
     principal.require("use_translate")
-    texts = body.text if isinstance(body.text, list) else [body.text]
     if len(texts) > 1 and not body.batch:
         raise ValidationError("Multiple texts require batch=true.")
     # Cross-tenant validation: ensure referenced resources belong to caller's org
-    if principal and principal.org_id:
+    if principal.org_id:
         if body.style_profile_id:
             sp = await db.get(M.StyleProfile, body.style_profile_id)
             # Global profiles (org_id NULL) are intentionally listable and usable by every org.
@@ -71,7 +86,7 @@ async def translate(body: TranslateRequest,
                 raise NotFoundError("Translation memory not found.")
     # quota pre-check on characters
     from app.services import usage_service
-    if principal and principal.org_id:
+    if principal.org_id:
         await usage_service.check_quota(
             db, principal.org_id, "characters", sum(len(t) for t in texts))
         # the translation volume is metered as "translation_requests" — the
@@ -79,29 +94,248 @@ async def translate(body: TranslateRequest,
         # trip (issue #109 class 4)
         await usage_service.check_quota(
             db, principal.org_id, "translation_requests", len(texts))
+
+
+def _translation_out(body: TranslateRequest, text: str, out) -> TranslationOut:
+    return TranslationOut(
+        translation_id=out.translation_id,
+        source_language=out.result.source_lang,
+        target_language=out.result.target_lang,
+        source_text=text,
+        translated_text=out.result.text,
+        model=out.result.model,
+        provider=out.result.provider,
+        latency_ms=round(out.result.latency_ms, 1),
+        quality_flags=out.result.quality_flags,
+        tm_match=out.tm_match,
+        domain=body.domain,
+        alternatives=getattr(out.result, "alternatives", []),
+        glossary_note=out.glossary_note,
+    )
+
+
+@router.post("/translate", response_model=TranslateResponse)
+async def translate(body: TranslateRequest,
+                    principal: Principal | None = Depends(rl_translate),
+                    db: AsyncSession = Depends(get_db)):
+    texts = body.text if isinstance(body.text, list) else [body.text]
+    await _authorize_translate(principal, body, db, texts)
     ctx = _ctx(principal, body)
     outputs = []
     for text in texts:
         out = await translate_text(db, text, body.source_language,
                                    body.target_language, ctx)
-        outputs.append(TranslationOut(
-            translation_id=out.translation_id,
-            source_language=out.result.source_lang,
-            target_language=out.result.target_lang,
-            source_text=text,
-            translated_text=out.result.text,
-            model=out.result.model,
-            provider=out.result.provider,
-            latency_ms=round(out.result.latency_ms, 1),
-            quality_flags=out.result.quality_flags,
-            tm_match=out.tm_match,
-            domain=body.domain,
-            alternatives=getattr(out.result, "alternatives", []),
-            glossary_note=out.glossary_note,
-        ))
+        outputs.append(_translation_out(body, text, out))
     from app import context
     return TranslateResponse(translations=outputs,
                              request_id=context.current().request_id)
+
+
+def _sse(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False, default=str)}\n\n"
+
+
+async def _run_translation(text: str, source: str, target: str, ctx: TranslateContext):
+    # Own session: FastAPI may tear down the request-scoped dependency before
+    # a StreamingResponse generator finishes.
+    async with db_session() as db:
+        return await translate_text(db, text, source, target, ctx)
+
+
+async def _translate_stream_events(request: Request, body: TranslateStreamRequest,
+                                   ctx: TranslateContext, request_id: str):
+    """SSE producer for live translation.
+
+    Emits a fast provisional draft of the stable prefix, then the final
+    translation produced by the normal pipeline (TM, glossary, QA, persist).
+    Every provider call is cancelled when the client aborts, so superseded
+    keystrokes do not occupy workers.
+    """
+    import dataclasses
+
+    from app.ai import ai
+
+    started = time.perf_counter()
+    target = normalize_lang(body.target_language)
+    resolved = normalize_lang(body.source_language or "AUTO") or "auto"
+    confidence: float | None = None
+    ttfd_ms: float | None = None
+    draft_used = False
+
+    def elapsed_ms() -> float:
+        return round((time.perf_counter() - started) * 1000, 1)
+
+    try:
+        if resolved in ("auto", ""):
+            yield _sse("meta", {
+                "request_id": request_id,
+                "source_language": resolved,
+                "target_language": target,
+                "detected_confidence": None,
+                "phase": "detecting",
+            })
+            detection = await ai.detect_language(body.text)
+            resolved = detection.language
+            confidence = detection.confidence
+
+        yield _sse("meta", {
+            "request_id": request_id,
+            "source_language": resolved,
+            "target_language": target,
+            "detected_confidence": confidence,
+            "phase": "ready",
+        })
+
+        if resolved == target:
+            # DeepL parity: When source language matches target, stream back identity translation
+            yield _sse("done", {
+                "request_id": request_id,
+                "source_language": resolved,
+                "target_language": target,
+                "detected_confidence": confidence,
+                "ttfd_ms": 0.0,
+                "total_ms": elapsed_ms(),
+                "translations": [{
+                    "translation_id": request_id,
+                    "source_language": resolved,
+                    "target_language": target,
+                    "source_text": body.text,
+                    "translated_text": body.text,
+                    "model": "identity/same_language",
+                    "provider": "identity",
+                    "latency_ms": 0.1,
+                    "quality_flags": ["source_equals_target"],
+                }],
+            })
+            return
+        async with db_session() as check_db:
+            await validate_pair(check_db, resolved, target)
+
+        prefix, _tail = split_stable_prefix(body.text) if body.draft else ("", body.text)
+        # A provisional pass only helps when it can beat the final pass: it
+        # runs with the latency-optimized intent (nllb_ct2 decodes beam-1 for
+        # that intent — at full quality the draft's own decode always lost the
+        # race with the final pass and shipped nothing early, measured
+        # 2026-10-24), never persists and never meters. ai.translate applies
+        # tenant_private_only AFTER the context intent, so privacy routing is
+        # unaffected. While the first sentence is still being typed there is
+        # no stable prefix at all; a DeepL-style editor still shows something,
+        # so the unrevised full text is drafted then too.
+        draft_text = prefix
+        if (body.draft and not draft_text
+                and len(body.text) <= _FULL_DRAFT_MAX_CHARS):
+            draft_text = body.text
+        draft_ctx = dataclasses.replace(
+            ctx, persist=False, meter=False, intent="latency_optimized")
+
+        final_task = asyncio.create_task(
+            _run_translation(body.text, resolved, target, ctx))
+        draft_task = (
+            asyncio.create_task(_run_translation(draft_text, resolved, target, draft_ctx))
+            if draft_text else None
+        )
+        pending = {final_task} | ({draft_task} if draft_task is not None else set())
+
+        try:
+            while pending:
+                if await request.is_disconnected():
+                    return
+                done, pending = await asyncio.wait(
+                    pending, timeout=10, return_when=asyncio.FIRST_COMPLETED)
+                if not done:
+                    yield _sse("ping", {"elapsed_ms": elapsed_ms()})
+                    continue
+
+                if draft_task is not None and draft_task in done:
+                    try:
+                        draft_out = draft_task.result()
+                    except Exception as exc:  # draft failure must not kill the final pass
+                        log.debug("live translation draft failed: %s", exc)
+                    else:
+                        if final_task not in done:
+                            draft_used = True
+                            if ttfd_ms is None:
+                                ttfd_ms = elapsed_ms()
+                            yield _sse("draft", {
+                                "request_id": request_id,
+                                "text": draft_out.result.text,
+                                "source_language": draft_out.result.source_lang,
+                                "target_language": draft_out.result.target_lang,
+                                "model": draft_out.result.model,
+                                "provider": draft_out.result.provider,
+                                "quality_flags": draft_out.result.quality_flags,
+                                "latency_ms": round(draft_out.result.latency_ms, 1),
+                                "elapsed_ms": elapsed_ms(),
+                            })
+
+                if final_task in done:
+                    out = final_task.result()
+                    final = _translation_out(body, body.text, out)
+                    yield _sse("done", {
+                        "request_id": request_id,
+                        "translations": [final.model_dump(mode="json")],
+                        "detected_confidence": confidence,
+                        "ttfd_ms": ttfd_ms,
+                        "total_ms": elapsed_ms(),
+                        "draft_used": draft_used,
+                    })
+                    return
+        finally:
+            # Client aborts, superseded streams and exceptions must not leave
+            # provider calls running past the request.
+            for task in (final_task, draft_task):
+                if task is not None and not task.done():
+                    task.cancel()
+            for task in (final_task, draft_task):
+                if task is not None:
+                    with contextlib.suppress(BaseException):
+                        await task
+    except asyncio.CancelledError:
+        raise
+    except AppError as exc:
+        yield _sse("error", {
+            "request_id": request_id,
+            "code": exc.code,
+            "message": exc.message,
+            "recoverable": exc.recoverable,
+            "details": exc.details,
+        })
+    except Exception as exc:
+        log.exception("live translation failed: %s", exc)
+        yield _sse("error", {
+            "request_id": request_id,
+            "code": "internal_error",
+            "message": "Translation failed. Please retry.",
+            "recoverable": True,
+        })
+
+
+@router.post("/translate/stream")
+async def translate_stream(body: TranslateStreamRequest,
+                           request: Request,
+                           principal: Principal | None = Depends(rl_translate_stream),
+                           db: AsyncSession = Depends(get_db)):
+    """Live translation over Server-Sent Events.
+
+    Mirrors DeepL's while-you-type contract: translate before the sentence is
+    finished, revise the result as more text arrives, and never require a
+    submit button. The client aborts on the next edit; only the final pass is
+    persisted and metered.
+    """
+    await _authorize_translate(principal, body, db, [body.text])
+    ctx = _ctx(principal, body)
+    # Capture the id while the request middleware's context is still active:
+    # a StreamingResponse body runs after that context may have unwound.
+    from app import context as req_context
+    request_id = req_context.current().request_id
+    return StreamingResponse(
+        _translate_stream_events(request, body, ctx, request_id),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/translate/page", response_model=PageTranslateResponse)
@@ -188,16 +422,29 @@ async def languages(db: AsyncSession = Depends(get_db),
 
     A language is exposed as supported only per its measured capability status
     (EXPERIMENTAL < BETA < SUPPORTED < PRODUCTION), never from model metadata.
+
+    Translation adds a second, tighter test: the status is the operator's
+    policy, and a model has to be installed to serve it. `served_languages` is
+    the union of what the runtime-ready MT providers decode on this machine, so
+    a language the checkpoint cannot produce never reaches a dropdown — the
+    picker shows what works, not what a paper claims.
     """
+    from app.ai import ai
+    from gt_ai.types import Task
+    from gt_ai.translation.nllb_languages import PICKER_VARIANTS
+
+    served = ai.served_languages(Task.MT)
     res = await db.execute(select(M.LanguageCapability).order_by(
         M.LanguageCapability.name))
     rows = res.scalars().all()
     out = []
     for r in rows:
+        translatable = (r.translation_status in ("SUPPORTED", "PRODUCTION")
+                        and (served is None or r.code in served))
         item = LanguageOut(
             code=r.code, name=r.name, native_name=r.native_name, script=r.script,
             rtl=r.rtl,
-            translation_supported=r.translation_status in ("SUPPORTED", "PRODUCTION"),
+            translation_supported=translatable,
             speech_input_supported=r.speech_input_status in ("BETA", "SUPPORTED", "PRODUCTION"),
             speech_output_supported=r.speech_output_status in ("BETA", "SUPPORTED", "PRODUCTION"),
             realtime_supported=r.realtime_status in ("BETA", "SUPPORTED", "PRODUCTION"),
@@ -220,6 +467,35 @@ async def languages(db: AsyncSession = Depends(get_db),
             if not keep:
                 continue
         out.append(item)
+
+    # DeepL-style regional rows ("English (British)", "French (Canadian)", …).
+    # They alias a served base language: the request resolves through
+    # LOCALE_VARIANTS before a model sees it, and a variant is advertised only
+    # while its base is served — the picker cannot out-promise the runtime.
+    if not capability or capability == "translation":
+        by_code = {i.code: i for i in out}
+        for variant_code, base_code, display_name in PICKER_VARIANTS:
+            base = by_code.get(base_code)
+            if base is None or not base.translation_supported:
+                continue
+            out.append(LanguageOut(
+                code=variant_code, name=display_name, native_name="",
+                script=base.script, rtl=base.rtl,
+                translation_supported=True,
+                speech_input_supported=False,
+                speech_output_supported=False,
+                realtime_supported=False,
+                document_supported=base.document_supported,
+                translation_status=base.translation_status,
+                speech_input_status="EXPERIMENTAL",
+                speech_output_status="EXPERIMENTAL",
+                realtime_status="EXPERIMENTAL",
+                document_status=base.document_status,
+                tts_voices=[],
+            ))
+        # Stable "DeepL order": base and its variants cluster alphabetically
+        # (English, English (American), English (British), …).
+        out.sort(key=(lambda i: i.name))
     return out
 
 

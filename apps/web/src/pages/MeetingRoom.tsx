@@ -15,6 +15,7 @@ import {
   MicOff,
   MonitorUp,
   PhoneOff,
+  Search,
   Settings,
   Share2,
   ShieldCheck,
@@ -65,6 +66,7 @@ import {
   type CaptionView,
 } from "../lib/captions";
 
+import { NotesSearchEngine } from "../lib/notesSearch";
 interface ChatLine {
   id: string;
   sender: string;
@@ -72,6 +74,27 @@ interface ChatLine {
   language: string;
   translated?: string;
   mine: boolean;
+}
+
+function highlightMatch(text: string | undefined, query: string) {
+  if (!text) return null;
+  if (!query.trim()) return text;
+  const segments = NotesSearchEngine.highlightSegments(text, query);
+
+
+  return (
+    <>
+      {segments.map((seg, i) =>
+        seg.isMatch ? (
+          <mark key={i} className="bg-amber-400/30 text-amber-200 font-semibold rounded px-0.5">
+            {seg.text}
+          </mark>
+        ) : (
+          seg.text
+        )
+      )}
+    </>
+  );
 }
 
 const SAMPLE_RATE = 16000;
@@ -114,7 +137,11 @@ export default function MeetingRoom() {
     caption_mode: "both",
     latency_mode: "balanced",
     captions_enabled: true,
+    original_audio_volume: 0.15,
   });
+  const [audioUnlocked, setAudioUnlocked] = React.useState<boolean>(true);
+  const [autoDetectedLang, setAutoDetectedLang] = React.useState<string | null>(null);
+  const [autoDetectedConfidence, setAutoDetectedConfidence] = React.useState<number | null>(null);
   const [isOnline, setIsOnline] = React.useState(typeof navigator !== "undefined" ? navigator.onLine : true);
   const [isDegradedNetwork, setIsDegradedNetwork] = React.useState(false);
   const [translationStatus, setTranslationStatus] = React.useState<"normal" | "delayed" | "unavailable">("normal");
@@ -152,7 +179,37 @@ export default function MeetingRoom() {
    *  and a single value let one speaker's "ended" clear the other's indicator. */
   const [speakingNow, setSpeakingNow] = React.useState<Set<string>>(() => new Set());
   const [captions, setCaptions] = React.useState<CaptionLine[]>([]);
+  const [captionSearchQuery, setCaptionSearchQuery] = React.useState<string>("");
+  const [captionSpeakerFilter, setCaptionSpeakerFilter] = React.useState<string>("all");
   const [showCaptionsOverlay, setShowCaptionsOverlay] = React.useState(true);
+
+  const transcriptSearchEngine = React.useMemo(() => {
+    const engine = new NotesSearchEngine();
+    captions.forEach((c) => {
+      engine.indexTurn({
+        id: c.id,
+        meetingId: id,
+        speakerName: c.speaker || "Speaker",
+        originalText: c.original || "",
+        sourceLang: c.language || "",
+        translatedText: c.translated || "",
+        targetLang: c.translatedLang || "",
+        timestampMs: c.startWallMs,
+      });
+    });
+    return engine;
+  }, [captions, id]);
+
+  const searchedCaptions = React.useMemo(() => {
+    if (!captionSearchQuery.trim() && captionSpeakerFilter === "all") {
+      return captions;
+    }
+    const results = transcriptSearchEngine.search(captionSearchQuery, {
+      speaker: captionSpeakerFilter,
+    });
+    const idSet = new Set(results.map((r) => r.turn.id));
+    return captions.filter((c) => idSet.has(c.id));
+  }, [captions, transcriptSearchEngine, captionSearchQuery, captionSpeakerFilter]);
   const [chat, setChat] = React.useState<ChatLine[]>([]);
   const [chatDraft, setChatDraft] = React.useState("");
   const [chatDisplay, setChatDisplay] = React.useState<"original" | "mine" | "both">("both");
@@ -408,15 +465,24 @@ export default function MeetingRoom() {
   // ---------------- websocket lifecycle ----------------
   React.useEffect(() => {
     if (!meetingQ.data || phase !== "in") return;
-    playerRef.current = new AudioPlayer((message) => {
-      setTranslationStatus("delayed");
-      setTranslationMessage(message);
-      setNotice(message);
-    }, (turn, state) => {
-      // Only the player knows what the listener actually heard, so the caption's
-      // playback state has to come from here rather than from an event.
-      setCaptions((prev) => setPlayback(prev, turn, state));
-    });
+    playerRef.current = new AudioPlayer(
+      (message) => {
+        setTranslationStatus("delayed");
+        setTranslationMessage(message);
+        setNotice(message);
+      },
+      (turn, state) => {
+        // Only the player knows what the listener actually heard, so the caption's
+        // playback state has to come from here rather than from an event.
+        setCaptions((prev) => setPlayback(prev, turn, state));
+      },
+      (ctxState) => {
+        setAudioUnlocked(ctxState === "running");
+      }
+    );
+    if (playerRef.current.isSuspended) {
+      setAudioUnlocked(false);
+    }
     const socket = new MeetingSocket({
       meetingId: id,
       sessionKey: seatSessionKeyRef.current ?? undefined,
@@ -443,10 +509,13 @@ export default function MeetingRoom() {
           const lang = utterLangRef.current.get(frame.shortId);
           const understoodNatively = lang && lang === prefsRef.current.listening_language;
           const liveKitConnected = mediaRoomStateRef.current === "connected";
+          // When WebRTC P2P or LiveKit is connected, the media track already delivers original audio directly.
+          // Only use the WS PCM relay if WebRTC audio is disconnected or inactive.
+          const p2pPeerConnected = Object.keys(p2pStreams).length > 0;
           if (
-            (liveKitConnected && mode === "translated" && understoodNatively) ||
-            (!liveKitConnected &&
-              (mode === "original" || mode === "mixed" || (mode === "translated" && understoodNatively)))
+            !liveKitConnected &&
+            !p2pPeerConnected &&
+            (mode === "original" || mode === "mixed" || (mode === "translated" && understoodNatively))
           ) {
             player.enqueuePcm16(frame.pcm, SAMPLE_RATE, `orig-${frame.shortId}`);
           }
@@ -639,7 +708,12 @@ export default function MeetingRoom() {
         // The pipeline fires this on VAD onset, which is also when it declares the
         // interrupted speaker's earlier translated audio stale.
         const sid = evt.speaker_id as string | undefined;
-        if (sid) setSpeakingNow((prev) => (prev.has(sid) ? prev : new Set(prev).add(sid)));
+        if (sid) {
+          setSpeakingNow((prev) => (prev.has(sid) ? prev : new Set(prev).add(sid)));
+          if (sid === myParticipantIdRef.current) {
+            playerRef.current?.setDucking(true);
+          }
+        }
         break;
       }
       case "speech.ended": {
@@ -651,6 +725,9 @@ export default function MeetingRoom() {
             next.delete(sid);
             return next;
           });
+          if (sid === myParticipantIdRef.current) {
+            playerRef.current?.setDucking(false);
+          }
         }
         // No cancellation here on purpose. The original-relay queue tag is the
         // SPEAKER's short id, while this event names an UTTERANCE, so any tag
@@ -663,6 +740,19 @@ export default function MeetingRoom() {
         break;
       }
       case "playback.flush": {
+        const rawCids = evt.correlation_ids ?? (evt.correlation_id ? [evt.correlation_id] : []);
+        const cids = Array.isArray(rawCids) ? rawCids : typeof rawCids === "string" ? [rawCids] : [];
+        if (cids.length > 0) {
+          setCaptions((prev) => {
+            let next = prev;
+            for (const cid of cids) {
+              if (typeof cid === "string" && cid) {
+                next = setPlayback(next, cid, "dropped");
+              }
+            }
+            return next;
+          });
+        }
         const scope = evt.scope as string | undefined;
         if (scope === "recipient") {
           // This listener changed what they want to hear, so every chunk still
@@ -683,10 +773,25 @@ export default function MeetingRoom() {
         }
         break;
       }
+      case "language.detected": {
+        if (evt.speaker_id === myParticipantIdRef.current && evt.language) {
+          setAutoDetectedLang(evt.language as string);
+          if (typeof evt.confidence === "number") {
+            setAutoDetectedConfidence(evt.confidence);
+          }
+        }
+        break;
+      }
       case "transcript.partial":
       case "transcript.final": {
         const uid = evt.utterance_id as string;
         if (typeof uid === "string") utterLangRef.current.set(uid.slice(0, 16), evt.language as string);
+        if (evt.speaker_id === myParticipantIdRef.current && evt.language) {
+          setAutoDetectedLang(evt.language as string);
+          if (typeof evt.confidence === "number") {
+            setAutoDetectedConfidence(evt.confidence);
+          }
+        }
         if (prefsRef.current.captions_enabled === false) break;
         setCaptions((prev) => reduceCaptions(prev, evt, captionView()));
         break;
@@ -1707,6 +1812,21 @@ export default function MeetingRoom() {
         const participant = participantsById.get(peer.id);
         const speakingLanguage = participant?.speaking_language ?? (peer.self ? prefs.speaking_language : "AUTO");
         const listeningLanguage = participant?.listening_language ?? (peer.self ? prefs.listening_language : "en");
+        const isSelf = peer.self;
+        const understoodNatively = speakingLanguage !== "AUTO" && speakingLanguage === prefs.listening_language;
+        const translationActive = translationStatus !== "unavailable";
+        const isTranslatedMode = prefs.audio_mode === "translated";
+        const isMixedMode = prefs.audio_mode === "mixed";
+        const isSpeaking = speakingNow.has(peer.id) && (!peer.self || micOn);
+        const duckingVol = prefs.original_audio_volume ?? 0.15;
+        // In translated mode, floor audio is muted unless the remote speaker is speaking,
+        // providing an immediate acoustic interruption cue at ducking volume before TTS starts.
+        const audioMuted = isSelf || (translationActive && isTranslatedMode && !understoodNatively && !isSpeaking);
+        const audioVolume = isSelf
+          ? 0
+          : translationActive && !understoodNatively && (isMixedMode || (isTranslatedMode && isSpeaking))
+            ? duckingVol
+            : 1;
         return {
           id: peer.id,
           name: peer.name,
@@ -1715,14 +1835,29 @@ export default function MeetingRoom() {
           self: peer.self,
           speakingLanguage,
           listeningLanguage,
-          speaking: speakingNow.has(peer.id) && (!peer.self || micOn),
+          speaking: isSpeaking,
           muted: peer.self ? !micOn : !peer.microphoneOn,
+          audioMuted,
+          audioVolume,
           isVirtualCamera: peer.self ? usingVirtualCamera : false,
         };
       })
       : participants.map((participant) => {
         const isSelf = participant.id === myParticipantId;
         const media = remoteMedia[participant.id];
+        const speakingLanguage = participant.speaking_language;
+        const understoodNatively = speakingLanguage !== "AUTO" && speakingLanguage === prefs.listening_language;
+        const translationActive = translationStatus !== "unavailable";
+        const isTranslatedMode = prefs.audio_mode === "translated";
+        const isMixedMode = prefs.audio_mode === "mixed";
+        const isSpeaking = speakingNow.has(participant.id) && (!isSelf || micOn);
+        const duckingVol = prefs.original_audio_volume ?? 0.15;
+        const audioMuted = isSelf || (translationActive && isTranslatedMode && !understoodNatively && !isSpeaking);
+        const audioVolume = isSelf
+          ? 0
+          : translationActive && !understoodNatively && (isMixedMode || (isTranslatedMode && isSpeaking))
+            ? duckingVol
+            : 1;
         return {
           id: participant.id,
           name: participant.display_name,
@@ -1731,8 +1866,10 @@ export default function MeetingRoom() {
           self: isSelf,
           speakingLanguage: participant.speaking_language,
           listeningLanguage: participant.listening_language,
-          speaking: speakingNow.has(participant.id) && (!isSelf || micOn),
+          speaking: isSpeaking,
           muted: isSelf ? !micOn : media ? !media.mic : true,
+          audioMuted,
+          audioVolume,
           isVirtualCamera: isSelf ? usingVirtualCamera : false,
         };
       });
@@ -1751,6 +1888,8 @@ export default function MeetingRoom() {
         listeningLanguage: prefs.listening_language,
         speaking: micOn && speakingNow.has(myParticipantId || ""),
         muted: !micOn,
+        audioMuted: true,
+        audioVolume: 0,
         isVirtualCamera: usingVirtualCamera,
       },
       ...callTiles,
@@ -1803,7 +1942,11 @@ export default function MeetingRoom() {
           >
             <Globe className="h-3.5 w-3.5 text-dl-blue" />
             <span className="font-medium">
-              I speak: {languageLabel(caps, prefs.speaking_language)} ➔ Hear: {languageLabel(caps, prefs.listening_language)}
+              I speak: {prefs.speaking_language === "AUTO"
+                ? (autoDetectedLang
+                    ? `Auto (${languageLabel(caps, autoDetectedLang)}${autoDetectedConfidence != null ? ` ${Math.round(autoDetectedConfidence <= 1 ? autoDetectedConfidence * 100 : autoDetectedConfidence)}%` : ""})`
+                    : "Auto-detect")
+                : languageLabel(caps, prefs.speaking_language)} ➔ Hear: {languageLabel(caps, prefs.listening_language)}
             </span>
             <span className="text-[10px] text-emerald-400 font-mono bg-emerald-950/60 border border-emerald-800/40 px-1.5 py-0.2 rounded-full">
               {currentLatencyMs != null ? `⚡ ~${currentLatencyMs}ms` : "< 350ms"}
@@ -1882,6 +2025,30 @@ export default function MeetingRoom() {
           <span className="flex-1">{notice}</span>
           <button className="font-semibold underline hover:text-white" onClick={() => setNotice(null)}>
             dismiss
+          </button>
+        </div>
+      )}
+
+      {!audioUnlocked && phase === "in" && (
+        <div
+          className="flex items-center justify-between gap-3 border-b border-dl-blue/30 bg-dl-blue/20 px-4 py-2.5 text-xs text-blue-200 shrink-0 cursor-pointer"
+          role="alert"
+          onClick={async () => {
+            await playerRef.current?.resumeContext();
+            setAudioUnlocked(true);
+          }}
+        >
+          <div className="flex items-center gap-2">
+            <Volume2 className="h-4 w-4 text-dl-blue shrink-0 animate-pulse" />
+            <span>
+              <strong>Audio playback is muted by browser policy.</strong> Tap here to enable real-time translated voice.
+            </span>
+          </div>
+          <button
+            type="button"
+            className="rounded-lg bg-dl-blue px-3 py-1 font-semibold text-white shadow hover:bg-blue-600 shrink-0"
+          >
+            Enable Audio
           </button>
         </div>
       )}
@@ -2141,22 +2308,30 @@ export default function MeetingRoom() {
                   : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3"
               }`}
           >
-            {finalTiles.map((tile) => (
-              <VideoTile
-                key={tile.id}
-                name={tile.name}
-                lang={languageLabel(caps, tile.speakingLanguage === "AUTO" ? "en" : tile.speakingLanguage)}
-                hear={languageLabel(caps, tile.listeningLanguage)}
-                stream={tile.stream}
-                videoOn={tile.self ? cameraOn && !!tile.stream : !!tile.stream}
-                isVirtualCamera={tile.isVirtualCamera}
-                isScreenShare={tile.isScreenShare}
-                speaking={tile.speaking}
-                muted={tile.muted}
-                self={tile.self}
-                className="aspect-video w-full rounded-2xl border border-white/10 shadow-lg bg-[#202124]"
-              />
-            ))}
+            {finalTiles.map((tile) => {
+              const tileSubtitle = showCaptionsOverlay && latestCaption && (latestCaption.speakerId === tile.id || (tile.self && (latestCaption.speakerId === myParticipantId || latestCaption.speakerId === "me")))
+                ? (latestCaption.translated || latestCaption.original)
+                : undefined;
+              return (
+                <VideoTile
+                  key={tile.id}
+                  name={tile.name}
+                  lang={languageLabel(caps, tile.speakingLanguage === "AUTO" ? (tile.self && autoDetectedLang ? autoDetectedLang : "en") : tile.speakingLanguage)}
+                  hear={languageLabel(caps, tile.listeningLanguage)}
+                  stream={tile.stream}
+                  videoOn={tile.self ? cameraOn && !!tile.stream : !!tile.stream}
+                  isVirtualCamera={tile.isVirtualCamera}
+                  isScreenShare={tile.isScreenShare}
+                  speaking={tile.speaking}
+                  muted={tile.muted}
+                  audioMuted={tile.audioMuted}
+                  audioVolume={tile.audioVolume}
+                  self={tile.self}
+                  subtitle={tileSubtitle}
+                  className="aspect-video w-full rounded-2xl border border-white/10 shadow-lg bg-[#202124]"
+                />
+              );
+            })}
           </div>
 
           {/* Participant Waiting Card (Visible State 9) */}
@@ -2190,12 +2365,32 @@ export default function MeetingRoom() {
           {/* Google Meet Live Multilingual Floating Subtitles Overlay */}
           {showCaptionsOverlay && latestCaption && (
             <div className="pointer-events-none mt-2 w-full max-w-2xl mx-auto z-10 animate-fade-in" data-testid="caption-box">
-              <div className="rounded-xl border border-white/15 bg-black/80 backdrop-blur-md px-4 py-2.5 text-center text-sm shadow-xl">
+              <div
+                className={`rounded-xl border backdrop-blur-md px-4 py-2.5 text-center text-sm shadow-xl transition-all ${
+                  latestCaption.playback === "playing"
+                    ? "border-sky-400/50 bg-black/90 shadow-[0_0_16px_rgba(56,189,248,0.2)] ring-1 ring-sky-500/40"
+                    : "border-white/15 bg-black/80"
+                }`}
+              >
                 <div className="flex items-center justify-center gap-2 text-[11px] text-sky-300 font-medium mb-0.5">
-                  <span>{latestCaption.speaker}</span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="inline-flex items-center justify-center h-4 w-4 rounded-full bg-sky-500/30 text-[10px] text-sky-200 uppercase font-bold">
+                      {latestCaption.speaker ? latestCaption.speaker.charAt(0) : "S"}
+                    </span>
+                    <span>{latestCaption.speaker}</span>
+                  </div>
                   {latestCaption.language && (
                     <span className="uppercase text-[10px] px-1.5 py-0.2 rounded bg-white/15 text-slate-200">
                       {latestCaption.language}
+                      {latestCaption.translatedLang && latestCaption.translatedLang !== latestCaption.language
+                        ? ` → ${latestCaption.translatedLang}`
+                        : ""}
+                    </span>
+                  )}
+                  {latestCaption.playback === "playing" && (
+                    <span className="flex items-center gap-1 text-[10px] text-emerald-400 font-normal">
+                      <Volume2 className="h-3 w-3 animate-pulse" />
+                      <span>Speaking</span>
                     </span>
                   )}
                   {latestCaption.latencyMs && (
@@ -2474,40 +2669,144 @@ export default function MeetingRoom() {
                         ))}
                       </div>
                     </div>
+
+                    {/* Apple Notes-style Instant Transcript Search Bar */}
+                    <div className="pt-1.5 space-y-1.5">
+                      <div className="relative flex items-center">
+                        <Search className="h-3.5 w-3.5 text-slate-400 absolute left-2.5 pointer-events-none" />
+                        <input
+                          type="text"
+                          value={captionSearchQuery}
+                          onChange={(e) => setCaptionSearchQuery(e.target.value)}
+                          placeholder="Search spoken words or translations…"
+                          aria-label="Search transcript"
+                          className="w-full rounded-lg bg-white/5 border border-white/10 pl-8 pr-7 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-dl-blue transition-colors"
+                        />
+                        {captionSearchQuery && (
+                          <button
+                            type="button"
+                            onClick={() => setCaptionSearchQuery("")}
+                            className="absolute right-2 text-slate-400 hover:text-white"
+                            aria-label="Clear search"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="flex items-center justify-between text-[10px] text-slate-400 px-0.5">
+                        {captionSearchQuery ? (
+                          <span className="font-medium text-amber-300">
+                            {searchedCaptions.length} matching turn(s)
+
+
+
+
+
+                          </span>
+                        ) : (
+                          <span>{captions.length} total turn(s)</span>
+                        )}
+
+                        {Array.from(new Set(captions.map((c) => c.speaker).filter(Boolean))).length > 1 && (
+                          <select
+                            value={captionSpeakerFilter}
+                            onChange={(e) => setCaptionSpeakerFilter(e.target.value)}
+                            aria-label="Filter by speaker"
+                            className="rounded bg-white/5 border border-white/10 px-1.5 py-0.5 text-[10px] text-slate-300 focus:outline-none"
+                          >
+                            <option value="all">All speakers</option>
+                            {Array.from(new Set(captions.map((c) => c.speaker).filter(Boolean))).map((spk) => (
+                              <option key={spk} value={spk}>{spk}</option>
+                            ))}
+                          </select>
+                        )}
+                      </div>
+                    </div>
                   </div>
 
-                  <div className="space-y-2.5 max-h-[calc(100vh-280px)] overflow-y-auto pr-1">
-                    {captions.map((c) => (
-                      <div key={c.id} className="rounded-xl border border-white/10 bg-white/5 p-3 text-xs space-y-1">
-                        <div className="flex items-center justify-between text-[10px] text-slate-400">
-                          <span className="font-semibold text-slate-200">{c.speaker}</span>
-                          <div className="flex items-center gap-1.5">
-                            {/* Only the two states that need explaining: audio on now,
-                                and audio cut off before the listener heard it. */}
-                            {c.playback === "playing" && (
-                              <span className="flex items-center gap-1 text-sky-400">
-                                <Volume2 className="h-3 w-3" />
+                  <div className="space-y-2.5 max-h-[calc(100vh-320px)] overflow-y-auto pr-1">
+                    {searchedCaptions
+
+
+
+
+
+
+
+
+
+
+                      .map((c) => (
+                        <div
+                          key={c.id}
+                          className={`rounded-xl border p-3 text-xs space-y-1 transition-all ${
+                            c.playback === "playing"
+                              ? "border-sky-400/50 bg-sky-950/25 shadow-[0_0_12px_rgba(56,189,248,0.15)] ring-1 ring-sky-500/30"
+                              : "border-white/10 bg-white/5"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between text-[10px] text-slate-400">
+                            <div className="flex items-center gap-1.5">
+                              <span className="inline-flex items-center justify-center h-4 w-4 rounded-full bg-sky-500/20 text-[10px] text-sky-300 uppercase font-bold shrink-0">
+                                {c.speaker ? c.speaker.charAt(0) : "S"}
                               </span>
-                            )}
-                            {c.playback === "dropped" && (
-                              <span className="text-slate-500" title="Interrupted before it finished playing">
-                                not heard
-                              </span>
-                            )}
-                            {c.language && <span className="uppercase">{c.language}</span>}
-                            {c.latencyMs != null && <span className="text-emerald-400">{Math.round(c.latencyMs)}ms</span>}
+                              <span className="font-semibold text-slate-200">{highlightMatch(c.speaker, captionSearchQuery)}</span>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              {/* Only the two states that need explaining: audio on now,
+                                  and audio cut off before the listener heard it. */}
+                              {c.playback === "playing" && (
+                                <span className="flex items-center gap-1 text-sky-400 font-medium">
+                                  <Volume2 className="h-3 w-3 animate-pulse" />
+                                  <span className="text-[10px]">Playing</span>
+                                </span>
+                              )}
+                              {c.playback === "dropped" && (
+                                <span className="text-slate-500" title="Interrupted before it finished playing">
+                                  not heard
+                                </span>
+                              )}
+                              {c.language && <span className="uppercase">{c.language}</span>}
+                              {c.latencyMs != null && <span className="text-emerald-400">{Math.round(c.latencyMs)}ms</span>}
+                            </div>
                           </div>
+                          {c.original && <p className="text-slate-400 italic">{highlightMatch(c.original, captionSearchQuery)}</p>}
+                          {c.translated && <p className="text-white font-medium">{highlightMatch(c.translated, captionSearchQuery)}</p>}
+                          {c.failed && <p className="text-amber-400">{c.failed}</p>}
                         </div>
-                        {c.original && <p className="text-slate-400 italic">{c.original}</p>}
-                        {c.translated && <p className="text-white font-medium">{c.translated}</p>}
-                        {c.failed && <p className="text-amber-400">{c.failed}</p>}
-                      </div>
-                    ))}
+                      ))}
                     {captions.length === 0 && (
                       <p className="py-8 text-center text-xs text-slate-400">
                         Speech will appear here transcribed and translated in real time.
                       </p>
                     )}
+                    {captions.length > 0 && searchedCaptions.length === 0 && (
+
+
+
+
+
+
+
+
+
+
+                        <div className="py-6 text-center text-xs text-slate-400 space-y-2">
+                          <p>No turns match &ldquo;{captionSearchQuery}&rdquo;.</p>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => {
+                              setCaptionSearchQuery("");
+                              setCaptionSpeakerFilter("all");
+                            }}
+                            className="rounded-lg text-[11px] h-7 px-3 bg-white/5 hover:bg-white/10 text-slate-200"
+                          >
+                            Clear search filters
+                          </Button>
+                        </div>
+                      )}
                   </div>
                 </div>
               )}
@@ -2890,6 +3189,28 @@ export default function MeetingRoom() {
                       ]}
                     />
                   </div>
+
+                  {prefs.audio_mode === "mixed" && (
+                    <div className="rounded-xl border border-white/10 bg-white/5 p-3 space-y-1.5">
+                      <div className="flex items-center justify-between text-[11px]">
+                        <span className="font-medium text-white">Original Voice Ducking Volume</span>
+                        <span className="text-slate-400">{Math.round((prefs.original_audio_volume ?? 0.15) * 100)}%</span>
+                      </div>
+                      <input
+                        type="range"
+                        aria-label="Original Voice Ducking Volume"
+                        min="5"
+                        max="60"
+                        step="5"
+                        value={Math.round((prefs.original_audio_volume ?? 0.15) * 100)}
+                        onChange={(e) => updatePrefs({ original_audio_volume: Number(e.target.value) / 100 })}
+                        className="w-full accent-dl-blue h-1.5 bg-slate-700 rounded-lg cursor-pointer"
+                      />
+                      <span className="block text-[10px] text-slate-400">
+                        Plays the floor audio at a subtle background level under the translated speech (Interprefy style).
+                      </span>
+                    </div>
+                  )}
 
                   {/* Caption display */}
                   <div>

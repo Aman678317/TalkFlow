@@ -233,11 +233,11 @@ export type RealtimeEventType =
   | "translation.transcript.partial" | "translation.transcript.final"
   | "translation.started" | "translation.partial" | "translation.final" | "translation.segment.final" | "translation.segment.translated"
   | "tts.started" | "tts.chunk" | "tts.completed" | "translation.tts.ready" | "audio.published"
-  | "caption.updated" | "language.changed"
+  | "caption.updated" | "language.changed" | "language.detected"
   | "chat.message" | "chat.translation"
   | "media.state"
   | "quality.degraded" | "quality.latency" | "latency.report" | "translation.failed" | "translation.error"
-  | "playback.flush"
+  | "playback.flush" | "playback.interrupt"
   | "reconnect.required" | "error" | "pong" | "signal" | "diagnostic";
 
 export interface RealtimeEvent {
@@ -258,4 +258,6 @@ export interface Preferences {
   latency_mode: LatencyMode;
   /** Server-side caption fan-out. Omitted by older callers = enabled. */
   captions_enabled?: boolean;
+  /** Volume for ducked original audio in mixed mode (0.0 to 1.0, default 0.15). */
+  original_audio_volume?: number;
 }

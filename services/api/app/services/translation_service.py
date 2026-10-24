@@ -33,6 +33,7 @@ from app.db import models as M
 from app.errors import UnsupportedLanguageError, ValidationError
 from app.services import usage_service
 from gt_ai.embeddings.hash_tfidf import cosine_similarity
+from gt_ai.translation.nllb_languages import normalize_lang
 from gt_ai.translation.text_ops import (
     apply_glossary_to_output,
     normalize_unicode,
@@ -101,6 +102,57 @@ def _lexical_similarity(a: str, b: str) -> float:
     if not A or not B:
         return 0.0
     return 2 * len(A & B) / (len(A) + len(B))
+
+
+_SENTENCE_END = ".!?。！？…\n"
+_CLOSERS = "\"'”’)]}"
+
+
+def split_stable_prefix(text: str, *, min_prefix: int = 32) -> tuple[str, str]:
+    """Split text into a stable prefix and the still-changing tail.
+
+    A live editor needs *something* on screen before the whole input exists.
+    The prefix ends at the last sentence boundary that can no longer change
+    (everything except the final sentence), so a provisional translation of
+    it can be produced while the tail is still being typed. Returns
+    ``("", text)`` when there is no prefix worth translating.
+    """
+    body = text.rstrip()
+    if len(body) < min_prefix + 2:
+        return "", body
+
+    boundaries: list[int] = []
+    i = 0
+    while i < len(body):
+        if body[i] not in _SENTENCE_END:
+            i += 1
+            continue
+        j = i + 1
+        while j < len(body) and body[j] in _CLOSERS:
+            j += 1
+        # Require a boundary after the terminator so decimals ("3.14") and
+        # abbreviations ("e.g.") are not mistaken for sentence ends.
+        if j >= len(body) or body[j].isspace():
+            boundaries.append(j)
+        i = j
+
+    if not boundaries:
+        return "", body
+    if boundaries[-1] < len(body):
+        # Last sentence is incomplete: every complete sentence is stable.
+        cut = boundaries[-1]
+    else:
+        # Last sentence is complete but could still be edited; leave it to
+        # the final pass and draft the sentences before it.
+        if len(boundaries) < 2:
+            return "", body
+        cut = boundaries[-2]
+
+    prefix = body[:cut].strip()
+    tail = body[cut:].strip()
+    if len(prefix) < min_prefix or not tail:
+        return "", body
+    return prefix, tail
 
 
 # --------------------------------------------------------------------------- #
@@ -224,11 +276,11 @@ async def translate_text(
         raise ValidationError(f"Text exceeds {MAX_TEXT_LEN} characters.")
 
     t0 = time.perf_counter()
-    source_language = (source_language or "AUTO").lower()
-    target_language = target_language.lower()
-    if source_language == target_language and source_language != "auto":
-        raise ValidationError("Source and target language must differ.")
-
+    # Case keeps meaning: the registry stores `zh-Hant`, so a plain .lower()
+    # turned a valid picker value into an unknown language. normalize_lang()
+    # folds every spelling the caller may send onto the registry code.
+    source_language = normalize_lang(source_language or "AUTO") or "auto"
+    target_language = normalize_lang(target_language)
     # 1) language detection ---------------------------------------------- #
     detected = source_language
     detect_conf = 1.0
@@ -238,10 +290,24 @@ async def translate_text(
         detect_conf = det.confidence
         log.debug("detected lang=%s conf=%.2f provider=%s",
                   det.language, det.confidence, det.provider)
-    if detected == target_language:
-        raise UnsupportedLanguageError(
-            "Detected source language equals the target language.",
-            details={"detected": detected}, recoverable=True)
+
+    detected_norm = normalize_lang(detected) or detected
+    target_norm = normalize_lang(target_language) or target_language
+
+    # DeepL parity: When source language equals target language (explicitly or via detection),
+    # return the text as an identity pass-through immediately rather than raising an error.
+    if (source_language != "auto" and source_language == target_language) or (detected_norm == target_norm):
+        result = TranslationResult(
+            text=text,
+            source_lang=detected_norm or target_norm,
+            target_lang=target_norm,
+            model="identity/same_language",
+            provider="identity",
+            latency_ms=round((time.perf_counter() - t0) * 1000, 1),
+            quality_flags=["source_equals_target"],
+            confidence=detect_conf,
+        )
+        return await _persist(db, text, result, ctx, tm_match=None, glossary=None)
 
     # 2) capability validation -------------------------------------------- #
     await validate_pair(db, detected, target_language)
@@ -283,6 +349,15 @@ async def translate_text(
         style_cfg["formality"] = ctx.formality
 
     # 5) translate via router ---------------------------------------------- #
+    # Release the pooled connection for the duration of the model call. A CPU
+    # decode is 3-10 s (measured 2026-10-24) and the SQLite QueuePool is
+    # 5 + 10; holding a checkout across the call is what made eight concurrent
+    # live streams — two sessions each, draft and final — answer
+    # `QueuePool limit reached` with a 500. The session re-acquires a
+    # connection for the write below; `_persist` already commits per
+    # translation, so no caller was treating these steps as one transaction.
+    await db.commit()
+
     context_list: list[str] = []
     if ctx.context:
         if isinstance(ctx.context, str):

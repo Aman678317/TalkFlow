@@ -33,3 +33,9 @@ try {
   // ignore
 }
 
+// jsdom ships no scrollIntoView, so any component that scrolls its active list
+// item into view throws an uncaught exception during commit.
+if (typeof Element !== "undefined" && !Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = () => {};
+}
+

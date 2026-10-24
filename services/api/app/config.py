@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -41,7 +42,7 @@ class Settings(BaseSettings):
     )
 
     # --- core ---
-    app_env: str = "development"
+    app_env: Literal["development", "test", "production"] = "development"
     app_name: str = "GlobalTalk AI"
     version: str = "0.1.0"
     api_host: str = "0.0.0.0"
@@ -240,6 +241,21 @@ class Settings(BaseSettings):
     # bounded and the chain fails over to the next candidate. 0 disables.
     provider_attempt_timeout_s: float = 20.0
 
+    # Self-hosted MT gets a longer attempt deadline than a networked provider:
+    # the work is a CPU beam search, not a socket, and on a low-RAM box a
+    # low-resource target legitimately takes 3-14 s (measured 2026-10-24).
+    # Killing it at 20 s failed over to providers with no pack installed and
+    # landed on the dev echo, which is how "works in the model" became
+    # "does not work in the app".
+    mt_local_attempt_timeout_s: float = 45.0
+
+    # How long an error-excluded provider stays out of the chain before it gets
+    # a probe. Exclusion used to be permanent — the counters that decide it only
+    # move on a routed request, and an excluded provider is never routed to —
+    # so one busy minute on the local CPU model disabled MT for the rest of the
+    # process. 0 disables re-probing (exclusion stays until restart).
+    provider_reprobe_after_s: float = 30.0
+
     # realtime tuning (PDD §11.4)
     # Per-stage provider deadlines (remediation plan §2.3). A stage that blows its
     # deadline fails over / degrades instead of stalling the room's event loop.
@@ -257,6 +273,10 @@ class Settings(BaseSettings):
 
     # --- rate limits (count/period) ---
     rate_limit_translate: str = "60/minute"
+    # Live /translate/stream charges one token per settled edit; typing
+    # exceeds the shared 60/minute translate budget within a minute of
+    # word-by-word editing, after which translation visibly stops working.
+    rate_limit_translate_stream: str = "240/minute"
     rate_limit_auth: str = "300/minute"
     rate_limit_default: str = "300/minute"
     rate_limit_ws_connect: str = "30/minute"
@@ -352,9 +372,9 @@ class Settings(BaseSettings):
 
     @property
     def cors_allow_origin_regex(self) -> str | None:
-        # Dev conveniences (localhost, devtunnels, any *.vercel.app) must never
-        # widen credentialed CORS in production; only exact CORS_ORIGINS apply.
-        if self.is_production:
+        # Dev conveniences (localhost, devtunnels, any *.vercel.app) are scoped
+        # to the local/CI environments; every other mode gets exact origins only.
+        if self.app_env not in ("development", "test"):
             return None
         return r"^https?://([a-zA-Z0-9-]+\.)*(devtunnels\.ms|localhost|127\.0\.0\.1|vercel\.app)(:\d+)?$"
 
@@ -384,6 +404,11 @@ class Settings(BaseSettings):
             if "sqlite" in self.database_url.lower():
                 raise ValueError(
                     "Production environment requires a production PostgreSQL database ('DATABASE_URL'). SQLite is not permitted in production."
+                )
+            if "cors_origins" not in self.model_fields_set:
+                raise ValueError(
+                    "Production environment requires an explicit 'CORS_ORIGINS' "
+                    "allowlist; the development defaults are refused."
                 )
             if any(o == "*" for o in self.cors_origins):
                 raise ValueError(

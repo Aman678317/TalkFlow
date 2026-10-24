@@ -8,7 +8,7 @@ import logging
 import uuid
 
 from fastapi import APIRouter, Body, Depends, Query, Request
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -554,7 +554,12 @@ async def get_transcript(meeting_id: uuid.UUID,
     if source_lang:
         query = query.where(M.TranscriptSegment.source_lang == source_lang)
     if q:
-        query = query.where(M.TranscriptSegment.source_text.ilike(f"%{q}%"))
+        query = query.where(
+            or_(
+                M.TranscriptSegment.source_text.ilike(f"%{q}%"),
+                M.TranscriptSegment.translations.any(M.TranslationSegment.target_text.ilike(f"%{q}%")),
+            )
+        )
     res = await db.execute(query.order_by(M.TranscriptSegment.seq).limit(limit))
     segments = res.scalars().all()
     out = []

@@ -24,7 +24,8 @@ import argostranslate.package as pkg
 pkg.update_package_index()
 available = pkg.get_available_packages()
 installed = {(p.from_code, p.to_code) for p in pkg.get_installed_packages()}
-wanted = [('en','hi'),('hi','en'),('en','ja'),('ja','en'),('en','zh'),('zh','en'),('en','es'),('es','en')]
+wanted = [('en','hi'),('hi','en'),('en','ja'),('ja','en'),('en','zh'),('zh','en'),('en','es'),('es','en'),
+          ('en','mr'),('mr','en'),('en','de'),('de','en'),('en','fr'),('fr','en')]
 for pair in wanted:
     if pair in installed:
         print('[OK] argos', pair); continue
@@ -36,6 +37,16 @@ for pair in wanted:
     except Exception as e:
         print('[WARN] argos', pair, e)
 "@
+
+# NLLB-200 (CTranslate2): one checkpoint, ~115 languages both directions with
+# no English pivot. Opt-in on CPU installs (WITH_NLLB=true), automatic on FULL.
+if ($Profile_ -eq "FULL" -or $env:WITH_NLLB -eq "true") {
+  Write-Host "[OK] provisioning NLLB-200 600M ct2-int8 (mt/nllb_ct2)..."
+  python scripts/provision_nllb_ct2.py --model-dir (Join-Path $Cache "nllb-200-600m-ct2-int8") --no-smoke
+  if ($LASTEXITCODE -ne 0) { Write-Host "[WARN] NLLB checkpoint (the language picker shrinks to the installed providers)" }
+} else {
+  Write-Host "[OPTIONAL] skipping NLLB-200 (set WITH_NLLB=true or MODEL_PROFILE=FULL)"
+}
 
 # Piper voices
 $PiperDir = Join-Path $Cache "piper"

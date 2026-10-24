@@ -11,6 +11,7 @@ import re
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from app.config import Settings, settings
 from app.middleware import SECURITY_HEADERS
@@ -119,6 +120,33 @@ def test_production_app_cors_uses_exact_origins_only(monkeypatch):
 
     dev = Settings(app_env="test", cors_origins=["http://localhost:5173"])
     assert dev.cors_allow_origin_regex is not None
+    local = Settings(app_env="development")
+    assert local.cors_allow_origin_regex is not None
+
+
+def test_production_requires_explicit_cors_origins(monkeypatch):
+    """A production boot must name its browser origins; the defaults are refused."""
+    base = dict(
+        app_env="production",
+        secret_key="x" * 32,
+        jwt_secret="y" * 32,
+        redis_url="redis://localhost:6379/0",
+        database_url="postgresql+asyncpg://user:pass@localhost:5432/dbname",
+        metrics_enabled=False,
+    )
+    with pytest.raises(ValueError, match="explicit 'CORS_ORIGINS'"):
+        Settings(**base)
+
+    monkeypatch.setenv("CORS_ORIGINS", "https://app.globaltalk.ai")
+    prod = Settings(**base)
+    assert prod.cors_origins == ["https://app.globaltalk.ai"]
+
+
+def test_app_env_rejects_unknown_modes():
+    """A typo such as 'Production' must fail closed instead of skipping the gates."""
+    for bad in ("Production", "prod", "staging"):
+        with pytest.raises(ValidationError):
+            Settings(app_env=bad)
 
 
 def test_cors_preflight_and_origin_validation(services_app_client):

@@ -3,9 +3,12 @@
 # artifacts, not live credentials. Fingerprints pin the introducing commit, file,
 # rule and line, so any new or relocated secret still fails the CI secret-scan job.
 # Format: <commit>:<path>:<rule-id>:<line>
+06549d2c9dd619dc3327ee7bad2450bd3661aa4c:.github/workflows/search-regression.yml:generic-api-key:31
 0abfe37f8b696902289c4eccb5e3838dfc110af2:.github/workflows/ci.yml:generic-api-key:48
 0f605a4af96b1c60a74e9aff63a0b3a94dd517ae:.github/workflows/ci.yml:generic-api-key:148
 0f605a4af96b1c60a74e9aff63a0b3a94dd517ae:.github/workflows/ci.yml:generic-api-key:64
+3178e8125c35ab20b76ae9f9b7fc98edc3374bd5:docs/SEARCH_TEST_MATRIX.md:generic-api-key:37
+3178e8125c35ab20b76ae9f9b7fc98edc3374bd5:docs/SEARCH_TEST_MATRIX.md:generic-api-key:41
 7096851da291152bb2808ebde9bc2a3a7bb33159:tests/test_telephony_provider_selection_hardened.py:generic-api-key:84
 947573e7b10a68fff6d681b0378ea90eddf4e02e:apps/web/src/pages/ApiKeys.tsx:curl-auth-header:144
 947573e7b10a68fff6d681b0378ea90eddf4e02e:apps/web/src/pages/DocsPage.tsx:curl-auth-header:105
