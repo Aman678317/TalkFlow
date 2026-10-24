@@ -33,6 +33,7 @@ from app.db import models as M
 from app.errors import UnsupportedLanguageError, ValidationError
 from app.services import usage_service
 from gt_ai.embeddings.hash_tfidf import cosine_similarity
+from gt_ai.translation.nllb_languages import normalize_lang
 from gt_ai.translation.text_ops import (
     apply_glossary_to_output,
     normalize_unicode,
@@ -275,8 +276,11 @@ async def translate_text(
         raise ValidationError(f"Text exceeds {MAX_TEXT_LEN} characters.")
 
     t0 = time.perf_counter()
-    source_language = (source_language or "AUTO").lower()
-    target_language = target_language.lower()
+    # Case keeps meaning: the registry stores `zh-Hant`, so a plain .lower()
+    # turned a valid picker value into an unknown language. normalize_lang()
+    # folds every spelling the caller may send onto the registry code.
+    source_language = normalize_lang(source_language or "AUTO") or "auto"
+    target_language = normalize_lang(target_language)
     if source_language == target_language and source_language != "auto":
         raise ValidationError("Source and target language must differ.")
 
@@ -334,6 +338,15 @@ async def translate_text(
         style_cfg["formality"] = ctx.formality
 
     # 5) translate via router ---------------------------------------------- #
+    # Release the pooled connection for the duration of the model call. A CPU
+    # decode is 3-10 s (measured 2026-10-24) and the SQLite QueuePool is
+    # 5 + 10; holding a checkout across the call is what made eight concurrent
+    # live streams — two sessions each, draft and final — answer
+    # `QueuePool limit reached` with a 500. The session re-acquires a
+    # connection for the write below; `_persist` already commits per
+    # translation, so no caller was treating these steps as one transaction.
+    await db.commit()
+
     context_list: list[str] = []
     if ctx.context:
         if isinstance(ctx.context, str):

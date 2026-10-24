@@ -143,6 +143,7 @@ def test_production_configuration_guardrails():
         jwt_secret=strong_jwt,
         redis_url=valid_redis,
         database_url=valid_pg,
+        cors_origins=["https://app.globaltalk.ai"],
     )
     assert prod_settings.is_production is True
     assert prod_settings.secret_key == strong_secret

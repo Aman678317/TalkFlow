@@ -29,6 +29,7 @@ from app.schemas import (
     TranslateStreamRequest, TranslationOut,
 )
 from app.services import audit_service
+from gt_ai.translation.nllb_languages import normalize_lang
 from gt_ai.types import Intent
 from app.services.page_fetch import PageFetchError, fetch_page
 from app.services.translation_service import (
@@ -149,8 +150,8 @@ async def _translate_stream_events(request: Request, body: TranslateStreamReques
     from app.ai import ai
 
     started = time.perf_counter()
-    target = body.target_language.lower()
-    resolved = (body.source_language or "AUTO").lower()
+    target = normalize_lang(body.target_language)
+    resolved = normalize_lang(body.source_language or "AUTO") or "auto"
     confidence: float | None = None
     ttfd_ms: float | None = None
     draft_used = False
@@ -383,16 +384,29 @@ async def languages(db: AsyncSession = Depends(get_db),
 
     A language is exposed as supported only per its measured capability status
     (EXPERIMENTAL < BETA < SUPPORTED < PRODUCTION), never from model metadata.
+
+    Translation adds a second, tighter test: the status is the operator's
+    policy, and a model has to be installed to serve it. `served_languages` is
+    the union of what the runtime-ready MT providers decode on this machine, so
+    a language the checkpoint cannot produce never reaches a dropdown — the
+    picker shows what works, not what a paper claims.
     """
+    from app.ai import ai
+    from gt_ai.types import Task
+    from gt_ai.translation.nllb_languages import PICKER_VARIANTS
+
+    served = ai.served_languages(Task.MT)
     res = await db.execute(select(M.LanguageCapability).order_by(
         M.LanguageCapability.name))
     rows = res.scalars().all()
     out = []
     for r in rows:
+        translatable = (r.translation_status in ("SUPPORTED", "PRODUCTION")
+                        and (served is None or r.code in served))
         item = LanguageOut(
             code=r.code, name=r.name, native_name=r.native_name, script=r.script,
             rtl=r.rtl,
-            translation_supported=r.translation_status in ("SUPPORTED", "PRODUCTION"),
+            translation_supported=translatable,
             speech_input_supported=r.speech_input_status in ("BETA", "SUPPORTED", "PRODUCTION"),
             speech_output_supported=r.speech_output_status in ("BETA", "SUPPORTED", "PRODUCTION"),
             realtime_supported=r.realtime_status in ("BETA", "SUPPORTED", "PRODUCTION"),
@@ -415,6 +429,35 @@ async def languages(db: AsyncSession = Depends(get_db),
             if not keep:
                 continue
         out.append(item)
+
+    # DeepL-style regional rows ("English (British)", "French (Canadian)", …).
+    # They alias a served base language: the request resolves through
+    # LOCALE_VARIANTS before a model sees it, and a variant is advertised only
+    # while its base is served — the picker cannot out-promise the runtime.
+    if not capability or capability == "translation":
+        by_code = {i.code: i for i in out}
+        for variant_code, base_code, display_name in PICKER_VARIANTS:
+            base = by_code.get(base_code)
+            if base is None or not base.translation_supported:
+                continue
+            out.append(LanguageOut(
+                code=variant_code, name=display_name, native_name="",
+                script=base.script, rtl=base.rtl,
+                translation_supported=True,
+                speech_input_supported=False,
+                speech_output_supported=False,
+                realtime_supported=False,
+                document_supported=base.document_supported,
+                translation_status=base.translation_status,
+                speech_input_status="EXPERIMENTAL",
+                speech_output_status="EXPERIMENTAL",
+                realtime_status="EXPERIMENTAL",
+                document_status=base.document_status,
+                tts_voices=[],
+            ))
+        # Stable "DeepL order": base and its variants cluster alphabetically
+        # (English, English (American), English (British), …).
+        out.sort(key=(lambda i: i.name))
     return out
 
 

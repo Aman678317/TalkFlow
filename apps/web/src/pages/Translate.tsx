@@ -828,6 +828,15 @@ export default function TranslatePage() {
   const activeGlossaries = (glossaries ?? []).filter((g) => g.status === "active");
   const caps = langs ?? [];
 
+  // Without a `rtl` context the browser lays an Arabic line out left-to-right:
+  // the pane showed "الطقس حار…" flush-left with its full stop on the wrong
+  // side (seen 2026-10-24). `dir` alone re-aligns the whole line.
+  const isRtl = (code?: string) => !!caps.find((c: any) => c.code === code)?.rtl;
+  const sourceRtl = isRtl(srcLang === "AUTO"
+    ? (detectedLanguage || (result ? result.source_language : undefined))
+    : srcLang);
+  const targetRtl = isRtl(tgtLang);
+
   const working = live ? livePhase !== "idle" : translate.isPending;
   const displayError = live
     ? liveError
@@ -936,6 +945,7 @@ export default function TranslatePage() {
           <div className="relative flex-1 p-5">
             <textarea
               ref={sourceRef}
+              dir={sourceRtl ? "rtl" : "ltr"}
               className="w-full h-full min-h-[200px] resize-none border-0 bg-transparent p-0 text-[15px] leading-relaxed text-dl-navy focus:outline-none focus:ring-0 placeholder:text-dl-faint"
               placeholder="Type or paste text…"
               value={source}
@@ -1102,7 +1112,7 @@ export default function TranslatePage() {
               />
             ) : draft ? (
               <div className="space-y-3">
-                <p className="whitespace-pre-wrap select-text text-base leading-relaxed text-dl-navy">
+                <p dir={targetRtl ? "rtl" : "ltr"} className="whitespace-pre-wrap select-text text-base leading-relaxed text-dl-navy">
                   {draft.translated_text}
                 </p>
                 <div className="flex items-center gap-2 text-[11px] font-medium text-dl-muted">
@@ -1120,7 +1130,7 @@ export default function TranslatePage() {
               />
             ) : result ? (
               <div className="space-y-4">
-                <p className="whitespace-pre-wrap select-text text-base leading-relaxed text-dl-navy">{result.translated_text}</p>
+                <p dir={targetRtl ? "rtl" : "ltr"} className="whitespace-pre-wrap select-text text-base leading-relaxed text-dl-navy">{result.translated_text}</p>
                 {result.from_translation_memory && (
                   <Badge tone="good">Matched in translation memory (100%)</Badge>
                 )}
@@ -1134,8 +1144,9 @@ export default function TranslatePage() {
                         <button
                           key={idx}
                           type="button"
+                          dir={targetRtl ? "rtl" : "ltr"}
                           onClick={() => setResult({ ...result, translated_text: alt })}
-                          className="text-xs px-2.5 py-1 rounded-md bg-white border border-dl-border text-dl-navy hover:border-dl-blue hover:text-dl-blue hover:bg-dl-blue-light/30 transition-all text-left shadow-2xs"
+                          className="text-xs px-2.5 py-1 rounded-md bg-white border border-dl-border text-dl-navy hover:border-dl-blue hover:text-dl-blue hover:bg-dl-blue-light/30 transition-all text-start shadow-2xs"
                         >
                           {alt}
                         </button>

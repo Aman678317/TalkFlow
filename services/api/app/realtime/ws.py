@@ -195,6 +195,25 @@ async def realtime_ws(
                                                mode, db_seq_start=db_seq,
                                                tenant_private_only=meeting_private_only)
         pl.get_pipeline(session)
+        # Build LangGraph control-plane orchestrator (sits ABOVE the AgentBus
+        # audio pipeline). This adds StateGraph conditional edges, MemorySaver
+        # checkpointing for session resume, and preference-driven state
+        # transitions (audio_mode, speaking_language, listening_language)
+        # without touching the proven audio transport logic.
+        meeting = await db.get(M.Meeting, participant.meeting_id) if participant_id is not None else None
+        if meeting is not None:
+            lg_app = build_langgraph_orchestrator(
+                listening_agent=pl.get_pipeline(session).listening,
+                translating_agent=pl.get_pipeline(session).translating,
+                voice_agent=pl.get_pipeline(session).voice,
+                supervisor=pl.get_pipeline(session).supervisor,
+                audio_mode=p_data.get("audio_mode", "translated"),
+                speaking_language=p_data.get("speak_lang", "AUTO"),
+                listening_language=p_data.get("hear_lang", "en"),
+            )
+            # Store on session for access in the receive loop
+            session._langgraph_orchestrator = lg_app
+            session._lg_config = make_checkpoint_config(session.session_id, db_seq)
     else:
         resumed = True
 
@@ -537,6 +556,26 @@ async def _handle_event(ws: WebSocket, session, rp: RtParticipant, event) -> Non
                 "sender_id": str(rp.participant_id),
                 "signal": signal_data,
             }, speaker_id=str(rp.participant_id))
+
+    elif event.type in (ClientEventType.PLAYBACK_INTERRUPT, "playback.flush", "playback.interrupt"):
+        target_sid = data.get("speaker_id") or data.get("speakerId")
+        if target_sid:
+            target_p = session.participants.get(str(target_sid))
+            if target_p:
+                await pipe._handle_barge_in(target_p)
+            else:
+                cancelled = await pipe.supervisor.interrupt(str(target_sid), reason="client_interrupt")
+                if cancelled:
+                    languages = pipe.supervisor.active_languages(str(target_sid))
+                    await manager.broadcast(
+                        session, ServerEventType.PLAYBACK_FLUSH,
+                        {"speaker_id": str(target_sid), "speakerId": str(target_sid),
+                         "reason": "client_interrupt", "scope": "speaker", "recoverable": True,
+                         "target_languages": languages, "correlation_ids": cancelled,
+                         "message": "Translation of the interrupted turn was dropped."},
+                        speaker_id=str(target_sid))
+        else:
+            await pipe._handle_barge_in(rp)
 
     else:
         await _send_error(ws, "unknown_event", f"Unknown event type: {event.type}",

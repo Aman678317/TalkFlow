@@ -38,6 +38,16 @@ for pair in wanted:
         print('[WARN] argos', pair, e)
 "@
 
+# NLLB-200 (CTranslate2): one checkpoint, ~115 languages both directions with
+# no English pivot. Opt-in on CPU installs (WITH_NLLB=true), automatic on FULL.
+if ($Profile_ -eq "FULL" -or $env:WITH_NLLB -eq "true") {
+  Write-Host "[OK] provisioning NLLB-200 600M ct2-int8 (mt/nllb_ct2)..."
+  python scripts/provision_nllb_ct2.py --model-dir (Join-Path $Cache "nllb-200-600m-ct2-int8") --no-smoke
+  if ($LASTEXITCODE -ne 0) { Write-Host "[WARN] NLLB checkpoint (the language picker shrinks to the installed providers)" }
+} else {
+  Write-Host "[OPTIONAL] skipping NLLB-200 (set WITH_NLLB=true or MODEL_PROFILE=FULL)"
+}
+
 # Piper voices
 $PiperDir = Join-Path $Cache "piper"
 New-Item -ItemType Directory -Force -Path $PiperDir | Out-Null

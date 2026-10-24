@@ -214,6 +214,7 @@ def test_production_secret_guard():
         jwt_secret="y" * 32,
         redis_url="redis://localhost:6379/0",
         database_url="postgresql+asyncpg://user:pass@localhost:5432/globaltalk",
+        cors_origins=["https://app.globaltalk.ai"],
     )
     assert valid_settings.is_production
 

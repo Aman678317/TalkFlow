@@ -33,6 +33,7 @@ def _prod_base() -> dict:
         "jwt_secret": "b" * 32,
         "redis_url": "redis://localhost:6379/0",
         "database_url": "postgresql+asyncpg://user:pass@localhost:5432/dbname",
+        "cors_origins": ["https://app.globaltalk.ai"],
     }
 
 

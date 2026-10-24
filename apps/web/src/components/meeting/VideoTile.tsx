@@ -19,6 +19,7 @@ export interface VideoTileProps {
   onTogglePin?: () => void;
   audioMuted?: boolean;
   audioVolume?: number;
+  subtitle?: string;
   className?: string;
 }
 
@@ -39,6 +40,7 @@ export function VideoTile({
   handRaised = false,
   isPinned = false,
   onTogglePin,
+  subtitle,
   className,
 }: VideoTileProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -228,6 +230,15 @@ export function VideoTile({
           <Maximize2 className="h-4 w-4" />
         </button>
       </div>
+
+      {/* 5b. Live In-Tile Subtitle Overlay (Google Meet standard) */}
+      {subtitle && (
+        <div className="pointer-events-none absolute inset-x-2 bottom-12 z-20 flex justify-center animate-fade-in" data-testid="tile-subtitle">
+          <div className="max-w-[95%] rounded-lg bg-black/85 px-2.5 py-1 text-center text-xs font-medium text-white backdrop-blur-md border border-white/15 shadow-lg line-clamp-2">
+            {subtitle}
+          </div>
+        </div>
+      )}
 
       {/* 6. Bottom Metadata Overlay: Name, Languages & Mic Status */}
       <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex items-end justify-between bg-gradient-to-t from-black/85 via-black/40 to-transparent p-3 pt-6">

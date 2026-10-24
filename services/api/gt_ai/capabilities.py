@@ -117,7 +117,7 @@ DEFAULT_LANGUAGES: list[LanguageCapability] = [
                        realtime_status=S, document_status=S,
                        stt_provider="faster_whisper", tts_provider="kokoro",
                        tts_voices=["jf_alpha", "jm_kumo"]),
-    LanguageCapability("zh", "Chinese", "中文", "Hani",
+    LanguageCapability("zh", "Chinese (Simplified)", "简体中文", "Hani",
                        translation_status=S, speech_input_status=S, speech_output_status=S,
                        realtime_status=S, document_status=S,
                        stt_provider="faster_whisper", tts_provider="kokoro",
@@ -154,3 +154,33 @@ DEFAULT_LANGUAGES: list[LanguageCapability] = [
 ]
 
 BY_CODE: dict[str, LanguageCapability] = {lc.code: lc for lc in DEFAULT_LANGUAGES}
+
+
+def nllb_languages() -> list[LanguageCapability]:
+    """Registry rows for the languages mt/nllb_ct2 maps, minus the ones
+    DEFAULT_LANGUAGES already curates.
+
+    These are machine-translation-only rows: NLLB proves that the checkpoint
+    decodes the language, which is why ``translation_status`` is SUPPORTED, and
+    nothing else — speech, realtime and documents stay below the bar until the
+    evaluation harness measures them. The endpoint still hides them unless a
+    runtime-ready provider actually serves the code
+    (``AIFacade.served_languages``), so an install without the checkpoint does
+    not advertise them.
+    """
+    from gt_ai.translation.nllb_languages import NLLB_LANGUAGES
+
+    rows: list[LanguageCapability] = []
+    for lang in NLLB_LANGUAGES:
+        if lang.code in BY_CODE:
+            continue
+        rows.append(LanguageCapability(
+            lang.code, lang.name, lang.native_name, lang.script, rtl=lang.rtl,
+            translation_status=S,
+            speech_input_status=E, speech_output_status=E,
+            realtime_status=E, document_status=B,
+            mt_provider="nllb_ct2",
+            notes=f"NLLB-200 600M (token {lang.nllb}); text MT only, "
+                  "no validated reference score for this language yet",
+        ))
+    return rows

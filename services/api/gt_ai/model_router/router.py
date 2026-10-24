@@ -78,10 +78,37 @@ class ModelRouter:
         providers: dict[Task, list[ProviderSpec]],
         gpu_available: bool = False,
         health: dict[tuple[str, str], ProviderHealth] | None = None,
+        reprobe_after_s: float = 30.0,
     ) -> None:
         self.providers = providers
         self.gpu_available = gpu_available
         self.health: dict[tuple[str, str], ProviderHealth] = health or {}
+        self.reprobe_after_s = reprobe_after_s
+
+    def _reprobe_expired(self, task: Task) -> None:
+        """Let a provider that was dropped for errors back in after a cooldown.
+
+        The error counters only decay on a routed success, and an unavailable
+        provider is never routed to, so one exclusion used to be permanent: a
+        concurrent benchmark overflowed the local CPU model's attempt deadline
+        (measured 2026-10-24), mt/nllb_ct2 was marked unhealthy, and every
+        later request — including single-shot REST seconds afterwards — fell
+        through to dev_echo. That is a load spike being recorded as an outage.
+        """
+        task_value = task.value if isinstance(task, Task) else task
+        if self.reprobe_after_s <= 0:
+            return
+        now = time.time()
+        for (t, provider), h in self.health.items():
+            if t != task_value or h.available or not h.unavailable_since:
+                continue
+            if now - h.unavailable_since < self.reprobe_after_s:
+                continue
+            h.available = True
+            h.error_count = h.request_count = 0
+            h.unavailable_since = 0.0
+            log.info("probing %s/%s again after %.0fs of exclusion",
+                     task, provider, self.reprobe_after_s)
 
     # ------------------------------------------------------------------ #
     def route(
@@ -99,6 +126,7 @@ class ModelRouter:
         candidates = list(self.providers.get(task, []))
         if not candidates:
             raise KeyError(f"no providers configured for task={task}")
+        self._reprobe_expired(task)
 
         # hard filters ------------------------------------------------- #
         def keep(p: ProviderSpec) -> bool:
@@ -218,15 +246,28 @@ class ModelRouter:
             h.error_count += 1
             if h.error_rate > 0.5 and h.request_count >= 4:
                 h.available = False
+                h.unavailable_since = time.time()
                 log.warning("provider %s/%s marked unhealthy (error_rate=%.2f)", task, provider, h.error_rate)
         else:
+            h.unavailable_since = 0.0
             if not h.available and h.error_rate < 0.2:
                 h.available = True
 
     def mark_available(self, task: Task, provider: str, available: bool) -> None:
         key = (task.value if isinstance(task, Task) else task, provider)
         h = self.health.setdefault(key, ProviderHealth())
+        was_available = h.available
         h.available = available
+        # Only a real transition starts the cooldown clock. AIFacade temporarily
+        # excludes each candidate while it assembles a failover chain and
+        # restores the previous state afterwards; stamping on every one of those
+        # reaffirmations reset the timer on each request, so an excluded local
+        # model could never reach its reprobe (seen 2026-10-24: the REST pass
+        # straight after a concurrent storm answered dev_echo in 50 ms).
+        if available:
+            h.unavailable_since = 0.0
+        elif was_available:
+            h.unavailable_since = time.time()
         h.request_count = 0
         h.error_count = 0
 

@@ -16,7 +16,7 @@ from app.db.base import utcnow
 from app.db import models as M
 from app.db.session import db_session, init_db
 from app.security import hash_password
-from gt_ai.capabilities import DEFAULT_LANGUAGES, QualityStatus
+from gt_ai.capabilities import DEFAULT_LANGUAGES, QualityStatus, nllb_languages
 
 log = logging.getLogger("app.seed")
 
@@ -82,7 +82,11 @@ MODEL_REGISTRY_SEED = [
 
 async def seed_languages(db) -> int:
     n = 0
-    for lc in DEFAULT_LANGUAGES:
+    # The curated DEFAULT_LANGUAGES rows carry measured speech/realtime/document
+    # statuses; nllb_languages() adds the machine-translation coverage the NLLB
+    # checkpoint brings and skips any code already curated above, so no status
+    # the evaluation harness earned gets overwritten by a model's claim.
+    for lc in [*DEFAULT_LANGUAGES, *nllb_languages()]:
         row = await db.get(M.LanguageCapability, lc.code)
         data = dict(
             name=lc.name, native_name=lc.native_name, script=lc.script, rtl=lc.rtl,

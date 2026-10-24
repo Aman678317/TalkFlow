@@ -59,6 +59,20 @@ for pair in wanted:
         print("[WARN] argos", pair, "failed:", e)
 EOF
 
+# ---------------------------------------------------------------- NLLB-200 (CTranslate2)
+# One checkpoint, ~115 languages both directions with no pivot: the difference
+# between a demo picker and the many-language picker the UI advertises. Argos
+# packs are per-pair and hub-and-spoke on English, so coverage grows 80 MB at a
+# time; NLLB grows it 200 languages at a time (~620 MB).
+# Opt-in on CPU installs (WITH_NLLB=1), automatic on FULL.
+if [[ "$PROFILE" == "FULL" || "${WITH_NLLB:-false}" == "true" ]]; then
+status OK "provisioning NLLB-200 600M ct2-int8 (mt/nllb_ct2)..."
+python3 scripts/provision_nllb_ct2.py --model-dir "$CACHE/nllb-200-600m-ct2-int8" --no-smoke \
+  || status WARN "NLLB checkpoint (language picker shrinks to the installed providers)"
+else
+status OPTIONAL "skipping NLLB-200 (set WITH_NLLB=true or MODEL_PROFILE=FULL)"
+fi
+
 # ---------------------------------------------------------------- Piper TTS voices
 status OK "downloading Piper TTS voices (en/hi/ja/zh/es)..."
 python3 - <<'EOF' || status WARN "piper voices (TTS stays NOT_CONFIGURED; captions-only fallback)"

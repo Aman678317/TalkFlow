@@ -32,4 +32,19 @@ describe('VideoTile — per-seat language chips', () => {
     expect(container.textContent).toContain('Me (you)');
     expect(container.textContent).toMatch(/speaks\s*en\s*·\s*hears\s*en/);
   });
+
+  it('renders live in-tile subtitle when subtitle prop is provided', () => {
+    const { getByTestId, queryByTestId, rerender } = render(
+      <VideoTile name="Carlos" lang="es" hear="en" speaking />
+    );
+    expect(queryByTestId('tile-subtitle')).toBeNull();
+
+    rerender(
+      <VideoTile name="Carlos" lang="es" hear="en" speaking subtitle="Hola, buenas tardes a todos" />
+    );
+    const subtitleEl = getByTestId('tile-subtitle');
+    expect(subtitleEl).toBeDefined();
+    expect(subtitleEl.textContent).toContain('Hola, buenas tardes a todos');
+  });
 });
+

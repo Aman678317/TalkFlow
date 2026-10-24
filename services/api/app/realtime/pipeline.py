@@ -734,6 +734,15 @@ class MeetingPipeline:
         if detected is not None:
             self._broadcast_diag(self._diag("lang_detect", utt=corr, seq=seq_num,
                                             speaker=p.participant_id, **detected))
+            await manager.broadcast(
+                self.session, ServerEventType.LANGUAGE_DETECTED,
+                {"speaker_id": str(p.participant_id),
+                 "language": detected.get("language"),
+                 "confidence": detected.get("confidence"),
+                 "provider": detected.get("provider"),
+                 "utterance_id": corr},
+                speaker_id=str(p.participant_id)
+            )
         self._broadcast_diag(self._diag(
             "stt_exit", utt=corr, seq=seq_num, speaker=p.participant_id,
             provider=segment.provider, model=segment.model,

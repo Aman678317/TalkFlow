@@ -38,6 +38,7 @@ class ServerEventType(StrEnum):
     AUDIO_PUBLISHED = "audio.published"
     CAPTION_UPDATED = "caption.updated"
     LANGUAGE_CHANGED = "language.changed"
+    LANGUAGE_DETECTED = "language.detected"
     QUALITY_DEGRADED = "quality.degraded"
     PLAYBACK_FLUSH = "playback.flush"
     TRANSLATION_FAILED = "translation.failed"
@@ -71,6 +72,7 @@ class ClientEventType(StrEnum):
     MEDIA_STATE = "media.state"
     SIGNAL = "signal"
     PING = "ping"
+    PLAYBACK_INTERRUPT = "playback.interrupt"
 
 
 PROTOCOL_VERSION = 1

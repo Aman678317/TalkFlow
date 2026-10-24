@@ -108,6 +108,9 @@ class ProviderHealth:
     request_count: int = 0
     available: bool = True
     gpu: bool = False
+    #: when the router excluded this provider, so the exclusion can expire and
+    #: a probe can be routed to it again (ModelRouter._reprobe_expired).
+    unavailable_since: float = 0.0
 
     @property
     def error_rate(self) -> float:

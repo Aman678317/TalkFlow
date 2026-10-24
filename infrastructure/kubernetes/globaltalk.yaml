@@ -30,6 +30,8 @@ metadata:
   namespace: globaltalk
 data:
   APP_ENV: production
+  # Must name the browser origins explicitly; the dev defaults are refused.
+  CORS_ORIGINS: https://app.globaltalk.example
   DB_AUTOCREATE: "false"
   STORAGE_BACKEND: s3
   S3_BUCKET: globaltalk

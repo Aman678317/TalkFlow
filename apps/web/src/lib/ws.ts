@@ -350,6 +350,10 @@ export class MeetingSocket {
     this.sendJson({ type: "chat.send", text });
   }
 
+  sendInterrupt(speakerId?: string) {
+    this.sendJson({ type: "playback.interrupt", speaker_id: speakerId });
+  }
+
   /** Inject a canned transcript (dev/test only — server guards with
    *  is_dev_mode + 403 when STT is real and configured). Used to verify the
    *  translation + TTS fan-out end-to-end on Render where no STT model is
