@@ -273,6 +273,10 @@ class Settings(BaseSettings):
 
     # --- rate limits (count/period) ---
     rate_limit_translate: str = "60/minute"
+    # Live /translate/stream charges one token per settled edit; typing
+    # exceeds the shared 60/minute translate budget within a minute of
+    # word-by-word editing, after which translation visibly stops working.
+    rate_limit_translate_stream: str = "240/minute"
     rate_limit_auth: str = "300/minute"
     rate_limit_default: str = "300/minute"
     rate_limit_ws_connect: str = "30/minute"

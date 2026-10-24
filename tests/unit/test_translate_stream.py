@@ -13,6 +13,7 @@ import uuid
 import pytest
 
 from app.services.translation_service import TranslateOutput, split_stable_prefix
+from app.config import settings
 from app.routers import translate as translate_router
 from gt_ai.types import TranslationResult
 
@@ -138,8 +139,14 @@ def test_stream_draft_arrives_before_final(services_app_client, user, monkeypatc
     prefix, _tail = split_stable_prefix(text)
     assert prefix == "This is the first sentence of the document."
 
+    seen: dict[str, list] = {}
+
     async def fake_run(body_text: str, source: str, target: str, ctx):
-        if body_text == prefix:
+        seen.setdefault("calls", []).append((body_text, ctx))
+        if body_text == prefix:  # draft pass: provisional, unmetered, fast intent
+            assert ctx.persist is False
+            assert ctx.meter is False
+            assert ctx.intent == "latency_optimized"
             return _fake_output("Dies ist der erste Satz des Dokuments.")
         await asyncio.sleep(0.15)  # the final pass is slower than the draft
         return _fake_output(f"FINAL:{body_text}")
@@ -164,6 +171,131 @@ def test_stream_draft_arrives_before_final(services_app_client, user, monkeypatc
     assert done["draft_used"] is True
     assert done["ttfd_ms"] is not None
     assert done["translations"][0]["translated_text"] == f"FINAL:{text}"
+
+    draft_call = next(c for c in seen["calls"] if not c[1].persist)
+    final_call = next(c for c in seen["calls"] if c[1].persist)
+    _, draft_ctx = draft_call
+    _, final_ctx = final_call
+    assert final_ctx.persist is True
+    assert final_ctx.intent == "quality_optimized"
+
+
+def test_stream_drafts_full_text_without_stable_prefix(
+        services_app_client, user, monkeypatch) -> None:
+    """Typing the FIRST sentence: no stable prefix yet, but a draft still shows.
+
+    Before the full-text fallback, this window produced no frame at all until
+    the final decode finished — the user read it as "live translation does not
+    work when I add a sentence".
+    """
+    text = "just a short test sentence being typed"
+    assert split_stable_prefix(text) == ("", text)
+
+    seen: dict[str, list] = {}
+
+    async def fake_run(body_text: str, source: str, target: str, ctx):
+        seen.setdefault("calls", []).append((body_text, ctx))
+        if not ctx.persist:
+            assert body_text == text  # the draft covers the full current text
+            return _fake_output("EIN KURZER TESTSATZ WIRD GESCHRIEBEN")
+        await asyncio.sleep(0.1)
+        return _fake_output(f"FINAL:{body_text}")
+
+    monkeypatch.setattr(translate_router, "_run_translation", fake_run)
+
+    response = services_app_client.post(
+        "/api/v1/translate/stream",
+        headers=user["headers"],
+        json={"text": text, "source_language": "en", "target_language": "de"},
+    )
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+    names = [name for name, _ in events]
+    assert names[0] == "meta"
+    assert "draft" in names and "done" in names
+    assert names.index("draft") < names.index("done")
+
+    draft = next(data for name, data in events if name == "draft")
+    assert draft["text"] == "EIN KURZER TESTSATZ WIRD GESCHRIEBEN"
+
+    done = events[-1][1]
+    assert done["draft_used"] is True
+    assert done["ttfd_ms"] is not None
+    assert done["translations"][0]["translated_text"] == f"FINAL:{text}"
+
+    draft_call = next(c for c in seen["calls"] if not c[1].persist)
+    final_call = next(c for c in seen["calls"] if c[1].persist)
+    _, draft_ctx = draft_call
+    _, final_ctx = final_call
+    assert draft_call[0] == text
+    assert final_call[0] == text
+    assert draft_ctx.persist is False and draft_ctx.meter is False
+    assert draft_ctx.intent == "latency_optimized"
+    assert final_ctx.persist is True
+    assert final_ctx.intent == "quality_optimized"
+
+
+def test_stream_no_full_text_draft_for_long_documents(services_app_client,
+                                                      user, monkeypatch) -> None:
+    """Long texts draft their stable prefix only — never a tail-twice decode."""
+    sentence = "This stable sentence number sits still for the test repeat. "
+    stable = sentence * 10                      # > _FULL_DRAFT_MAX_CHARS
+    text = stable + "typing the new short tail here"
+    prefix, _tail = split_stable_prefix(text)
+    assert prefix == stable.rstrip()
+    assert len(text) > translate_router._FULL_DRAFT_MAX_CHARS
+
+    seen: dict[str, list] = {}
+
+    async def fake_run(body_text: str, source: str, target: str, ctx):
+        seen.setdefault("calls", []).append((body_text, ctx))
+        if not ctx.persist:
+            assert body_text == prefix
+            return _fake_output("PFX")
+        await asyncio.sleep(0.1)  # final must finish after the draft wins the race
+        return _fake_output(f"FINAL:{body_text}")
+
+    monkeypatch.setattr(translate_router, "_run_translation", fake_run)
+    response = services_app_client.post(
+        "/api/v1/translate/stream",
+        headers=user["headers"],
+        json={"text": text, "source_language": "en", "target_language": "de"},
+    )
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+    drafts = [data for name, data in events if name == "draft"]
+    assert drafts and drafts[0]["text"] == "PFX"
+    # Exactly TWO calls happened: the prefix draft and the final pass.
+    assert {text_ for text_, _ctx in seen["calls"]} == {prefix, text}
+
+
+def test_stream_rate_limit_stream_bucket_is_separate(monkeypatch) -> None:
+    """/translate/stream keys its own (bucket, identity) so typing bursts do
+    not consume the single-shot /translate budget (and vice versa)."""
+    from starlette.requests import Request
+
+    from app import deps
+
+    seen: dict[str, str] = {}
+
+    async def fake_check(bucket: str, identity: str, spec: str) -> None:
+        seen.update(bucket=bucket, identity=identity, spec=spec)
+
+    monkeypatch.setattr(deps, "check_rate_limit", fake_check)
+    request = Request({
+        "type": "http",
+        "method": "POST",
+        "headers": [],
+        "client": ("127.0.0.1", 12345),
+    })
+    asyncio.run(deps.rl_translate_stream(request, principal=None))
+    assert seen["bucket"] == "translate_stream"
+    assert seen["spec"] == settings.rate_limit_translate_stream
+
+    # And the single-shot endpoint keeps its own bucket untouched:
+    asyncio.run(deps.rl_translate(request, principal=None))
+    assert seen["bucket"] == "translate"
+    assert seen["spec"] == settings.rate_limit_translate
 
 
 def test_stream_emits_error_event_for_same_language(services_app_client, user) -> None:

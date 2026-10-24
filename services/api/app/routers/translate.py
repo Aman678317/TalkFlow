@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import models as M
 from app.db.session import db_session, get_db
-from app.deps import Principal, require_permission, require_scope, rl_translate
+from app.deps import Principal, require_permission, require_scope, rl_translate, rl_translate_stream
 from app.errors import (
     AppError, AuthenticationError, AuthorizationError, NotFoundError,
     ProviderError, UnsupportedLanguageError, ValidationError,
@@ -39,6 +39,12 @@ from app.services.translation_service import (
 log = logging.getLogger("app.routers.translate")
 
 router = APIRouter(prefix="/api/v1", tags=["translation"])
+
+# Beyond this length a "no stable prefix yet" full-text draft would re-decode
+# the tail twice per edit on the CPU model, so it only covers the
+# typing-your-first-sentence window; long documents always have a stable
+# prefix for split_stable_prefix to draft.
+_FULL_DRAFT_MAX_CHARS = 400
 
 
 def _ctx(principal: Principal | None, body: TranslateRequest, product: str = "text") -> TranslateContext:
@@ -188,13 +194,27 @@ async def _translate_stream_events(request: Request, body: TranslateStreamReques
             await validate_pair(check_db, resolved, target)
 
         prefix, _tail = split_stable_prefix(body.text) if body.draft else ("", body.text)
-        draft_ctx = dataclasses.replace(ctx, persist=False, meter=False)
+        # A provisional pass only helps when it can beat the final pass: it
+        # runs with the latency-optimized intent (nllb_ct2 decodes beam-1 for
+        # that intent — at full quality the draft's own decode always lost the
+        # race with the final pass and shipped nothing early, measured
+        # 2026-10-24), never persists and never meters. ai.translate applies
+        # tenant_private_only AFTER the context intent, so privacy routing is
+        # unaffected. While the first sentence is still being typed there is
+        # no stable prefix at all; a DeepL-style editor still shows something,
+        # so the unrevised full text is drafted then too.
+        draft_text = prefix
+        if (body.draft and not draft_text
+                and len(body.text) <= _FULL_DRAFT_MAX_CHARS):
+            draft_text = body.text
+        draft_ctx = dataclasses.replace(
+            ctx, persist=False, meter=False, intent="latency_optimized")
 
         final_task = asyncio.create_task(
             _run_translation(body.text, resolved, target, ctx))
         draft_task = (
-            asyncio.create_task(_run_translation(prefix, resolved, target, draft_ctx))
-            if prefix else None
+            asyncio.create_task(_run_translation(draft_text, resolved, target, draft_ctx))
+            if draft_text else None
         )
         pending = {final_task} | ({draft_task} if draft_task is not None else set())
 
@@ -275,7 +295,7 @@ async def _translate_stream_events(request: Request, body: TranslateStreamReques
 @router.post("/translate/stream")
 async def translate_stream(body: TranslateStreamRequest,
                            request: Request,
-                           principal: Principal | None = Depends(rl_translate),
+                           principal: Principal | None = Depends(rl_translate_stream),
                            db: AsyncSession = Depends(get_db)):
     """Live translation over Server-Sent Events.
 

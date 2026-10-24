@@ -275,6 +275,17 @@ async def rl_translate(request: Request,
     return principal
 
 
+async def rl_translate_stream(request: Request,
+                              principal: Principal | None = Depends(get_principal_optional)):
+    # Separate budget: one settled live edit = one /translate/stream call, and
+    # typing comfortably outpaces the shared 60/minute 'translate' bucket —
+    # tripping the limiter mid-typing made live translation appear broken.
+    ident = principal.identity_for_rate_limit if principal else f"anon:{client_ip_hash(request)}"
+    await check_rate_limit("translate_stream", ident,
+                           settings.rate_limit_translate_stream)
+    return principal
+
+
 async def rl_auth(request: Request):
     await check_rate_limit("auth", client_ip_hash(request), settings.rate_limit_auth)
 
