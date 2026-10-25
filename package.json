@@ -22,6 +22,7 @@
     "build:sdk": "npm --prefix sdk/typescript run build",
     "build:photos": "npm --prefix apps/photo-organizer run build",
     "build:all": "npm run build:web && npm run build:cli && npm run build:sdk",
+    "test": "npm run test:web",
     "test:web": "npm --prefix apps/web test",
     "test:cli": "npm --prefix cli/desi-cli test",
     "test:sdk": "npm --prefix sdk/typescript test",
