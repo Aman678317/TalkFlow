@@ -32,6 +32,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai import ai
 from app.config import settings
 from app.db import models as M
 from app.db.base import utcnow
@@ -42,6 +43,7 @@ from app.routers.platform import _require_platform_admin
 from app.security import create_session_ticket
 from app.services import meeting_service, write_service
 from app.services.translation_service import TranslateContext, translate_text
+from gt_ai.translation.neural_online import FORMALITY_RULES
 
 log = logging.getLogger("app.routers.v2_v3")
 
@@ -88,6 +90,134 @@ async def _extract_request_data(request: Request) -> dict[str, Any]:
             data[k] = v
 
     return data
+
+
+def _as_bool(value: Any, *, default: bool = False) -> bool:
+    """Parse JSON and form booleans without treating ``"false"`` as true."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _text_items(raw_text: Any, *, field: str = "text") -> list[str]:
+    if raw_text is None:
+        raise HTTPException(status_code=400, detail=f"Missing required parameter '{field}'")
+    return [str(item) for item in raw_text] if isinstance(raw_text, list) else [str(raw_text)]
+
+
+def _validate_text_batch(payload: dict[str, Any], raw_texts: list[str], *, field: str = "text") -> None:
+    """Apply DeepL-compatible batch guards before any provider work is started."""
+    if len(raw_texts) > settings.api_batch_max_texts:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Parameter '{field}' contains {len(raw_texts)} items; maximum is {settings.api_batch_max_texts}",
+        )
+    try:
+        encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    except (TypeError, ValueError):
+        encoded = "".join(raw_texts).encode("utf-8")
+    if len(encoded) > settings.api_batch_max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Request body exceeds the {settings.api_batch_max_bytes} byte limit",
+        )
+
+
+def _resolve_formality(value: Any, target_lang: str) -> str:
+    """Map DeepL's public formality values to the provider-neutral style value."""
+    requested = str(value or "default").strip().lower()
+    allowed = {"default", "more", "less", "prefer_more", "prefer_less"}
+    if requested not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail="formality must be one of default, more, less, prefer_more, prefer_less",
+        )
+    supports_formality = target_lang.lower().split("-")[0] in {lang for lang, _ in FORMALITY_RULES}
+    if requested in {"prefer_more", "more"}:
+        return "formal" if supports_formality else "default"
+    if requested in {"prefer_less", "less"}:
+        return "informal" if supports_formality else "default"
+    return requested
+
+
+def _protect_markup(text: str, tag_handling: str | None) -> tuple[str, dict[str, str]]:
+    if not tag_handling:
+        return text, {}
+    tags = re.findall(r"<[^>]+>", text)
+    replacements = {f"__TALKFLOW_TAG_{index}__": tag for index, tag in enumerate(tags)}
+    protected = text
+    for token, tag in replacements.items():
+        protected = protected.replace(tag, token, 1)
+    return protected, replacements
+
+
+def _restore_markup(text: str, replacements: dict[str, str]) -> str:
+    restored = text
+    for token, tag in replacements.items():
+        restored = restored.replace(token, tag)
+    return restored
+
+
+def _apply_glossaries(
+    translated: str,
+    source: str,
+    glossary_ids: list[str],
+    principal: Principal | None,
+) -> str:
+    """Apply tenant-scoped in-memory glossaries in caller-provided priority order."""
+    caller_org = str(principal.org_id) if (principal and principal.org_id) else None
+    result = translated
+    for glossary_id in glossary_ids:
+        record = _GLOSSARIES_STORE.get(str(glossary_id)) or _MULTILINGUAL_GLOSSARIES.get(str(glossary_id))
+        if not record or not caller_org or record.get("org_id") != caller_org:
+            continue
+        dictionaries = [record]
+        if "dictionaries" in record:
+            dictionaries = record.get("dictionaries", [])
+        for dictionary in dictionaries:
+            entries = dictionary.get("terms") or dictionary.get("entries") or {}
+            for term, replacement in entries.items():
+                if str(term).lower() in source.lower():
+                    result = re.sub(re.escape(str(term)), str(replacement), result, flags=re.IGNORECASE)
+    return result
+
+
+def _effective_glossary_ids(
+    glossary_ids: list[str],
+    principal: Principal | None,
+) -> list[str]:
+    """Return glossary references that belong to the caller's tenant.
+
+    Compatibility clients historically received a successful translation when
+    they accidentally referenced another tenant's glossary. Keep that behavior
+    while ensuring the foreign terms are never applied. Unknown references are
+    retained so the stricter validation path still rejects malformed requests.
+    Anonymous callers likewise get no glossary application.
+    """
+    caller_org = str(principal.org_id) if (principal and principal.org_id) else None
+    effective: list[str] = []
+    for glossary_id in glossary_ids:
+        record = _GLOSSARIES_STORE.get(str(glossary_id)) or _MULTILINGUAL_GLOSSARIES.get(str(glossary_id))
+        if record is None:
+            effective.append(str(glossary_id))
+        elif caller_org and record.get("org_id") == caller_org:
+            effective.append(str(glossary_id))
+    return effective
+
+
+async def _detect_write_language(text: str, source_lang: Any) -> str:
+    requested = str(source_lang or "").strip()
+    if requested and requested.lower() != "auto":
+        return requested.lower()
+    try:
+        detected = await ai.detect_language(text)
+        return (detected.language or "en").lower()
+    except Exception:
+        # Detection is advisory for Write; keep the request usable if the
+        # optional detector is unavailable.
+        return "en"
 
 
 # --------------------------------------------------------------------------- #
@@ -304,16 +434,13 @@ async def v2_translate(
     """
     payload = await _extract_request_data(request)
 
-    raw_text = payload.get("text")
-    if raw_text is None:
-        raise HTTPException(status_code=400, detail="Missing required parameter 'text'")
+    raw_texts = _text_items(payload.get("text"))
+    _validate_text_batch(payload, raw_texts)
 
-    if isinstance(raw_text, list):
-        raw_texts = [str(t) for t in raw_text]
-    else:
-        raw_texts = [str(raw_text)]
-
-    target_lang = str(payload.get("target_lang") or payload.get("to") or "en")
+    target_value = payload.get("target_lang") or payload.get("to")
+    if not target_value:
+        raise HTTPException(status_code=400, detail="Missing required parameter 'target_lang'")
+    target_lang = str(target_value)
     source_lang = payload.get("source_lang") or payload.get("from")
     source_lang = str(source_lang) if source_lang else None
 
@@ -324,20 +451,53 @@ async def v2_translate(
     glossary_ids = payload.get("glossary_ids")
     if isinstance(glossary_ids, str):
         glossary_ids = [g.strip() for g in glossary_ids.split(",") if g.strip()]
+    elif glossary_ids is None:
+        glossary_ids = []
+    else:
+        glossary_ids = [str(g).strip() for g in glossary_ids if str(g).strip()]
 
     if glossary_id and glossary_ids:
         raise HTTPException(status_code=400, detail="Cannot combine 'glossary' and 'glossary_ids' parameters")
+    if glossary_id:
+        glossary_ids = [str(glossary_id)]
     if glossary_ids:
-        if not source_lang:
-            raise HTTPException(status_code=400, detail="'source_lang' is required when using 'glossary_ids'")
+        effective_glossary_ids = _effective_glossary_ids(glossary_ids, principal)
+        if not effective_glossary_ids:
+            # A foreign reference is intentionally ignored after tenant
+            # isolation is checked; it must not make an otherwise valid
+            # translation fail or reveal whether the resource exists.
+            glossary_ids = []
+        elif not source_lang:
+            raise HTTPException(status_code=400, detail="'source_lang' is required when using a glossary")
         if len(glossary_ids) > 5:
             raise HTTPException(status_code=400, detail="Maximum of 5 glossaries may be specified in 'glossary_ids'")
 
-    model_type = payload.get("model_type")
-    tag_handling = payload.get("tag_handling")
+    context = str(payload.get("context") or "")
+    if len(context) > settings.context_max_chars:
+        raise HTTPException(
+            status_code=400,
+            detail=f"context exceeds the {settings.context_max_chars} character limit",
+        )
+    if context and glossary_ids:
+        raise HTTPException(status_code=400, detail="context cannot be combined with a glossary")
+
+    requested_model_type = payload.get("model_type")
+    model_type = str(
+        requested_model_type
+        or ("quality_optimized" if payload.get("custom_instructions") else "latency_optimized")
+    ).lower()
+    if model_type not in {"latency_optimized", "quality_optimized"}:
+        raise HTTPException(
+            status_code=400,
+            detail="model_type must be latency_optimized or quality_optimized",
+        )
+
+    tag_handling = str(payload.get("tag_handling") or "").lower() or None
+    if tag_handling not in {None, "xml", "html"}:
+        raise HTTPException(status_code=400, detail="tag_handling must be xml or html")
     tag_handling_version = payload.get("tag_handling_version") or "v2"
+    formality = _resolve_formality(payload.get("formality"), target_lang)
     style_rule = payload.get("style_rule") or payload.get("style_id")
-    translation_memory = payload.get("translation_memory") or payload.get("translation_memory_id")
     custom_instructions = payload.get("custom_instructions")
 
     if custom_instructions:
@@ -348,7 +508,7 @@ async def v2_translate(
         for ci in custom_instructions:
             if len(str(ci)) > 300:
                 raise HTTPException(status_code=400, detail="Custom instruction exceeds 300 character limit")
-        if model_type == "latency_optimized":
+        if requested_model_type == "latency_optimized":
             raise HTTPException(
                 status_code=400,
                 detail="Requests combining custom_instructions and model_type: latency_optimized are rejected",
@@ -359,24 +519,28 @@ async def v2_translate(
                 status_code=400,
                 detail=f"custom_instructions only supported for target languages: {', '.join(sorted(allowed_ci_langs))}",
             )
-        if not model_type:
-            model_type = "quality_optimized"
 
     ctx = TranslateContext(
         org_id=principal.org_id if principal else None,
         user_id=principal.user_id if principal else None,
         api_key_id=principal.api_key.id if (principal and principal.api_key) else None,
-        glossary_id=uuid.UUID(glossary_id) if glossary_id and _is_valid_uuid(glossary_id) else None,
+        glossary_id=uuid.UUID(glossary_ids[0]) if glossary_ids and _is_valid_uuid(glossary_ids[0]) else None,
+        formality=formality,
+        context=context or None,
+        intent=model_type,
         product="text",
     )
 
     results = []
     for item in raw_texts:
         item_flags: list[str] = []
+        alternatives: list[str] = []
+        protected_item, markup = _protect_markup(item, tag_handling)
         try:
-            out = await translate_text(db, item, src, tgt, ctx)
+            out = await translate_text(db, protected_item, src, tgt, ctx)
             detected = (out.source_lang or "en").upper()
-            translated = out.result.text
+            translated = _restore_markup(out.result.text, markup)
+            alternatives = list(getattr(out.result, "alternatives", []) or [])
             if out.result.quality_flags:
                 item_flags.extend(out.result.quality_flags)
             if out.result.is_dev:
@@ -384,9 +548,9 @@ async def v2_translate(
                 # dictionary may refine ONLY this kind of result (day-3:
                 # a real provider result used to be silently swapped for a
                 # dictionary phrase whenever the source matched a key).
-                refined = _apply_dev_dictionary(item, detected, tgt.upper())
+                refined = _apply_dev_dictionary(protected_item, detected, tgt.upper())
                 if refined is not None:
-                    translated = refined
+                    translated = _restore_markup(refined, markup)
         except Exception as e:
             # Day-3 honesty: no fabricated "[DE] text", no source-as-
             # translation. Empty text + an untranslated_fallback flag is the
@@ -400,19 +564,8 @@ async def v2_translate(
         # Phase 3: only the caller's own tenant records may be applied — foreign or
         # anonymous references are silently ignored (never applied, never confirmed).
         caller_org = str(principal.org_id) if (principal and principal.org_id) else None
-        if glossary_id and str(glossary_id) in _GLOSSARIES_STORE:
-            g = _GLOSSARIES_STORE[str(glossary_id)]
-            if caller_org and g.get("org_id") == caller_org:
-                for term, repl in g.get("terms", {}).items():
-                    if term.lower() in item.lower():
-                        translated = re.sub(re.escape(term), repl, translated, flags=re.IGNORECASE)
-        elif glossary_id and str(glossary_id) in _MULTILINGUAL_GLOSSARIES:
-            mg = _MULTILINGUAL_GLOSSARIES[str(glossary_id)]
-            if caller_org and mg.get("org_id") == caller_org:
-                for d in mg.get("dictionaries", []):
-                    for term, repl in d.get("entries", {}).items():
-                        if term.lower() in item.lower():
-                            translated = re.sub(re.escape(term), repl, translated, flags=re.IGNORECASE)
+        if glossary_ids:
+            translated = _apply_glossaries(translated, item, glossary_ids, principal)
 
         # Style rule or custom instructions simulated application if requested
         if style_rule and str(style_rule) in _STYLE_RULES_STORE:
@@ -424,16 +577,18 @@ async def v2_translate(
         res_item: dict[str, Any] = {
             "detected_source_language": detected,
             "text": translated,
-            "billed_characters": len(item),
+            "model_type_used": model_type,
         }
+        if _as_bool(payload.get("show_billed_characters"), default=True):
+            res_item["billed_characters"] = len(item)
         if item_flags:
             res_item["quality_flags"] = sorted(set(item_flags))
             if "untranslated_fallback" in res_item["quality_flags"]:
                 res_item["untranslated_fallback"] = True
-        if model_type:
-            res_item["model_type_used"] = model_type
         if tag_handling:
             res_item["tag_handling_version"] = tag_handling_version
+        if alternatives:
+            res_item["alternatives"] = [_restore_markup(alt, markup) for alt in alternatives]
 
         results.append(res_item)
 
@@ -462,24 +617,35 @@ async def v2_write_rephrase(
         raise AuthenticationError("Authentication required.")
     principal.require("use_write")
     payload = await _extract_request_data(request)
-    raw_text = payload.get("text")
-    if raw_text is None:
-        raise HTTPException(status_code=400, detail="Missing required parameter 'text'")
+    raw_texts = _text_items(payload.get("text"))
+    _validate_text_batch(payload, raw_texts)
+    if (payload.get("style_id") or payload.get("style_rule")) and (
+        payload.get("writing_style") or payload.get("tone")
+    ):
+        raise HTTPException(status_code=400, detail="style rules cannot be combined with writing_style or tone")
 
-    raw_texts = raw_text if isinstance(raw_text, list) else [raw_text]
     style_param = payload.get("writing_style") or payload.get("style") or "business"
     style = str(style_param).replace("prefer_", "").lower()
-    tone_param = payload.get("tone") or "professional"
+    tone_param = payload.get("tone") or "default"
     tone = str(tone_param).replace("prefer_", "").lower()
+    allowed_styles = {"academic", "business", "casual", "default", "simple"}
+    allowed_tones = {"confident", "diplomatic", "enthusiastic", "friendly", "default"}
+    if style not in allowed_styles:
+        raise HTTPException(status_code=400, detail="Unsupported writing_style")
+    if tone not in allowed_tones:
+        raise HTTPException(status_code=400, detail="Unsupported tone")
+    if tone == "default":
+        tone = "professional"
     target_lang = str(payload.get("target_lang") or "en")
     tgt = target_lang.lower().split("-")[0]
 
     improvements = []
     for item in raw_texts:
-        resp = write_service.improve_text(str(item), language=tgt, style=style, tone=tone)
+        text = str(item)
+        resp = await write_service.improve_text_async(text, language=tgt, style=style, tone=tone)
         improvements.append({
             "text": resp.improved_text,
-            "detected_source_language": "EN",
+            "detected_source_language": await _detect_write_language(text, payload.get("source_lang")),
             "target_language": target_lang.upper(),
         })
 
@@ -496,22 +662,20 @@ async def v2_write_correct(
         raise AuthenticationError("Authentication required.")
     principal.require("use_write")
     payload = await _extract_request_data(request)
-    raw_text = payload.get("text")
-    if raw_text is None:
-        raise HTTPException(status_code=400, detail="Missing required parameter 'text'")
-
-    raw_texts = raw_text if isinstance(raw_text, list) else [raw_text]
+    raw_texts = _text_items(payload.get("text"))
+    _validate_text_batch(payload, raw_texts)
     target_lang = str(payload.get("target_lang") or "en")
     tgt = target_lang.lower().split("-")[0]
 
     improvements = []
     for item in raw_texts:
-        resp = write_service.improve_text(
-            str(item), language=tgt, style="simple", tone="professional", corrections_only=True
+        text = str(item)
+        resp = await write_service.improve_text_async(
+            text, language=tgt, style="simple", tone="professional", corrections_only=True
         )
         improvements.append({
             "text": resp.improved_text,
-            "detected_source_language": "EN",
+            "detected_source_language": await _detect_write_language(text, payload.get("source_lang")),
             "target_language": target_lang.upper(),
         })
 
@@ -570,8 +734,6 @@ async def get_usage(
 # the runtime source of truth; la (beta) and sa (external) remain available
 # only when the caller explicitly asks for them via ?include=.
 from gt_ai.capabilities import DEFAULT_LANGUAGES
-from gt_ai.translation.neural_online import FORMALITY_RULES
-
 _FORMALITY_CODES = sorted({lang.upper() for lang, _formal in FORMALITY_RULES})
 
 

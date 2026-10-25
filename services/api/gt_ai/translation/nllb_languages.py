@@ -33,11 +33,12 @@ Request inventory, 2026-10-24: this deployment's user request listed DeepL's
 full public table plus the wider multilingual set and every variant on both
 panels. After the additions below (``glg``, ``gle``, ``sr``, ``tk`` — each one
 verified against this checkpoint's own vocabulary, 202 tokens), 119 of the ~126
-distinct languages and all six DeepL variants are served. Four requested
-languages are NOT in this checkpoint's vocabulary and remain honestly absent:
-Latin and Aragonese (not in the NLLB-200 released token list), Breton and
-Konkani (in NLLB-200 but not in this distilled conversion — the checkpoint is
-the referee, per ``checkpoint_codes``). A missing row beats a ``dev_echo`` row.
+distinct languages and all six DeepL variants are served. Five requested
+languages are NOT in this deployment checkpoint's vocabulary and remain
+honestly absent: Latin and Aragonese (not in the NLLB-200 released token list),
+Breton, Konkani, and Kapampangan (present in the original model family but not
+in this distilled conversion — the checkpoint is the referee, per
+``checkpoint_codes``). A missing row beats a ``dev_echo`` row.
 """
 from __future__ import annotations
 
@@ -74,7 +75,6 @@ NLLB_LANGUAGES: tuple[NllbLanguage, ...] = (
     _L("ace", "ace_Latn", "Acehnese", "Bahsa Acèh"),
     _L("af", "afr_Latn", "Afrikaans"),
     _L("am", "amh_Ethi", "Amharic", "አማርኛ"),
-    _L("an", "arg_Latn", "Aragonese", "Aragonés"),
     _L("ar", "arb_Arab", "Arabic", "العربية", rtl=True),
     _L("as", "asm_Beng", "Assamese", "অসমীয়া"),
     _L("ay", "ayr_Latn", "Aymara", "Aymar aru"),
@@ -85,7 +85,6 @@ NLLB_LANGUAGES: tuple[NllbLanguage, ...] = (
     _L("bg", "bul_Cyrl", "Bulgarian", "Български"),
     _L("bn", "ben_Beng", "Bengali", "বাংলা"),
     _L("bho", "bho_Deva", "Bhojpuri", "भोजपुरी"),
-    _L("br", "bre_Latn", "Breton", "Brezhoneg"),
     _L("bs", "bos_Latn", "Bosnian", "Bosanski"),
     _L("ca", "cat_Latn", "Catalan", "Català"),
     _L("ceb", "ceb_Latn", "Cebuano", "Sugbuanon"),
@@ -124,9 +123,7 @@ NLLB_LANGUAGES: tuple[NllbLanguage, ...] = (
     _L("km", "khm_Khmr", "Khmer", "ខ្មែរ"),
     _L("kn", "kan_Knda", "Kannada", "ಕನ್ನಡ"),
     _L("ko", "kor_Hang", "Korean", "한국어"),
-    _L("kok", "kok_Deva", "Konkani", "कोंकणी"),
     _L("ky", "kir_Cyrl", "Kyrgyz", "Кыргызча"),
-    _L("la", "lat_Latn", "Latin", "Latina"),
     _L("ln", "lin_Latn", "Lingala", "Lingála"),
     _L("lo", "lao_Laoo", "Lao", "ລາວ"),
     _L("lt", "lit_Latn", "Lithuanian", "Lietuvių"),
@@ -149,7 +146,6 @@ NLLB_LANGUAGES: tuple[NllbLanguage, ...] = (
     _L("om", "gaz_Latn", "Oromo", "Afaan Oromoo"),
     _L("pa", "pan_Guru", "Punjabi", "ਪੰਜਾਬੀ"),
     _L("pag", "pag_Latn", "Pangasinan", "Salitan Pangasinan"),
-    _L("pam", "pam_Latn", "Kapampangan", "Kapampangan"),
     _L("pl", "pol_Latn", "Polish", "Polski"),
     _L("ps", "pbt_Arab", "Pashto", "پښتو", rtl=True),
     _L("pt", "por_Latn", "Portuguese", "Português"),
