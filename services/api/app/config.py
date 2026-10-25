@@ -271,12 +271,25 @@ class Settings(BaseSettings):
     rt_session_ttl_s: int = 3600
     rt_resume_buffer_size: int = 500  # events kept per session for reconnect replay
 
+    # --- DeepL parity tuning ------------------------------------------------
+    api_batch_max_texts: int = 50                   # DeepL batch translate ≤50 texts
+    api_batch_max_bytes: int = 131072               # DeepL batch body ≤128 KiB
+    context_max_chars: int = 2000                   # context param max length
+    voice_chunk_max_bytes: int = 102400            # DeepL voice ≤100 KB per chunk
+    voice_cadence_max_x: float = 2.0               # arrival ≤2× realtime
+    voice_cadence_window_s: float = 1.0            # ≤1 s chunk span
+    document_min_billed_chars: int = 50000         # DeepL 50k-char minimum
+    document_max_undownloaded: int = 20           # DeepL 429 cap
+    glossary_max_bytes: int = 10_485_760           # 10 MB dictionary limit
+    glossary_max_entry_bytes: int = 1024          # per name/phrase ≤1024 UTF-8 B
+
     # --- rate limits (count/period) ---
     rate_limit_translate: str = "60/minute"
     # Live /translate/stream charges one token per settled edit; typing
     # exceeds the shared 60/minute translate budget within a minute of
     # word-by-word editing, after which translation visibly stops working.
     rate_limit_translate_stream: str = "240/minute"
+    rate_limit_provider_keys: str = "300/minute"
     rate_limit_auth: str = "300/minute"
     rate_limit_default: str = "300/minute"
     rate_limit_ws_connect: str = "30/minute"
@@ -320,6 +333,9 @@ class Settings(BaseSettings):
             return [str(x).strip() for x in v]
         return ["http://localhost:5173", "http://localhost:4173", "http://127.0.0.1:5173"]
 
+    # --- security ---
+    security_secret_key: str = "dev-provider-vault-secret-32chars-min!!!"  # ≥32 chars; derives Fernet key for provider vault
+    provider_fernet_key_path: str = "./data/provider_vault.key"  # restricted key file for Fernet master
     secure_cookies: bool = False
     cookie_samesite: str = "lax"
     cookie_domain: str | None = None
@@ -351,6 +367,11 @@ class Settings(BaseSettings):
     retention_usage_days: int = 730
     # resolved escalate-ticket audit rows (§E2 durable transport). The
     # resolution itself outlives the row on the call's own event ledger.
+    # --- provider vault key bootstrap (offline-safe; path normalized in dev) ---
+    # 0600 enforcement documented for future Unix paths; Windows best-effort
+    # attribute chmod/owner-set where available; honest notional otherwise.
+    provider_vault_key_mode: int = 0o600
+
     retention_escalation_days: int = 30
 
     # --- workers ---
