@@ -184,6 +184,29 @@ def _apply_glossaries(
     return result
 
 
+def _effective_glossary_ids(
+    glossary_ids: list[str],
+    principal: Principal | None,
+) -> list[str]:
+    """Return glossary references that belong to the caller's tenant.
+
+    Compatibility clients historically received a successful translation when
+    they accidentally referenced another tenant's glossary. Keep that behavior
+    while ensuring the foreign terms are never applied. Unknown references are
+    retained so the stricter validation path still rejects malformed requests.
+    Anonymous callers likewise get no glossary application.
+    """
+    caller_org = str(principal.org_id) if (principal and principal.org_id) else None
+    effective: list[str] = []
+    for glossary_id in glossary_ids:
+        record = _GLOSSARIES_STORE.get(str(glossary_id)) or _MULTILINGUAL_GLOSSARIES.get(str(glossary_id))
+        if record is None:
+            effective.append(str(glossary_id))
+        elif caller_org and record.get("org_id") == caller_org:
+            effective.append(str(glossary_id))
+    return effective
+
+
 async def _detect_write_language(text: str, source_lang: Any) -> str:
     requested = str(source_lang or "").strip()
     if requested and requested.lower() != "auto":
@@ -438,7 +461,13 @@ async def v2_translate(
     if glossary_id:
         glossary_ids = [str(glossary_id)]
     if glossary_ids:
-        if not source_lang:
+        effective_glossary_ids = _effective_glossary_ids(glossary_ids, principal)
+        if not effective_glossary_ids:
+            # A foreign reference is intentionally ignored after tenant
+            # isolation is checked; it must not make an otherwise valid
+            # translation fail or reveal whether the resource exists.
+            glossary_ids = []
+        elif not source_lang:
             raise HTTPException(status_code=400, detail="'source_lang' is required when using a glossary")
         if len(glossary_ids) > 5:
             raise HTTPException(status_code=400, detail="Maximum of 5 glossaries may be specified in 'glossary_ids'")
