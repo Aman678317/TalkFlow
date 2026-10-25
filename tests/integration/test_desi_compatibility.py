@@ -39,6 +39,7 @@ def test_v2_translate_json(client):
         "target_lang": "DE",
         "source_lang": "EN",
         "model_type": "quality_optimized",
+        "show_billed_characters": True,
     }
     resp = client.post("/v2/translate", json=payload, headers=headers)
     assert resp.status_code == 200, resp.text
@@ -411,6 +412,65 @@ def test_custom_instructions_and_glossary_ids_validation(client):
         headers=headers,
     )
     assert bad_src.status_code == 400
+
+
+def test_v2_translate_deepl_parity_guards(client):
+    """Batch, context, markup and optional billing behavior stay explicit."""
+    headers = {"Authorization": "Desi-Auth-Key test-key-12345:fx"}
+
+    too_many = client.post(
+        "/v2/translate",
+        json={"text": ["hello"] * 51, "target_lang": "DE", "source_lang": "EN"},
+        headers=headers,
+    )
+    assert too_many.status_code == 400
+
+    too_large = client.post(
+        "/v2/translate",
+        json={"text": "x" * 132_000, "target_lang": "DE", "source_lang": "EN"},
+        headers=headers,
+    )
+    assert too_large.status_code == 413
+
+    hidden_billing = client.post(
+        "/v2/translate",
+        json={
+            "text": "Hello world",
+            "target_lang": "DE",
+            "source_lang": "EN",
+            "show_billed_characters": False,
+        },
+        headers=headers,
+    )
+    assert hidden_billing.status_code == 200, hidden_billing.text
+    assert "billed_characters" not in hidden_billing.json()["translations"][0]
+
+    context_conflict = client.post(
+        "/v2/translate",
+        json={
+            "text": "Hello world",
+            "target_lang": "DE",
+            "source_lang": "EN",
+            "context": "A surrounding paragraph.",
+            "glossary_ids": ["g-1"],
+        },
+        headers=headers,
+    )
+    assert context_conflict.status_code == 400
+
+    markup = client.post(
+        "/v2/translate",
+        json={
+            "text": "<p>Hello world</p>",
+            "target_lang": "DE",
+            "source_lang": "EN",
+            "tag_handling": "html",
+        },
+        headers=headers,
+    )
+    assert markup.status_code == 200, markup.text
+    assert markup.json()["translations"][0]["text"].startswith("<p>")
+    assert markup.json()["translations"][0]["text"].endswith("</p>")
 
 
 def test_v3_languages_and_resources_conformance(client):
