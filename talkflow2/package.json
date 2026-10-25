@@ -1,0 +1,14 @@
+{
+  "name": "talkflow2",
+  "version": "2.0.0",
+  "description": "TalkFlow 2.0 — DeepL-inspired feature-complete translation suite (demo engine + optional real DeepL API)",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server/server.mjs",
+    "test": "node --test tests/"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

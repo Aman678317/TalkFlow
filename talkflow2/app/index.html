@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="TalkFlow 2.0 — a zero-dependency translation suite: translate, write, voice captions, documents, glossaries and usage.">
+  <title>TalkFlow 2.0 · Translate</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230eb5a6'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-family='Segoe UI,Arial' font-size='14' font-weight='700' fill='%2304231f'%3ETF%3C/text%3E%3C/svg%3E">
+  <script>
+    try {
+      document.documentElement.dataset.theme = localStorage.getItem("talkflow.theme") === "light" ? "light" : "dark";
+    } catch (_) { /* storage may be blocked; default stays dark */ }
+  </script>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <div class="brand">
+        <span class="logo" aria-hidden="true">TF</span>
+        <span class="brand-name">TalkFlow <span class="brand-sub">2.0</span></span>
+      </div>
+      <nav id="nav" aria-label="Main navigation">
+        <a href="#/translate" data-route="#/translate">Translate</a>
+        <a href="#/write" data-route="#/write">Write</a>
+        <a href="#/voice" data-route="#/voice">Voice</a>
+        <a href="#/documents" data-route="#/documents">Documents</a>
+        <a href="#/glossary" data-route="#/glossary">Glossary</a>
+        <a href="#/usage" data-route="#/usage">Usage</a>
+        <a href="#/settings" data-route="#/settings">Settings</a>
+        <a href="#/tests" data-route="#/tests">Tests</a>
+      </nav>
+      <div class="side-foot">
+        <span id="api-dot" class="api-dot down" role="status" title="Checking API…">API offline</span>
+        <button id="theme-toggle" class="btn ghost w100" type="button">Toggle light / dark</button>
+        <p class="foot-note">Inspired by DeepL · demo engine + optional DeepL API</p>
+      </div>
+    </aside>
+    <main id="main">
+      <div class="view"><div class="card"><p class="empty">Loading TalkFlow…</p></div></div>
+    </main>
+  </div>
+  <noscript>
+    <div class="view"><div class="card"><p class="empty">TalkFlow needs JavaScript and ES modules enabled.</p></div></div>
+  </noscript>
+  <script type="module" src="/js/main.mjs"></script>
+</body>
+</html>
