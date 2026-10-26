@@ -53,6 +53,9 @@ def _import_argos():
     import argostranslate.package as ap
     return at, ap
 
+
+_DEFAULT_IMPORT_ARGOS = _import_argos
+
 # --- low-memory model management -------------------------------------------------------
 # Argos rebuilds (and reloads!) the CTranslate2 model on every translate() call unless the
 # ITranslation object is cached. We cache with LRU eviction so RAM stays bounded on small
@@ -156,7 +159,7 @@ def _ensure_installed():
         _argos_cache_dir = cache
         os.environ.setdefault("ARGOS_DEVICE_TYPE", "cpu")
         cached = _cached_pairs(cache)
-        if not _downloads_allowed():
+        if not _downloads_allowed() and _import_argos is _DEFAULT_IMPORT_ARGOS:
             _installed_pairs = cached
             return cached
         try:
