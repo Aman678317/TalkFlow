@@ -31,8 +31,9 @@ import {
 // Helpers
 // ---------------------------------------------------------------------------
 
-const FREE_KEY = "0123456789abcdef".repeat(2) + ":fx"; // 32-char body + :fx
-const PRO_KEY = "fedcba9876543210".repeat(2);
+// Deterministic format fixtures deliberately avoid secret-shaped literals.
+const FREE_KEY = "talkflow-test-free-" + "f".repeat(20) + ":fx";
+const PRO_KEY = "talkflow-test-pro-" + "p".repeat(20);
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
 
 function jsonResponse(status, payload) {
@@ -363,7 +364,7 @@ test("validateKeyFormat detects free/pro tiers and invalid keys", () => {
 
 test("maskKey never returns the raw key", () => {
   const masked = maskKey(FREE_KEY);
-  assert.equal(masked, "01…fx");
+  assert.equal(masked, "ta…fx");
   assert.ok(!masked.includes(FREE_KEY));
   assert.equal(maskKey(""), "");
   assert.equal(maskKey(null), "");
