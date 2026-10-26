@@ -194,9 +194,17 @@ class Settings(BaseSettings):
     stt_device: str = "auto"
     stt_compute_type: str = "int8"
     stt_http_url: str = ""
+    # Optional VoiceStudio (AGPL sidecar) OpenAI-compatible speech service.
+    # TalkFlow connects over HTTP; VoiceStudio source is not bundled here.
+    voicestudio_url: str = ""
+    voicestudio_api_key: str = ""
+    voicestudio_stt_model: str = "whisper-1"
     tts_provider: str = "auto"
     tts_model: str = "kokoro-v1.0"
     tts_http_url: str = ""
+    voicestudio_tts_model: str = "tts-1"
+    voicestudio_tts_voice: str = "default"
+    voicestudio_tts_format: str = "wav"
     # Which voice speaks which target language: "hi=hf_alpha,en=af_heart".
     # Empty means the provider's own default, which for Kokoro is a single
     # English voice — correct for en, wrong for every other language the room
