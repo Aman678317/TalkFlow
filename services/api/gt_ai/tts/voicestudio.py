@@ -57,7 +57,8 @@ class VoiceStudioTtsProvider(BaseProvider):
                     f"{self.url}/v1/audio/speech",
                     json={"model": self.model, "input": text,
                           "voice": voice or self.default_voice,
-                          "response_format": self.response_format},
+                          "response_format": self.response_format,
+                          "language": lang},
                     headers=headers,
                 )
                 response.raise_for_status()

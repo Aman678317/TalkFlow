@@ -64,7 +64,7 @@ async def test_voicestudio_tts_requests_wav_and_reads_duration(monkeypatch):
         assert url.endswith("/v1/audio/speech")
         assert kwargs["json"] == {
             "model": "tts-1", "input": "नमस्ते", "voice": "default",
-            "response_format": "wav",
+            "response_format": "wav", "language": "hi",
         }
         return httpx.Response(
             200, content=_wav(), request=httpx.Request("POST", url)
