@@ -26,6 +26,11 @@ router = APIRouter(tags=["languages"])
 def list_languages(db: Session = Depends(get_db),
                    principal: Principal = Depends(get_principal),
                    include_experimental: bool = True):
+    # Capability refresh also runs during startup, but that work is deliberately
+    # backgrounded so it cannot delay API readiness.  Reconcile here as well so
+    # the first request cannot expose the seeded optimistic registry before the
+    # installed provider packages have been checked.
+    caps.refresh_from_providers(db)
     rows = caps.list_capabilities(db, include_experimental=include_experimental)
     if not include_experimental and not flag_enabled(db, "experimental_language",
                                                      principal.org_id):
@@ -45,7 +50,10 @@ def pair_matrix(db: Session = Depends(get_db),
                 principal: Principal = Depends(get_principal)):
     rows = caps.list_capabilities(db)
     supported = [r.code for r in rows if r.translation_supported]
+    pairs = sorted(caps.translation_pairs())
     return {"translatable_languages": supported,
+            "pairs": [{"source_language": src, "target_language": tgt}
+                      for src, tgt in pairs],
             "note": "Every pair is translated directly from the canonical source; "
                     "pivot use is flagged per section 77.10."}
 

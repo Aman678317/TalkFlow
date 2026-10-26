@@ -155,12 +155,11 @@ def test_history_recorded_and_searchable(auth_client):
 
 
 def _mt_ready(client, src="en", tgt="hi") -> bool:
-    r = client.get("/api/v1/languages")
+    r = client.get("/api/v1/languages/pairs")
     if r.status_code != 200:
         return False
-    caps = {c["code"]: c for c in r.json()}
-    return (caps.get(src, {}).get("translation_supported")
-            and caps.get(tgt, {}).get("translation_supported"))
+    return any(p["source_language"] == src and p["target_language"] == tgt
+               for p in r.json().get("pairs", []))
 
 
 @pytest.mark.model

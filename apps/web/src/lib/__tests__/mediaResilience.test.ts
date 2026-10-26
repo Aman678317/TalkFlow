@@ -158,6 +158,34 @@ describe("MeetingSocket heartbeat", () => {
     expect(ws.closed).toBe(0);
     expect(states).not.toContain("reconnecting");
   });
+
+  it("mints a fresh standalone ticket after a socket attempt closes", async () => {
+    const refreshTicket = vi.fn(async () => "fresh-ticket");
+    const socket = new MeetingSocket({
+      meetingId: "m1",
+      ticket: "first-ticket",
+      refreshTicket,
+      displayName: "Test",
+      preferences: {
+        speaking_language: "en", listening_language: "hi",
+        audio_mode: "translated", caption_mode: "translated", latency_mode: "balanced",
+      },
+      onEvent: () => {},
+      onBinary: () => {},
+      onStateChange: () => {},
+    });
+
+    socket.connect();
+    const first = FakeWebSocket.instances[0];
+    expect(first.url).toContain("ticket=first-ticket");
+    first.simulateOpen();
+    first.simulateMessage(envelope("session.created"));
+    first.close();
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(refreshTicket).toHaveBeenCalledTimes(1);
+    expect(FakeWebSocket.instances[1]?.url).toContain("ticket=fresh-ticket");
+  });
 });
 
 // --------------------------------------------------------------------------- //

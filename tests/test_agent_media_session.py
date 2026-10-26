@@ -30,7 +30,6 @@ from typing import Any
 import pytest
 from websockets.asyncio.client import connect as ws_connect
 
-from app.config import settings
 from app.telephony.ai_agent_graph import GraphConfig
 from app.telephony.media.agent_media_session import (
     AgentMediaSession,
@@ -448,25 +447,27 @@ async def test_eligibility_only_starts_ai_agent_calls(services_app_client, user)
 
 def test_build_spec_uses_settings() -> None:
     """Product path: the default spec_builder maps settings into the spec."""
-    from app.config import settings
+    # tests/conftest.py reloads app.config after this module is imported; use
+    # the current singleton so build_spec observes the same settings object.
+    from app.config import settings as current_settings
 
     runtime = AsteriskAgentMediaRuntime(
         FakeARI(), bind_host="127.0.0.1", bind_port=0)
-    saved = (settings.asterisk_media_external_host,
-             settings.asterisk_ari_app_name,
-             settings.asterisk_agent_permitted_documents,
-             settings.asterisk_agent_segment_wait_seconds)
+    saved = (current_settings.asterisk_media_external_host,
+             current_settings.asterisk_ari_app_name,
+             current_settings.asterisk_agent_permitted_documents,
+             current_settings.asterisk_agent_segment_wait_seconds)
     try:
-        settings.asterisk_media_external_host = "spec-cfg"
-        settings.asterisk_ari_app_name = "spec-app"
-        settings.asterisk_agent_permitted_documents = "doc-b, doc-a ,,doc-c"
-        settings.asterisk_agent_segment_wait_seconds = 1.5
+        current_settings.asterisk_media_external_host = "spec-cfg"
+        current_settings.asterisk_ari_app_name = "spec-app"
+        current_settings.asterisk_agent_permitted_documents = "doc-b, doc-a ,,doc-c"
+        current_settings.asterisk_agent_segment_wait_seconds = 1.5
         spec = runtime.build_spec(f"talkflow-{uuid.uuid4()}", "chan-1")
     finally:
-        (settings.asterisk_media_external_host,
-         settings.asterisk_ari_app_name,
-         settings.asterisk_agent_permitted_documents,
-         settings.asterisk_agent_segment_wait_seconds) = saved
+        (current_settings.asterisk_media_external_host,
+         current_settings.asterisk_ari_app_name,
+         current_settings.asterisk_agent_permitted_documents,
+         current_settings.asterisk_agent_segment_wait_seconds) = saved
     assert spec.external_host == "spec-cfg"
     assert spec.app_name == "spec-app"
     assert spec.graph_config.permitted_documents == ("doc-a", "doc-b", "doc-c")

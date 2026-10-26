@@ -26,6 +26,8 @@ export interface MeetingSocketOptions {
   /** server-issued seat key; every (re)connect mints a fresh single-use ticket from it */
   sessionKey?: string;
   ticket?: string;
+  /** Optional authenticated ticket re-mint hook for standalone sessions. */
+  refreshTicket?: () => Promise<string | null>;
   displayName: string;
   preferences: Preferences;
   participantId?: string;
@@ -114,6 +116,13 @@ export class MeetingSocket {
   }
 
   private async mintTicket(): Promise<string | null> {
+    if (this.opts.refreshTicket) {
+      try {
+        return await this.opts.refreshTicket();
+      } catch {
+        return null;
+      }
+    }
     if (!this.opts.sessionKey && !getAccessToken()) return null;
     try {
       const body = this.opts.sessionKey ? { session_key: this.opts.sessionKey } : {};
@@ -130,14 +139,24 @@ export class MeetingSocket {
     }
   }
 
+  /** Allow a standalone session bootstrap to seed the same one-shot ticket path. */
+  setTicket(ticket: string | null) {
+    this.pendingTicket = ticket;
+  }
+
   private async open() {
     this.setState(this.everJoined ? "reconnecting" : "connecting");
-    if (this.opts.sessionKey || (this.everJoined && !this.opts.ticket)) {
+    const needsFreshTicket = Boolean(
+      this.opts.sessionKey
+      || (this.opts.refreshTicket && (this.everJoined || (!this.opts.ticket && !this.pendingTicket)))
+      || (this.everJoined && !this.opts.ticket),
+    );
+    if (needsFreshTicket) {
       // Tickets are single-use and expire in 120s, so every (re)connect mints
       // a fresh one; the WS URL never carries a long-lived credential.
       const ticket = await this.mintTicket();
       if (!ticket) {
-        if (this.opts.sessionKey) {
+        if (this.opts.sessionKey || this.opts.refreshTicket) {
           this.mintFailures += 1;
           if (this.mintFailures >= 5) {
             this.setState("error");
@@ -215,6 +234,10 @@ export class MeetingSocket {
 
     ws.onclose = (ev) => {
       this.stopHeartbeat();
+      // Standalone voice tickets are single-use. Once a socket attempt closes,
+      // never retry the same bootstrap ticket, even if the handshake failed
+      // before the client observed session.created.
+      if (this.opts.refreshTicket) this.pendingTicket = null;
       if (this.closedByUser) {
         this.setState("closed");
         return;
