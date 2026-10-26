@@ -31,8 +31,10 @@ async function detectBackendPort(): Promise<number> {
       });
     });
 
+  // The canonical backend is always 8088. Do not auto-select the legacy
+  // compatibility service on 8000: it has a different route surface and can
+  // make valid auth calls appear to be 404s when both services are running.
   if (await check(8088)) return 8088;
-  if (await check(8000)) return 8000;
   return 8088;
 }
 

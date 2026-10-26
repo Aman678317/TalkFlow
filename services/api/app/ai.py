@@ -47,8 +47,8 @@ TASKS = (Task.STT, Task.MT, Task.TTS, Task.LANG_DETECT, Task.SUMMARIZE, Task.EMB
 AUTO_PROVIDER_ORDER: dict[Task, list[str]] = {
     Task.MT: ["madlad400", "nllb_ct2", "argos", "airllm",
               "neural_online", "deepl", "mt_http", "dev_echo"],
-    Task.STT: ["faster_whisper", "stt_http", "dev_text"],
-    Task.TTS: ["kokoro", "piper", "tts_http", "dev_tone"],
+    Task.STT: ["faster_whisper", "voicestudio_stt", "stt_http", "dev_text"],
+    Task.TTS: ["kokoro", "piper", "voicestudio_tts", "tts_http", "dev_tone"],
     Task.LANG_DETECT: ["fasttext", "langdetect"],
     Task.SUMMARIZE: ["extractive", "llm_http"],
     Task.EMBED: ["sentence_transformers", "hash_tfidf"],
@@ -203,6 +203,10 @@ class AIFacade:
                       "compute_type": settings.stt_compute_type}
         elif task == Task.STT and name == "stt_http":
             kwargs = {"url": settings.stt_http_url}
+        elif task == Task.STT and name == "voicestudio_stt":
+            kwargs = {"url": settings.voicestudio_url,
+                      "api_key": settings.voicestudio_api_key,
+                      "model": settings.voicestudio_stt_model}
         elif task == Task.STT and name in ("azure_speech", "azure_stt", "azure_speech_stt"):
             kwargs = {
                 "key": settings.azure_speech_key,
@@ -217,6 +221,12 @@ class AIFacade:
             kwargs = {"model_dir": f"{cache}/piper"}
         elif task == Task.TTS and name == "tts_http":
             kwargs = {"url": settings.tts_http_url}
+        elif task == Task.TTS and name == "voicestudio_tts":
+            kwargs = {"url": settings.voicestudio_url,
+                      "api_key": settings.voicestudio_api_key,
+                      "model": settings.voicestudio_tts_model,
+                      "default_voice": settings.voicestudio_tts_voice,
+                      "response_format": settings.voicestudio_tts_format}
         elif task == Task.TTS and name in ("azure_speech_tts", "azure_tts", "azure_speech"):
             kwargs = {
                 "key": settings.azure_speech_key,

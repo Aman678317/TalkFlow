@@ -55,7 +55,8 @@ def _import_adapters(task: str) -> None:
     modules = {
         "stt": [
             "gt_ai.stt.azure_speech",
-            "gt_ai.stt.faster_whisper", "gt_ai.stt.http", "gt_ai.stt.dev",
+            "gt_ai.stt.faster_whisper", "gt_ai.stt.voicestudio",
+            "gt_ai.stt.http", "gt_ai.stt.dev",
         ],
         "mt": [
             "gt_ai.translation.azure_translator",
@@ -69,7 +70,8 @@ def _import_adapters(task: str) -> None:
         ],
         "tts": [
             "gt_ai.tts.azure_speech",
-            "gt_ai.tts.kokoro", "gt_ai.tts.piper", "gt_ai.tts.http", "gt_ai.tts.dev_tone",
+            "gt_ai.tts.kokoro", "gt_ai.tts.piper", "gt_ai.tts.voicestudio",
+            "gt_ai.tts.http", "gt_ai.tts.dev_tone",
         ],
         "lang_detect": ["gt_ai.detection.fasttext", "gt_ai.detection.langdetect_p"],
         "summarize": ["gt_ai.summarize.extractive", "gt_ai.summarize.llm_http"],
