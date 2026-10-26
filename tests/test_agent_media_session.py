@@ -448,8 +448,6 @@ async def test_eligibility_only_starts_ai_agent_calls(services_app_client, user)
 
 def test_build_spec_uses_settings() -> None:
     """Product path: the default spec_builder maps settings into the spec."""
-    from app.config import settings
-
     runtime = AsteriskAgentMediaRuntime(
         FakeARI(), bind_host="127.0.0.1", bind_port=0)
     saved = (settings.asterisk_media_external_host,

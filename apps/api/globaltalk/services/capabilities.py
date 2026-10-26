@@ -112,6 +112,19 @@ def refresh_from_providers(db: Session) -> dict[str, dict]:
     return report
 
 
+def translation_pairs() -> set[tuple[str, str]]:
+    """Return the exact MT pairs currently served by local providers."""
+    router = get_router()
+    pairs: set[tuple[str, str]] = set()
+    for provider in router._providers.get("mt", {}).values():
+        try:
+            if provider.healthy() and hasattr(provider, "supported_pairs"):
+                pairs.update(provider.supported_pairs())
+        except Exception:
+            continue
+    return pairs
+
+
 def _RR(task: str):  # kept for callers that still construct RouteRequests directly
     from ai.model_router.router import RouteRequest
     return RouteRequest(task=task)

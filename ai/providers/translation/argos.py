@@ -11,6 +11,7 @@ so routing policy can reject pivots for premium realtime routes.
 from __future__ import annotations
 
 import os
+import json
 import threading
 import time
 from pathlib import Path
@@ -20,6 +21,7 @@ from ai.interfaces import ProviderUnavailable, TranslationResult
 _lock = threading.Lock()
 _SUBPROCESS_LOCK = threading.Lock()  # serialize heavy model subprocesses (low-RAM safety)
 _installed_pairs: set[tuple[str, str]] | None = None
+_argos_cache_dir: Path | None = None
 
 
 def _downloads_allowed() -> bool:
@@ -75,6 +77,8 @@ _pair_cache: "OrderedDict[tuple[str, str], object]" = OrderedDict()
 
 
 def _get_translation(src: str, tgt: str):
+    if _argos_cache_dir is not None:
+        _use_cache_dir(str(_argos_cache_dir))
     at, _ap = _import_argos()
     with _lock:
         key = (src, tgt)
@@ -93,6 +97,13 @@ def _get_translation(src: str, tgt: str):
         except Exception:
             pass
         tr = at.get_translation_from_codes(src, tgt)
+        if tr is None:
+            # Argos returns None for a missing direct pair.  Calling
+            # ``translate`` on that value produces an opaque AttributeError
+            # and makes the router report a misleading provider crash.
+            raise ProviderUnavailable(
+                "argos", f"language pair {src}->{tgt} is not installed"
+            )
         _pair_cache[key] = tr
         return tr
 
@@ -121,19 +132,38 @@ def _use_cache_dir(cache: str) -> None:
         argos_settings.package_dirs.insert(0, root)
 
 
+def _cached_pairs(cache: Path) -> set[tuple[str, str]]:
+    """Read installed package metadata without importing Argos or Stanza."""
+    pairs: set[tuple[str, str]] = set()
+    for metadata in cache.glob("*/metadata.json"):
+        try:
+            data = json.loads(metadata.read_text(encoding="utf-8"))
+            src, tgt = data.get("from_code"), data.get("to_code")
+            if isinstance(src, str) and isinstance(tgt, str) and src and tgt:
+                pairs.add((src, tgt))
+        except (OSError, ValueError):
+            continue
+    return pairs
+
+
 def _ensure_installed():
-    global _installed_pairs
+    global _installed_pairs, _argos_cache_dir
     with _lock:
         if _installed_pairs is not None:
             return _installed_pairs
         from globaltalk.core.config import settings
-        cache = str(settings.resolve(settings.model_cache_path) / "argos")
+        cache = Path(settings.resolve(settings.model_cache_path) / "argos")
+        _argos_cache_dir = cache
         os.environ.setdefault("ARGOS_DEVICE_TYPE", "cpu")
+        cached = _cached_pairs(cache)
+        if not _downloads_allowed():
+            _installed_pairs = cached
+            return cached
         try:
             _at, argostranslate_package = _import_argos()
         except ImportError as exc:
             raise ProviderUnavailable("argos", f"not installed: {exc}")
-        _use_cache_dir(cache)
+        _use_cache_dir(str(cache))
         installed = argostranslate_package.get_installed_packages()
         have = {(p.from_code, p.to_code) for p in installed}
         if _downloads_allowed():

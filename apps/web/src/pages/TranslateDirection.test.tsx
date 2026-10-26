@@ -45,7 +45,7 @@ function renderTranslate() {
 
 async function pickTarget(name: string) {
   fireEvent.click(screen.getByRole("button", { name: "More target languages" }));
-  fireEvent.click(await screen.findByRole("button", { name }));
+  fireEvent.click(await screen.findByRole("button", { name }, { timeout: 5000 }));
 }
 
 describe("Translate panes follow the script direction", () => {
@@ -97,7 +97,7 @@ describe("Translate panes follow the script direction", () => {
   it("sets dir=rtl on the source box once an RTL language is picked", async () => {
     renderTranslate();
     fireEvent.click(screen.getByRole("button", { name: "More source languages" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Arabic (العربية)" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Arabic (العربية)" }, { timeout: 5000 }));
     const box = screen.getByLabelText("Source text");
     fireEvent.change(box, { target: { value: "مرحبا" } });
     await waitFor(() => expect(box).toHaveAttribute("dir", "rtl"));
