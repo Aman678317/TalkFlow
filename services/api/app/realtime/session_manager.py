@@ -76,6 +76,22 @@ class RtSession:
         return self.sequence
 
 
+def _lang_match(lang_a: str | None, lang_b: str | None) -> bool:
+    """Regional-subtag-tolerant language comparison.
+
+    ``_lang_match("en-US", "en")`` returns True so that listeners whose
+    *hear_lang* differs only in the regional subtag still receive captions
+    and TTS audio.
+    """
+    if not lang_a or not lang_b:
+        return False
+    a = lang_a.strip().lower().replace("_", "-")
+    b = lang_b.strip().lower().replace("_", "-")
+    if a == b:
+        return True
+    return a.split("-")[0] == b.split("-")[0]
+
+
 class SessionManager:
     def __init__(self) -> None:
         self._sessions: dict[str, RtSession] = {}
@@ -152,16 +168,6 @@ class SessionManager:
             p.connected = False
             p.ws = None
             p.ws_task = None
-
-def _lang_match(lang_a: str | None, lang_b: str | None) -> bool:
-    if not lang_a or not lang_b:
-        return False
-    a = lang_a.strip().lower().replace("_", "-")
-    b = lang_b.strip().lower().replace("_", "-")
-    if a == b:
-        return True
-    return a.split("-")[0] == b.split("-")[0]
-
 
     def listeners_for_language(self, session: RtSession, target_lang: str,
                                *, want_audio: bool) -> list[RtParticipant]:

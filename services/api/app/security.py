@@ -161,6 +161,9 @@ def create_session_ticket(session_id: str, participant_id: str,
     return token
 
 
+mint_session_ticket = create_session_ticket
+
+
 _CONSUMED_RT_TICKETS: dict[str, float] = {}  # jti -> expires_at
 
 

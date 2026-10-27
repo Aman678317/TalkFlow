@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from app.db import models as M
 from app.db.session import db_session
 from app.realtime.session_manager import manager
-from app.security import mint_session_ticket
+from app.security import create_session_ticket
 
 log = logging.getLogger("app.routers.google_meet")
 
@@ -114,8 +114,7 @@ async def connect_google_meet(payload: ConnectMeetRequest):
         await db.refresh(participant)
 
         # Mint session ticket for WebSocket realtime streaming
-        ticket = mint_session_ticket(
-            str(participant.id),
+        ticket = create_session_ticket(
             meeting.room_name,
             str(participant.id),
         )

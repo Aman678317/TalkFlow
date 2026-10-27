@@ -38,10 +38,11 @@ function getWsUrl(roomId: string): string {
     return `${base}${path}`;
   }
   if (typeof window !== 'undefined') {
-    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-      const port = (window.location.port === '5173' || window.location.port === '3000' || !window.location.port) ? '8000' : window.location.port; return `${protocol}//${window.location.hostname}:${port}${path}`;
-    }
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+      const port = (window.location.port === '5173' || window.location.port === '3000' || !window.location.port) ? '8000' : window.location.port;
+      return `${protocol}//${window.location.hostname}:${port}${path}`;
+    }
     return `${protocol}//${window.location.host}${path}`;
   }
   return `ws://127.0.0.1:8000${path}`;

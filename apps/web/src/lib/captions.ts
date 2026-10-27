@@ -162,7 +162,7 @@ function applyTranslation(lines: CaptionLine[], evt: RealtimeEvent,
   view: CaptionView): CaptionLine[] {
   const targetLang = str(evt.target_language) ?? str(evt.target_lang);
   const turn = turnId(evt);
-  if (!turn || !isSameLanguage(targetLang, view.listening_language)) return lines;
+  if (!turn || !targetLang || !isSameLanguage(targetLang, view.listening_language)) return lines;
   // "Original" caption mode is a deliberate choice not to read translations.
   if (view.caption_mode === "original") return lines;
 
