@@ -286,7 +286,10 @@ async def realtime_ws(
 
             # binary frame = audio chunk from this participant
             if (bdata := message.get("bytes")) is not None:
-                await pl.get_pipeline(session).feed_audio(rp.participant_id, bdata)
+                pipe = pl.get_pipeline(session)
+                if rp.participant_id not in pipe.audio_queues:
+                    pipe.start_speaker(rp)
+                await pipe.feed_audio(rp.participant_id, bdata)
                 # relay original audio to original/mixed listeners (WS transport)
                 await manager.relay_audio(session, rp.participant_id, bdata)
                 continue
@@ -454,7 +457,7 @@ async def _handle_event(ws: WebSocket, session, rp: RtParticipant, event) -> Non
                 return
             await pipe.feed_audio(rp.participant_id, pcm)
 
-    elif event.type == ClientEventType.AUDIO_STOP:
+    elif event.type in (ClientEventType.AUDIO_STOP, "audio.stop", "audio.stopped"):
         flush_task = pipe.stop_speaker(rp.participant_id)
         if flush_task is not None:
             await flush_task
@@ -467,6 +470,17 @@ async def _handle_event(ws: WebSocket, session, rp: RtParticipant, event) -> Non
                                          data.get("language", ""))
         except Exception as e:
             await _send_error(ws, "inject_disabled", str(e)[:200])
+
+    elif event.type in (ClientEventType.SPEECH_TRANSCRIPT, "speech.transcript"):
+        try:
+            await pipe.ingest_client_transcript(
+                rp,
+                text=data.get("text", ""),
+                language=data.get("language", ""),
+                is_final=bool(data.get("is_final", True))
+            )
+        except Exception as e:
+            log.warning("speech.transcript processing failed: %s", e)
 
     elif event.type == ClientEventType.PREFERENCES_UPDATE:
         speak = data.get("speak_lang") or data.get("speaking_language")

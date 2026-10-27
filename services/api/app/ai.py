@@ -48,7 +48,7 @@ AUTO_PROVIDER_ORDER: dict[Task, list[str]] = {
     Task.MT: ["madlad400", "nllb_ct2", "argos", "airllm",
               "neural_online", "deepl", "mt_http", "dev_echo"],
     Task.STT: ["faster_whisper", "voicestudio_stt", "stt_http", "dev_text"],
-    Task.TTS: ["kokoro", "piper", "voicestudio_tts", "tts_http", "dev_tone"],
+    Task.TTS: ["kokoro", "piper", "neural_online", "google_tts", "voicestudio_tts", "tts_http", "dev_tone"],
     Task.LANG_DETECT: ["fasttext", "langdetect"],
     Task.SUMMARIZE: ["extractive", "llm_http"],
     Task.EMBED: ["sentence_transformers", "hash_tfidf"],

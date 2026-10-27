@@ -78,7 +78,7 @@ def create_app() -> FastAPI:
     from app.routers import (
         assistant as assistant_routers,
         auth, contacts, documents, health, meetings, orgs, platform, translate,
-        customization, write, v2_v3, telephony, agent_studio, notes,
+        customization, write, v2_v3, telephony, agent_studio, notes, google_meet,
     )
     app.include_router(v2_v3.router)
     app.include_router(health.router)
@@ -91,6 +91,7 @@ def create_app() -> FastAPI:
     app.include_router(documents.router)
     app.include_router(meetings.router)
     app.include_router(meetings.voice_router)
+    app.include_router(google_meet.router)
     app.include_router(assistant_routers.chat_router)
     app.include_router(assistant_routers.assistant_router)
     app.include_router(assistant_routers.agent_router)
@@ -118,20 +119,55 @@ def create_app() -> FastAPI:
     except Exception as exc:
         log.warning("Could not mount CopilotKit agent: %s", exc)
 
-    @app.get("/", include_in_schema=False)
-    async def _root():
-        return {
-            "name": settings.app_name,
-            "status": "running",
-            "version": settings.version,
-            "docs": "/api/docs",
-        }
-
     @app.get("/api", include_in_schema=False)
     @app.get("/api-docs", include_in_schema=False)
     async def _api_docs_redirect():
         from fastapi.responses import RedirectResponse
         return RedirectResponse(url="/api/docs")
+
+    web_dist: Path | None = None
+    for cand in [
+        Path("/app/apps/web/dist"),
+        _APP_ROOT.parent.parent / "apps" / "web" / "dist",
+        _APP_ROOT / "apps" / "web" / "dist",
+        Path("apps/web/dist"),
+        Path("../../apps/web/dist"),
+    ]:
+        if cand.is_dir() and (cand / "index.html").is_file():
+            web_dist = cand.resolve()
+            break
+
+    if web_dist:
+        from fastapi.staticfiles import StaticFiles
+        from fastapi.responses import FileResponse
+
+        assets_dir = web_dist / "assets"
+        if assets_dir.is_dir():
+            app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+
+        @app.get("/", include_in_schema=False)
+        async def _serve_spa_root():
+            return FileResponse(str(web_dist / "index.html"))
+
+        @app.get("/{full_path:path}", include_in_schema=False)
+        async def _serve_spa(full_path: str):
+            first_segment = full_path.split("/")[0]
+            if first_segment in {"api", "api-docs", "docs", "redoc", "openapi.json", "health", "ready", "metrics", "ws", "v2", "v3"}:
+                from fastapi import HTTPException
+                raise HTTPException(status_code=404, detail="Not Found")
+            target = web_dist / full_path
+            if target.is_file():
+                return FileResponse(str(target))
+            return FileResponse(str(web_dist / "index.html"))
+    else:
+        @app.get("/", include_in_schema=False)
+        async def _root():
+            return {
+                "name": settings.app_name,
+                "status": "running",
+                "version": settings.version,
+                "docs": "/api/docs",
+            }
 
     return app
 
