@@ -1,0 +1,88 @@
+/* TalkFlow Google Meet Overlay Styles */
+
+#talkflow-meet-overlay {
+  position: fixed;
+  bottom: 84px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 999999;
+  pointer-events: none;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  width: 90%;
+  max-width: 640px;
+}
+
+.tf-card {
+  pointer-events: auto;
+  background: rgba(19, 19, 20, 0.88);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 14px;
+  padding: 10px 16px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5), 0 0 15px rgba(0, 122, 255, 0.2);
+  transition: all 0.2s ease-in-out;
+}
+
+.tf-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.tf-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tf-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #10b981;
+  box-shadow: 0 0 8px #10b981;
+  animation: tf-pulse 1.8s infinite;
+}
+
+@keyframes tf-pulse {
+  0% { transform: scale(0.95); opacity: 0.8; }
+  50% { transform: scale(1.2); opacity: 1; }
+  100% { transform: scale(0.95); opacity: 0.8; }
+}
+
+.tf-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #38bdf8;
+  letter-spacing: 0.3px;
+}
+
+.tf-lang-badge {
+  font-size: 10px;
+  font-weight: 600;
+  color: #cbd5e1;
+  background: rgba(255, 255, 255, 0.1);
+  padding: 2px 7px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.tf-body {
+  text-align: center;
+}
+
+.tf-translated {
+  font-size: 15px;
+  font-weight: 600;
+  color: #ffffff;
+  line-height: 1.4;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+}
+
+.tf-original {
+  font-size: 12px;
+  color: #94a3b8;
+  font-style: italic;
+  margin-top: 3px;
+}

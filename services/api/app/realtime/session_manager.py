@@ -153,6 +153,16 @@ class SessionManager:
             p.ws = None
             p.ws_task = None
 
+def _lang_match(lang_a: str | None, lang_b: str | None) -> bool:
+    if not lang_a or not lang_b:
+        return False
+    a = lang_a.strip().lower().replace("_", "-")
+    b = lang_b.strip().lower().replace("_", "-")
+    if a == b:
+        return True
+    return a.split("-")[0] == b.split("-")[0]
+
+
     def listeners_for_language(self, session: RtSession, target_lang: str,
                                *, want_audio: bool) -> list[RtParticipant]:
         """Fan-out: participants whose hear_lang == target_lang.
@@ -162,7 +172,7 @@ class SessionManager:
         """
         out = []
         for p in session.participants.values():
-            if not p.connected or p.hear_lang != target_lang:
+            if not p.connected or not _lang_match(p.hear_lang, target_lang):
                 continue
             if want_audio:
                 if p.audio_mode in ("translated", "mixed"):
@@ -178,13 +188,13 @@ class SessionManager:
         """Deduplicated target set: translate each language ONCE (PDD §13)."""
         langs: set[str] = set()
         for key, p in session.participants.items():
-            if key == exclude_speaker:
-                # speakers still get captions of their own speech? No —
-                # they see their own source transcript; skip self-translation.
+            if key == exclude_speaker and len(session.participants) > 1:
+                # In multi-participant rooms, speakers skip self-translation.
+                # In solo voice translation sessions, the speaker is the one requesting translation.
                 continue
             if not p.connected:
                 continue
-            if p.hear_lang and p.hear_lang != source_lang:
+            if p.hear_lang and not _lang_match(p.hear_lang, source_lang):
                 if p.audio_mode in ("translated", "mixed") or p.captions_enabled:
                     langs.add(p.hear_lang)
         return langs

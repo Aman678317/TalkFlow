@@ -283,6 +283,11 @@ class MeetingPipeline:
     # ------------------------------------------------------------------ #
     async def feed_audio(self, participant_id: uuid.UUID, pcm16: bytes) -> None:
         q = self.audio_queues.get(participant_id)
+        if q is None:
+            participant = self.session.participants.get(str(participant_id))
+            if participant is not None and not self._closed:
+                self.start_speaker(participant)
+                q = self.audio_queues.get(participant_id)
         if q is None or not pcm16:
             return
         # PCM16 contract: 16-bit signed integer samples (even number of bytes)
@@ -571,7 +576,8 @@ class MeetingPipeline:
         """
         listeners = manager.listeners_for_language(self.session, target_lang,
                                                    want_audio=True)
-        listeners = [p for p in listeners if p.participant_id != speaker_id]
+        if len(self.session.participants) > 1:
+            listeners = [p for p in listeners if p.participant_id != speaker_id]
         live = set(self.supervisor.live_recipients(
             [str(p.participant_id) for p in listeners], target_lang))
         return [p for p in listeners if str(p.participant_id) in live]
@@ -791,6 +797,76 @@ class MeetingPipeline:
                                    stt_model="injected", stt_provider="inject",
                                    stt_ms=0.0, capture_ms=0.0, start_ms=0,
                                    start_wall_ms=int(time.time() * 1000))
+
+    async def ingest_client_transcript(self, p: RtParticipant, text: str,
+                                       language: str = "", is_final: bool = True) -> None:
+        """Ingest live real-time speech recognized by the client's Web Speech engine (Google Meet pattern)."""
+        clean_text = (text or "").strip()
+        if not clean_text:
+            return
+        source_lang = language or (p.speak_lang if p.speak_lang not in ("auto", "AUTO", "") else "")
+        if not source_lang:
+            try:
+                det = await self.listening.detect_language(clean_text)
+                source_lang = det.language
+            except Exception:
+                source_lang = "en"
+
+        u = self.utterances.get(p.participant_id)
+        if u is None:
+            self.start_speaker(p)
+            u = self.utterances[p.participant_id]
+
+        now_ms = int(time.time() * 1000)
+
+        if not is_final:
+            u.partial_text = clean_text
+            await manager.broadcast(
+                self.session, ServerEventType.TRANSCRIPT_PARTIAL,
+                {
+                    "speaker_name": p.display_name,
+                    "display_name": p.display_name,
+                    "speaker_id": str(p.participant_id),
+                    "speakerId": str(p.participant_id),
+                    "session_id": str(self.session.meeting_id),
+                    "sessionId": str(self.session.meeting_id),
+                    "language": source_lang,
+                    "text": clean_text,
+                    "is_final": False,
+                    "utterance_started_ms": u.started_at_ms or now_ms,
+                    "utterance_id": str(u.utterance_id),
+                    "utteranceId": str(u.utterance_id),
+                    "sequence": u.seq,
+                    "seq": u.seq,
+                    "created_at": now_ms,
+                    "createdAt": now_ms,
+                },
+                speaker_id=str(p.participant_id),
+            )
+            return
+
+        # Final speech transcript: advance turn and commit segment for MT translation & TTS fanout
+        u.seq += 1
+        curr_seq = u.seq
+        curr_uid = uuid.uuid4()
+        u.utterance_id = curr_uid
+        u.in_speech = False
+        u.partial_text = ""
+
+        self._broadcast_diag(self._diag(
+            "stt_exit", utt=str(curr_uid), seq=curr_seq, speaker=p.participant_id,
+            provider="client_speech_api", model="browser_web_speech", stt_ms=0.0,
+            text_len=len(clean_text), text_preview=clean_text[:80],
+            language=source_lang, confidence=0.98))
+
+        await self._commit_segment(
+            p, text=clean_text, source_lang=source_lang,
+            audio=b"", confidence=0.98,
+            stt_model="browser_web_speech", stt_provider="client_speech_api",
+            stt_ms=0.0, capture_ms=0.0, start_ms=now_ms,
+            start_wall_ms=now_ms, duration_ms=round(len(clean_text.split()) * 300),
+            utterance_id=curr_uid, seq_num=curr_seq
+        )
 
     # ------------------------------------------------------------------ #
     # Canonical segment + fan-out

@@ -45,6 +45,15 @@ export interface CaptionView {
   speakerNames?: Record<string, string>;
 }
 
+/** Check if two language tags match (handling regional subtags like 'en-US' vs 'en', case variations, etc.) */
+export function isSameLanguage(a?: string | null, b?: string | null): boolean {
+  if (!a || !b) return false;
+  const cleanA = a.trim().toLowerCase().replace("_", "-");
+  const cleanB = b.trim().toLowerCase().replace("_", "-");
+  if (cleanA === cleanB) return true;
+  return cleanA.split("-")[0] === cleanB.split("-")[0];
+}
+
 /** Bound on the live list; the durable transcript is the server's job. */
 export const MAX_CAPTION_LINES = 80;
 
@@ -117,7 +126,7 @@ function applyTranscript(lines: CaptionLine[], evt: RealtimeEvent, view: Caption
   // In "translated" mode a source caption in someone else's language is noise —
   // but a final still opens the line, because the translation has to land on it.
   const showOriginal = view.caption_mode !== "translated"
-    || language === view.listening_language;
+    || isSameLanguage(language, view.listening_language);
   if (!showOriginal && !isFinal) return lines;
 
   const index = lines.findIndex((c) => c.id === turn);
@@ -153,7 +162,7 @@ function applyTranslation(lines: CaptionLine[], evt: RealtimeEvent,
   view: CaptionView): CaptionLine[] {
   const targetLang = str(evt.target_language) ?? str(evt.target_lang);
   const turn = turnId(evt);
-  if (!turn || targetLang !== view.listening_language) return lines;
+  if (!turn || !isSameLanguage(targetLang, view.listening_language)) return lines;
   // "Original" caption mode is a deliberate choice not to read translations.
   if (view.caption_mode === "original") return lines;
 
@@ -191,7 +200,7 @@ function applyTranslationFailed(lines: CaptionLine[], evt: RealtimeEvent,
   // A failed translation to somebody else's language is not my problem. When the
   // event names no target there is nothing to route on, so it is shown.
   const targetLang = str(evt.target_language) ?? str(evt.target_lang);
-  if (targetLang && targetLang !== view.listening_language) return lines;
+  if (targetLang && !isSameLanguage(targetLang, view.listening_language)) return lines;
   const segmentId = str(evt.segment_id);
   if (!segmentId) return lines;
   const id = `fail:${segmentId}`;
@@ -210,7 +219,7 @@ function applyTranslationFailed(lines: CaptionLine[], evt: RealtimeEvent,
 function applyLatencyReport(lines: CaptionLine[], evt: RealtimeEvent,
   view: CaptionView): CaptionLine[] {
   const targetLang = str(evt.target_language);
-  if (targetLang && targetLang !== view.listening_language) return lines;
+  if (targetLang && !isSameLanguage(targetLang, view.listening_language)) return lines;
   const turn = turnId(evt);
   if (!turn) return lines;
   const ms = num(evt.total_e2e_latency_ms);

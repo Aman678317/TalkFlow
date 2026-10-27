@@ -62,6 +62,7 @@ import {
 import {
   reduceCaptions,
   setPlayback,
+  isSameLanguage,
   type CaptionLine,
   type CaptionView,
 } from "../lib/captions";
@@ -411,6 +412,7 @@ export default function MeetingRoom() {
 
   const socketRef = React.useRef<MeetingSocket | null>(null);
   const micRef = React.useRef<MicCapture | null>(null);
+  const speechRecRef = React.useRef<any>(null);
   const micRecoveringRef = React.useRef(false);
   const playerRef = React.useRef<AudioPlayer | null>(null);
   const mediaRoomStateRef = React.useRef(mediaRoom.state);
@@ -631,6 +633,66 @@ export default function MeetingRoom() {
     });
   }, [cameraOn, screenOn, micOn, phase, socketState]);
 
+  // Google Meet-style Client-Assisted Speech Recognition Accelerator
+  React.useEffect(() => {
+    if (phase !== "in" || !micOn || typeof window === "undefined") {
+      if (speechRecRef.current) {
+        try { speechRecRef.current.abort(); } catch {}
+        speechRecRef.current = null;
+      }
+      return;
+    }
+    const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRec) return;
+
+    try {
+      const recognizer = new SpeechRec();
+      recognizer.continuous = true;
+      recognizer.interimResults = true;
+      const lang = prefs.speaking_language;
+      recognizer.lang = lang === "AUTO" ? (navigator.language || "en-US") : lang;
+
+      recognizer.onresult = (event: any) => {
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          const res = event.results[i];
+          const transcript = res[0]?.transcript?.trim();
+          if (transcript) {
+            socketRef.current?.sendJson({
+              type: "speech.transcript",
+              text: transcript,
+              language: prefs.speaking_language === "AUTO" ? (recognizer.lang || "en") : prefs.speaking_language,
+              is_final: res.isFinal,
+            });
+          }
+        }
+      };
+
+      recognizer.onerror = (e: any) => {
+        if (e.error !== "no-speech" && e.error !== "aborted") {
+          console.debug("[SpeechRec] non-fatal:", e.error);
+        }
+      };
+
+      recognizer.onend = () => {
+        if (micOn && phase === "in" && speechRecRef.current === recognizer) {
+          try { recognizer.start(); } catch {}
+        }
+      };
+
+      recognizer.start();
+      speechRecRef.current = recognizer;
+    } catch (e) {
+      console.debug("[SpeechRec] could not initialize:", e);
+    }
+
+    return () => {
+      if (speechRecRef.current) {
+        try { speechRecRef.current.abort(); } catch {}
+        speechRecRef.current = null;
+      }
+    };
+  }, [phase, micOn, prefs.speaking_language]);
+
   /**
    * What the caption reducer needs to know about this listener. Read from refs:
    * the socket's event handler is the closure from the render that opened it, so
@@ -811,7 +873,7 @@ export default function MeetingRoom() {
       case "translation.failed": {
         // A failure to translate into somebody else's language is not a degraded
         // experience here; the reducer applies the same rule to the caption.
-        if (evt.target_language !== prefsRef.current.listening_language) break;
+        if (!isSameLanguage(evt.target_language as string, prefsRef.current.listening_language)) break;
         // The pipeline sends its wording under `message`; `user_message` is the
         // older name some routes still use.
         const why = (evt.user_message as string) ?? (evt.message as string)
@@ -825,7 +887,7 @@ export default function MeetingRoom() {
         break;
       }
       case "tts.chunk": {
-        if (evt.target_language !== prefsRef.current.listening_language) break;
+        if (!isSameLanguage(evt.target_language as string, prefsRef.current.listening_language)) break;
         const mode = prefsRef.current.audio_mode;
         if (mode !== "translated" && mode !== "mixed") break;
         const audio = (evt.audio_base64 as string) || (evt.audio as string);
@@ -848,7 +910,7 @@ export default function MeetingRoom() {
         break;
       }
       case "tts.completed": {
-        if (evt.target_language !== prefsRef.current.listening_language) break;
+        if (!isSameLanguage(evt.target_language as string, prefsRef.current.listening_language)) break;
         const mode = prefsRef.current.audio_mode;
         if (mode !== "translated" && mode !== "mixed") break;
         const audio = evt.audio as string;
@@ -883,7 +945,7 @@ export default function MeetingRoom() {
           setTranslationStatus("delayed");
           setTranslationMessage(`High translation latency (~${Math.round(ms)}ms). Audio prioritized.`);
         }
-        if (evt.target_language !== prefsRef.current.listening_language) break;
+        if (!isSameLanguage(evt.target_language as string, prefsRef.current.listening_language)) break;
         if (prefsRef.current.captions_enabled !== false) {
           setCaptions((prev) => reduceCaptions(prev, evt, captionView()));
         }
@@ -969,6 +1031,8 @@ export default function MeetingRoom() {
       micRef.current?.stop();
       micRef.current = null;
       setMicOn(false);
+      socketRef.current?.sendJson({ type: "audio.stop" });
+      socketRef.current?.sendJson({ type: "audio.stop" });
       socketRef.current?.sendJson({ type: "audio.stopped" });
       return;
     }
@@ -1001,6 +1065,7 @@ export default function MeetingRoom() {
       setMicOn(true);
       setMicPermissionBlocked(false);
       setMicLost(false);
+      socketRef.current?.sendJson({ type: "audio.start", sample_rate: SAMPLE_RATE });
       toast.success(
         "Microphone active",
         "Speaking in " +
@@ -1103,10 +1168,13 @@ export default function MeetingRoom() {
         } catch { }
       }
       setMicLost(false);
+      socketRef.current?.sendJson({ type: "audio.start", sample_rate: SAMPLE_RATE });
       toast.success("Microphone recovered", "Input device re-acquired — keep speaking.");
     } catch {
       setMicOn(false);
       setMicLost(true);
+      socketRef.current?.sendJson({ type: "audio.stop" });
+      socketRef.current?.sendJson({ type: "audio.stop" });
       socketRef.current?.sendJson({ type: "audio.stopped" });
       toast.error(
         reason === "mute" ? "Microphone muted by the system" : "Microphone disconnected",
@@ -1148,6 +1216,7 @@ export default function MeetingRoom() {
         } catch { }
       }
       setMicLost(false);
+      socketRef.current?.sendJson({ type: "audio.start", sample_rate: SAMPLE_RATE });
       toast.success("Audio settings updated", "Microphone DSP and input updated.");
     } catch (err: any) {
       // The chosen device may have been unplugged between listing it and opening
@@ -1157,6 +1226,8 @@ export default function MeetingRoom() {
       micRef.current = null;
       setMicOn(false);
       setMicLost(true);
+      socketRef.current?.sendJson({ type: "audio.stop" });
+      socketRef.current?.sendJson({ type: "audio.stop" });
       socketRef.current?.sendJson({ type: "audio.stopped" });
       toast.error("Microphone stopped", "That input device could not be opened. Pick another one.");
       void refreshDevices();
@@ -1388,7 +1459,8 @@ export default function MeetingRoom() {
       });
     } catch (cause) { failures.push(`seat: ${cause}`); }
     // 3) Socket + mesh + capture + playback.
-    socketRef.current?.sendJson({ type: "audio.stopped" });
+    socketRef.current?.sendJson({ type: "audio.stop" });
+      socketRef.current?.sendJson({ type: "audio.stopped" });
     socketRef.current?.close();
     socketRef.current = null;
     rtcRef.current?.dispose();
@@ -1410,7 +1482,7 @@ export default function MeetingRoom() {
     if (failures.length) {
       console.warn("[leave] teardown had failures:", failures.join("; "));
     }
-    nav(`/meetings?end=${id}`);
+    nav("/meetings");
   }
 
   const summaryMut = useMutation({

@@ -73,6 +73,7 @@ class ClientEventType(StrEnum):
     SIGNAL = "signal"
     PING = "ping"
     PLAYBACK_INTERRUPT = "playback.interrupt"
+    SPEECH_TRANSCRIPT = "speech.transcript"
 
 
 PROTOCOL_VERSION = 1

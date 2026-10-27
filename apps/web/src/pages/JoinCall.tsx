@@ -16,7 +16,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import {
-  Globe,
   Mic,
   MicOff,
   Phone,
@@ -27,7 +26,10 @@ import {
   AlertCircle,
   CheckCircle2,
   Languages,
+  Lock,
+  Sparkles,
 } from 'lucide-react';
+import { playWhatsAppRingtone, stopWhatsAppAudio } from '../lib/whatsappAudio';
 
 function getWsUrl(roomId: string): string {
   const path = `/api/v1/telephony/peer-calls/${roomId}/signal?role=callee`;
@@ -37,12 +39,12 @@ function getWsUrl(roomId: string): string {
   }
   if (typeof window !== 'undefined') {
     if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-      return `ws://127.0.0.1:8088${path}`;
+      const port = (window.location.port === '5173' || window.location.port === '3000' || !window.location.port) ? '8000' : window.location.port; return `${protocol}//${window.location.hostname}:${port}${path}`;
     }
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     return `${protocol}//${window.location.host}${path}`;
   }
-  return `ws://127.0.0.1:8088${path}`;
+  return `ws://127.0.0.1:8000${path}`;
 }
 
 async function fetchRoomInfo(roomId: string): Promise<RoomInfo> {
@@ -50,8 +52,8 @@ async function fetchRoomInfo(roomId: string): Promise<RoomInfo> {
   const candidateUrls = [
     ...(customBase ? [`${customBase}/api/v1/telephony/peer-calls/${roomId}`] : []),
     `/api/v1/telephony/peer-calls/${roomId}`,
-    `http://127.0.0.1:8088/api/v1/telephony/peer-calls/${roomId}`,
-    `http://localhost:8088/api/v1/telephony/peer-calls/${roomId}`,
+    `http://127.0.0.1:8000/api/v1/telephony/peer-calls/${roomId}`,
+    `http://localhost:8000/api/v1/telephony/peer-calls/${roomId}`,
   ];
 
   let lastError: Error | null = null;
@@ -150,6 +152,7 @@ export default function JoinCall() {
         }
         setRoom(info);
         setPageState('ready');
+        playWhatsAppRingtone();
       })
       .catch((e: Error) => {
         setPageState('error');
@@ -162,6 +165,7 @@ export default function JoinCall() {
   }, [roomId]);
 
   const cleanup = useCallback(() => {
+    stopWhatsAppAudio();
     timerRef.current && clearInterval(timerRef.current);
     timerRef.current = null;
     connectingTimerRef.current && clearTimeout(connectingTimerRef.current);
@@ -176,6 +180,7 @@ export default function JoinCall() {
 
   // ─── Instant connect helper ──────────────────────────────────────────────
   const startConnectedSession = useCallback(() => {
+    stopWhatsAppAudio();
     connectingTimerRef.current && clearTimeout(connectingTimerRef.current);
     connectingTimerRef.current = null;
     setPageState('connected');
@@ -190,6 +195,7 @@ export default function JoinCall() {
   // ─── Step 2: Answer ──────────────────────────────────────────────────────
   const handleAnswer = useCallback(async () => {
     if (!roomId) return;
+    stopWhatsAppAudio();
     setPageState('connecting');
     hasRemoteDescRef.current = false;
     pendingIceRef.current = [];
@@ -337,37 +343,40 @@ export default function JoinCall() {
 
   // ─── Render ───────────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-iris-950 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-[#0b141a] text-white flex items-center justify-center p-4">
       {/* Hidden audio element for remote stream */}
       <audio ref={remoteAudioRef} autoPlay playsInline className="hidden" />
 
       <div className="w-full max-w-sm">
-        {/* Header */}
-        <div className="text-center mb-8">
-          <div className="inline-flex items-center gap-2 text-white mb-2">
-            <Globe className="w-7 h-7 text-iris-400" />
-            <span className="text-xl font-bold">GlobalTalk AI</span>
+        {/* WhatsApp Brand Header */}
+        <div className="text-center mb-6">
+          <div className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/15 px-3 py-1 text-xs font-bold text-emerald-400 border border-emerald-500/30 mb-2">
+            <Lock className="w-3.5 h-3.5" />
+            <span>WhatsApp VoIP · End-to-End Encrypted</span>
           </div>
-          <p className="text-slate-400 text-sm">Instant translated phone call</p>
+          <h1 className="text-lg font-bold text-white">TalkFlow WhatsApp Voice</h1>
+          <p className="text-slate-400 text-xs">Free Internet Voice Call with Live 2-Way Translation</p>
         </div>
 
-        {/* Card */}
-        <div className="bg-slate-800/80 backdrop-blur border border-slate-700 rounded-2xl p-6 shadow-2xl animate-fadeIn">
+        {/* WhatsApp Card */}
+        <div className="bg-[#111b21] border border-emerald-500/20 rounded-[32px] p-7 shadow-2xl shadow-emerald-950/40 relative overflow-hidden">
+          {/* Subtle pattern */}
+          <div className="absolute inset-0 opacity-5 pointer-events-none bg-[radial-gradient(#25d366_1px,transparent_1px)] [background-size:16px_16px]" />
 
           {/* LOADING */}
           {pageState === 'loading' && (
-            <div className="text-center py-8">
-              <Loader2 className="w-10 h-10 text-iris-400 animate-spin mx-auto mb-3" />
-              <p className="text-white font-medium">Loading call…</p>
+            <div className="text-center py-10 relative z-10">
+              <Loader2 className="w-10 h-10 text-emerald-400 animate-spin mx-auto mb-3" />
+              <p className="text-white font-medium text-sm">Connecting to WhatsApp call…</p>
             </div>
           )}
 
           {/* ERROR */}
           {pageState === 'error' && (
-            <div className="text-center py-8">
+            <div className="text-center py-8 relative z-10">
               <AlertCircle className="w-12 h-12 text-red-400 mx-auto mb-3" />
-              <p className="text-white font-semibold mb-2">Call unavailable</p>
-              <p className="text-slate-400 text-sm mb-6">{errorMsg}</p>
+              <p className="text-white font-semibold mb-2">Call Unavailable</p>
+              <p className="text-slate-400 text-xs mb-6">{errorMsg}</p>
               <div className="flex flex-col gap-2">
                 <button
                   onClick={() => {
@@ -382,6 +391,7 @@ export default function JoinCall() {
                           }
                           setRoom(info);
                           setPageState('ready');
+                          playWhatsAppRingtone();
                         })
                         .catch((e: Error) => {
                           setPageState('error');
@@ -389,15 +399,15 @@ export default function JoinCall() {
                         });
                     }
                   }}
-                  className="w-full py-2.5 px-4 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-sm font-medium transition-colors"
+                  className="w-full py-2.5 px-4 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-bold transition-colors"
                 >
                   Try Again
                 </button>
                 <a
                   href="/voice"
-                  className="w-full py-2.5 px-4 bg-iris-600/30 hover:bg-iris-600/50 text-iris-300 border border-iris-500/30 rounded-lg text-sm font-medium transition-colors block text-center"
+                  className="w-full py-2.5 px-4 bg-emerald-600/30 hover:bg-emerald-600/50 text-emerald-300 border border-emerald-500/30 rounded-xl text-xs font-bold transition-colors block text-center"
                 >
-                  Open Voice Calling
+                  Open Voice Dialer
                 </a>
               </div>
             </div>
@@ -405,106 +415,117 @@ export default function JoinCall() {
 
           {/* ENDED */}
           {pageState === 'ended' && (
-            <div className="text-center py-8">
-              <CheckCircle2 className="w-12 h-12 text-green-400 mx-auto mb-3" />
-              <p className="text-white font-semibold mb-2">Call ended</p>
-              <p className="text-slate-400 text-sm">Duration: {formatTime(callDuration)}</p>
-              <p className="text-slate-500 text-xs mt-4">You can close this tab.</p>
+            <div className="text-center py-8 relative z-10">
+              <CheckCircle2 className="w-12 h-12 text-emerald-400 mx-auto mb-3" />
+              <p className="text-white font-bold text-lg mb-1">Call Ended</p>
+              <p className="text-slate-400 text-xs">Duration: {formatTime(callDuration)}</p>
+              <p className="text-slate-500 text-[11px] mt-4">You can safely close this browser tab.</p>
             </div>
           )}
 
-          {/* READY — show caller info + Answer button */}
+          {/* READY — WhatsApp Ringing Callee Screen */}
           {pageState === 'ready' && room && (
-            <div className="text-center">
-              {/* Caller avatar */}
-              <div className="w-20 h-20 rounded-full bg-iris-600/30 border-2 border-iris-500 flex items-center justify-center mx-auto mb-4">
-                <Phone className="w-9 h-9 text-iris-300" />
+            <div className="text-center relative z-10">
+              {/* Pulsing Avatar */}
+              <div className="relative mx-auto mb-5 flex h-24 w-24 items-center justify-center">
+                <div className="absolute inset-0 rounded-full bg-emerald-500/20 animate-ping opacity-75" />
+                <div className="absolute -inset-2 rounded-full bg-emerald-500/15 animate-pulse" />
+                <div className="relative flex h-24 w-24 items-center justify-center rounded-full bg-gradient-to-tr from-[#128c7e] to-[#25d366] text-3xl font-extrabold text-white shadow-xl border-4 border-[#111b21]">
+                  <Phone className="w-10 h-10 text-white" />
+                </div>
               </div>
 
-              <p className="text-slate-400 text-sm mb-1">Incoming translated call from</p>
-              <p className="text-white text-xl font-bold mb-1">{room.caller_name}</p>
+              <p className="text-emerald-400 text-xs font-bold uppercase tracking-wider mb-1 animate-pulse">
+                Incoming WhatsApp Call
+              </p>
+              <h2 className="text-white text-2xl font-bold mb-1">{room.caller_name}</h2>
 
-              {/* Language pair */}
-              <div className="flex items-center justify-center gap-2 text-sm text-slate-400 mb-6">
-                <Languages className="w-4 h-4 text-iris-400" />
+              {/* Language Pair */}
+              <div className="inline-flex items-center justify-center gap-2 rounded-full bg-slate-900/80 px-3.5 py-1 text-xs font-semibold text-slate-300 border border-slate-700/60 my-3">
+                <Languages className="w-3.5 h-3.5 text-emerald-400" />
                 <span>{LANG_NAMES[room.caller_language] ?? room.caller_language}</span>
-                <span className="text-iris-400">↔</span>
+                <span className="text-emerald-400">↔</span>
                 <span>{LANG_NAMES[room.receiver_language] ?? room.receiver_language}</span>
               </div>
 
-              <p className="text-slate-500 text-xs mb-6">
-                🎙️ Speak naturally in your language — AI translates in real time
+              <p className="text-slate-400 text-[11px] mb-6 flex items-center justify-center gap-1">
+                <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Speak naturally — AI translates live into your earpiece</span>
               </p>
 
-              {/* Answer button */}
+              {/* Answer Button */}
               <button
                 onClick={handleAnswer}
-                className="w-full py-4 rounded-xl bg-green-500 hover:bg-green-400 text-white font-bold text-lg transition-all flex items-center justify-center gap-3 shadow-lg shadow-green-900/40"
+                className="w-full py-4 rounded-2xl bg-[#25d366] hover:bg-[#20ba59] text-slate-950 font-extrabold text-base transition-all flex items-center justify-center gap-3 shadow-xl shadow-emerald-950/60 active:scale-95 animate-bounce"
               >
                 <Phone className="w-6 h-6" />
-                Answer Call
+                <span>Answer WhatsApp Call</span>
               </button>
 
-              <p className="text-slate-600 text-xs mt-4">
-                No app download required · Works in any browser
+              <p className="text-slate-500 text-[11px] mt-4">
+                100% Free · No phone bill · Works in mobile Safari & Chrome
               </p>
             </div>
           )}
 
           {/* CONNECTING */}
           {pageState === 'connecting' && (
-            <div className="text-center py-4">
-              <div className="w-20 h-20 rounded-full bg-iris-600/30 border-2 border-iris-500 flex items-center justify-center mx-auto mb-4 animate-pulse">
-                <Phone className="w-9 h-9 text-iris-300" />
+            <div className="text-center py-4 relative z-10">
+              <div className="w-20 h-20 rounded-full bg-emerald-500/20 border-2 border-emerald-500/40 flex items-center justify-center mx-auto mb-4 animate-pulse">
+                <Phone className="w-8 h-8 text-emerald-400" />
               </div>
-              <p className="text-white font-semibold mb-2">Connecting…</p>
-              <Loader2 className="w-6 h-6 text-iris-400 animate-spin mx-auto mb-3" />
+              <p className="text-white font-bold text-base mb-1">Connecting…</p>
+              <Loader2 className="w-5 h-5 text-emerald-400 animate-spin mx-auto mb-3" />
               <p className="text-slate-400 text-xs mb-4">
                 {callerOnline === false
                   ? 'Waiting for Caller to join room…'
-                  : 'Establishing secure audio connection…'}
+                  : 'Establishing secure peer-to-peer audio…'}
               </p>
 
-              {/* Instant Connect Button — lets user connect in 1 tap without waiting */}
               <button
                 onClick={startConnectedSession}
-                className="w-full py-3 px-4 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-xl text-sm font-bold transition-all shadow-lg shadow-emerald-950/40 flex items-center justify-center gap-2"
+                className="w-full py-3 px-4 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition-all shadow-lg flex items-center justify-center gap-2"
               >
-                <span>⚡ Connect Call Now</span>
+                <span>⚡ Connect Call Immediately</span>
               </button>
             </div>
           )}
 
-          {/* CONNECTED — active call controls */}
+          {/* CONNECTED — WhatsApp In-Call Controls */}
           {pageState === 'connected' && room && (
-            <div className="text-center">
-              {/* Animated avatar */}
-              <div className="w-20 h-20 rounded-full bg-green-600/20 border-2 border-green-500 flex items-center justify-center mx-auto mb-4 animate-pulse">
-                <Phone className="w-9 h-9 text-green-400" />
+            <div className="text-center relative z-10">
+              <div className="relative mx-auto mb-4 flex h-20 w-20 items-center justify-center">
+                <div className="absolute -inset-2 rounded-full bg-emerald-500/15 animate-pulse" />
+                <div className="relative flex h-20 w-20 items-center justify-center rounded-full bg-gradient-to-tr from-[#128c7e] to-[#25d366] text-white shadow-xl border-2 border-emerald-400">
+                  <Phone className="w-8 h-8 text-white" />
+                </div>
               </div>
 
-              <p className="text-green-400 font-semibold mb-1">Connected</p>
-              <p className="text-white text-2xl font-mono font-bold mb-1">
+              <div className="inline-flex items-center gap-1.5 rounded-full bg-emerald-950/80 border border-emerald-500/30 px-3 py-0.5 text-xs text-emerald-300 font-bold mb-2">
+                <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span>HD Audio Connected</span>
+              </div>
+
+              <h2 className="text-white text-3xl font-mono font-bold mb-1">
                 {formatTime(callDuration)}
-              </p>
-              <p className="text-slate-400 text-sm mb-1">{room.caller_name}</p>
+              </h2>
+              <p className="text-slate-300 text-sm font-semibold mb-1">{room.caller_name}</p>
 
-              <div className="flex items-center justify-center gap-2 text-xs text-slate-500 mb-6">
-                <Languages className="w-3 h-3 text-iris-400" />
+              <div className="inline-flex items-center justify-center gap-2 text-xs text-slate-400 mb-6">
+                <Languages className="w-3.5 h-3.5 text-emerald-400" />
                 <span>{LANG_NAMES[room.caller_language] ?? room.caller_language}</span>
-                <span className="text-iris-400">↔</span>
+                <span className="text-emerald-400">↔</span>
                 <span>{LANG_NAMES[room.receiver_language] ?? room.receiver_language}</span>
-                <span className="text-iris-400 font-medium ml-1">AI Translation LIVE</span>
               </div>
 
-              {/* Mute + Speaker + Hang up */}
+              {/* Mute + Hang Up + Speaker */}
               <div className="flex items-center justify-center gap-4">
                 <button
                   onClick={toggleMute}
                   className={`w-14 h-14 rounded-full flex items-center justify-center transition-all ${
                     isMuted
-                      ? 'bg-red-600/20 border border-red-500 text-red-400'
-                      : 'bg-slate-700 border border-slate-600 text-slate-300 hover:bg-slate-600'
+                      ? 'bg-red-500/20 border border-red-500 text-red-400'
+                      : 'bg-slate-800 border border-slate-700 text-slate-200 hover:bg-slate-700'
                   }`}
                   title={isMuted ? 'Unmute' : 'Mute'}
                 >
@@ -513,7 +534,7 @@ export default function JoinCall() {
 
                 <button
                   onClick={handleHangUp}
-                  className="w-16 h-16 rounded-full bg-red-600 hover:bg-red-500 text-white flex items-center justify-center shadow-lg shadow-red-900/40 transition-all"
+                  className="w-16 h-16 rounded-full bg-red-600 hover:bg-red-500 text-white flex items-center justify-center shadow-xl shadow-red-950/60 active:scale-95 transition-all"
                   title="End Call"
                 >
                   <PhoneOff className="w-7 h-7" />
@@ -523,8 +544,8 @@ export default function JoinCall() {
                   onClick={toggleSpeaker}
                   className={`w-14 h-14 rounded-full flex items-center justify-center transition-all ${
                     !isSpeakerOn
-                      ? 'bg-red-600/20 border border-red-500 text-red-400'
-                      : 'bg-slate-700 border border-slate-600 text-slate-300 hover:bg-slate-600'
+                      ? 'bg-amber-500/20 border border-amber-500 text-amber-400'
+                      : 'bg-slate-800 border border-slate-700 text-slate-200 hover:bg-slate-700'
                   }`}
                   title={isSpeakerOn ? 'Mute speaker' : 'Unmute speaker'}
                 >
@@ -536,8 +557,8 @@ export default function JoinCall() {
         </div>
 
         {/* Footer */}
-        <p className="text-center text-slate-600 text-xs mt-6">
-          Powered by GlobalTalk AI · Real-time multilingual translation
+        <p className="text-center text-slate-500 text-[11px] mt-6">
+          Powered by TalkFlow AI · Real-time multilingual voice translation
         </p>
       </div>
     </div>

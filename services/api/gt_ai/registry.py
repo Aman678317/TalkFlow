@@ -70,6 +70,7 @@ def _import_adapters(task: str) -> None:
         ],
         "tts": [
             "gt_ai.tts.azure_speech",
+            "gt_ai.tts.neural_online",
             "gt_ai.tts.kokoro", "gt_ai.tts.piper", "gt_ai.tts.voicestudio",
             "gt_ai.tts.http", "gt_ai.tts.dev_tone",
         ],
