@@ -373,6 +373,7 @@ class Settings(BaseSettings):
     retention_transcript_days: int = 365
     retention_document_days: int = 90
     retention_usage_days: int = 730
+    retention_translation_history_days: int = 0
     # resolved escalate-ticket audit rows (§E2 durable transport). The
     # resolution itself outlives the row on the call's own event ledger.
     # --- provider vault key bootstrap (offline-safe; path normalized in dev) ---

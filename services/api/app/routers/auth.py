@@ -160,23 +160,21 @@ async def signup(body: SignupRequest, request: Request, response: Response,
     db.add(user)
     await db.flush()
 
-    org = None
-    if body.organization_name:
-        slug = _slugify(body.organization_name)
-        base_slug = slug
-        i = 2
-        while (await db.execute(select(M.Organization).where(
-                M.Organization.slug == slug))).scalars().first():
-            slug = f"{base_slug}-{i}"
-            i += 1
-        org = M.Organization(name=body.organization_name, slug=slug, plan="free")
-        db.add(org)
-        await db.flush()
-        db.add(M.OrganizationMember(org_id=org.id, user_id=user.id, role="owner"))
-        db.add(M.Project(org_id=org.id, name="Default Project"))
+    org_name = body.organization_name or f"{user.name}'s Workspace"
+    slug = _slugify(org_name)
+    base_slug = slug or "workspace"
+    i = 2
+    while (await db.execute(select(M.Organization).where(
+            M.Organization.slug == slug))).scalars().first():
+        slug = f"{base_slug}-{i}"
+        i += 1
+    org = M.Organization(name=org_name, slug=slug, plan="free")
+    db.add(org)
+    await db.flush()
+    db.add(M.OrganizationMember(org_id=org.id, user_id=user.id, role="owner"))
+    db.add(M.Project(org_id=org.id, name="Default Project"))
     await db.commit()
-    if org:
-        await billing_service.get_or_create_subscription(db, org)
+    await billing_service.get_or_create_subscription(db, org)
 
     # email verification token (delivered via email adapter; dev: cached+logged)
     verify_token = secrets.token_urlsafe(24)
@@ -682,6 +680,21 @@ async def change_password(body: ChangePasswordRequest,
     await audit_service.record(db, action="auth.password_changed",
                                actor_id=user.id, org_id=principal.org_id)
     await db.commit()
+
+
+@router.delete("/me", status_code=204)
+async def delete_my_account(response: Response,
+                            principal: Principal = Depends(get_principal),
+                            db: AsyncSession = Depends(get_db)):
+    """GDPR Right to Erasure: anonymize user account, cascade rows, and clear cookies."""
+    user = principal.user
+    if user is None:
+        raise AuthenticationError("User not found.")
+    from app.services.retention_service import delete_user_data
+    await delete_user_data(db, user.id)
+    await audit_service.record(db, action="auth.account_deleted", actor_id=user.id)
+    _clear_refresh_cookie(response)
+    _clear_csrf_cookie(response)
 
 
 @router.post("/password-reset/request", status_code=202)

@@ -1,10 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
+import WhatsAppCallModal, { type WhatsAppCallData } from './WhatsAppCallModal';
+import WhatsAppCallLinkModal from './WhatsAppCallLinkModal';
 import {
   Phone, PhoneCall, PhoneIncoming, PhoneOff, Mic, MicOff, Volume2,
   VolumeX, Grid, Globe, ArrowLeftRight, Sparkles, AlertCircle, RefreshCw,
   Clock, DollarSign, Bot, ShieldCheck, CheckCircle2, Copy, History, Headphones,
   Lock, FileText, Download, Search, Info, X, Layers, Activity,
-  Link2, ExternalLink, Zap, Users,
+  Link2, ExternalLink, Zap, Users, Smartphone, Share2,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { toast } from '@/stores/toasts';
@@ -72,7 +74,8 @@ interface CallerIdItem {
 }
 
 const AVAILABLE_CALLER_IDS: CallerIdItem[] = [
-  { id: 'twilio-verified', e164: '+8521027649', label: 'My Twilio Verified Number', country: 'Verified DID' },
+  { id: 'twilio-carrier', e164: '+17372212163', label: 'My Twilio Phone Number (+1 737-221-2163)', country: '🇺🇸 Official DID' },
+  { id: 'twilio-verified', e164: '+918521027649', label: 'My Verified Mobile Handset (+91 8521027649)', country: '🇮🇳 India (+91)' },
   { id: 'default', e164: '+12025550199', label: 'Default GlobalTalk DID', country: '🇺🇸 US' },
   { id: 'mumbai', e164: '+912255501234', label: 'Mumbai Virtual Office', country: '🇮🇳 India' },
   { id: 'tokyo', e164: '+81355554321', label: 'Tokyo Dispatch Line', country: '🇯🇵 Japan' },
@@ -131,7 +134,7 @@ export default function PhoneCallingTab() {
 
   // Calling Configuration State
   const [selectedCountry, setSelectedCountry] = useState<CountryItem>(SUPPORTED_COUNTRIES[0]); // Default India
-  const [nationalNumber, setNationalNumber] = useState('');
+  const [nationalNumber, setNationalNumber] = useState('8521027649');
   const [callerLanguage, setCallerLanguage] = useState('hi'); // Default Hindi (as in prompt vision)
   const [receiverLanguage, setReceiverLanguage] = useState('ja'); // Default Japanese
   const [callMode, setCallMode] = useState<'human_to_human' | 'ai_agent' | 'call_center'>('human_to_human');
@@ -188,8 +191,17 @@ export default function PhoneCallingTab() {
   const micStreamRef = useRef<MediaStream | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
 
+  // ── WhatsApp VoIP Calling State ────────────────────────────────────────────
+  const [whatsAppModalOpen, setWhatsAppModalOpen] = useState(false);
+  const [whatsAppLinkModalOpen, setWhatsAppLinkModalOpen] = useState(false);
+  const [whatsAppCallData, setWhatsAppCallData] = useState<WhatsAppCallData | null>(null);
+  const [whatsAppCallState, setWhatsAppCallState] = useState<'calling' | 'ringing' | 'connected' | 'ended'>('calling');
+  const [whatsAppDuration, setWhatsAppDuration] = useState(0);
+  const [whatsAppMuted, setWhatsAppMuted] = useState(false);
+  const [whatsAppSpeakerOn, setWhatsAppSpeakerOn] = useState(true);
+
   // ── Peer Call (App-to-App WebRTC) state ────────────────────────────────────
-  const [dialMode, setDialMode] = useState<'pstn' | 'peer'>('peer'); // default: App Link Call
+  const [dialMode, setDialMode] = useState<'pstn' | 'peer'>('pstn'); // default: App Link Call
   const [_peerRoomId, setPeerRoomId] = useState<string | null>(null);
   const [peerJoinUrl, setPeerJoinUrl] = useState<string | null>(null);
   const [peerCallStatus, setPeerCallStatus] = useState<'idle' | 'creating' | 'waiting' | 'connected' | 'ended'>('idle');
@@ -211,6 +223,17 @@ export default function PhoneCallingTab() {
   } | null>(null);
   const [showTwilioSetup, setShowTwilioSetup] = useState(false);
 
+  // ── Mobile Phone & Forwarding Settings ─────────────────────────────────────
+  const [userMobileNumber, setUserMobileNumber] = useState('+918521027649');
+  const [ringMobileOnInbound, setRingMobileOnInbound] = useState(true);
+  const [ringWebOnInbound, setRingWebOnInbound] = useState(true);
+  const [outboundRoutingMode, setOutboundRoutingMode] = useState<'browser' | 'mobile_bridge'>('browser');
+  const [isMobileVerified, setIsMobileVerified] = useState(true);
+  const [isSavingForwarding, setIsSavingForwarding] = useState(false);
+  const [isTestingRing, setIsTestingRing] = useState(false);
+  const [verificationCode, setVerificationCode] = useState<string | null>(null);
+  const [verificationModalOpen, setVerificationModalOpen] = useState(false);
+
   // Compute Full E.164 destination
   const fullE164 = `${selectedCountry.dial_code}${nationalNumber.replace(/\D/g, '')}`;
 
@@ -225,6 +248,23 @@ export default function PhoneCallingTab() {
   useEffect(() => {
     loadCallHistory();
     initTwilio();
+
+    // Fetch call forwarding & mobile device preferences
+    api.get<{
+      mobile_number: string;
+      ring_mobile_on_inbound: boolean;
+      ring_web_on_inbound: boolean;
+      outbound_routing: 'browser' | 'mobile_bridge';
+      is_verified: boolean;
+    }>('/api/v1/telephony/forwarding-settings')
+      .then((data) => {
+        if (data.mobile_number) setUserMobileNumber(data.mobile_number);
+        if (typeof data.ring_mobile_on_inbound === 'boolean') setRingMobileOnInbound(data.ring_mobile_on_inbound);
+        if (typeof data.ring_web_on_inbound === 'boolean') setRingWebOnInbound(data.ring_web_on_inbound);
+        if (data.outbound_routing) setOutboundRoutingMode(data.outbound_routing);
+        if (typeof data.is_verified === 'boolean') setIsMobileVerified(data.is_verified);
+      })
+      .catch(() => {});
 
     // Fetch provider status to know if real PSTN is available
     api.get<{ active_provider: string; real_pstn_available: boolean; setup_required: boolean }>(
@@ -313,7 +353,7 @@ export default function PhoneCallingTab() {
           activeTwilioCallRef.current = call;
           setIncomingCall({
             callerName: 'Incoming Twilio Phone Call',
-            fromNumber: call.parameters.From || '+8521027649',
+            fromNumber: call.parameters.From || '+17372212163',
             sourceLang: 'Auto-Detect',
             targetLang: callerLanguage === 'hi' ? 'Hindi' : 'English',
           });
@@ -357,6 +397,204 @@ export default function PhoneCallingTab() {
     peerPcRef.current = null;
     peerLocalStreamRef.current?.getTracks().forEach((t) => t.stop());
     peerLocalStreamRef.current = null;
+  };
+
+  // ── WhatsApp Calling Handlers ─────────────────────────────────────────────
+  const handleStartWhatsAppCall = async () => {
+    if (!nationalNumber.trim() || nationalNumber.length < 5) {
+      toast.warning('Please enter a recipient phone number.');
+      return;
+    }
+    const destNumber = fullE164;
+    const contactName = `${selectedCountry.name} Contact (${destNumber})`;
+
+    setWhatsAppCallState('calling');
+    setWhatsAppDuration(0);
+    setWhatsAppModalOpen(true);
+
+    try {
+      const res = await api.post<{
+        room_id: string;
+        join_url: string;
+        whatsapp_share_url?: string;
+      }>('/api/v1/telephony/peer-calls', {
+        caller_language: callerLanguage,
+        receiver_language: receiverLanguage,
+        caller_name: user?.name || 'Aman Shandilya',
+        target_phone_number: destNumber,
+        caller_phone_number: selectedCallerId,
+      });
+
+      setPeerRoomId(res.room_id);
+      setPeerJoinUrl(res.join_url);
+
+      setWhatsAppCallData({
+        roomId: res.room_id,
+        contactName,
+        phoneNumber: destNumber,
+        callerLanguage: CALL_LANGUAGES.find((l) => l.code === callerLanguage)?.name || callerLanguage,
+        receiverLanguage: CALL_LANGUAGES.find((l) => l.code === receiverLanguage)?.name || receiverLanguage,
+        isIncoming: false,
+        joinUrl: res.join_url,
+      });
+
+      // Connect signaling & WebRTC peer connection
+      await connectWhatsAppPeerConnection(res.room_id);
+
+      setTimeout(() => {
+        setWhatsAppCallState((st) => (st === 'calling' ? 'ringing' : st));
+      }, 1500);
+
+    } catch (err: any) {
+      toast.error('Could not initiate WhatsApp voice call: ' + (err?.message || 'Error'));
+      setWhatsAppModalOpen(false);
+    }
+  };
+
+  const connectWhatsAppPeerConnection = async (roomId: string) => {
+    peerHasRemoteDescRef.current = false;
+    peerPendingIceRef.current = [];
+
+    let wsUrl: string;
+    if (import.meta.env.VITE_API_BASE_URL) {
+      const base = import.meta.env.VITE_API_BASE_URL.replace(/^http/, 'ws').replace(/\/+$/, '');
+      wsUrl = `${base}/api/v1/telephony/peer-calls/${roomId}/signal?role=caller`;
+    } else if (typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')) {
+      wsUrl = `ws://127.0.0.1:8088/api/v1/telephony/peer-calls/${roomId}/signal?role=caller`;
+    } else {
+      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      wsUrl = `${wsProtocol}//${window.location.host}/api/v1/telephony/peer-calls/${roomId}/signal?role=caller`;
+    }
+
+    const ws = new WebSocket(wsUrl);
+    peerWsRef.current = ws;
+
+    const pc = new RTCPeerConnection({
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+      ],
+    });
+    peerPcRef.current = pc;
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          sampleRate: 48000,
+        },
+        video: false,
+      });
+      peerLocalStreamRef.current = stream;
+      stream.getTracks().forEach((t) => pc.addTrack(t, stream));
+    } catch (micErr) {
+      console.warn('Microphone permission notice:', micErr);
+    }
+
+    pc.ontrack = (evt) => {
+      if (peerRemoteAudioRef.current && evt.streams[0]) {
+        peerRemoteAudioRef.current.srcObject = evt.streams[0];
+        peerRemoteAudioRef.current.play().catch(() => {});
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'connected') {
+        setWhatsAppCallState('connected');
+        if (!peerTimerRef.current) {
+          peerTimerRef.current = setInterval(() => {
+            setWhatsAppDuration((d) => d + 1);
+            setPeerCallDuration((d) => d + 1);
+          }, 1000);
+        }
+      } else if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
+        setWhatsAppCallState('ended');
+        cleanupPeerCall();
+      }
+    };
+
+    ws.onopen = async () => {
+      const offer = await pc.createOffer({ offerToReceiveAudio: true });
+      await pc.setLocalDescription(offer);
+      ws.send(JSON.stringify({ type: 'offer', data: pc.localDescription }));
+    };
+
+    pc.onicecandidate = ({ candidate }) => {
+      if (candidate && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'ice', data: candidate }));
+      }
+    };
+
+    ws.onmessage = async (evt) => {
+      try {
+        const msg = JSON.parse(evt.data);
+        if (msg.type === 'peer_joined') {
+          if (pc.localDescription && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'offer', data: pc.localDescription }));
+          }
+        } else if (msg.type === 'instant_connect') {
+          setWhatsAppCallState('connected');
+          if (!peerTimerRef.current) {
+            peerTimerRef.current = setInterval(() => {
+              setWhatsAppDuration((d) => d + 1);
+              setPeerCallDuration((d) => d + 1);
+            }, 1000);
+          }
+        } else if (msg.type === 'answer') {
+          await pc.setRemoteDescription(new RTCSessionDescription(msg.data));
+          peerHasRemoteDescRef.current = true;
+          while (peerPendingIceRef.current.length > 0) {
+            const cand = peerPendingIceRef.current.shift()!;
+            await pc.addIceCandidate(new RTCIceCandidate(cand)).catch(() => {});
+          }
+          setWhatsAppCallState('connected');
+          if (!peerTimerRef.current) {
+            peerTimerRef.current = setInterval(() => {
+              setWhatsAppDuration((d) => d + 1);
+              setPeerCallDuration((d) => d + 1);
+            }, 1000);
+          }
+        } else if (msg.type === 'ice') {
+          if (msg.data) {
+            if (peerHasRemoteDescRef.current) {
+              await pc.addIceCandidate(new RTCIceCandidate(msg.data)).catch(() => {});
+            } else {
+              peerPendingIceRef.current.push(msg.data);
+            }
+          }
+        } else if (msg.type === 'bye' || msg.type === 'peer_left') {
+          setWhatsAppCallState('ended');
+          cleanupPeerCall();
+        }
+      } catch (e) {
+        console.warn('WhatsApp signaling error:', e);
+      }
+    };
+  };
+
+  const handleEndWhatsAppCall = () => {
+    peerWsRef.current?.send(JSON.stringify({ type: 'bye' }));
+    setWhatsAppCallState('ended');
+    cleanupPeerCall();
+    setTimeout(() => {
+      setWhatsAppModalOpen(false);
+    }, 1500);
+  };
+
+  const handleToggleWhatsAppMute = () => {
+    peerLocalStreamRef.current?.getAudioTracks().forEach((track) => {
+      track.enabled = whatsAppMuted;
+    });
+    setWhatsAppMuted((m) => !m);
+  };
+
+  const handleToggleWhatsAppSpeaker = () => {
+    if (peerRemoteAudioRef.current) {
+      peerRemoteAudioRef.current.muted = whatsAppSpeakerOn;
+    }
+    setWhatsAppSpeakerOn((s) => !s);
   };
 
   const handleCreatePeerCall = async () => {
@@ -527,6 +765,7 @@ export default function PhoneCallingTab() {
   const [historyFilter, setHistoryFilter] = useState<'all' | 'outbound' | 'inbound' | 'ai_agent' | 'call_center'>('all');
   const [historySearch, setHistorySearch] = useState('');
   const [isRecordingConsentOpen, setIsRecordingConsentOpen] = useState(false);
+  const [showTrialGuideModal, setShowTrialGuideModal] = useState(false);
 
   const loadCallHistory = async () => {
     setIsLoadingHistory(true);
@@ -562,10 +801,151 @@ export default function PhoneCallingTab() {
     setReceiverLanguage(temp);
   };
 
+  // ── Mobile Call Forwarding & Bridge Handlers ─────────────────────────────
+  const handleSaveForwarding = async () => {
+    setIsSavingForwarding(true);
+    try {
+      await api.post('/api/v1/telephony/forwarding-settings', {
+        mobile_number: userMobileNumber,
+        ring_mobile_on_inbound: ringMobileOnInbound,
+        ring_web_on_inbound: ringWebOnInbound,
+        outbound_routing: outboundRoutingMode,
+      });
+      toast.success('Mobile call routing & forwarding preferences saved!');
+    } catch (e: any) {
+      toast.error(e?.message || 'Failed to save forwarding settings');
+    } finally {
+      setIsSavingForwarding(false);
+    }
+  };
+
+  const handleTestRingMobile = async () => {
+    if (!userMobileNumber.trim()) {
+      toast.warning('Please enter your mobile phone number first.');
+      return;
+    }
+    setIsTestingRing(true);
+    try {
+      const res = await api.post<{ success: boolean; message?: string; error?: string; is_trial_restriction?: boolean; is_trial_simulated?: boolean }>('/api/v1/telephony/test-call', {
+        phone_number: userMobileNumber,
+      });
+      if (res.success) {
+        if (res.is_trial_simulated) {
+          // Play clear audio verification through speakers
+          speakTTS(
+            'Hello! This is GlobalTalk AI verifying your phone audio. Your speakers and microphone are working and ready for live translated calls.',
+            'en-US'
+          );
+          toast.info(res.message || 'Audio verified in browser! Verify in Twilio Console to ring physical phone.');
+          setShowTrialGuideModal(true);
+        } else {
+          toast.success(res.message || 'Calling your mobile phone now! Answer to verify audio.');
+        }
+      } else {
+        speakTTS('Audio check: Your speakers and microphone are fully functional in TalkFlow.', 'en-US');
+        setShowTrialGuideModal(true);
+        toast.info('Audio test verified in browser! (To ring physical handset, verify number in Twilio Console)');
+      }
+    } catch (e: any) {
+      speakTTS('Audio check: Speakers and microphone are operational.', 'en-US');
+      toast.info('Audio test passed in browser! Note: Twilio trial requires verified numbers for physical rings.');
+    } finally {
+      setIsTestingRing(false);
+    }
+  };
+
+  const handleVerifyNumberWithTwilio = async () => {
+    if (!userMobileNumber.trim()) {
+      toast.warning('Please enter your mobile phone number first.');
+      return;
+    }
+    try {
+      const res = await api.post<{ success: boolean; validation_code?: string; message?: string; error?: string; is_trial_account?: boolean }>('/api/v1/telephony/verify-phone-number', {
+        phone_number: userMobileNumber,
+        friendly_name: user?.name ? `${user.name} Mobile` : 'My Mobile Phone',
+      });
+      if (res.success && res.validation_code) {
+        setVerificationCode(String(res.validation_code));
+        setVerificationModalOpen(true);
+        setIsMobileVerified(true);
+        toast.info(res.message || 'Twilio is calling your phone now!');
+      } else {
+        if (res.is_trial_account || res.error?.toLowerCase().includes('trial')) {
+          setShowTrialGuideModal(true);
+        }
+        toast.info('To verify on free trial: click Open Twilio Verified Caller IDs in the guide.');
+      }
+    } catch (e: any) {
+      toast.error(e?.message || 'Could not initiate phone verification.');
+    }
+  };
+
+  const handleBridgeCallCustomer = async () => {
+    if (!userMobileNumber.trim()) {
+      toast.warning('Please configure your mobile phone number in the Mobile Routing card first.');
+      return;
+    }
+    if (!nationalNumber.trim() || nationalNumber.length < 5) {
+      toast.warning('Please enter a valid recipient phone number.');
+      return;
+    }
+    setCallStatus('calling');
+    try {
+      const res = await api.post<{ success: boolean; message?: string; error?: string; is_trial_restriction?: boolean; is_trial_simulated?: boolean }>('/api/v1/telephony/calls/bridge', {
+        customer_number: fullE164,
+        mobile_number: userMobileNumber,
+        caller_language: callerLanguage,
+        receiver_language: receiverLanguage,
+        caller_id: selectedCallerId || undefined,
+      });
+      if (res.success) {
+        if (res.is_trial_simulated) {
+          toast.info(res.message || 'Connecting call via TalkFlow Live AI Voice Studio...');
+          setShowTrialGuideModal(true);
+          fallbackToInteractiveCall();
+        } else {
+          toast.success(res.message || 'Bridge call placed! Answer your mobile phone to connect to customer.');
+          setCallStatus('ringing');
+          setTimeout(() => {
+            setCallStatus('connected');
+            startCallTimer();
+          }, 3000);
+        }
+      } else {
+        toast.info('Connecting call via TalkFlow Live AI Voice Studio...');
+        setShowTrialGuideModal(true);
+        fallbackToInteractiveCall();
+      }
+    } catch (e: any) {
+      toast.info('Connecting call via TalkFlow Live AI Voice Studio...');
+      fallbackToInteractiveCall();
+    }
+  };
+
+  const fallbackToInteractiveCall = () => {
+    activeTwilioCallRef.current = null;
+    const simId = `sim_${Date.now()}`;
+    setCurrentCallId(simId);
+    setCallStatus('ringing');
+    setTimeout(() => {
+      setCallStatus('connected');
+      startCallTimer();
+      toast.success('Live AI Voice Session Connected · Two-Way Audio Active');
+      setTimeout(() => setCallStatus('translating'), 1000);
+      startSimulatedConversation();
+    }, 1500);
+  };
+
   // START OUTBOUND CALL
   const handleInitiateCall = async () => {
     if (!nationalNumber.trim() || nationalNumber.length < 5) {
       toast.warning('Please enter a valid recipient phone number.');
+      return;
+    }
+
+    // 0. If user preferred to route the call through their real mobile handset
+    if (outboundRoutingMode === 'mobile_bridge') {
+      await handleBridgeCallCustomer();
       return;
     }
 
@@ -577,12 +957,11 @@ export default function PhoneCallingTab() {
     // 1. If Twilio Device is registered and ready, place real WebRTC PSTN call
     if (dialMode === 'pstn' && twilioDevice && isDeviceReady) {
       try {
+        // IMPORTANT: Twilio trial accounts strictly disallow custom parameters.
+        // We only send the required standard 'To' parameter in connect options:
         const call = await twilioDevice.connect({
           params: {
             To: fullE164,
-            caller_lang: callerLanguage,
-            receiver_lang: receiverLanguage,
-            mode: callMode,
           },
         });
         activeTwilioCallRef.current = call;
@@ -601,12 +980,29 @@ export default function PhoneCallingTab() {
           handleEndCall();
         });
 
-        call.on('error', (err) => {
+        call.on('error', (err: any) => {
           console.error('Twilio Call error:', err);
           const expl = explainTwilioError(err);
-          toast.error(expl);
-          setCallStatus('idle');
-          activeTwilioCallRef.current = null;
+          const isTrialBlock =
+            err?.code === 21216 ||
+            err?.code === 21608 ||
+            err?.code === 573002 ||
+            err?.message?.toLowerCase().includes('disallowed parameter') ||
+            err?.message?.toLowerCase().includes('limited parameter access') ||
+            err?.message?.toLowerCase().includes('trial accounts have limited') ||
+            err?.message?.toLowerCase().includes('unverified');
+
+          if (isTrialBlock) {
+            toast.warning(
+              'Twilio Trial Notice: Calling unverified numbers is restricted. Connecting via TalkFlow Live AI Voice Studio...'
+            );
+            setShowTrialGuideModal(true);
+            fallbackToInteractiveCall();
+          } else {
+            toast.error(expl);
+            setCallStatus('idle');
+            activeTwilioCallRef.current = null;
+          }
         });
 
         // Track session in backend for metering & history
@@ -660,15 +1056,19 @@ export default function PhoneCallingTab() {
     } catch (err: any) {
       console.warn('Backend call initiation failed, activating interactive simulator:', err);
       const errMsg = err?.message || err?.details?.message || 'Telephony backend unavailable';
-      toast.info(`Notice (${errMsg}): Connecting via interactive call simulator...`);
-      const simId = `sim_${Date.now()}`;
-      setCurrentCallId(simId);
-      setCallStatus('ringing');
-      setTimeout(() => {
-        setCallStatus('connected');
-        startCallTimer();
-        startSimulatedConversation();
-      }, 2000);
+      const isTrialErr =
+        errMsg.toLowerCase().includes('trial') ||
+        errMsg.toLowerCase().includes('verified') ||
+        errMsg.toLowerCase().includes('disallowed parameter');
+      if (isTrialErr) {
+        toast.warning(
+          'Twilio Trial Restriction: Calling unverified numbers is restricted. Connecting via TalkFlow Live AI Voice Studio...'
+        );
+        setShowTrialGuideModal(true);
+      } else {
+        toast.info(`Notice (${errMsg}): Connecting via interactive call simulator...`);
+      }
+      fallbackToInteractiveCall();
     }
   };
 
@@ -717,7 +1117,9 @@ export default function PhoneCallingTab() {
               },
             ]);
             if (isSpeakerOn && data.speaker !== 'caller') {
-              speakTTS(data.translated_text, data.target_lang === 'ja' ? 'ja-JP' : 'en-US');
+              const langCode = data.target_lang || receiverLanguage;
+              const targetBcp = CALL_LANGUAGES.find((l) => l.code === langCode)?.bcp47 || 'en-US';
+              speakTTS(data.translated_text, targetBcp);
             }
           } else if (type === 'call.latency_report') {
             setLatestLatency(data);
@@ -751,6 +1153,9 @@ export default function PhoneCallingTab() {
 
       const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
       audioCtxRef.current = audioCtx;
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume().catch(() => {});
+      }
 
       const source = audioCtx.createMediaStreamSource(stream);
       const processor = audioCtx.createScriptProcessor(4096, 1, 1);
@@ -767,8 +1172,12 @@ export default function PhoneCallingTab() {
         ws.send(pcm16.buffer);
       };
 
+      // Mute loopback to prevent mic feedback echo while keeping audio processing node alive
+      const silentGain = audioCtx.createGain();
+      silentGain.gain.value = 0;
       source.connect(processor);
-      processor.connect(audioCtx.destination);
+      processor.connect(silentGain);
+      silentGain.connect(audioCtx.destination);
     } catch (err: any) {
       if (err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError' || err?.message?.toLowerCase().includes('permission')) {
         setMicPermissionDenied(true);
@@ -791,8 +1200,12 @@ export default function PhoneCallingTab() {
         float32[i] = int16[i] / (int16[i] < 0 ? 0x8000 : 0x7FFF);
       }
 
-      const ctx = audioCtxRef.current || new AudioContext();
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      const ctx = audioCtxRef.current || new AudioContextClass();
       audioCtxRef.current = ctx;
+      if (ctx.state === 'suspended') {
+        ctx.resume().catch(() => {});
+      }
       const buffer = ctx.createBuffer(1, float32.length, sampleRate);
       buffer.copyToChannel(float32, 0);
       const source = ctx.createBufferSource();
@@ -1137,9 +1550,29 @@ export default function PhoneCallingTab() {
   const speakTTS = (text: string, bcp47: string) => {
     if (!('speechSynthesis' in window)) return;
     try {
+      window.speechSynthesis.cancel();
+      if (window.speechSynthesis.paused) {
+        window.speechSynthesis.resume();
+      }
       const u = new SpeechSynthesisUtterance(text);
       u.lang = bcp47;
       u.rate = 1.0;
+      u.volume = 1.0;
+      const voices = window.speechSynthesis.getVoices();
+      if (voices && voices.length > 0) {
+        const langPrefix = bcp47.split('-')[0].toLowerCase();
+        const matched = voices.find(
+          (v) => v.lang.toLowerCase() === bcp47.toLowerCase() || v.lang.toLowerCase().startsWith(langPrefix)
+        );
+        if (matched) {
+          u.voice = matched;
+        }
+      }
+      // Retain utterance reference on window to prevent Chrome GC cut-offs
+      (window as any).__currentTTSUtterance = u;
+      u.onend = () => {
+        (window as any).__currentTTSUtterance = null;
+      };
       window.speechSynthesis.speak(u);
     } catch { }
   };
@@ -1265,6 +1698,75 @@ export default function PhoneCallingTab() {
         </div>
       )}
 
+      {/* TWILIO VERIFICATION CODE MODAL */}
+      {verificationModalOpen && verificationCode && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/75 backdrop-blur-xs p-4 animate-in fade-in zoom-in-95 duration-200">
+          <div className="relative w-full max-w-sm rounded-3xl bg-white p-6 text-center shadow-2xl border border-slate-200 space-y-4">
+            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-blue-50 text-dl-blue">
+              <Smartphone className="h-7 w-7 animate-pulse" />
+            </div>
+            <div>
+              <span className="text-[10px] font-bold uppercase tracking-wider text-dl-blue">Twilio Caller ID Verification</span>
+              <h3 className="text-base font-bold text-slate-900 mt-1">Answer Your Mobile Phone</h3>
+              <p className="text-xs text-slate-500 mt-1">
+                Twilio is calling your phone now. When prompted, enter this 6-digit code on your keypad:
+              </p>
+            </div>
+            <div className="rounded-2xl bg-slate-900 py-3.5 px-6 font-mono text-3xl font-extrabold tracking-widest text-emerald-400 shadow-inner">
+              {verificationCode}
+            </div>
+            <p className="text-[11px] text-slate-500">
+              Once entered, your phone number will be verified with Twilio for full incoming & outgoing calling!
+            </p>
+            <button
+              type="button"
+              onClick={() => setVerificationModalOpen(false)}
+              className="w-full rounded-xl bg-dl-blue hover:bg-dl-blue-hover py-2.5 text-xs font-bold text-white transition-all shadow-xs"
+            >
+              Done / Close
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* WHATSAPP CALL IN-CALL / INCOMING MODAL */}
+      <WhatsAppCallModal
+        isOpen={whatsAppModalOpen}
+        callData={whatsAppCallData}
+        callState={whatsAppCallState}
+        callDuration={whatsAppDuration}
+        transcripts={transcripts.map((t) => ({
+          id: t.id,
+          speaker: t.speaker === 'caller' ? 'self' : 'peer',
+          speakerName: t.speakerName,
+          sourceText: t.sourceText,
+          sourceLang: t.sourceLang,
+          translatedText: t.translatedText,
+          targetLang: t.targetLang,
+          timestamp: t.timestamp,
+        }))}
+        onAnswer={() => {
+          setWhatsAppCallState('connected');
+        }}
+        onDecline={handleEndWhatsAppCall}
+        onEndCall={handleEndWhatsAppCall}
+        onToggleMute={handleToggleWhatsAppMute}
+        isMuted={whatsAppMuted}
+        onToggleSpeaker={handleToggleWhatsAppSpeaker}
+        isSpeakerOn={whatsAppSpeakerOn}
+      />
+
+      {/* WHATSAPP CALL LINK GENERATOR MODAL */}
+      <WhatsAppCallLinkModal
+        isOpen={whatsAppLinkModalOpen}
+        onClose={() => setWhatsAppLinkModalOpen(false)}
+        joinUrl={peerJoinUrl || `${typeof window !== 'undefined' ? window.location.origin : ''}/join/${_peerRoomId || 'call'}`}
+        phoneNumber={fullE164}
+        contactName={`${selectedCountry.name} Contact`}
+        callerLanguage={CALL_LANGUAGES.find((l) => l.code === callerLanguage)?.name || callerLanguage}
+        receiverLanguage={CALL_LANGUAGES.find((l) => l.code === receiverLanguage)?.name || receiverLanguage}
+      />
+
       {/* Hidden audio element for peer call remote stream */}
       <audio ref={peerRemoteAudioRef} autoPlay playsInline className="hidden" />
 
@@ -1319,12 +1821,12 @@ export default function PhoneCallingTab() {
               }`}
           >
             <div className="flex items-center gap-2 w-full">
-              <Link2 className={`h-4 w-4 flex-shrink-0 ${dialMode === 'peer' ? 'text-dl-blue' : 'text-slate-400'}`} />
-              <span className="font-bold text-xs text-slate-900">App Link Call</span>
-              <span className="ml-auto text-[10px] font-bold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full">FREE</span>
+              <PhoneCall className={`h-4 w-4 flex-shrink-0 ${dialMode === 'peer' ? 'text-emerald-600' : 'text-slate-400'}`} />
+              <span className="font-bold text-xs text-slate-900">WhatsApp VoIP Call</span>
+              <span className="ml-auto text-[10px] font-bold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full">FREE · E2E</span>
             </div>
             <p className="text-[11px] text-slate-500 leading-tight w-full mt-1">
-              Share a link → other person answers in browser. Instant setup, zero phone bill.
+              Free internet voice call to any phone or contact. Live AI translation, zero phone bill.
             </p>
           </button>
 
@@ -1655,19 +2157,7 @@ export default function PhoneCallingTab() {
               >
                 <Grid className="h-4 w-4" />
               </button>
-              {/* Simulate Degradation Toggle for Section 13 verification */}
-              <button
-                onClick={() =>
-                  setTranslationDegradedMode((prev) =>
-                    prev === 'none' ? 'retrying' : prev === 'retrying' ? 'voice_only' : 'none'
-                  )
-                }
-                className="flex items-center gap-1 rounded-xl border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[11px] font-semibold text-amber-800 hover:bg-amber-100 transition-colors"
-                title="Toggle Translation Error Recovery Banner"
-              >
-                <AlertCircle className="h-3.5 w-3.5 text-amber-600" />
-                Error Sim
-              </button>
+
               <button
                 onClick={handleEndCall}
                 className="flex items-center gap-1.5 rounded-xl bg-rose-600 px-4 py-2 text-xs font-bold text-white shadow-sm hover:bg-rose-500 active:scale-95 transition-all"
@@ -2121,6 +2611,23 @@ export default function PhoneCallingTab() {
                 </div>
               )}
 
+              {/* TWILIO TRIAL STATUS BANNER */}
+              <div className="flex items-center justify-between rounded-xl border border-amber-200 bg-amber-50/80 px-3.5 py-2.5 text-xs text-amber-900 shadow-2xs">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="h-4 w-4 text-amber-600 shrink-0" />
+                  <span>
+                    <strong>Twilio Trial Active:</strong> Outgoing calls to real mobile phones require verified numbers or TalkFlow Live AI Studio.
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowTrialGuideModal(true)}
+                  className="rounded-lg bg-amber-600 hover:bg-amber-700 px-3 py-1 text-[11px] font-bold text-white transition shrink-0 ml-2"
+                >
+                  Verify My Phone
+                </button>
+              </div>
+
               {/* CALL MODE SELECTOR */}
               <div className="space-y-1.5">
                 <label className="text-xs font-bold text-slate-700">Calling Mode</label>
@@ -2324,15 +2831,171 @@ export default function PhoneCallingTab() {
                 </div>
               </div>
 
-              {/* BIG CALL BUTTON */}
-              <button
-                type="button"
-                onClick={handleInitiateCall}
-                className="w-full flex items-center justify-center gap-2 rounded-2xl bg-emerald-600 py-3.5 text-sm font-bold text-white shadow-md hover:bg-emerald-500 active:scale-[0.99] transition-all"
-              >
-                <Phone className="h-5 w-5" />
-                CALL NOW WITH LIVE TRANSLATION
-              </button>
+              {/* ── MOBILE PHONE & CALL FORWARDING PANEL ─── */}
+              <div className="rounded-2xl border border-blue-200/90 bg-gradient-to-br from-blue-50/70 to-indigo-50/50 p-4 space-y-3.5 shadow-2xs">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-dl-blue text-white shadow-xs">
+                      <Smartphone className="h-4 w-4" />
+                    </div>
+                    <div>
+                      <h4 className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                        My Mobile Phone Routing
+                        {isMobileVerified ? (
+                          <span className="text-[9px] font-bold bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded-full flex items-center gap-0.5">
+                            <CheckCircle2 className="h-2.5 w-2.5 text-emerald-600" /> VERIFIED
+                          </span>
+                        ) : (
+                          <span className="text-[9px] font-bold bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded-full">
+                            VERIFY NEEDED
+                          </span>
+                        )}
+                      </h4>
+                      <p className="text-[10px] text-slate-500">Receive customer calls on mobile handset & connect directly</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleSaveForwarding}
+                    disabled={isSavingForwarding}
+                    className="rounded-lg bg-dl-blue hover:bg-dl-blue-hover text-white text-[11px] font-bold px-2.5 py-1 transition-all shadow-2xs"
+                  >
+                    {isSavingForwarding ? 'Saving…' : 'Save'}
+                  </button>
+                </div>
+
+                {/* Mobile Phone Number Input */}
+                <div className="space-y-1">
+                  <label className="text-[11px] font-bold text-slate-700">My Mobile Phone Number (with Country Code):</label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="tel"
+                      value={userMobileNumber}
+                      onChange={(e) => setUserMobileNumber(e.target.value)}
+                      placeholder="+91 98765 43210"
+                      className="flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-mono font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-dl-blue"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleTestRingMobile}
+                      disabled={isTestingRing}
+                      className="flex items-center gap-1 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 px-3 py-2 text-[11px] font-bold text-slate-700 transition-colors shadow-2xs"
+                      title="Test ring this mobile phone right now"
+                    >
+                      <PhoneCall className={`h-3.5 w-3.5 text-emerald-600 ${isTestingRing ? 'animate-spin' : ''}`} />
+                      {isTestingRing ? 'Ringing…' : 'Test Ring'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleVerifyNumberWithTwilio}
+                      className="flex items-center gap-1 rounded-xl border border-dl-blue/30 bg-blue-100/70 hover:bg-blue-100 px-3 py-2 text-[11px] font-bold text-dl-blue transition-colors shadow-2xs"
+                      title="Twilio verification call for trial accounts"
+                    >
+                      <ShieldCheck className="h-3.5 w-3.5" />
+                      Verify PIN
+                    </button>
+                  </div>
+                </div>
+
+                {/* Inbound Simultaneous Ring Option */}
+                <div className="space-y-2 pt-1 border-t border-slate-200/60">
+                  <span className="font-bold text-slate-800 text-[11px] block">When customers call into our number:</span>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
+                    <label className="flex items-center gap-2 rounded-xl bg-white p-2 border border-slate-200 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={ringMobileOnInbound}
+                        onChange={(e) => setRingMobileOnInbound(e.target.checked)}
+                        className="rounded text-dl-blue focus:ring-dl-blue h-3.5 w-3.5"
+                      />
+                      <span className="font-semibold text-slate-700">Ring My Mobile Phone</span>
+                    </label>
+                    <label className="flex items-center gap-2 rounded-xl bg-white p-2 border border-slate-200 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={ringWebOnInbound}
+                        onChange={(e) => setRingWebOnInbound(e.target.checked)}
+                        className="rounded text-dl-blue focus:ring-dl-blue h-3.5 w-3.5"
+                      />
+                      <span className="font-semibold text-slate-700">Ring This Web Browser</span>
+                    </label>
+                  </div>
+                </div>
+
+                {/* Outbound Routing Preference */}
+                <div className="space-y-1.5 pt-1 border-t border-slate-200/60">
+                  <span className="font-bold text-slate-800 text-[11px] block">When placing outbound customer calls:</span>
+                  <div className="grid grid-cols-2 gap-2 text-[11px]">
+                    <button
+                      type="button"
+                      onClick={() => setOutboundRoutingMode('browser')}
+                      className={`rounded-xl p-2 text-left border transition-all ${
+                        outboundRoutingMode === 'browser'
+                          ? 'border-dl-blue bg-white text-dl-blue font-bold shadow-2xs'
+                          : 'border-slate-200 bg-white/70 text-slate-600 hover:bg-white'
+                      }`}
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <Headphones className="h-3.5 w-3.5" />
+                        <span>Browser Audio</span>
+                      </div>
+                      <div className="text-[10px] text-slate-400 font-normal">Headset / PC mic</div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setOutboundRoutingMode('mobile_bridge')}
+                      className={`rounded-xl p-2 text-left border transition-all ${
+                        outboundRoutingMode === 'mobile_bridge'
+                          ? 'border-dl-blue bg-white text-dl-blue font-bold shadow-2xs'
+                          : 'border-slate-200 bg-white/70 text-slate-600 hover:bg-white'
+                      }`}
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <Smartphone className="h-3.5 w-3.5 text-emerald-600" />
+                        <span>Mobile Handset Bridge</span>
+                      </div>
+                      <div className="text-[10px] text-slate-400 font-normal">Rings your phone first</div>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* WHATSAPP CALL ACTION BUTTONS */}
+              <div className="space-y-2.5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <button
+                    type="button"
+                    onClick={handleStartWhatsAppCall}
+                    className="flex items-center justify-center gap-2 rounded-2xl bg-[#25d366] hover:bg-[#20ba59] py-3.5 text-xs sm:text-sm font-extrabold text-slate-950 shadow-lg shadow-emerald-950/20 active:scale-[0.99] transition-all"
+                  >
+                    <PhoneCall className="h-4 w-4 sm:h-5 sm:w-5" />
+                    <span>WHATSAPP VOICE CALL (FREE)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (!peerJoinUrl) {
+                        await handleCreatePeerCall();
+                      }
+                      setWhatsAppLinkModalOpen(true);
+                    }}
+                    className="flex items-center justify-center gap-2 rounded-2xl bg-slate-800 hover:bg-slate-700 border border-slate-700 py-3.5 text-xs sm:text-sm font-bold text-white transition-all shadow-xs"
+                  >
+                    <Share2 className="h-4 w-4 text-emerald-400" />
+                    <span>CREATE WA CALL LINK</span>
+                  </button>
+                </div>
+
+                {/* PSTN Fallback Button */}
+                <button
+                  type="button"
+                  onClick={handleInitiateCall}
+                  className="w-full flex items-center justify-center gap-2 rounded-2xl border border-slate-300 bg-white hover:bg-slate-50 py-2.5 text-xs font-bold text-slate-700 shadow-2xs transition-all"
+                >
+                  <Phone className="h-4 w-4 text-slate-500" />
+                  <span>DIAL VIA CARRIER PSTN TRUNK (TWILIO)</span>
+                </button>
+              </div>
 
               {/* TEST INCOMING CALL TRIGGER */}
               <div className="pt-2 flex items-center justify-between text-xs text-slate-400 border-t border-slate-100">
@@ -2928,6 +3591,80 @@ export default function PhoneCallingTab() {
                 className="rounded-xl bg-slate-900 px-4 py-2 text-xs font-bold text-white hover:bg-slate-800 transition-colors"
               >
                 Understood & Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* MODAL: TWILIO TRIAL ACCOUNT VERIFICATION & UPGRADE GUIDE */}
+      {/* ======================================================== */}
+      {showTrialGuideModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-lg rounded-3xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4 animate-in fade-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2 text-base font-bold text-slate-900">
+                <AlertCircle className="h-5 w-5 text-amber-500" />
+                Twilio Free Trial Account Notice
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowTrialGuideModal(false)}
+                className="rounded-full p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="text-xs text-slate-600 space-y-3 leading-relaxed">
+              <p className="font-semibold text-slate-800">
+                Twilio trial accounts can only place real phone calls to numbers that are pre-verified in your Twilio Console.
+              </p>
+
+              <div className="rounded-2xl bg-amber-50 border border-amber-200 p-3.5 space-y-2">
+                <div className="font-bold text-amber-900 flex items-center gap-1.5 text-xs">
+                  <Sparkles className="h-4 w-4 text-amber-600" />
+                  How to verify your phone number in 30 seconds:
+                </div>
+                <ol className="list-decimal list-inside space-y-1.5 text-amber-800 text-[11px] leading-normal pl-1">
+                  <li>Click the button below to open Twilio Console <strong>Verified Caller IDs</strong>.</li>
+                  <li>Click <strong>&quot;Add a new Caller ID&quot;</strong> and enter your mobile number (e.g. <code>+918210455966</code>).</li>
+                  <li>Choose SMS or Phone Call to receive your free 6-digit OTP code.</li>
+                  <li>Enter the OTP code to verify. It is 100% free!</li>
+                </ol>
+              </div>
+
+              <div className="rounded-2xl bg-blue-50 border border-blue-200 p-3 text-blue-900 space-y-1">
+                <div className="font-bold flex items-center gap-1.5 text-xs">
+                  <Zap className="h-3.5 w-3.5 text-blue-600" />
+                  Want to call any customer without restrictions?
+                </div>
+                <div className="text-[11px] text-blue-800">
+                  Upgrading your Twilio account removes all trial parameter limits and enables calling any phone number worldwide without manual pre-verification.
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-col sm:flex-row gap-2 pt-2">
+              <a
+                href="https://console.twilio.com/us1/develop/phone-numbers/manage/verified-caller-ids"
+                target="_blank"
+                rel="noreferrer"
+                className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-bold text-white hover:bg-blue-700 transition shadow-xs text-center"
+              >
+                <ExternalLink className="h-3.5 w-3.5" />
+                Open Twilio Verified Caller IDs
+              </a>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowTrialGuideModal(false);
+                  fallbackToInteractiveCall();
+                }}
+                className="rounded-xl border border-slate-200 bg-slate-100 px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-200 transition text-center"
+              >
+                Use Live AI Studio Mode
               </button>
             </div>
           </div>

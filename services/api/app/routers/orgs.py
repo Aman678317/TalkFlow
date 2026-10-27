@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import models as M
 from app.db.session import get_db
 from app.deps import Principal, get_principal, require_org_user
-from app.errors import ConflictError, NotFoundError, ValidationError
+from app.errors import AuthorizationError, ConflictError, NotFoundError, ValidationError
 from app.rbac import ROLE_PERMISSIONS
 from app.schemas import OrgMemberOut, OrganizationOut, UserOut
 from app.services import audit_service
@@ -73,6 +73,19 @@ async def create_org(body: OrgCreate, principal: Principal = Depends(get_princip
 @router.get("/organizations/current", response_model=OrganizationOut)
 async def current_org(principal: Principal = Depends(require_org_user)):
     return OrganizationOut.model_validate(principal.org)
+
+
+@router.delete("/organizations/current", status_code=204)
+async def delete_current_org(principal: Principal = Depends(require_org_user),
+                             db: AsyncSession = Depends(get_db)):
+    """GDPR / Tenant Erasure: delete organization data and cascade related objects."""
+    if principal.role != "owner":
+        raise AuthorizationError("Only organization owners can delete the organization.")
+    from app.services.retention_service import delete_org_data
+    await delete_org_data(db, principal.org_id)
+    await audit_service.record(db, action="org.deleted", org_id=principal.org_id,
+                               actor_id=principal.user_id, resource_type="org",
+                               resource_id=str(principal.org_id))
 
 
 @router.get("/members", response_model=list[OrgMemberOut])

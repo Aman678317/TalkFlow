@@ -131,6 +131,16 @@ async def _load_user_with_org(db: AsyncSession, user_id: uuid.UUID,
         member = res.scalars().first()
         if member is not None:
             org = member.org
+        else:
+            # Auto-provision default organization so the user is never blocked
+            slug = f"user-{str(user.id)[:8]}"
+            org = M.Organization(name=f"{user.name}'s Workspace", slug=slug, plan="free")
+            db.add(org)
+            await db.flush()
+            member = M.OrganizationMember(org_id=org.id, user_id=user.id, role="owner")
+            db.add(member)
+            db.add(M.Project(org_id=org.id, name="Default Project"))
+            await db.commit()
     return user, org, member
 
 

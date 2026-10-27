@@ -25,6 +25,34 @@ export class ApiError extends Error {
 }
 
 let accessToken: string | null = null;
+const SESSION_TOKEN_KEY = "gt.session_access_token";
+
+function getStoredToken(): string | null {
+  try {
+    if (typeof sessionStorage !== "undefined") {
+      return sessionStorage.getItem(SESSION_TOKEN_KEY);
+    }
+  } catch {
+    // sessionStorage may be restricted in sandbox mode
+  }
+  return null;
+}
+
+function setStoredToken(token: string | null) {
+  try {
+    if (typeof sessionStorage !== "undefined") {
+      if (token) {
+        sessionStorage.setItem(SESSION_TOKEN_KEY, token);
+      } else {
+        sessionStorage.removeItem(SESSION_TOKEN_KEY);
+      }
+    }
+  } catch {
+    // ignore
+  }
+}
+
+accessToken = getStoredToken();
 let authSeq = 0;
 let onUnauthorized: () => void = () => { };
 let refreshInFlight: Promise<boolean> | null = null;
@@ -52,11 +80,14 @@ if (authChannel) {
     if (event.data?.type === "LOGOUT") {
       authSeq = Math.max(authSeq, event.data?.seq ?? (authSeq + 1));
       accessToken = null;
+  setStoredToken(null);
+      setStoredToken(null);
       onUnauthorized();
     } else if (event.data?.type === "TOKEN_REFRESHED" && event.data?.accessToken) {
       if (!event.data?.seq || event.data.seq >= authSeq) {
         authSeq = Math.max(authSeq, event.data?.seq ?? (authSeq + 1));
         accessToken = event.data.accessToken;
+        setStoredToken(event.data.accessToken);
         if (event.data?.timestamp) {
           lastRefreshSuccess = event.data.timestamp;
         }
@@ -65,6 +96,7 @@ if (authChannel) {
       if (!event.data?.seq || event.data.seq >= authSeq) {
         authSeq = Math.max(authSeq, event.data?.seq ?? (authSeq + 1));
         accessToken = event.data.accessToken;
+        setStoredToken(event.data.accessToken);
       }
     }
   };
@@ -73,6 +105,7 @@ if (authChannel) {
 export function setTokens(access: string | null) {
   authSeq++;
   accessToken = access;
+  setStoredToken(access);
   if (access && authChannel) {
     authChannel.postMessage({ type: "TOKEN_REFRESHED", accessToken: access, timestamp: Date.now(), seq: authSeq });
   }
@@ -81,6 +114,7 @@ export function setTokens(access: string | null) {
 export function broadcastLogout() {
   authSeq++;
   accessToken = null;
+  setStoredToken(null);
   if (authChannel) {
     authChannel.postMessage({ type: "LOGOUT", seq: authSeq });
   }
@@ -92,10 +126,13 @@ export function setUnauthorizedHandler(fn: () => void) {
 }
 
 export function getAccessToken() {
+  if (!accessToken) {
+    accessToken = getStoredToken();
+  }
   return accessToken;
 }
 
-export const DEFAULT_PRODUCTION_API_BASE_URL = "https://talkflow-csbw.onrender.com";
+export const DEFAULT_PRODUCTION_API_BASE_URL = "";
 
 export interface ResolveApiOptions {
   envUrl?: string;
@@ -314,7 +351,9 @@ async function doRefreshRequest(): Promise<boolean> {
       if (r.status === 401) {
         lastRefreshError = "invalid";
         if (authSeq === seqAtStart && accessToken === tokenAtStart) {
-          broadcastLogout();
+          if (!accessToken) {
+            broadcastLogout();
+          }
         }
       } else {
         lastRefreshError = "invalid";
@@ -333,6 +372,7 @@ async function doRefreshRequest(): Promise<boolean> {
     // only the access token is read back, into memory.
     authSeq++;
     accessToken = data.access_token || null;
+    setStoredToken(accessToken);
     lastRefreshSuccess = Date.now();
     lastRefreshError = null;
     if (accessToken && authChannel) {
@@ -446,12 +486,14 @@ export async function api<T = any>(path: string, opts: RequestOptions = {}): Pro
       if (res.status === 401) {
         if (accessToken) {
           accessToken = null;
+          setStoredToken(null);
           onUnauthorized();
         }
       }
     } else if (lastRefreshError === "invalid") {
       if (accessToken) {
         accessToken = null;
+        setStoredToken(null);
         onUnauthorized();
       }
     }

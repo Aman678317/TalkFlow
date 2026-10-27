@@ -40,6 +40,7 @@ const AgentCalls = lazy(() => import('./pages/AgentCalls'));
 const JoinCall = lazy(() => import('./pages/JoinCall'));
 const DocsPage = lazy(() => import('./pages/DocsPage'));
 const AgentStudio = lazy(() => import('./pages/AgentStudio'));
+const AuthCallback = lazy(() => import('./pages/AuthCallback'));
 
 /** Shown while a route chunk is still arriving. */
 function RouteFallback() {
@@ -49,6 +50,13 @@ function RouteFallback() {
       <span className="sr-only">Loading</span>
     </div>
   );
+}
+
+function RootGate() {
+  const user = useAuth((s) => s.user);
+  const status = useAuth((s) => s.status);
+  if (status === 'authed' && user) return <Navigate to="/dashboard" replace />;
+  return <Landing />;
 }
 
 function RequireAuth({ children }: { children: JSX.Element }) {
@@ -77,12 +85,14 @@ export default function App() {
       <ErrorBoundary sectionName="AppRoot">
         <Suspense fallback={<RouteFallback />}>
         <Routes>
-          <Route path="/" element={<Landing />} />
+          <Route path="/" element={<RootGate />} />
+          <Route path="/auth/callback/:provider" element={<AuthCallback />} />
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
           <Route path="/meeting/:id" element={<MeetingRoom />} />
           {/* Public join page — other person opens this link on their phone (NO login required) */}
           <Route path="/join/:roomId" element={<JoinCall />} />
+          <Route path="/join" element={<Navigate to="/meetings" replace />} />
 
           <Route element={<AppShell />}>
             <Route path="/translate" element={<Translate />} />
@@ -91,16 +101,22 @@ export default function App() {
             <Route path="/notes" element={<NotesPage />} />
             <Route path="/agents" element={<AgentStudio />} />
             <Route path="/agent-studio" element={<AgentStudio />} />
+            <Route path="/agent" element={<Navigate to="/agents" replace />} />
             <Route path="/docs" element={<DocsPage />} />
             <Route path="/api/docs" element={<DocsPage />} />
+            <Route path="/developer" element={<Navigate to="/docs" replace />} />
+            <Route path="/developers" element={<Navigate to="/docs" replace />} />
           </Route>
 
           {/* Protected app shell routes: requires user authentication */}
           <Route element={<RequireAuth><AppShell /></RequireAuth>}>
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/documents" element={<Documents />} />
+            <Route path="/knowledge" element={<Documents />} />
+            <Route path="/knowledge-base" element={<Navigate to="/documents" replace />} />
             <Route path="/voice" element={<Voice />} />
             <Route path="/meetings" element={<Meetings />} />
+            <Route path="/meeting" element={<Navigate to="/meetings" replace />} />
             <Route path="/chat" element={<ChatPage />} />
             <Route path="/history" element={<History />} />
             <Route path="/glossaries" element={<Glossaries />} />
@@ -114,6 +130,7 @@ export default function App() {
             <Route path="/admin" element={<Admin />} />
             <Route path="/admin/telephony" element={<AdminTelephony />} />
             <Route path="/agent/calls" element={<AgentCalls />} />
+            <Route path="/calls" element={<Navigate to="/agent/calls" replace />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

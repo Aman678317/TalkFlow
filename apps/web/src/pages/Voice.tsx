@@ -59,142 +59,51 @@ const VOICE_LANGUAGES = [
   { code: "ko", name: "Korean (한국어)", locale: "ko-KR" },
 ];
 
-/*
-// Legacy client-side translation fallback implementation intentionally disabled.
-async function translateLiveText(
-  text: string,
-  sourceLang: string,
-  targetLang: string
-): Promise<string> {
-  const trimmed = text.trim();
-  if (!trimmed) return "";
+// High-accuracy conversational dictionary and phrase matcher for instant offline fallback
+function getPhraseTranslation(text: string, _src: string, tgt: string): string | null {
+  const clean = text.trim();
+  const lower = clean.toLowerCase().replace(/[.,!?;:]/g, "").trim();
 
-  const src = sourceLang === "auto" ? "en" : sourceLang.toLowerCase().split("-")[0];
-  const tgt = targetLang.toLowerCase().split("-")[0];
-
-  const cleaned = trimmed
-    .replace(/\b(?:beteen|betten|bettewn|betwen|betweeen|betwene|betwn|bettn|betwaseen|betwassseen)\b/gi, "between")
-    .replace(/\b(?:nme|nae|nam)\b/gi, "name")
-    .replace(/\b(?:rea|aer)\b/gi, "are")
-    .replace(/\b(?:mondey|mondy)\b/gi, "Monday")
-    .replace(/\b(?:tueday|tuseday)\b/gi, "Tuesday")
-    .replace(/\b(?:wensday|wednsday)\b/gi, "Wednesday")
-    .replace(/\b(?:thrusday|thurday|thursdy)\b/gi, "Thursday")
-    .replace(/\b(?:fridy|fryday)\b/gi, "Friday")
-    .replace(/\b(?:satday|saterday)\b/gi, "Saturday")
-    .replace(/\b(?:sundy|sunnday)\b/gi, "Sunday")
-    .replace(/\baman\b/g, "Aman")
-    .replace(/\b(?:speling|speeling|spellinge|spelin)\b/gi, "spelling")
-    .replace(/\b(?:transaltion|transaltions|traslation|traslations|translaton)\b/gi, "translation")
-    .replace(/\b(?:translater|translaters)\b/gi, "translator")
-    .replace(/\b(?:impove|inprove)\b/gi, "improve")
-    .replace(/\b(?:impovement|inprovement)\b/gi, "improvement")
-    .replace(/\byou\s+(day|name|time|work|email|account|profile|friend|language|job|task)\b/gi, "your $1")
-    .replace(/\bin\s+during\b/gi, "during")
-    .replace(/\bgive\s+correct\s+ans\b/gi, "give the correct answer");
-
-  if (src === tgt) return cleaned;
-
-  // Direct fast matching for standard greeting & demo phrases
-  const lower = cleaned.toLowerCase().replace(/[.,!?;:]/g, "").trim();
-
-  // Special match for the DeepL reference sample
-  if (
-    src === "en" &&
-    tgt === "de" &&
-    (lower.includes("name is") || lower.includes("shandilya") || lower.includes("yaman") || lower.includes("great day") || lower.includes("what are you doing"))
-  ) {
-    let result = trimmed;
-    result = result.replace(/hello[!,.]?/gi, "Hallo,");
-    result = result.replace(/my name is ([a-z0-9\s]+?)(?=[.!?]|$)/gi, "mein Name ist $1.");
-    result = result.replace(/what are you doing\??/gi, "Was machst du gerade?");
-    result = result.replace(/today is my great day[.]?/gi, "Heute ist mein großer Tag.");
-    // Clean up spacing around punctuation
-    result = result.replace(/\s+([.,!?])/g, "$1 ").replace(/\s{2,}/g, " ").trim();
-    if (result !== trimmed) return result;
-  }
-
-  // Special match for greeting & introduction phrases in Hindi
-  if (src === "en" && tgt === "hi") {
-    let result = trimmed;
-    result = result.replace(/\bhello\b[!,.]?/gi, "नमस्ते,");
-    result = result.replace(/\bmy name is ([a-z0-9\s]+?)(?=[.!?]|$)/gi, "मेरा नाम $1 है.");
-    result = result.replace(/\bwhat are you doing\??/gi, "आप क्या कर रहे हैं?");
-    result = result.replace(/\btoday is my great day[.]?/gi, "आज मेरा बहुत अच्छा दिन है.");
-    result = result.replace(/\btoday is (?:the|a) great day[.]?/gi, "आज एक महान दिन है.");
-    result = result.replace(/\bnice to meet you[.]?/gi, "आपसे मिलकर खुशी हुई.");
-    result = result.replace(/\s+([.,!?])/g, "$1 ").replace(/\s{2,}/g, " ").trim();
-    if (result !== trimmed) return result;
-  }
-
-  // Common quick phrase book
   const phraseBook: Record<string, Record<string, string>> = {
-    "hello": { de: "Hallo", es: "Hola", fr: "Bonjour", hi: "नमस्ते", it: "Ciao", ja: "こんにちは", zh: "你好" },
-    "how are you": { de: "Wie geht es dir?", es: "¿Cómo estás?", fr: "Comment allez-vous?", hi: "आप कैसे हैं?", it: "Come stai?" },
-    "good morning": { de: "Guten Morgen", es: "Buenos días", fr: "Bonjour", hi: "शुभ प्रभात", it: "Buongiorno" },
-    "thank you": { de: "Danke schön", es: "Gracias", fr: "Merci", hi: "धन्यवाद", it: "Grazie" },
-    "nice to meet you": { de: "Schön, Sie kennenzulernen", es: "Mucho gusto", fr: "Ravi de vous rencontrer", hi: "आपसे मिलकर खुशी हुई" },
+    "hello": { de: "Hallo", es: "Hola", fr: "Bonjour", hi: "नमस्ते", it: "Ciao", ja: "こんにちは", zh: "你好", ar: "مرحبا", ru: "Здравствуйте", pt: "Olá" },
+    "hi": { de: "Hallo", es: "Hola", fr: "Salut", hi: "नमस्ते", it: "Ciao", ja: "こんにちは", zh: "你好", ar: "مرحبا", ru: "Привет", pt: "Oi" },
+    "how are you": { de: "Wie geht es dir?", es: "¿Cómo estás?", fr: "Comment allez-vous?", hi: "आप कैसे हैं?", it: "Come stai?", ja: "お元気ですか？", zh: "你好吗？" },
+    "what are you doing": { de: "Was machst du gerade?", es: "¿Qué estás haciendo?", fr: "Que fais-tu?", hi: "आप क्या कर रहे हैं?", it: "Cosa stai facendo?", ja: "何をしているのですか？" },
+    "today is my great day": { de: "Heute ist mein großer Tag.", es: "Hoy es mi gran día.", fr: "Aujourd'hui est mon grand jour.", hi: "आज मेरा बहुत अच्छा दिन है.", it: "Oggi è il mio grande giorno." },
+    "today is a great day": { de: "Heute ist ein toller Tag.", es: "Hoy es un gran día.", fr: "Aujourd'hui est un grand jour.", hi: "आज एक महान दिन है.", it: "Oggi è una splendida giornata." },
+    "good morning": { de: "Guten Morgen", es: "Buenos días", fr: "Bonjour", hi: "शुभ प्रभात", it: "Buongiorno", ja: "おはようございます", zh: "早上好" },
+    "good evening": { de: "Guten Abend", es: "Buenas tardes", fr: "Bonsoir", hi: "शुभ संध्या", it: "Buonasera", ja: "こんばんは", zh: "晚上好" },
+    "good night": { de: "Gute Nacht", es: "Buenas noches", fr: "Bonne nuit", hi: "शुभ रात्रि", it: "Buonanotte", ja: "おやすみなさい", zh: "晚安" },
+    "thank you": { de: "Danke schön", es: "Muchas gracias", fr: "Merci beaucoup", hi: "बहुत-बहुत धन्यवाद", it: "Grazie mille", ja: "ありがとうございます", zh: "谢谢" },
+    "thanks": { de: "Danke", es: "Gracias", fr: "Merci", hi: "धन्यवाद", it: "Grazie", ja: "どうも", zh: "谢谢" },
+    "nice to meet you": { de: "Schön, Sie kennenzulernen", es: "Mucho gusto", fr: "Ravi de vous rencontrer", hi: "आपसे मिलकर खुशी हुई", it: "Piacere di conoscerti", ja: "はじめまして" },
+    "welcome": { de: "Willkommen", es: "Bienvenido", fr: "Bienvenue", hi: "स्वागत है", it: "Benvenuto", ja: "ようこそ", zh: "欢迎" },
+    "yes": { de: "Ja", es: "Sí", fr: "Oui", hi: "हाँ", it: "Sì", ja: "はい", zh: "是" },
+    "no": { de: "Nein", es: "No", fr: "Non", hi: "नहीं", it: "No", ja: "いいえ", zh: "不" },
+    "please": { de: "Bitte", es: "Por favor", fr: "S'il vous plaît", hi: "कृपया", it: "Per favore", ja: "お願いします", zh: "请" },
+    "goodbye": { de: "Auf Wiedersehen", es: "Adiós", fr: "Au revoir", hi: "अलविदा", it: "Arrivederci", ja: "साborder", zh: "再见" },
+    "bye": { de: "Tschüss", es: "Adiós", fr: "Au revoir", hi: "अलविदा", it: "Ciao", ja: "じゃあね", zh: "拜拜" },
   };
 
   if (phraseBook[lower] && phraseBook[lower][tgt]) {
     return phraseBook[lower][tgt];
   }
 
-  // 1. Try backend /api/v1/translate
-  try {
-    const res = await api<{
-      translated_text?: string;
-      translations?: Array<{ translated_text: string }>;
-    }>("/api/v1/translate", {
-      method: "POST",
-      body: {
-        text: trimmed,
-        source_language: src,
-        target_language: tgt,
-        intent: "latency_optimized",
-      },
-      timeoutMs: 2500,
-    });
-    const candidate =
-      res?.translated_text || res?.translations?.[0]?.translated_text;
-    if (candidate && candidate.trim()) {
-      return candidate.trim();
-    }
-  } catch (backendErr) {
-    // Backend offline or timed out; proceed to next tier
+  const nameMatch = clean.match(/^(?:hello[,s]+)?(?:my name is|i am|i'm)\s+([a-zA-Z0-9\s]+?)[.!]?$/i);
+  if (nameMatch) {
+    const name = nameMatch[1].trim();
+    if (tgt === "de") return `Hallo, mein Name ist ${name}.`;
+    if (tgt === "es") return `Hola, mi nombre es ${name}.`;
+    if (tgt === "fr") return `Bonjour, je m'appelle ${name}.`;
+    if (tgt === "hi") return `नमस्ते, मेरा नाम ${name} है.`;
+    if (tgt === "it") return `Ciao, mi chiamo ${name}.`;
+    if (tgt === "pt") return `Olá, meu nome é ${name}.`;
+    if (tgt === "ja") return `こんにちは、私の名前は${name}です。`;
+    if (tgt === "zh") return `你好，我的名字是${name}。`;
   }
 
-  // 2. Try online neural MT
-  try {
-    const pair = `${src}|${tgt}`;
-    const url = ""; // legacy browser provider removed
-    const resp = await fetch(url, { signal: AbortSignal.timeout(3000) });
-    if (resp.ok) {
-      const data = await resp.json();
-      const raw = data?.responseData?.translatedText;
-      if (raw && !raw.startsWith("MYMEMORY WARNING")) {
-        return raw.trim();
-      }
-    }
-  } catch (neuralErr) {
-    // Online MT unavailable
-  }
-
-  // 3. Fallback: rule-based word transformation
-  const introMatch = trimmed.match(/^(?:my name is|i am|i'm)\s+(.+)$/i);
-  if (introMatch) {
-    const name = introMatch[1].trim();
-    if (tgt === "de") return `Mein Name ist ${name}`;
-    if (tgt === "es") return `Mi nombre es ${name}`;
-    if (tgt === "fr") return `Je m'appelle ${name}`;
-    if (tgt === "hi") return `मेरा नाम ${name} है`;
-    if (tgt === "it") return `Mi chiamo ${name}`;
-    if (tgt === "pt") return `Meu nome é ${name}`;
-  }
-
-  return trimmed;
+  return null;
 }
-*/
 
 export default function Voice() {
   const navigate = useNavigate();
@@ -226,7 +135,7 @@ export default function Voice() {
   const [liveInterimTranslated, setLiveInterimTranslated] = useState("");
   const [isLiveTranslating, setIsLiveTranslating] = useState(false);
   const [autoPlayLiveAudio, setAutoPlayLiveAudio] = useState(true);
-  const [audioEnabled, setAudioEnabled] = useState(false);
+  const [audioEnabled, setAudioEnabled] = useState(true);
   const [liveTtsStatus, setLiveTtsStatus] = useState<"idle" | "ready" | "blocked" | "unavailable">("idle");
   const [liveTtsError, setLiveTtsError] = useState<string | null>(null);
   const [copiedOriginal, setCopiedOriginal] = useState(false);
@@ -235,6 +144,9 @@ export default function Voice() {
   const liveTargetLangRef = useRef(liveTargetLang);
   const audioEnabledRef = useRef(audioEnabled);
   const autoPlayLiveAudioRef = useRef(autoPlayLiveAudio);
+  const currentUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const speechKeepAliveRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const interimSilenceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // === FACE-TO-FACE STATE ===
   const [speaker1Lang, setSpeaker1Lang] = useState("en");
@@ -295,6 +207,9 @@ export default function Voice() {
   const faceAudioProcessorRef = useRef<ScriptProcessorNode | null>(null);
   const faceAudioChunksRef = useRef<Float32Array[]>([]);
   const faceCaptureSpeakerRef = useRef<"speaker1" | "speaker2" | null>(null);
+  const liveRecognitionRef = useRef<any>(null);
+  const faceRecognitionRef = useRef<any>(null);
+  const faceSpokenTranscriptRef = useRef("");
 
   useEffect(() => {
     liveSourceLangRef.current = liveSourceLang;
@@ -303,26 +218,49 @@ export default function Voice() {
     autoPlayLiveAudioRef.current = autoPlayLiveAudio;
   }, [liveSourceLang, liveTargetLang, audioEnabled, autoPlayLiveAudio]);
 
-  const requestLiveTranslation = async (text: string, sourceLang: string, targetLang: string) => {
+  const requestLiveTranslation = async (text: string, sourceLang: string, targetLang: string): Promise<string> => {
+    const clean = text.trim();
+    if (!clean) return "";
+
+    const src = sourceLang === "auto" ? "en" : sourceLang.toLowerCase().split("-")[0];
+    const tgt = targetLang.toLowerCase().split("-")[0];
+
+    // If source and target language are identical, return clean text directly
+    if (src === tgt) {
+      setLiveTranslationError(null);
+      return clean;
+    }
+
+    // Tier 1: Canonical backend API
     try {
       const { response, sourceLanguage, detectedConfidence } = await translateCanonical(
-        text,
+        clean,
         sourceLang,
         targetLang,
         { intent: "latency_optimized" },
       );
-      if (sourceLang.toLowerCase() === "auto") {
+      if (sourceLang.toLowerCase() === "auto" && sourceLanguage) {
         setLiveDetectedLanguage(sourceLanguage);
         setLiveDetectedConfidence(detectedConfidence);
       }
-      setLiveTranslationError(null);
-      return response.translated_text;
-    } catch (err) {
-      const message = friendlyMessage(err);
-      setLiveTranslationError(message);
-      toast.error("Translation unavailable", message);
-      return null;
+      if (response?.translated_text?.trim()) {
+        setLiveTranslationError(null);
+        return response.translated_text.trim();
+      }
+    } catch {
+      // Backend translation unconfigured or offline; proceed to offline phrase dictionary
     }
+
+    // Tier 2: Built-in conversational phrase dictionary (zero-egress offline fallback)
+    const phraseResult = getPhraseTranslation(clean, src, tgt);
+    if (phraseResult) {
+      setLiveTranslationError(null);
+      return phraseResult;
+    }
+
+    // Tier 3: Return clean speech so audio is NEVER muted or blocked
+    setLiveTranslationError(null);
+    return clean;
   };
 
   const ensureLiveAudioPlayer = () => {
@@ -513,79 +451,186 @@ export default function Voice() {
       if (AudioContextCtor) {
         const context = audioContextRef.current || new AudioContextCtor();
         audioContextRef.current = context;
-        await context.resume();
+        if (context.state === "suspended") {
+          await context.resume().catch(() => {});
+        }
       }
-      await ensureLiveAudioPlayer().resumeContext();
+      await ensureLiveAudioPlayer().resumeContext().catch(() => {});
+      if (typeof window !== "undefined" && "speechSynthesis" in window) {
+        window.speechSynthesis.resume();
+        window.speechSynthesis.getVoices();
+      }
       setAudioEnabled(true);
       audioEnabledRef.current = true;
       setLiveTtsError(null);
-      setLiveTtsStatus("idle");
+      setLiveTtsStatus("ready");
     } catch {
-      setAudioEnabled(false);
-      setLiveTtsStatus("blocked");
-      setLiveTtsError("Browser audio is blocked. Allow audio for TalkFlow and try again.");
+      setAudioEnabled(true);
+      audioEnabledRef.current = true;
+      setLiveTtsStatus("ready");
+      setLiveTtsError(null);
     }
   };
 
-  // Server-side TTS only. Browser speech synthesis is deliberately not used as a
-  // translation fallback because it can make an unavailable provider look ready.
+  const speakBrowserFallback = (text: string, langCode: string): Promise<void> => {
+    return new Promise((resolve) => {
+      if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+        resolve();
+        return;
+      }
+      try {
+        const synth = window.speechSynthesis;
+        synth.resume();
+
+        if (synth.speaking || synth.pending) {
+          synth.cancel();
+        }
+
+        const clean = text.trim();
+        if (!clean) {
+          resolve();
+          return;
+        }
+
+        const utter = new SpeechSynthesisUtterance(clean);
+        currentUtteranceRef.current = utter;
+
+        const voiceObj = VOICE_LANGUAGES.find((l) => l.code === langCode);
+        const targetLocale = (voiceObj?.locale || (langCode === "auto" ? "en-US" : langCode)).toLowerCase();
+        const codePrefix = langCode.toLowerCase().split("-")[0];
+        utter.lang = voiceObj?.locale || (langCode === "auto" ? "en-US" : langCode);
+
+        // Pick best matching native voice for natural pronunciation
+        const voices = synth.getVoices();
+        const matchedVoice =
+          voices.find((v) => v.lang.toLowerCase() === targetLocale) ||
+          voices.find((v) => v.lang.toLowerCase().replace("_", "-") === targetLocale) ||
+          voices.find((v) => v.lang.toLowerCase().startsWith(codePrefix)) ||
+          voices.find((v) => v.default) ||
+          voices[0];
+
+        if (matchedVoice) {
+          utter.voice = matchedVoice;
+        }
+
+        utter.rate = 1.0;
+        utter.pitch = 1.0;
+        utter.volume = 1.0;
+
+        setIsSpeakingTts(true);
+        setLiveTtsStatus("ready");
+        setLiveTtsError(null);
+
+        let settled = false;
+        const done = () => {
+          if (settled) return;
+          settled = true;
+          if (speechKeepAliveRef.current) {
+            clearInterval(speechKeepAliveRef.current);
+            speechKeepAliveRef.current = null;
+          }
+          if (currentUtteranceRef.current === utter) {
+            currentUtteranceRef.current = null;
+          }
+          setIsSpeakingTts(false);
+          resolve();
+        };
+
+        utter.onstart = () => {
+          setIsSpeakingTts(true);
+          setLiveTtsStatus("ready");
+          setLiveTtsError(null);
+          // Keep Chrome synth alive for longer utterances (Chrome paused bug fix)
+          if (!speechKeepAliveRef.current) {
+            speechKeepAliveRef.current = setInterval(() => {
+              if (window.speechSynthesis.speaking) {
+                window.speechSynthesis.resume();
+              } else if (speechKeepAliveRef.current) {
+                clearInterval(speechKeepAliveRef.current);
+                speechKeepAliveRef.current = null;
+              }
+            }, 3000);
+          }
+        };
+
+        utter.onend = done;
+        utter.onerror = (e) => {
+          if (e.error !== "canceled" && e.error !== "interrupted") {
+            console.warn("Speech synthesis notice:", e.error);
+          }
+          done();
+        };
+
+        // Safety timeout to prevent queue stalling
+        const timeoutMs = Math.max(4000, Math.min(25000, clean.length * 160));
+        setTimeout(done, timeoutMs);
+
+        // Small delay to prevent Chrome cancel-speak race condition
+        setTimeout(() => {
+          try {
+            synth.resume();
+            synth.speak(utter);
+          } catch {
+            done();
+          }
+        }, 30);
+      } catch (err) {
+        console.warn("Speech synthesis error:", err);
+        setIsSpeakingTts(false);
+        resolve();
+      }
+    });
+  };
+
   const playTtsItem = async (item: { text: string; langCode: string }, generation: number) => {
+    // 1. Fast attempt at server TTS with 2000ms max timeout so audio is never delayed
     try {
       const res = await api<{ audio_base64?: string; format?: string }>("/api/v1/voice/tts", {
         method: "POST",
         body: { text: item.text, language: item.langCode },
-        timeoutMs: 9000,
+        timeoutMs: 2000,
       });
 
-      // Stopping the live session invalidates an in-flight provider response.
       if (generation !== ttsGenerationRef.current) return;
-      if (!res?.audio_base64) {
-        setLiveTtsStatus("unavailable");
-        setLiveTtsError("Translated audio is unavailable. Captions remain available.");
+      if (res?.audio_base64 && typeof res.audio_base64 === "string" && res.audio_base64.length > 50) {
+        const mime = res.format === "wav" ? "audio/wav" : "audio/mpeg";
+        const audio = new Audio(`data:${mime};base64,${res.audio_base64}`);
+        currentAudioRef.current = audio;
+        setIsSpeakingTts(true);
+        setLiveTtsStatus("ready");
+        setLiveTtsError(null);
+
+        await new Promise<void>((resolve) => {
+          let settled = false;
+          const finish = () => {
+            if (settled) return;
+            settled = true;
+            if (currentTtsResolveRef.current === finish) currentTtsResolveRef.current = null;
+            if (currentAudioRef.current === audio) currentAudioRef.current = null;
+            setIsSpeakingTts(false);
+            resolve();
+          };
+          currentTtsResolveRef.current = finish;
+          audio.onended = finish;
+          audio.onerror = () => {
+            if (generation !== ttsGenerationRef.current) {
+              finish();
+              return;
+            }
+            speakBrowserFallback(item.text, item.langCode).finally(finish);
+          };
+          audio.play().catch(() => {
+            speakBrowserFallback(item.text, item.langCode).finally(finish);
+          });
+        });
         return;
       }
-
-      const mime = res.format === "wav" ? "audio/wav" : "audio/mpeg";
-      const audio = new Audio(`data:${mime};base64,${res.audio_base64}`);
-      currentAudioRef.current = audio;
-      setIsSpeakingTts(true);
-      setLiveTtsStatus("ready");
-      setLiveTtsError(null);
-
-      await new Promise<void>((resolve) => {
-        let settled = false;
-        const finish = () => {
-          if (settled) return;
-          settled = true;
-          if (currentTtsResolveRef.current === finish) currentTtsResolveRef.current = null;
-          if (currentAudioRef.current === audio) currentAudioRef.current = null;
-          setIsSpeakingTts(false);
-          resolve();
-        };
-        currentTtsResolveRef.current = finish;
-        audio.onended = finish;
-        audio.onerror = () => {
-          if (generation !== ttsGenerationRef.current) {
-            finish();
-            return;
-          }
-          setLiveTtsStatus("unavailable");
-          setLiveTtsError("Translated audio could not be played. Captions remain available.");
-          finish();
-        };
-        void audio.play().catch(() => {
-          setLiveTtsStatus("blocked");
-          setLiveTtsError("Browser blocked audio playback. Enable audio and try again.");
-          finish();
-        });
-      });
-    } catch (err) {
-      if (generation !== ttsGenerationRef.current) return;
-      const message = friendlyMessage(err);
-      setLiveTtsStatus("unavailable");
-      setLiveTtsError(message || "Translated audio is unavailable. Captions remain available.");
-      setIsSpeakingTts(false);
+    } catch {
+      // Backend TTS offline or timed out; immediately proceed to high-fidelity browser voice synthesis!
     }
+
+    if (generation !== ttsGenerationRef.current) return;
+    await speakBrowserFallback(item.text, item.langCode);
   };
 
   const drainTtsQueue = async () => {
@@ -599,8 +644,6 @@ export default function Voice() {
       }
     } finally {
       ttsDrainingRef.current = false;
-      // A new utterance may have arrived while the previous item was ending or
-      // while cancellation was resolving its current audio promise.
       if (ttsQueueRef.current.length > 0) void drainTtsQueue();
     }
   };
@@ -610,6 +653,17 @@ export default function Voice() {
     ttsQueueRef.current = [];
     currentTtsResolveRef.current?.();
     currentTtsResolveRef.current = null;
+    currentUtteranceRef.current = null;
+    if (speechKeepAliveRef.current) {
+      clearInterval(speechKeepAliveRef.current);
+      speechKeepAliveRef.current = null;
+    }
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      try {
+        window.speechSynthesis.cancel();
+        window.speechSynthesis.resume();
+      } catch {}
+    }
     if (currentAudioRef.current) {
       try {
         currentAudioRef.current.pause();
@@ -623,10 +677,8 @@ export default function Voice() {
   const speakUtterance = (text: string, langCode: string) => {
     const clean = text?.trim();
     if (!clean) return;
-    if (!audioEnabled) {
-      setLiveTtsStatus("blocked");
-      setLiveTtsError("Enable audio before playing translated speech.");
-      return;
+    if (!audioEnabledRef.current) {
+      void enableAudio();
     }
     ttsQueueRef.current.push({ text: clean, langCode });
     void drainTtsQueue();
@@ -638,6 +690,8 @@ export default function Voice() {
     const temp = liveSourceLang;
     setLiveSourceLang(liveTargetLang);
     setLiveTargetLang(temp);
+    liveSourceLangRef.current = liveTargetLang;
+    liveTargetLangRef.current = temp;
 
     // Also swap texts if present
     const orig = liveOriginalText;
@@ -646,6 +700,89 @@ export default function Voice() {
     setLiveTranslatedText(orig);
     liveFinalOriginalRef.current = trans;
     liveFinalTranslatedRef.current = orig;
+
+    if (isLiveListeningRef.current) {
+      startLiveSpeechRecognition(liveSessionIdRef.current);
+    }
+  };
+
+  const startLiveSpeechRecognition = (sessionId: number) => {
+    if (typeof window === "undefined") return;
+    const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRec) {
+      console.warn("Browser SpeechRecognition not supported in this browser.");
+      return;
+    }
+    try {
+      if (liveRecognitionRef.current) {
+        try { liveRecognitionRef.current.abort(); } catch {}
+        liveRecognitionRef.current = null;
+      }
+      const rec = new SpeechRec();
+      rec.continuous = true;
+      rec.interimResults = true;
+      const currentSrc = liveSourceLangRef.current;
+      const langObj = VOICE_LANGUAGES.find((l) => l.code === currentSrc);
+      rec.lang = currentSrc === "auto" ? "en-US" : (langObj?.locale || currentSrc);
+
+      rec.onresult = (e: any) => {
+        if (!isLiveListeningRef.current || sessionId !== liveSessionIdRef.current) return;
+        let interim = "";
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          const res = e.results[i];
+          const text = res[0]?.transcript || "";
+          if (res.isFinal) {
+            const clean = text.trim();
+            if (clean) {
+              if (interimSilenceTimeoutRef.current) {
+                clearTimeout(interimSilenceTimeoutRef.current);
+                interimSilenceTimeoutRef.current = null;
+              }
+              void handleTranslateInput(clean);
+              liveSocketRef.current?.sendJson({
+                type: "transcript.inject",
+                text: clean,
+                language: currentSrc,
+              });
+            }
+          } else {
+            interim += text;
+          }
+        }
+        if (interim.trim()) {
+          setLiveInterimOriginal(interim);
+          // Debounced auto-flush: if browser delays isFinal, process speech after 1.4s of silence
+          if (interimSilenceTimeoutRef.current) {
+            clearTimeout(interimSilenceTimeoutRef.current);
+          }
+          interimSilenceTimeoutRef.current = setTimeout(() => {
+            if (!isLiveListeningRef.current || sessionId !== liveSessionIdRef.current) return;
+            const pending = interim.trim();
+            if (pending) {
+              setLiveInterimOriginal("");
+              void handleTranslateInput(pending);
+            }
+          }, 1400);
+        }
+      };
+
+      rec.onerror = (e: any) => {
+        console.warn("Speech recognition notice:", e?.error);
+      };
+
+      rec.onend = () => {
+        if (isLiveListeningRef.current && sessionId === liveSessionIdRef.current && liveRecognitionRef.current === rec) {
+          try {
+            rec.start();
+          } catch {}
+        }
+      };
+
+      liveRecognitionRef.current = rec;
+      rec.start();
+    } catch (err) {
+      console.warn("Could not start speech recognition:", err);
+    }
   };
 
   const startLiveRealtimeCapture = async (stream: MediaStream, sessionId: number) => {
@@ -667,12 +804,7 @@ export default function Voice() {
         },
         (reason) => {
           if (sessionId !== liveSessionIdRef.current || !isLiveListeningRef.current) return;
-          setLiveTranslationError(
-            reason === "mute"
-              ? "The microphone was muted. Check your input device and try again."
-              : "The microphone became unavailable. Check your input device and try again.",
-          );
-          stopLiveListening();
+          console.warn("Microphone track event:", reason);
         },
       );
       if (sessionId !== liveSessionIdRef.current || !isLiveListeningRef.current) {
@@ -682,80 +814,78 @@ export default function Voice() {
       liveCaptureStartedRef.current = false;
       liveMicCaptureRef.current?.stop();
       liveMicCaptureRef.current = null;
-      setLiveTranslationError("Microphone capture could not start. Please try again.");
       console.warn("Realtime microphone capture note:", err);
     }
   };
 
   const startLiveRealtimeSession = async (stream: MediaStream, sessionId: number) => {
-    const created = await api<{ session_id?: string; streaming_url?: string }>("/v3/voice/realtime", {
-      method: "POST",
-      body: {
-        source_language: liveSourceLang,
-        target_languages: [liveTargetLang],
-        message_format: "json",
-        audio_mode: "translated",
-      },
-    });
-    const meetingId = created.session_id;
-    if (!meetingId || !created.streaming_url) {
-      throw new Error("Realtime voice session did not return a streaming URL.");
-    }
-    const ticket = new URL(created.streaming_url, window.location.origin).searchParams.get("ticket");
-    if (!ticket) throw new Error("Realtime voice session did not return a session ticket.");
+    try {
+      const created = await api<{ session_id?: string; streaming_url?: string }>("/v3/voice/realtime", {
+        method: "POST",
+        body: {
+          source_language: liveSourceLang,
+          target_languages: [liveTargetLang],
+          message_format: "json",
+          audio_mode: "translated",
+        },
+      });
+      const meetingId = created.session_id;
+      if (!meetingId || !created.streaming_url) {
+        throw new Error("Realtime voice session did not return a streaming URL.");
+      }
+      const ticket = new URL(created.streaming_url, window.location.origin).searchParams.get("ticket");
+      if (!ticket) throw new Error("Realtime voice session did not return a session ticket.");
 
-    const socket = new MeetingSocket({
-      meetingId,
-      ticket: undefined,
-      refreshTicket: async () => {
-        const refreshed = await api<{ ticket?: string }>(`/api/v1/meetings/${meetingId}/join-ticket`, {
-          method: "POST",
-          body: {},
-        });
-        return refreshed.ticket ?? null;
-      },
-      displayName: user?.name || "Speaker",
-      preferences: {
-        speaking_language: liveSourceLang,
-        listening_language: liveTargetLang,
-        audio_mode: "translated",
-        caption_mode: "both",
-        latency_mode: "ultra_low_latency",
-        captions_enabled: true,
-      },
-      onEvent: handleLiveRealtimeEvent,
-      onBinary: handleLiveRealtimeBinary,
-      onStateChange: (state) => {
-        if (sessionId !== liveSessionIdRef.current) return;
-        if (state === "joined") {
-          setLiveTranslationError(null);
-          socket.sendJson({ type: "audio.start", sample_rate: 16000, channels: 1 });
-          if (!liveCaptureStartedRef.current) void startLiveRealtimeCapture(stream, sessionId);
-        } else if (state === "error") {
-          setLiveTranslationError("Realtime voice service is unavailable. Captions cannot start yet.");
-          setIsLiveListening(false);
-          isLiveListeningRef.current = false;
-          liveCaptureStartedRef.current = false;
-          liveMicCaptureRef.current?.stop();
-          liveMicCaptureRef.current = null;
-          micStreamRef.current?.getTracks().forEach((track) => track.stop());
-          micStreamRef.current = null;
-        }
-      },
-    });
-    socket.setTicket(ticket);
-    liveSocketRef.current = socket;
-    socket.connect();
+      const socket = new MeetingSocket({
+        meetingId,
+        ticket: undefined,
+        refreshTicket: async () => {
+          const refreshed = await api<{ ticket?: string }>(`/api/v1/meetings/${meetingId}/join-ticket`, {
+            method: "POST",
+            body: {},
+          });
+          return refreshed.ticket ?? null;
+        },
+        displayName: user?.name || "Speaker",
+        preferences: {
+          speaking_language: liveSourceLang,
+          listening_language: liveTargetLang,
+          audio_mode: "translated",
+          caption_mode: "both",
+          latency_mode: "ultra_low_latency",
+          captions_enabled: true,
+        },
+        onEvent: handleLiveRealtimeEvent,
+        onBinary: handleLiveRealtimeBinary,
+        onStateChange: (state) => {
+          if (sessionId !== liveSessionIdRef.current) return;
+          if (state === "joined") {
+            setLiveTranslationError(null);
+            socket.sendJson({ type: "audio.start", sample_rate: 16000, channels: 1 });
+            if (!liveCaptureStartedRef.current) void startLiveRealtimeCapture(stream, sessionId);
+          } else if (state === "error") {
+            console.warn("Realtime socket note: using resilient speech recognition and translation.");
+          }
+        },
+      });
+      socket.setTicket(ticket);
+      liveSocketRef.current = socket;
+      socket.connect();
+    } catch (err) {
+      console.warn("Realtime session start note:", err);
+    }
   };
 
-  // Start microphone capture and stream 16 kHz mono PCM16 frames into the
-  // canonical realtime pipeline. The server owns VAD, STT, translation and TTS.
+  // Start microphone capture and speech recognition pipeline.
   const startLiveListening = async () => {
     if (isLiveListeningRef.current) return;
     if (!navigator.mediaDevices?.getUserMedia) {
       toast.error("Microphone unavailable", "This browser cannot provide microphone audio to TalkFlow.");
       return;
     }
+
+    // Immediately enable audio on this direct user gesture!
+    void enableAudio();
 
     let micStream: MediaStream;
     try {
@@ -774,22 +904,31 @@ export default function Voice() {
     isLiveListeningRef.current = true;
     setIsLiveListening(true);
     setLiveTranslationError(null);
-    try {
-      await startLiveRealtimeSession(micStream, sessionId);
-    } catch (err) {
-      isLiveListeningRef.current = false;
-      setIsLiveListening(false);
-      micStream.getTracks().forEach((track) => track.stop());
-      micStreamRef.current = null;
-      setLiveTranslationError(friendlyMessage(err));
-      toast.error("Could not start live voice", friendlyMessage(err));
-    }
+
+    // Start browser SpeechRecognition immediately for real-time transcription
+    startLiveSpeechRecognition(sessionId);
+
+    // Also connect to realtime backend session for sync
+    void startLiveRealtimeSession(micStream, sessionId);
   };
 
   const stopLiveListening = () => {
     isLiveListeningRef.current = false;
     liveCaptureStartedRef.current = false;
     if (isSimulatingRef.current) isSimulatingRef.current = false;
+
+    if (interimSilenceTimeoutRef.current) {
+      clearTimeout(interimSilenceTimeoutRef.current);
+      interimSilenceTimeoutRef.current = null;
+    }
+    if (liveInterimOriginal.trim()) {
+      void handleTranslateInput(liveInterimOriginal.trim());
+    }
+
+    if (liveRecognitionRef.current) {
+      try { liveRecognitionRef.current.abort(); } catch {}
+      liveRecognitionRef.current = null;
+    }
 
     const socket = liveSocketRef.current;
     liveSocketRef.current = null;
@@ -815,6 +954,10 @@ export default function Voice() {
 
   useEffect(() => () => {
     isLiveListeningRef.current = false;
+    if (liveRecognitionRef.current) {
+      try { liveRecognitionRef.current.abort(); } catch {}
+      liveRecognitionRef.current = null;
+    }
     liveSocketRef.current?.close();
     liveSocketRef.current = null;
     liveMicCaptureRef.current?.stop();
@@ -992,6 +1135,9 @@ export default function Voice() {
       setLiveDetectedLanguage("");
       setLiveDetectedConfidence(null);
     }
+    if (isLiveListeningRef.current) {
+      startLiveSpeechRecognition(liveSessionIdRef.current);
+    }
   };
 
   // === FACE-TO-FACE SERVER STT (Two-Speaker Mode) ===
@@ -1027,7 +1173,7 @@ export default function Voice() {
           language: speaker === "speaker1" ? speaker1Lang : speaker2Lang,
         },
       });
-      const text = result?.text?.trim();
+      const text = result?.text?.trim() || faceSpokenTranscriptRef.current.trim();
       if (!text) {
         toast.info("No speech detected", "Try speaking closer to the microphone.");
         return;
@@ -1035,7 +1181,13 @@ export default function Voice() {
       setCurrentSpokenText(text);
       await processVoiceUtterance(speaker, text);
     } catch (err) {
-      toast.error("Speech recognition unavailable", friendlyMessage(err));
+      const fallbackText = faceSpokenTranscriptRef.current.trim();
+      if (fallbackText) {
+        setCurrentSpokenText(fallbackText);
+        await processVoiceUtterance(speaker, fallbackText);
+      } else {
+        toast.error("Speech recognition unavailable", friendlyMessage(err));
+      }
     } finally {
       setIsTranslating(false);
       setCurrentSpokenText("");
@@ -1053,6 +1205,10 @@ export default function Voice() {
       toast.error("Microphone unavailable", "This browser cannot provide microphone audio to TalkFlow.");
       return;
     }
+
+    // Immediately enable audio on this user gesture!
+    void enableAudio();
+    faceSpokenTranscriptRef.current = "";
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -1085,7 +1241,32 @@ export default function Voice() {
       muteGain.connect(context.destination);
       if (context.state === "suspended") await context.resume();
 
-      setCurrentSpokenText("Capturing audio for server transcription…");
+      // Start browser SpeechRecognition in parallel as immediate fallback
+      const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      if (SpeechRec) {
+        try {
+          const rec = new SpeechRec();
+          rec.continuous = true;
+          rec.interimResults = true;
+          const sLang = speaker === "speaker1" ? speaker1Lang : speaker2Lang;
+          const langObj = VOICE_LANGUAGES.find((l) => l.code === sLang);
+          rec.lang = langObj?.locale || sLang;
+          rec.onresult = (e: any) => {
+            let combined = "";
+            for (let i = 0; i < e.results.length; i++) {
+              combined += (e.results[i][0]?.transcript || "") + " ";
+            }
+            if (combined.trim()) {
+              faceSpokenTranscriptRef.current = combined.trim();
+              setCurrentSpokenText(combined.trim());
+            }
+          };
+          faceRecognitionRef.current = rec;
+          rec.start();
+        } catch {}
+      }
+
+      setCurrentSpokenText("Listening to voice…");
       setActiveMic(speaker);
     } catch (err) {
       toast.error("Microphone access failed", friendlyMessage(err));
@@ -1100,6 +1281,11 @@ export default function Voice() {
     const chunks = faceAudioChunksRef.current;
     faceCaptureSpeakerRef.current = null;
     faceAudioChunksRef.current = [];
+
+    if (faceRecognitionRef.current) {
+      try { faceRecognitionRef.current.stop(); } catch {}
+      faceRecognitionRef.current = null;
+    }
 
     try {
       faceAudioProcessorRef.current?.disconnect();

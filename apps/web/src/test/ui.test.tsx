@@ -3,7 +3,7 @@
  * and design-system component rendering.
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { RealtimeClient } from '@/lib/realtime';
 import type { ServerEvent } from '@globaltalk/shared-types';
@@ -204,7 +204,9 @@ describe('UI components', () => {
     // Only a real email/password login path remains.
     fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'alice@example.com' } });
     fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'validpass123' } });
-    fireEvent.click(screen.getByRole('button', { name: /sign in/i }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /sign in/i }));
+    });
 
     await vi.waitFor(() => {
       expect(mockLogin).toHaveBeenCalledWith('alice@example.com', 'validpass123');

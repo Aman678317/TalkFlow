@@ -155,18 +155,45 @@ def reconstruct_docx(blocks: list[DocBlock], original: bytes) -> tuple[bytes, st
             continue
         if b.ctx.get("kind") == "paragraph":
             para = doc.paragraphs[b.ctx["pi"]]
+            # Preserve paragraph format (ISSUE-202)
+            p_fmt = para.paragraph_format
+            p_left = p_fmt.left_indent
+            p_first = p_fmt.first_line_indent
             if para.runs:
                 para.runs[0].text = b.translated
                 for r in para.runs[1:]:
                     r.text = ""
+
+            else:
+                para.text = b.translated
+            if p_left is not None:
+                p_fmt.left_indent = p_left
+            if p_first is not None:
+                p_fmt.first_line_indent = p_first
         elif b.ctx.get("kind") == "table":
             cell = doc.tables[b.ctx["ti"]].rows[b.ctx["ri"]].cells[b.ctx["ci"]]
-            if cell.paragraphs and cell.paragraphs[0].runs:
-                cell.paragraphs[0].runs[0].text = b.translated
-                for r in cell.paragraphs[0].runs[1:]:
-                    r.text = ""
-            elif cell.paragraphs:
-                cell.paragraphs[0].text = b.translated
+            if cell.paragraphs:
+                cp = cell.paragraphs[0]
+                cp_fmt = cp.paragraph_format
+                cp_left = cp_fmt.left_indent
+                cp_first = cp_fmt.first_line_indent
+                if cp.runs:
+                    cp.runs[0].text = b.translated
+                    for r in cp.runs[1:]:
+                        r.text = ""
+    
+                else:
+                    cp.text = b.translated
+                if cp_left is not None:
+                    cp_fmt.left_indent = cp_left
+                if cp_first is not None:
+                    cp_fmt.first_line_indent = cp_first
+
+
+
+
+
+
     out = io.BytesIO()
     doc.save(out)
     return out.getvalue(), "application/vnd.openxmlformats-officedocument.wordprocessingml.document"

@@ -320,23 +320,33 @@ export function explainTwilioError(error: TwilioError | any): string {
   if (!error) return 'An unexpected call error occurred.';
   const code = error.code || 0;
   const msg = error.message || '';
-
-  if (code === 21216 || msg.includes('unverified') || msg.includes('21216')) {
+  const lowerMsg = msg.toLowerCase();
+  if (
+    lowerMsg.includes('disallowed parameter') ||
+    lowerMsg.includes('limited parameter access') ||
+    lowerMsg.includes('trial accounts have limited')
+  ) {
+    return 'Twilio Trial Account: Custom dialing parameters and unverified numbers are restricted by Twilio on trial accounts. Verify destination numbers in Twilio Console or upgrade account.';
+  }
+  if (code === 573002 || lowerMsg.includes('573002')) {
+    return 'Twilio Trial Restriction: Calling unverified numbers is not permitted on trial accounts. Please add this number to Twilio Console > Verified Caller IDs.';
+  }
+  if (code === 21216 || lowerMsg.includes('unverified') || lowerMsg.includes('21216')) {
     return 'Twilio Trial Account: Destination number must be verified in Twilio Console before calling.';
   }
-  if (code === 21608 || msg.includes('trial') || msg.includes('21608')) {
+  if (code === 21608 || lowerMsg.includes('21608')) {
     return 'Twilio Trial Restriction: Calling unverified numbers is restricted during the trial period.';
   }
-  if (code === 31205 || msg.includes('JWT') || msg.includes('token')) {
+  if (code === 31205 || lowerMsg.includes('jwt') || lowerMsg.includes('token')) {
     return 'Twilio Token Expired or Invalid TwiML App SID. Refreshing token...';
   }
-  if (code === 31000 || msg.includes('network') || msg.includes('gateway')) {
+  if (code === 31000 || lowerMsg.includes('network') || lowerMsg.includes('gateway')) {
     return 'Twilio WebRTC Signaling: Network connection lost or firewall blocked WebRTC ports.';
   }
-  if (code === 31400 || msg.includes('audio') || msg.includes('microphone')) {
+  if (code === 31400 || lowerMsg.includes('audio') || lowerMsg.includes('microphone')) {
     return 'Microphone Error: Please allow microphone permission in your browser.';
   }
-  if (code === 21217 || msg.includes('international')) {
+  if (code === 21217 || lowerMsg.includes('international')) {
     return 'International Calling Permission: Destination country is disabled in Twilio Geo Permissions.';
   }
 

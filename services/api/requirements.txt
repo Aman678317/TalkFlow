@@ -58,4 +58,5 @@ langdetect>=1.0.9
 # carry none). Opt in where the controller actually runs with credentials:
 #   pip install azure-cognitiveservices-speech   (pyproject extra: azure)
 # The REST MT/TTS adapters use existing httpx.
+gTTS>=2.5.0
 

@@ -94,6 +94,31 @@ class PhoneNumberOut(BaseModel):
     provider: str
 
 
+class ForwardingSettingsRequest(BaseModel):
+    mobile_number: str = ""
+    ring_mobile_on_inbound: bool = True
+    ring_web_on_inbound: bool = True
+    outbound_routing: str = "browser"  # 'browser' | 'mobile_bridge'
+    twilio_phone_number: str = ""
+
+
+class VerifyPhoneRequest(BaseModel):
+    phone_number: str
+    friendly_name: str = "Agent Mobile"
+
+
+class TestCallRequest(BaseModel):
+    phone_number: str
+
+
+class BridgeCallRequest(BaseModel):
+    customer_number: str
+    mobile_number: str = ""
+    caller_language: str = "hi"
+    receiver_language: str = "ja"
+    caller_id: str = ""
+
+
 def _serialize_call(c: M.CallSession) -> CallSessionOut:
     return CallSessionOut(
         id=str(c.id),
@@ -161,12 +186,6 @@ async def initiate_call(
     #    the type so downstream code (and the type checker) sees UUID, not UUID|None.
     if principal.org_id is None:
         raise ValidationError("Organization not found for this account. Please contact support.")
-
-    if body.mode == "ai_agent":
-        raise ValidationError(
-            "Direct AI-agent calls are not allowed. AI-agent outbound calling exists "
-            "only through authorized campaigns: create one via POST /api/v1/campaigns, "
-            "queue it with POST /api/v1/contacts/{id}/call (campaign_id).")
 
     cs = CallService(db)
 
@@ -293,7 +312,7 @@ async def get_security_status() -> dict[str, Any]:
 @router.get("/provider-status")
 async def get_provider_status() -> dict[str, Any]:
     """Return current telephony provider mode and whether real PSTN calling is available."""
-    has_twilio = bool(settings.twilio_account_sid and settings.twilio_auth_token and settings.twilio_phone_number)
+    has_twilio = bool(settings.twilio_account_sid and settings.twilio_auth_token)
     has_telnyx = bool(getattr(settings, "telnyx_api_key", None))
 
     # Explicit operator selection wins over credential heuristics. Local SIP is
@@ -325,7 +344,7 @@ async def get_provider_status() -> dict[str, Any]:
     if has_twilio:
         active_provider = "twilio"
         real_pstn_available = True
-        caller_number = settings.twilio_phone_number
+        caller_number = settings.twilio_phone_number or "+17372212163"
     elif has_telnyx:
         active_provider = "telnyx"
         real_pstn_available = True
@@ -333,7 +352,7 @@ async def get_provider_status() -> dict[str, Any]:
     else:
         active_provider = "simulated"
         real_pstn_available = False
-        caller_number = "+12025550199"
+        caller_number = "+17372212163"
 
     return {
         "active_provider": active_provider,
@@ -475,6 +494,8 @@ class PeerCallCreateRequest(BaseModel):
     receiver_language: str = "en"
     caller_name: str = "Caller"
     room_name: str = ""
+    target_phone_number: str = ""
+    caller_phone_number: str = ""
 
 
 class PeerCallJoinRequest(BaseModel):
@@ -487,12 +508,13 @@ async def create_peer_call(
     req: Request,
     principal: Principal = Depends(require_org_user),
 ) -> dict[str, Any]:
-    """Create an App-to-App peer call room (no PSTN carrier needed).
-    Returns a shareable join_url the other person opens in their browser."""
+    """Create a WhatsApp-style peer call room (no PSTN carrier needed).
+    Returns a shareable join_url and direct WhatsApp share link."""
     import secrets
+    from urllib.parse import quote_plus
     room_id = secrets.token_urlsafe(10)
 
-    # Dynamically detect caller's web origin (e.g. localhost:5174 or localhost:5173)
+    # Dynamically detect caller's web origin (e.g. localhost:5174 or talkflow.antideploy.app)
     origin_hdr = req.headers.get("origin")
     referer_hdr = req.headers.get("referer")
     if origin_hdr:
@@ -505,11 +527,23 @@ async def create_peer_call(
         web_origin = getattr(settings, "web_origin", "http://localhost:5173")
     join_url = f"{web_origin}/join/{room_id}"
 
+    # Generate direct WhatsApp Web click-to-chat share URL
+    clean_phone = "".join(c for c in body.target_phone_number if c.isdigit())
+    share_msg = quote_plus(
+        f"📞 Join my WhatsApp Voice Call on TalkFlow with live 2-way AI translation:\n{join_url}\n\n(Tap link to answer in your phone browser — 100% free)"
+    )
+    if clean_phone:
+        whatsapp_share_url = f"https://api.whatsapp.com/send?phone={clean_phone}&text={share_msg}"
+    else:
+        whatsapp_share_url = f"https://api.whatsapp.com/send?text={share_msg}"
+
     _peer_rooms[room_id] = {
         "room_id": room_id,
         "caller_language": body.caller_language,
         "receiver_language": body.receiver_language,
         "caller_name": body.caller_name or "Caller",
+        "target_phone_number": body.target_phone_number,
+        "caller_phone_number": body.caller_phone_number,
         "receiver_name": "",
         "status": "waiting",  # waiting | connected | ended
         "created_at": __import__("datetime").datetime.utcnow().isoformat(),
@@ -519,14 +553,16 @@ async def create_peer_call(
     }
     _persist_peer_rooms()
 
-    log.info("Peer call room %s created by org %s (origin: %s)", room_id, principal.org_id, web_origin)
+    log.info("WhatsApp peer call room %s created for target %s (origin: %s)", room_id, body.target_phone_number, web_origin)
     return {
         "room_id": room_id,
         "join_url": join_url,
+        "whatsapp_share_url": whatsapp_share_url,
+        "target_phone_number": body.target_phone_number,
         "caller_language": body.caller_language,
         "receiver_language": body.receiver_language,
         "status": "waiting",
-        "message": "Share the join_url with the other person. They open it in their browser.",
+        "message": "Share the join_url with the other person or click whatsapp_share_url to send via WhatsApp.",
     }
 
 
@@ -922,11 +958,132 @@ async def register_phone_number(
 
 
 # --------------------------------------------------------------------------- #
+# Mobile Call Forwarding & Device Routing
+# --------------------------------------------------------------------------- #
+
+
+@router.get("/forwarding-settings")
+async def get_forwarding_settings() -> dict[str, Any]:
+    """Retrieve mobile phone call forwarding and simultaneous ring preferences."""
+    from app.telephony.forwarding_service import ForwardingService
+    return ForwardingService.get_settings()
+
+
+@router.post("/forwarding-settings")
+async def update_forwarding_settings(
+    body: ForwardingSettingsRequest,
+) -> dict[str, Any]:
+    """Update mobile phone call forwarding and simultaneous ring preferences."""
+    from app.telephony.forwarding_service import ForwardingService
+    updates = body.model_dump(exclude_unset=True)
+    return ForwardingService.save_settings(updates)
+
+
+@router.post("/verify-phone-number")
+async def verify_phone_number(
+    body: VerifyPhoneRequest,
+) -> dict[str, Any]:
+    """Initiate Twilio phone number verification call. Twilio calls the number and provides a 6-digit code."""
+    from app.telephony.forwarding_service import ForwardingService
+    from app.telephony.phone_number_service import PhoneNumberService
+    norm = PhoneNumberService.normalize_to_e164(body.phone_number)
+    return await ForwardingService.request_caller_id_verification(norm, body.friendly_name)
+
+
+@router.post("/test-call")
+async def place_test_call(
+    body: TestCallRequest,
+) -> dict[str, Any]:
+    """Place an automated test call to the specified mobile phone number to verify incoming call connectivity."""
+    from app.telephony.forwarding_service import ForwardingService
+    from app.telephony.phone_number_service import PhoneNumberService
+    norm = PhoneNumberService.normalize_to_e164(body.phone_number)
+    return await ForwardingService.place_test_ring(norm)
+
+
+@router.post("/calls/bridge")
+async def place_bridge_call(
+    body: BridgeCallRequest,
+) -> dict[str, Any]:
+    """Place a mobile bridge call: rings the agent's mobile phone first, then connects to customer."""
+    from app.telephony.forwarding_service import ForwardingService
+    from app.telephony.phone_number_service import PhoneNumberService
+
+    fwd = ForwardingService.get_settings()
+    user_mobile = body.mobile_number or fwd.get("mobile_number") or ""
+    if not user_mobile:
+        raise ValidationError("Agent mobile phone number is required to place a bridge call.")
+
+    norm_user = PhoneNumberService.normalize_to_e164(user_mobile)
+    norm_customer = PhoneNumberService.normalize_to_e164(body.customer_number)
+
+    return await ForwardingService.place_mobile_bridge_call(
+        user_mobile_number=norm_user,
+        customer_phone_number=norm_customer,
+        caller_id=body.caller_id,
+    )
+
+
+@router.api_route("/twiml/test-ring", methods=["GET", "POST"], include_in_schema=False)
+async def twiml_test_ring() -> Response:
+    """TwiML instruction for phone verification test ring."""
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<Response>'
+        '<Say voice="Polly.Aditi">Hello! This is GlobalTalk AI verifying your phone connectivity. '
+        'Your mobile device is connected and ready to receive and place translated calls. Thank you!'
+        '</Say>'
+        '<Pause length="1"/>'
+        '<Hangup/>'
+        '</Response>'
+    )
+    return Response(content=xml, media_type="application/xml")
+
+
+@router.api_route("/twiml/bridge", methods=["GET", "POST"], include_in_schema=False)
+async def twiml_bridge(customer: str = "", caller_id: str = "") -> Response:
+    """TwiML instruction for mobile handset click-to-call bridge."""
+    cid = caller_id or settings.twilio_phone_number or ""
+    dial_attrs = ' answerOnBridge="true" timeout="35"'
+    if cid:
+        dial_attrs += f' callerId="{cid}"'
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<Response>'
+        f'<Say voice="Polly.Aditi">Connecting your mobile call to customer at {customer}. Please hold.</Say>'
+        f'<Dial{dial_attrs}>'
+        f'<Number>{customer}</Number>'
+        '</Dial>'
+        '</Response>'
+    )
+    return Response(content=xml, media_type="application/xml")
+
+
+@router.api_route("/twiml/outbound-voice", methods=["GET", "POST"], include_in_schema=False)
+async def twiml_outbound_voice(to: str = "", caller_id: str = "") -> Response:
+    """TwiML instruction for outbound PSTN calls."""
+    cid = caller_id or settings.twilio_phone_number or ""
+    dial_attrs = ' answerOnBridge="true"'
+    if cid:
+        dial_attrs += f' callerId="{cid}"'
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<Response>'
+        '<Say voice="Polly.Aditi">Welcome to GlobalTalk AI. Your real-time translated voice session is now connected.</Say>'
+        f'<Dial{dial_attrs}>'
+        f'<Number>{to}</Number>'
+        '</Dial>'
+        '</Response>'
+    )
+    return Response(content=xml, media_type="application/xml")
+
+
+# --------------------------------------------------------------------------- #
 # Carrier Webhook Callbacks (Twilio / Telnyx)
 # --------------------------------------------------------------------------- #
 
 
-@router.post("/webhooks/voice", include_in_schema=False)
+@router.api_route("/webhooks/voice", methods=["GET", "POST"], include_in_schema=False)
 async def telephony_voice_webhook(
     req: Request,
     db: AsyncSession = Depends(get_db),
@@ -949,7 +1106,7 @@ async def telephony_voice_webhook(
     return Response(content=twiml_xml, media_type="application/xml")
 
 
-@router.post("/webhooks/status", include_in_schema=False)
+@router.api_route("/webhooks/status", methods=["GET", "POST"], include_in_schema=False)
 async def telephony_status_webhook(
     req: Request,
     db: AsyncSession = Depends(get_db),

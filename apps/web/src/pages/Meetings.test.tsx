@@ -29,7 +29,7 @@ function renderMeetings() {
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   return render(
-    <MemoryRouter initialEntries={["/meetings"]}>
+    <MemoryRouter initialEntries={["/meetings"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <QueryClientProvider client={queryClient}>
         <Meetings />
         <LocationProbe />
