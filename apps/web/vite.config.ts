@@ -90,7 +90,7 @@ export default defineConfig(async () => {
     proxy: apiProxy,
   },
   build: {
-    sourcemap: true,
+    sourcemap: process.env.GENERATE_SOURCEMAP === 'true',
     chunkSizeWarningLimit: 700,
     rollupOptions: {
       output: {

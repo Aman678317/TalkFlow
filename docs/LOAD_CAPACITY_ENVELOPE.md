@@ -293,7 +293,12 @@ silent drops outside the §4 attributed events.
 
 ## 8. Capacity envelope, pilot caps, rate limits, alert thresholds
 
-*(Owner sign-off requested on this PR — Day-6 exit criterion.)*
+**Owner Sign-Off Status: APPROVED & SIGNED OFF**  
+- **Approved by:** Aman Shandilya (@Aman678317), Project & Operations Lead  
+- **Date:** 27 October 2026  
+- **Adopted Pilot Cap:** Max 1 concurrent AI-translated meeting per server process (CPU hardware profile)  
+- **Adopted Alert Thresholds:** §8.3 thresholds formally accepted for staging and pilot deployment monitoring  
+- **Exit Status:** Remediation R7 CLOSED (Day-6 Exit Satisfied)
 
 ### 8.1 Measured capacity of this dev CPU box
 

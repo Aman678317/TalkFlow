@@ -1,4 +1,5 @@
 FROM node:20-alpine AS web-builder
+ENV NODE_OPTIONS="--max-old-space-size=4096"
 WORKDIR /web
 COPY apps/web/package.json apps/web/package-lock.json* ./
 RUN npm ci --legacy-peer-deps --no-audit --no-fund

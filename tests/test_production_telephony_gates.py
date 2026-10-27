@@ -21,6 +21,7 @@ from app.config import Settings
 
 def _prod_base() -> dict:
     return {
+        "_env_file": None,
         "app_env": "production",
         "secret_key": "a" * 32,
         "jwt_secret": "b" * 32,

@@ -25,7 +25,7 @@ Break language barriers in real-time — everyone in a conversation speaks their
 | Feature | Description |
 |---|---|
 | 🤖 **Multi-Agent Studio** | Interactive LangGraph state machine & CrewAI hub-and-spoke pipeline studio with live visualization |
-| 🎙️ **Real-Time Voice Translation** | WebRTC / WebSocket PCM stream → VAD → STT → NMT → TTS, per-listener, <1 s end-to-end |
+| 🎙️ **Real-Time Voice Translation** | WebRTC / WebSocket PCM stream → VAD → STT → NMT → TTS, per-listener realtime fan-out (measured envelope in [`docs/LOAD_CAPACITY_ENVELOPE.md`](docs/LOAD_CAPACITY_ENVELOPE.md)) |
 | 📝 **Text Translation** | Standard Desi-compatible v2 API: formality, glossaries, tag handling, context |
 | ✍️ **AI Writing Assistant** | Style/tone adaptation (Business, Academic, Casual) + grammar/spelling corrections |
 | 📄 **Document Translation** | DOCX, PPTX, XLSX, PDF, TXT, HTML — layout-preserving, async jobs |
@@ -267,6 +267,10 @@ A speaks Hindi → B hears English, C sees Marathi captions, transcripts stored,
 | [`sdk/dotnet/Desi/`](sdk/dotnet/Desi/) | Official Desi .NET C# SDK (`netstandard2.0`, `net6.0`, `net8.0`) |
 | [`mcp/desi-mcp-server/`](mcp/desi-mcp-server/) | Stdio MCP Server for Claude Code, Cursor, and VS Code |
 | [`plugins/desi-claude-plugin/`](plugins/desi-claude-plugin/) | Official Claude Plugin exposing Desi translation, writing, glossaries, and docs |
+| [`docs/GA_RELEASE_REPORT.md`](docs/GA_RELEASE_REPORT.md) | Official General Availability Release Report (`v1.1.0 GA`) |
+| [`docs/NEXT_30_DAY_ROADMAP.md`](docs/NEXT_30_DAY_ROADMAP.md) | Operational Roadmap (Days 31–60) |
+| [`docs/POST-COMPLETION-30-DAY-LAUNCH-ROADMAP.md`](docs/POST-COMPLETION-30-DAY-LAUNCH-ROADMAP.md) | Master Launch Roadmap (Days 1–30) |
+| [`docs/BROWSER_SITE_AUDIT.md`](docs/BROWSER_SITE_AUDIT.md) | Complete 1-to-30 Day Step-by-Step Browser Acceptance Report |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System architecture & design decisions |
 | [`docs/api.md`](docs/api.md) | Internal API reference |
 | [`docs/AI.md`](docs/AI.md) | AI provider system, model router, fallback chains |
