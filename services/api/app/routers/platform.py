@@ -127,6 +127,7 @@ async def rotate_api_key(key_id: uuid.UUID,
     return out
 
 
+@keys_router.delete("/{key_id}", status_code=204)
 @keys_router.post("/{key_id}/revoke", status_code=204)
 async def revoke_api_key(key_id: uuid.UUID,
                          principal: Principal = Depends(require_org_user),
