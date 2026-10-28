@@ -378,6 +378,7 @@ export default function MeetingRoom() {
     meetingId: id,
     participantId: myParticipantId,
     audioMode: prefs.audio_mode,
+    listeningLanguage: prefs.listening_language,
     // The seat key is the guest's media credential (org users mint under
     // their JWT); read freshly at each mint/connect attempt.
     sessionKey: () => seatSessionKeyRef.current,
@@ -654,7 +655,7 @@ export default function MeetingRoom() {
   React.useEffect(() => {
     if (phase !== "in" || !micOn || typeof window === "undefined") {
       if (speechRecRef.current) {
-        try { speechRecRef.current.abort(); } catch {}
+        try { speechRecRef.current.abort(); } catch { }
         speechRecRef.current = null;
       }
       return;
@@ -662,12 +663,22 @@ export default function MeetingRoom() {
     const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRec) return;
 
+    // In "AUTO" mode, allow the server's streaming Faster-Whisper and LID to transcribe
+    // and identify source language from the raw audio frames, avoiding browser speech
+    // recognition language contamination and premature buffer clearing.
+    if (prefs.speaking_language === "AUTO") {
+      if (speechRecRef.current) {
+        try { speechRecRef.current.abort(); } catch { }
+        speechRecRef.current = null;
+      }
+      return;
+    }
+
     try {
       const recognizer = new SpeechRec();
       recognizer.continuous = true;
       recognizer.interimResults = true;
-      const lang = prefs.speaking_language;
-      recognizer.lang = lang === "AUTO" ? (navigator.language || "en-US") : lang;
+      recognizer.lang = prefs.speaking_language;
 
       recognizer.onresult = (event: any) => {
         for (let i = event.resultIndex; i < event.results.length; ++i) {
@@ -692,7 +703,7 @@ export default function MeetingRoom() {
 
       recognizer.onend = () => {
         if (micOn && phase === "in" && speechRecRef.current === recognizer) {
-          try { recognizer.start(); } catch {}
+          try { recognizer.start(); } catch { }
         }
       };
 
@@ -704,7 +715,7 @@ export default function MeetingRoom() {
 
     return () => {
       if (speechRecRef.current) {
-        try { speechRecRef.current.abort(); } catch {}
+        try { speechRecRef.current.abort(); } catch { }
         speechRecRef.current = null;
       }
     };
@@ -896,10 +907,11 @@ export default function MeetingRoom() {
             language: (evt.target_language as string) ?? undefined,
             sequence: seqNum,
           });
-          if (evt.speaker_id || evt.utterance_id) {
+          if (evt.speaker_id || evt.utterance_id || seqNum !== undefined) {
             playerRef.current?.noteOwnership(tag, {
               speakerId: (evt.speaker_id as string) ?? undefined,
               utteranceId: (evt.utterance_id as string) ?? undefined,
+              sequence: seqNum,
             });
           }
         }
@@ -940,10 +952,11 @@ export default function MeetingRoom() {
             language: (evt.target_language as string) ?? undefined,
             sequence: seqNum,
           });
-          if (evt.speaker_id || evt.utterance_id) {
+          if (evt.speaker_id || evt.utterance_id || seqNum !== undefined) {
             playerRef.current?.noteOwnership(tag, {
               speakerId: (evt.speaker_id as string) ?? undefined,
               utteranceId: (evt.utterance_id as string) ?? undefined,
+              sequence: seqNum,
             });
           }
         }
@@ -1523,7 +1536,7 @@ export default function MeetingRoom() {
     } catch (cause) { failures.push(`seat: ${cause}`); }
     // 3) Socket + mesh + capture + playback.
     socketRef.current?.sendJson({ type: "audio.stop" });
-      socketRef.current?.sendJson({ type: "audio.stopped" });
+    socketRef.current?.sendJson({ type: "audio.stopped" });
     socketRef.current?.close();
     socketRef.current = null;
     rtcRef.current?.dispose();
@@ -1895,7 +1908,7 @@ export default function MeetingRoom() {
                 // never block the join — a stuck permission dialog shouldn't
                 // strand the user in the lobby.
                 const safeToggle = (fn: () => Promise<void>) =>
-                  fn().catch(() => {/* toggleX already toasts / sets blocked state */});
+                  fn().catch(() => {/* toggleX already toasts / sets blocked state */ });
                 await Promise.all([
                   cameraOn ? Promise.resolve() : safeToggle(toggleCamera),
                   micOn ? Promise.resolve() : safeToggle(toggleMic),
@@ -2079,8 +2092,8 @@ export default function MeetingRoom() {
             <span className="font-medium">
               I speak: {prefs.speaking_language === "AUTO"
                 ? (autoDetectedLang
-                    ? `Auto (${languageLabel(caps, autoDetectedLang)}${autoDetectedConfidence != null ? ` ${Math.round(autoDetectedConfidence <= 1 ? autoDetectedConfidence * 100 : autoDetectedConfidence)}%` : ""})`
-                    : "Auto-detect")
+                  ? `Auto (${languageLabel(caps, autoDetectedLang)}${autoDetectedConfidence != null ? ` ${Math.round(autoDetectedConfidence <= 1 ? autoDetectedConfidence * 100 : autoDetectedConfidence)}%` : ""})`
+                  : "Auto-detect")
                 : languageLabel(caps, prefs.speaking_language)} ➔ Hear: {languageLabel(caps, prefs.listening_language)}
             </span>
             <span className="text-[10px] text-emerald-400 font-mono bg-emerald-950/60 border border-emerald-800/40 px-1.5 py-0.2 rounded-full">
@@ -2501,11 +2514,10 @@ export default function MeetingRoom() {
           {showCaptionsOverlay && latestCaption && (
             <div className="pointer-events-none mt-2 w-full max-w-2xl mx-auto z-10 animate-fade-in" data-testid="caption-box">
               <div
-                className={`rounded-xl border backdrop-blur-md px-4 py-2.5 text-center text-sm shadow-xl transition-all ${
-                  latestCaption.playback === "playing"
+                className={`rounded-xl border backdrop-blur-md px-4 py-2.5 text-center text-sm shadow-xl transition-all ${latestCaption.playback === "playing"
                     ? "border-sky-400/50 bg-black/90 shadow-[0_0_16px_rgba(56,189,248,0.2)] ring-1 ring-sky-500/40"
                     : "border-white/15 bg-black/80"
-                }`}
+                  }`}
               >
                 <div className="flex items-center justify-center gap-2 text-[11px] text-sky-300 font-medium mb-0.5">
                   <div className="flex items-center gap-1.5">
@@ -2875,11 +2887,10 @@ export default function MeetingRoom() {
                       .map((c) => (
                         <div
                           key={c.id}
-                          className={`rounded-xl border p-3 text-xs space-y-1 transition-all ${
-                            c.playback === "playing"
+                          className={`rounded-xl border p-3 text-xs space-y-1 transition-all ${c.playback === "playing"
                               ? "border-sky-400/50 bg-sky-950/25 shadow-[0_0_12px_rgba(56,189,248,0.15)] ring-1 ring-sky-500/30"
                               : "border-white/10 bg-white/5"
-                          }`}
+                            }`}
                         >
                           <div className="flex items-center justify-between text-[10px] text-slate-400">
                             <div className="flex items-center gap-1.5">
@@ -2927,21 +2938,21 @@ export default function MeetingRoom() {
 
 
 
-                        <div className="py-6 text-center text-xs text-slate-400 space-y-2">
-                          <p>No turns match &ldquo;{captionSearchQuery}&rdquo;.</p>
-                          <Button
-                            size="sm"
-                            variant="secondary"
-                            onClick={() => {
-                              setCaptionSearchQuery("");
-                              setCaptionSpeakerFilter("all");
-                            }}
-                            className="rounded-lg text-[11px] h-7 px-3 bg-white/5 hover:bg-white/10 text-slate-200"
-                          >
-                            Clear search filters
-                          </Button>
-                        </div>
-                      )}
+                      <div className="py-6 text-center text-xs text-slate-400 space-y-2">
+                        <p>No turns match &ldquo;{captionSearchQuery}&rdquo;.</p>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={() => {
+                            setCaptionSearchQuery("");
+                            setCaptionSpeakerFilter("all");
+                          }}
+                          className="rounded-lg text-[11px] h-7 px-3 bg-white/5 hover:bg-white/10 text-slate-200"
+                        >
+                          Clear search filters
+                        </Button>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}

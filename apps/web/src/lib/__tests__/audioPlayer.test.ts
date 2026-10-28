@@ -393,4 +393,34 @@ describe("AudioPlayer playback state per turn", () => {
     // heard, which is the stale-output half of the Phase 3 gate.
     expect(states).toEqual([["turn-ana", "dropped"], ["turn-ben", "dropped"]]);
   });
+
+  it("backfills metadata and updates playing turn when binary chunk arrives before JSON metadata", async () => {
+    const { AudioPlayer } = await import("../audio");
+    const states: Array<[string, string]> = [];
+    const player = new AudioPlayer(undefined, (turn, state) => states.push([turn, state]));
+
+    // 1. Binary chunk arrives first without metadata
+    await player.deliver(wav(10), "tts-ana", { chunkIndex: 0, source: "binary" });
+    await player.deliver(wav(11), "tts-ana", { chunkIndex: 1, source: "binary" });
+    await settle();
+
+    // Chunk 0 is playing, chunk 1 is queued. But utteranceId was not yet known.
+    expect(player.debugPlayedCount()).toBe(1);
+    expect(player.debugQueueLength()).toBe(1);
+    expect(states).toEqual([]);
+
+    // 2. Metadata arrives via noteOwnership (from JSON translation.final or tts.chunk)
+    player.noteOwnership("tts-ana", { speakerId: ANA, utteranceId: "turn-ana", sequence: 3 });
+
+    // Playing turn must now be marked as playing
+    expect(states).toEqual([["turn-ana", "playing"]]);
+
+    // 3. Barge-in arrives for ANA
+    expect(player.cancelSpeaker(ANA)).toBe(2);
+    await settle();
+
+    // Turn is correctly marked as dropped, not played
+    expect(states).toContainEqual(["turn-ana", "dropped"]);
+    expect(player.debugQueueLength()).toBe(0);
+  });
 });

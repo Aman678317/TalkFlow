@@ -87,18 +87,39 @@ export function useLiveKitRoom({
   meetingId,
   participantId,
   audioMode,
+  listeningLanguage,
   sessionKey,
 }: {
   enabled: boolean;
   meetingId: string;
   participantId?: string;
   audioMode: AudioMode;
+  listeningLanguage?: string;
   /** Latest seat session key; the guest's media-token credential. */
   sessionKey?: () => string | null;
 }) {
   const roomRef = useRef<Room | null>(null);
-  const audioElementsRef = useRef(new Map<string, HTMLMediaElement>());
+  const audioElementsRef = useRef(new Map<string, { element: HTMLMediaElement; trackName: string }>());
   const audioModeRef = useRef(audioMode);
+  const listeningLanguageRef = useRef(listeningLanguage);
+  audioModeRef.current = audioMode;
+  listeningLanguageRef.current = listeningLanguage;
+
+  const updateAudioMuting = (element: HTMLMediaElement, trackName: string) => {
+    const isSynthetic = trackName.startsWith('gt-translated-');
+    if (isSynthetic) {
+      const trackLang = trackName.slice('gt-translated-'.length).toLowerCase();
+      const myLang = (listeningLanguageRef.current || '').toLowerCase();
+      const matchesLang = myLang && (trackLang === myLang || myLang.startsWith(trackLang) || trackLang.startsWith(myLang));
+      if (audioModeRef.current === 'original') {
+        element.muted = true;
+      } else {
+        element.muted = !matchesLang;
+      }
+    } else {
+      element.muted = audioModeRef.current === 'translated';
+    }
+  };
   const audioContainerRef = useRef<HTMLDivElement | null>(null);
   const [state, setState] = useState<MediaRoomState>('unavailable');
   const [error, setError] = useState<string | null>(null);
@@ -162,19 +183,20 @@ export function useLiveKitRoom({
       if (track.kind === Track.Kind.Audio) {
         const element = track.attach() as HTMLMediaElement;
         element.autoplay = true;
-        element.muted = audioModeRef.current === 'translated';
+        const trackName = (track.name || track.publication?.trackName || '') as string;
         audioContainerRef.current?.appendChild(element);
-        audioElementsRef.current.set(track.sid, element);
+        audioElementsRef.current.set(track.sid, { element, trackName });
+        updateAudioMuting(element, trackName);
         void element.play().catch(() => setAudioBlocked(true));
       }
       refreshPeers();
     };
 
     const onTrackUnsubscribed = (track: any) => {
-      const element = audioElementsRef.current.get(track.sid);
-      if (element) {
-        track.detach(element);
-        element.remove();
+      const entry = audioElementsRef.current.get(track.sid);
+      if (entry) {
+        track.detach(entry.element);
+        entry.element.remove();
         audioElementsRef.current.delete(track.sid);
       }
       refreshPeers();
@@ -299,7 +321,7 @@ export function useLiveKitRoom({
       room.removeAllListeners();
       room.disconnect();
       if (roomRef.current === room) roomRef.current = null;
-      for (const element of audioElementsRef.current.values()) element.remove();
+      for (const entry of audioElementsRef.current.values()) entry.element.remove();
       audioElementsRef.current.clear();
       publishedCameraSidRef.current = null;
       setPeers([]);
@@ -308,9 +330,12 @@ export function useLiveKitRoom({
   }, [enabled, meetingId, participantId, retryNonce]);
 
   useEffect(() => {
-    const muted = audioMode === 'translated';
-    for (const element of audioElementsRef.current.values()) element.muted = muted;
-  }, [audioMode]);
+    audioModeRef.current = audioMode;
+    listeningLanguageRef.current = listeningLanguage;
+    for (const { element, trackName } of audioElementsRef.current.values()) {
+      updateAudioMuting(element, trackName);
+    }
+  }, [audioMode, listeningLanguage]);
 
   async function publishMicrophone(track: MediaStreamTrack) {
     const room = roomRef.current;

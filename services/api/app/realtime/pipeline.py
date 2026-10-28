@@ -808,7 +808,7 @@ class MeetingPipeline:
         if not clean_text:
             return
         source_lang = language or (p.speak_lang if p.speak_lang not in ("auto", "AUTO", "") else "")
-        if not source_lang:
+        if not source_lang or source_lang in ("auto", "AUTO"):
             try:
                 det = await self.listening.detect_language(clean_text)
                 source_lang = det.language

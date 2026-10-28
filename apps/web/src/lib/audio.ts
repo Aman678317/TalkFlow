@@ -92,6 +92,7 @@ export class MicCapture {
   private node: AudioWorkletNode | null = null;
   private scriptProcessor: ScriptProcessorNode | null = null;
   private silentGain: GainNode | null = null;
+  private sourceNode: MediaStreamAudioSourceNode | null = null;
   private isClonedTrack = false;
   private stopped = false;
 
@@ -149,7 +150,7 @@ export class MicCapture {
     const AudioCtxCtor = window.AudioContext || (window as any).webkitAudioContext;
     this.ctx = new AudioCtxCtor();
     if (this.ctx.state === "suspended") {
-      await this.ctx.resume().catch(() => {});
+      await this.ctx.resume().catch(() => { });
     }
 
     let workletSuccess = false;
@@ -179,6 +180,7 @@ export class MicCapture {
 
         const source = this.ctx.createMediaStreamSource(this.stream);
         source.connect(this.node);
+        this.sourceNode = source;
         workletSuccess = true;
       } catch (workletErr) {
         console.warn("AudioWorklet unavailable, activating ScriptProcessor fallback:", workletErr);
@@ -236,6 +238,7 @@ export class MicCapture {
 
       const source = this.ctx.createMediaStreamSource(this.stream);
       source.connect(scriptNode);
+      this.sourceNode = source;
       const silentGain = this.ctx.createGain();
       silentGain.gain.value = 0;
       scriptNode.connect(silentGain);
@@ -258,6 +261,9 @@ export class MicCapture {
 
   stop() {
     this.stopped = true;
+    if (typeof this.sourceNode?.disconnect === "function") {
+      this.sourceNode.disconnect();
+    }
     this.node?.disconnect();
     this.scriptProcessor?.disconnect();
     this.silentGain?.disconnect();
@@ -266,7 +272,8 @@ export class MicCapture {
         t.stop();
       });
     }
-    this.ctx?.close().catch(() => {});
+    this.ctx?.close().catch(() => { });
+    this.sourceNode = null;
     this.node = null;
     this.scriptProcessor = null;
     this.silentGain = null;
@@ -354,7 +361,7 @@ export class AudioPlayer {
     if (typeof window !== "undefined") {
       this.autoResumeHandler = () => {
         if (this.ctx && this.ctx.state === "suspended") {
-          void this.ctx.resume().catch(() => {});
+          void this.ctx.resume().catch(() => { });
         }
       };
       window.addEventListener("orientationchange", this.autoResumeHandler);
@@ -538,7 +545,8 @@ export class AudioPlayer {
     for (const item of this.queue) {
       if (wanted.has(item.tag)) {
         dropped += 1;
-        if (item.utteranceId) droppedTurns.add(item.utteranceId);
+        const turn = item.utteranceId || this.turnByTag.get(item.tag);
+        if (turn) droppedTurns.add(turn);
       } else {
         kept.push(item);
       }
@@ -548,7 +556,7 @@ export class AudioPlayer {
       if (this.playingTag === tag && this.current) {
         // Cleared before stopping: the chained playNext must not announce the
         // audio it is about to cut off as having finished.
-        const liveTurn = this.playingTurn;
+        const liveTurn = this.playingTurn || this.turnByTag.get(tag);
         this.playingTurn = null;
         if (this.stopIfPlaying(tag)) {
           dropped += 1;
@@ -586,9 +594,34 @@ export class AudioPlayer {
    * frame carries only the segment's short id, so both cross-transport
    * cancellation and per-turn playback state depend on what the JSON events name.
    */
-  noteOwnership(tag: string, owner: { speakerId?: string; utteranceId?: string }) {
+  noteOwnership(tag: string, owner: { speakerId?: string; utteranceId?: string; sequence?: number }) {
     if (owner.speakerId) this.remember(this.speakerByTag, tag, owner.speakerId);
     if (owner.utteranceId) this.remember(this.turnByTag, tag, owner.utteranceId);
+
+    // Backfill any items already in this.queue matching item.tag === tag
+    let resort = false;
+    for (const item of this.queue) {
+      if (item.tag === tag) {
+        if (!item.speakerId && owner.speakerId) item.speakerId = owner.speakerId;
+        if (!item.utteranceId && owner.utteranceId) item.utteranceId = owner.utteranceId;
+        if ((!item.sequence || item.sequence === 0) && owner.sequence) {
+          item.sequence = owner.sequence;
+          resort = true;
+        }
+      }
+    }
+    if (resort) {
+      this.queue.sort((a, b) => {
+        if (a.sequence !== b.sequence) return a.sequence - b.sequence;
+        if (a.chunkIndex !== b.chunkIndex) return a.chunkIndex - b.chunkIndex;
+        return a.enqueuedAt - b.enqueuedAt;
+      });
+    }
+
+    // If something with this tag is currently playing but playingTurn was null, update it now!
+    if (this.playingTag === tag && !this.playingTurn && owner.utteranceId) {
+      this.noteTurn(owner.utteranceId);
+    }
   }
 
   /** FIFO-evicting registry, so a long meeting cannot grow these without bound. */
@@ -761,7 +794,7 @@ export class AudioPlayer {
     void this.stopAll();
     this.deliveredChunks.clear();
     this.current?.stop();
-    this.ctx.close().catch(() => {});
+    this.ctx.close().catch(() => { });
   }
 }
 

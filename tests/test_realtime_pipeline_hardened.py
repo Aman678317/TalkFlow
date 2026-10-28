@@ -114,6 +114,7 @@ async def test_canonical_source_segment_and_independent_fanout(sample_rt_session
             target_lang=target_lang,
             model="test_model",
             provider="test_provider",
+            latency_ms=10.0,
         )
         return TranslateOutput(
             result=res,
@@ -441,3 +442,135 @@ async def test_multilingual_chat_canonical_fanout_and_no_fabrication(services_ap
         for tgt in ("es", "fr", "de"):
             assert msg.translations_json[tgt]["text"] is not None
             assert msg.translations_json[tgt]["model"] is not None
+
+
+@pytest.mark.asyncio
+async def test_four_participants_distinct_languages_fanout_and_switching(sample_rt_session):
+    """Phase 4 verification:
+    - 4 participants with distinct listening languages (en, es, hi, fr).
+    - Canonical source utterance preserved and fanned out independently to targets.
+    - No self-translation to the speaker.
+    - Listener language switch mid-stream drops stale audio and updates fanout.
+    - Barge-in interrupts one speaker without affecting others.
+    """
+    session = sample_rt_session
+    pipe = pl.get_pipeline(session)
+
+    # 1. Setup 4 participants
+    p_en = RtParticipant(
+        participant_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        display_name="Alice (EN)",
+        speak_lang="en",
+        hear_lang="en",
+        audio_mode="translated",
+        connected=True,
+    )
+    p_es = RtParticipant(
+        participant_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        display_name="Bob (ES)",
+        speak_lang="es",
+        hear_lang="es",
+        audio_mode="translated",
+        connected=True,
+    )
+    p_hi = RtParticipant(
+        participant_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        display_name="Chandran (HI)",
+        speak_lang="hi",
+        hear_lang="hi",
+        audio_mode="translated",
+        connected=True,
+    )
+    p_fr = RtParticipant(
+        participant_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        display_name="Denise (FR)",
+        speak_lang="fr",
+        hear_lang="fr",
+        audio_mode="translated",
+        connected=True,
+    )
+    for p in (p_en, p_es, p_hi, p_fr):
+        manager.add_participant(session, p)
+
+    # 2. Check required target languages when Alice speaks English
+    targets = manager.required_target_languages(session, "en", exclude_speaker=str(p_en.participant_id))
+    # Must include es, hi, fr; must NOT include en (no self-translation)
+    assert set(targets) == {"es", "hi", "fr"}
+    assert "en" not in targets
+
+    # 3. Simulate Alice speaking: commit segment and capture fan-out
+    broadcasted_events = []
+
+    async def mock_broadcast(sess, ev_type, data=None, **kwargs):
+        broadcasted_events.append((ev_type, data, kwargs))
+
+    fake_wav = b"RIFF" + b"\x00" * 40 + b"WAVEfmt " + b"\x00" * 20 + b"data" + b"\x00" * 100
+
+    async def fake_synthesize_stream(text, lang, voice=None):
+        async def _gen():
+            yield AudioChunk(data=fake_wav, sample_rate=24000, duration_ms=200, is_dev=True)
+        return _gen(), RouteDecision(provider="test_tts", model="test_model", task="tts", reason="test")
+
+    async def mock_translate_text(db, text, source_lang, target_lang, ctx):
+        from app.services.translation_service import TranslateOutput
+        res = TranslationResult(
+            text=f"[{target_lang}] {text}",
+            source_lang=source_lang,
+            target_lang=target_lang,
+            model="test_model",
+            provider="test_provider",
+            latency_ms=10.0,
+        )
+        return TranslateOutput(
+            result=res,
+            translation_id=uuid.uuid4(),
+            tm_match=None,
+            source_lang=source_lang,
+        )
+
+    with patch("app.realtime.pipeline.translate_text", side_effect=mock_translate_text), \
+         patch.object(manager, "broadcast", side_effect=mock_broadcast), \
+         patch.object(pipe.voice.tts, "synthesize_stream", side_effect=fake_synthesize_stream):
+        await pipe.inject_transcript(p_en, "Welcome to the global planning meeting.", language="en")
+        await asyncio.sleep(0.3)
+
+        # Verify translations were broadcast for es, hi, fr
+        tf_events = [e for e in broadcasted_events if e[0] == ServerEventType.TRANSLATION_FINAL]
+        translated_langs = {e[1]["target_language"] for e in tf_events}
+        assert translated_langs == {"es", "hi", "fr"}
+
+        # Verify TTS chunks were broadcast for es, hi, fr
+        tts_events = [e for e in broadcasted_events if e[0] == ServerEventType.TTS_CHUNK]
+        tts_langs = {e[1]["target_language"] for e in tts_events}
+        assert tts_langs == {"es", "hi", "fr"}
+
+        # 4. Listener language switch: Denise switches from 'fr' to 'de'
+        broadcasted_events.clear()
+        await pipe.recipient_changed(p_fr.participant_id, previous_language="fr", new_language="de")
+        p_fr.hear_lang = "de"
+
+        # Verify PLAYBACK_FLUSH with scope="recipient" was sent
+        flush_events = [e for e in broadcasted_events if e[0] == ServerEventType.PLAYBACK_FLUSH]
+        assert len(flush_events) == 1
+        assert flush_events[0][1]["scope"] == "recipient"
+        assert flush_events[0][1]["previous_language"] == "fr"
+        assert flush_events[0][1]["new_language"] == "de"
+
+        # New target languages when Alice speaks again must now be es, hi, de (not fr)
+        targets_after = manager.required_target_languages(session, "en", exclude_speaker=str(p_en.participant_id))
+        assert set(targets_after) == {"es", "hi", "de"}
+
+        # 5. Barge-in test: Alice interrupts her own earlier turn
+        corr = str(uuid.uuid4())
+        pipe.supervisor.note_active_segment(str(p_en.participant_id), correlation_id=corr,
+                                            sequence_number=1, target_languages=["es", "hi", "de"])
+        cancelled = await pipe._handle_barge_in(p_en)
+        assert corr in cancelled
+        # Flush event broadcast with scope="speaker"
+        speaker_flushes = [e for e in broadcasted_events if e[0] == ServerEventType.PLAYBACK_FLUSH and e[1].get("scope") == "speaker"]
+        assert len(speaker_flushes) >= 1
+        assert speaker_flushes[-1][1]["speaker_id"] == str(p_en.participant_id)

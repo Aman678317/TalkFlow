@@ -73,8 +73,8 @@ function makeSocket(states: SocketState[], quality: number[]) {
       speaking_language: "en", listening_language: "hi",
       audio_mode: "translated", caption_mode: "translated", latency_mode: "balanced",
     },
-    onEvent: () => {},
-    onBinary: () => {},
+    onEvent: () => { },
+    onBinary: () => { },
     onStateChange: (s) => states.push(s),
     onQuality: (rtt) => quality.push(rtt),
   });
@@ -170,9 +170,9 @@ describe("MeetingSocket heartbeat", () => {
         speaking_language: "en", listening_language: "hi",
         audio_mode: "translated", caption_mode: "translated", latency_mode: "balanced",
       },
-      onEvent: () => {},
-      onBinary: () => {},
-      onStateChange: () => {},
+      onEvent: () => { },
+      onBinary: () => { },
+      onStateChange: () => { },
     });
 
     socket.connect();
@@ -198,9 +198,9 @@ class FakeTrack {
   addEventListener(type: string, fn: () => void) {
     (this.listeners[type] ||= []).push(fn);
   }
-  removeEventListener() {}
+  removeEventListener() { }
   emit(type: string) { (this.listeners[type] || []).forEach((fn) => fn()); }
-  stop() {}
+  stop() { }
   asTrack() { return this as unknown as MediaStreamTrack; }
 }
 
@@ -208,20 +208,20 @@ function installFakeCaptureEnv() {
   const track = new FakeTrack();
   class FakeCtx {
     state = "running";
-    audioWorklet = { addModule: vi.fn(async () => {}) };
-    resume = vi.fn(async () => {});
-    close = vi.fn(async () => {});
-    createMediaStreamSource = vi.fn(() => ({ connect: vi.fn() }));
+    audioWorklet = { addModule: vi.fn(async () => { }) };
+    resume = vi.fn(async () => { });
+    close = vi.fn(async () => { });
+    createMediaStreamSource = vi.fn(() => ({ connect: vi.fn(), disconnect: vi.fn() }));
   }
   class FakeNode {
     port = { onmessage: null as ((e: MessageEvent) => void) | null };
-    connect() {}
-    disconnect() {}
+    connect() { }
+    disconnect() { }
   }
   vi.stubGlobal("AudioContext", FakeCtx);
   vi.stubGlobal("AudioWorkletNode", FakeNode);
   vi.stubGlobal("MediaStream", class {
-    constructor(public tracks: unknown[]) {}
+    constructor(public tracks: unknown[]) { }
     getAudioTracks() { return this.tracks as MediaStreamTrack[]; }
     getTracks() { return this.tracks as MediaStreamTrack[]; }
   });
@@ -229,7 +229,7 @@ function installFakeCaptureEnv() {
     configurable: true,
     value: { getUserMedia: vi.fn(async () => new MediaStream([track.asTrack()])) },
   });
-  vi.stubGlobal("Blob", class { constructor(public parts: unknown[]) {} });
+  vi.stubGlobal("Blob", class { constructor(public parts: unknown[]) { } });
   vi.stubGlobal("URL", Object.assign(vi.fn(), {
     createObjectURL: vi.fn(() => "blob:x"),
     revokeObjectURL: vi.fn(),
@@ -245,7 +245,7 @@ describe("MicCapture device loss", () => {
     const track = installFakeCaptureEnv();
     const lost: Array<"ended" | "mute"> = [];
     const mic = new MicCapture();
-    await mic.start(16000, () => {}, { onLost: (r) => lost.push(r) });
+    await mic.start(16000, () => { }, { onLost: (r) => lost.push(r) });
 
     track.emit("ended");
     track.emit("mute");
@@ -257,7 +257,7 @@ describe("MicCapture device loss", () => {
     const track = installFakeCaptureEnv();
     const lost: Array<"ended" | "mute"> = [];
     const mic = new MicCapture();
-    await mic.start(16000, () => {}, { onLost: (r) => lost.push(r) });
+    await mic.start(16000, () => { }, { onLost: (r) => lost.push(r) });
 
     mic.stop(); // every device switch and the leave-room path run through here
     track.emit("ended");
