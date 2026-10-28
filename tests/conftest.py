@@ -15,6 +15,8 @@ sys.path.insert(0, str(REPO / "ai"))
 sys.path.insert(0, str(REPO / "services" / "api"))
 
 _TMP = Path(tempfile.mkdtemp(prefix="gt_test_"))
+_empty_env = _TMP / "test_empty.env"
+_empty_env.touch()
 _raw_db = os.environ.get("DATABASE_URL", "")
 if not _raw_db or "sqlite" in _raw_db or "globaltalk.db" in _raw_db:
     _db_url = f"sqlite+aiosqlite:///{_TMP}/services_test.db?timeout=60"
@@ -31,7 +33,7 @@ _redis_url = os.environ.get("REDIS_URL", "")
 _cache_backend = os.environ.get("CACHE_BACKEND") or ("memory" if not _redis_url else "redis")
 os.environ.update({
     "APP_ENV": "test",
-    "GT_ENV_FILE": "",  # ignore .env files; explicit env only
+    "GT_ENV_FILE": str(_empty_env),  # ignore .env files; explicit env only
     "DATABASE_URL": _db_url,
     "GLOBALTALK_DATABASE_URL": _gt_db_url,
     "FALLBACK_DATABASE_URL": "",
