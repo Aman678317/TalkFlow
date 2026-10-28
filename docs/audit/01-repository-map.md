@@ -60,6 +60,7 @@ The primary backend is a FastAPI application configured for high-concurrency asy
 | `write.py` | `/api/v1` | `/write`, `/dictionary` | AI rephrasing, grammar correction, vocabulary dictionary lookup, granular text diffing. |
 | `documents.py` | `/api/v1/documents`| `POST /`, `GET /`, `GET /{id}/status`, `GET /{id}/result`, `POST /{id}/retry` | Multipart upload, DB-backed storage, chunked batch translation, layout reconstruction. |
 | `meetings.py` | `/api/v1/meetings` | `POST /`, `GET /`, `GET /{id}/token`, `POST /{id}/preferences`, `GET /{id}/summary` | Meeting CRUD, LiveKit participant JWT issuance, preferences, AI executive minutes. |
+| `google_meet.py` | `/api/v1/google-meet` | `POST /connect`, `POST /disconnect`, `GET /status`, `POST /subtitles` | Google Meet, Teams, and Zoom live audio bridge, dual-channel caption streaming, and meeting companion sync. |
 | `telephony.py` | `/api/v1/telephony`| `/calls`, `/calls/dial`, `/calls/bridge`, `/phone-numbers`, `/webhooks/*`, `/agents/*` | Asterisk ARI / Twilio integration, call bridging, IVR sentence chunking, agent prompts. |
 | `customization.py`| `/api/v1` | `/glossaries/*`, `/translation-memories/*`, `/style-profiles/*` | Term replacement rules, bilingual dictionary pairs, style guides, TMX exports. |
 | `contacts.py` | `/api/v1/contacts` | `POST /`, `GET /`, `POST /{id}/consent`, `POST /{id}/call`, `POST /{id}/jobs` | CRM contact management, calling campaigns, TCPA consent logging, document attachments. |
