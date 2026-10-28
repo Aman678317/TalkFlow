@@ -613,25 +613,32 @@ async def _run_pipeline(db: AsyncSession, doc: M.Document, resume: bool = False)
     to_translate = [b for b in translatable if not b.translated]
     recent: list[str] = [b.translated for b in translatable if b.translated][-MAX_BATCH_CONTEXT:]
 
-    # Parallel worker pool: bounded by configured concurrency (default 4)
-    concurrency = getattr(settings, "document_translation_concurrency", 4)
+    # Parallel worker pool: bounded by configured concurrency (default 8)
+    concurrency = getattr(settings, "document_translation_concurrency", 8)
     sem = asyncio.Semaphore(concurrency)
 
     async def _translate_single(b: DocBlock, rolling_ctx: list[str]) -> str:
         async with sem:
-            out = await translate_text(
-                db, b.text, detected, doc.target_lang,
-                TranslateContext(
-                    org_id=doc.org_id, user_id=doc.created_by, product="document",
-                    domain=doc.domain, glossary_id=doc.glossary_id,
-                    style_profile_id=doc.style_profile_id,
-                    persist=False, meter=False,
-                    context=rolling_ctx[-MAX_BATCH_CONTEXT:] if rolling_ctx else None,
-                ))
-            return out.result.text
+            for attempt in range(2):
+                try:
+                    out = await translate_text(
+                        db, b.text, detected, doc.target_lang,
+                        TranslateContext(
+                            org_id=doc.org_id, user_id=doc.created_by, product="document",
+                            domain=doc.domain, glossary_id=doc.glossary_id,
+                            style_profile_id=doc.style_profile_id,
+                            persist=False, meter=False,
+                            context=rolling_ctx[-MAX_BATCH_CONTEXT:] if rolling_ctx else None,
+                        ))
+                    return out.result.text
+                except Exception:
+                    if attempt == 0:
+                        await asyncio.sleep(0.2)
+                        continue
+                    raise
 
     # Translate in bounded chunked batches and persist immediately
-    BATCH_SIZE = 5
+    BATCH_SIZE = 12
     for batch_start in range(0, len(to_translate), BATCH_SIZE):
         batch = to_translate[batch_start:batch_start + BATCH_SIZE]
         tasks = [_translate_single(b, list(recent)) for b in batch]

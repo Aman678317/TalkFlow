@@ -5,7 +5,7 @@ import logging
 import uuid
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, UploadFile
 from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,6 +39,7 @@ async def _get_doc(db: AsyncSession, doc_id: uuid.UUID,
 
 @router.post("", response_model=DocumentOut, status_code=202)
 async def upload_document(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     target_lang: str = Form(default=""),
     target_language: str = Form(default=""),
@@ -118,12 +119,14 @@ async def upload_document(
         "trace_id": ctx.trace_id if ctx else uuid.uuid4().hex,
     }
     await queue().push("document.process", payload, queue="documents")
+    background_tasks.add_task(document_service.process_document_job, payload)
     await db.refresh(doc)
     return DocumentOut.model_validate(doc)
 
 
 @router.get("", response_model=list[DocumentOut])
-async def list_documents(principal: Principal = Depends(require_org_user),
+async def list_documents(background_tasks: BackgroundTasks,
+                         principal: Principal = Depends(require_org_user),
                          db: AsyncSession = Depends(get_db),
                          limit: int = Query(default=50, le=200),
                          status: str = Query(default="")):
@@ -132,7 +135,18 @@ async def list_documents(principal: Principal = Depends(require_org_user),
     if status:
         q = q.where(M.Document.status == status)
     res = await db.execute(q.order_by(M.Document.created_at.desc()).limit(limit))
-    return [DocumentOut.model_validate(d) for d in res.scalars().all()]
+    docs = res.scalars().all()
+    # Serverless push: if any document is waiting or stalled, trigger background worker
+    for d in docs[:3]:
+        if d.status in ("uploaded", "queued") or (
+            d.status == "translating" and d.updated_at and (utcnow() - d.updated_at).total_seconds() > 20
+        ):
+            background_tasks.add_task(
+                document_service.process_document_job,
+                {"document_id": str(d.id), "resume": True}
+            )
+            break
+    return [DocumentOut.model_validate(d) for d in docs]
 
 
 @router.get("/{doc_id}", response_model=DocumentOut)
@@ -144,10 +158,18 @@ async def get_document(doc_id: uuid.UUID,
 
 @router.get("/{doc_id}/status", response_model=DocumentStatusOut)
 async def document_status(doc_id: uuid.UUID,
+                          background_tasks: BackgroundTasks,
                           principal: Principal = Depends(require_org_user),
                           db: AsyncSession = Depends(get_db)):
     from sqlalchemy import func
     doc = await _get_doc(db, doc_id, principal)
+    if doc.status in ("uploaded", "queued") or (
+        doc.status == "translating" and doc.updated_at and (utcnow() - doc.updated_at).total_seconds() > 15
+    ):
+        background_tasks.add_task(
+            document_service.process_document_job,
+            {"document_id": str(doc.id), "resume": True}
+        )
     job = (await db.execute(select(M.DocumentJob).where(
         M.DocumentJob.document_id == doc.id).order_by(
         M.DocumentJob.created_at.desc()))).scalars().first()
@@ -237,6 +259,7 @@ async def download_document(doc_id: uuid.UUID,
 
 @router.post("/{doc_id}/retry", response_model=DocumentOut, status_code=202)
 async def retry_document(doc_id: uuid.UUID,
+                         background_tasks: BackgroundTasks,
                          principal: Principal = Depends(require_org_user),
                          db: AsyncSession = Depends(get_db)):
     principal.require("manage_documents")
@@ -259,6 +282,7 @@ async def retry_document(doc_id: uuid.UUID,
         "resume": True,
     }
     await queue().push("document.process", payload, queue="documents")
+    background_tasks.add_task(document_service.process_document_job, payload)
     return DocumentOut.model_validate(doc)
 
 

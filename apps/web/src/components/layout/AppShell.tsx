@@ -1,7 +1,7 @@
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { AnimatePresence } from 'motion/react';
 import {
-  BookmarkCheck, BookOpen, Bot, CreditCard, FileText, Files, Gauge, History, KeyRound, Languages,
+  BookmarkCheck, BookOpen, CreditCard, FileText, Files, Gauge, History, KeyRound, Languages,
   LayoutDashboard, Mic, MessageSquare, Phone, PhoneCall, PhoneIncoming, Settings as SettingsIcon,
   ShieldCheck, Sparkles, Users, Video,
 } from 'lucide-react';
@@ -15,13 +15,11 @@ const NAV = [
   { to: '/translate', label: 'Translate', icon: Languages },
   { to: '/write', label: 'Write', icon: Sparkles },
   { to: '/notes', label: 'Notes & Search', icon: BookmarkCheck },
-  { to: '/agents', label: 'Agent Studio', icon: Bot },
   { to: '/agent/calls', label: 'Agent Calls', icon: PhoneCall },
   { to: '/voice', label: 'Live Voice', icon: Mic },
   { to: '/global-call', label: 'Global Call', icon: Phone },
   { to: '/meetings', label: 'Meetings', icon: Video },
   { to: '/chat', label: 'Chat', icon: MessageSquare },
-  { to: '/knowledge', label: 'Knowledge Base', icon: BookOpen },
   { to: '/documents', label: 'Documents', icon: FileText },
   { to: '/history', label: 'History', icon: History },
 ];

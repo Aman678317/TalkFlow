@@ -230,6 +230,119 @@ class S3Storage(StorageBackend):
             return False
 
 
+class DatabaseStorage(StorageBackend):
+    """PostgreSQL / SQLite backed storage for serverless environments (Vercel).
+
+    Files and translated documents are stored in the `stored_objects` table so
+    all serverless lambda instances share persistent storage without requiring
+    an external S3 bucket. A local disk cache is maintained for fast access
+    within the same container invocation.
+    """
+
+    def __init__(self, local_cache_root: str) -> None:
+        self.local = LocalStorage(local_cache_root)
+
+    async def put(self, key: str, data: bytes, content_type: str = "application/octet-stream") -> None:
+        try:
+            await self.local.put(key, data, content_type)
+        except Exception:
+            pass
+
+        from app.db.session import db_session
+        from sqlalchemy import text
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        binds = {"k": key, "d": data, "ct": content_type, "created_at": now}
+
+        async with db_session() as db:
+            try:
+                await db.execute(text("""
+                    INSERT INTO stored_objects (key, data, content_type, created_at)
+                    VALUES (:k, :d, :ct, :created_at)
+                    ON CONFLICT (key) DO UPDATE SET
+                        data = EXCLUDED.data,
+                        content_type = EXCLUDED.content_type,
+                        created_at = EXCLUDED.created_at
+                """), binds)
+                await db.commit()
+            except Exception as e:
+                await db.rollback()
+                log.warning("DatabaseStorage put conflict/missing (%s), ensuring table", e)
+                try:
+                    await db.execute(text("""
+                        CREATE TABLE IF NOT EXISTS stored_objects (
+                            key VARCHAR(500) PRIMARY KEY,
+                            data BYTEA,
+                            content_type VARCHAR(120),
+                            created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """))
+                    await db.commit()
+                except Exception:
+                    await db.rollback()
+
+                try:
+                    await db.execute(text("DELETE FROM stored_objects WHERE key = :k"), {"k": key})
+                    await db.execute(text("""
+                        INSERT INTO stored_objects (key, data, content_type, created_at)
+                        VALUES (:k, :d, :ct, :created_at)
+                    """), binds)
+                    await db.commit()
+                except Exception as inner_e:
+                    await db.rollback()
+                    log.error("DatabaseStorage put failed: %s", inner_e)
+                    raise StorageError(f"DatabaseStorage put failed: {inner_e}") from inner_e
+
+    async def get(self, key: str) -> bytes:
+        if await self.local.exists(key):
+            try:
+                return await self.local.get(key)
+            except Exception:
+                pass
+
+        from app.db.session import db_session
+        from sqlalchemy import text
+        async with db_session() as db:
+            res = await db.execute(text("SELECT data, content_type FROM stored_objects WHERE key = :k"), {"k": key})
+            row = res.first()
+            if row is None or row[0] is None:
+                raise StorageError(f"object not found: {key}")
+            raw = row[0]
+            data = bytes(raw) if not isinstance(raw, bytes) else raw
+            try:
+                await self.local.put(key, data, row[1] or "application/octet-stream")
+            except Exception:
+                pass
+            return data
+
+    async def delete(self, key: str) -> None:
+        try:
+            await self.local.delete(key)
+        except Exception:
+            pass
+        from app.db.session import db_session
+        from sqlalchemy import text
+        async with db_session() as db:
+            await db.execute(text("DELETE FROM stored_objects WHERE key = :k"), {"k": key})
+            await db.commit()
+
+    async def exists(self, key: str) -> bool:
+        if await self.local.exists(key):
+            return True
+        from app.db.session import db_session
+        from sqlalchemy import text
+        async with db_session() as db:
+            res = await db.execute(text("SELECT 1 FROM stored_objects WHERE key = :k"), {"k": key})
+            return res.scalar() is not None
+
+    async def presigned_url(self, key: str, expires_s: int = 3600) -> str | None:
+        return None
+
+    async def ping(self) -> bool:
+        from app.db.session import healthcheck
+        return await healthcheck()
+
+
 _storage: StorageBackend | None = None
 
 
@@ -242,20 +355,28 @@ async def init_storage() -> StorageBackend:
                 _storage = s3
                 log.info("storage backend: s3 (%s)", settings.s3_endpoint)
                 return s3
-            log.warning("s3 unreachable, falling back to local storage")
+            log.warning("s3 unreachable, falling back to database storage")
         except ImportError:
-            log.warning("boto3 not installed, falling back to local storage")
+            log.warning("boto3 not installed, falling back to database storage")
         except Exception as e:
-            log.warning("s3 init failed (%s), falling back to local storage", e)
-    _storage = LocalStorage(settings.local_storage_path)
-    log.info("storage backend: local (%s)", settings.local_storage_path)
-    return _storage
+            log.warning("s3 init failed (%s), falling back to database storage", e)
+
+    # In cloud / serverless, use DatabaseStorage so all serverless lambdas share files
+    try:
+        db_storage = DatabaseStorage(settings.local_storage_path)
+        _storage = db_storage
+        log.info("storage backend: database (table: stored_objects, local cache: %s)", settings.local_storage_path)
+        return db_storage
+    except Exception as e:
+        log.warning("database storage init failed (%s), falling back to local storage", e)
+        _storage = LocalStorage(settings.local_storage_path)
+        return _storage
 
 
 def storage() -> StorageBackend:
     global _storage
     if _storage is None:
-        _storage = LocalStorage(settings.local_storage_path)
+        _storage = DatabaseStorage(settings.local_storage_path)
     return _storage
 
 

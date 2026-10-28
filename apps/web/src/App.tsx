@@ -110,7 +110,7 @@ export default function App() {
           <Route element={<RequireAuth><AppShell /></RequireAuth>}>
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/documents" element={<Documents />} />
-            <Route path="/knowledge" element={<Documents />} />
+            <Route path="/knowledge" element={<Navigate to="/documents" replace />} />
             <Route path="/knowledge-base" element={<Navigate to="/documents" replace />} />
             <Route path="/voice" element={<Voice />} />
             <Route path="/global-call" element={<GlobalCall />} />
