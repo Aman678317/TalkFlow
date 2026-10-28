@@ -407,6 +407,27 @@ button.bg-iris-600:active,
   }
 }
 
+/* Copilot sidebar layout safeguards: never allow CopilotKit to shrink or offset the main document/body */
+html,
+body {
+  margin-right: 0 !important;
+  margin-inline-end: 0 !important;
+  padding-right: 0 !important;
+  max-width: 100vw !important;
+}
+
+#root {
+  width: 100% !important;
+  max-width: 100% !important;
+}
+
+/* Ensure Copilot sidebar acts strictly as an overlay drawer, never pushing page content */
+[data-copilot-sidebar="true"],
+[data-testid="copilot-sidebar"],
+.copilotKitSidebar {
+  max-width: 90vw !important;
+}
+
 /* Copilot error banner must never intercept pointer events or block UI actions */
 [data-testid="copilot-error-banner"],
 div[data-testid="copilot-error-banner"],

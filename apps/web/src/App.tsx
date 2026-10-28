@@ -1,7 +1,7 @@
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { CopilotKit, CopilotSidebar } from '@copilotkit/react-core/v2';
 import '@copilotkit/react-core/v2/styles.css';
-import { Suspense, lazy } from 'react';
+import { Suspense, lazy, useState } from 'react';
 import { useAuth } from './stores/auth';
 import ErrorBoundary from './components/common/ErrorBoundary';
 import AppShell from './components/layout/AppShell';
@@ -76,16 +76,31 @@ function RequireAuth({ children }: { children: JSX.Element }) {
   return children;
 }
 
+function ControlledCopilotSidebar() {
+  const [open, setOpen] = useState(false);
+  return (
+    <CopilotSidebar
+      open={open}
+      onOpenChange={setOpen}
+      defaultOpen={false}
+    />
+  );
+}
+
 function ConditionalCopilotSidebar() {
   const location = useLocation();
-  const isMeetingRoute =
+  const isExcludedRoute =
+    location.pathname === '/' ||
+    location.pathname === '/login' ||
+    location.pathname === '/signup' ||
+    location.pathname.startsWith('/auth') ||
     location.pathname.startsWith('/meeting') ||
     location.pathname.startsWith('/join') ||
     location.pathname.startsWith('/meet-companion') ||
     location.pathname.startsWith('/google-meet');
 
-  if (isMeetingRoute) return null;
-  return <CopilotSidebar defaultOpen={false} />;
+  if (isExcludedRoute) return null;
+  return <ControlledCopilotSidebar />;
 }
 
 export default function App() {
