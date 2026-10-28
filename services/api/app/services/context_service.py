@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from app.errors import ValidationError
 
 if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession as AsyncSessionType
     from app.db.models import GlossaryTerm, StyleProfile
 
 
@@ -97,9 +98,11 @@ async def _resolve_terms(db: "AsyncSessionType", glossary_ids: list[str]) -> lis
         await loop.run_in_executor(None, lambda: None)  # noop keep loop warm
         return out
 
+    glossary_terms: list[str] = []
     for gid in glossary_ids:
         terms = await _load_terms(db, gid)
         done.append((len(glossary_ids), terms))
+        glossary_terms.extend(terms)
     return glossary_terms
 
 

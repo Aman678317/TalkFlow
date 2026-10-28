@@ -21,6 +21,8 @@ if TYPE_CHECKING:  # pragma: no cover - typed only for linters
     from app.db.models import ProviderCredential, ProviderCredentialEvent
     from app.models.base import org_id_type
     import uuid
+    from uuid import UUID as uuid_type
+    from cryptography.fernet import Fernet
 
 
 class ProviderVaultError(AppError):
