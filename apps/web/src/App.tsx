@@ -76,6 +76,18 @@ function RequireAuth({ children }: { children: JSX.Element }) {
   return children;
 }
 
+function ConditionalCopilotSidebar() {
+  const location = useLocation();
+  const isMeetingRoute =
+    location.pathname.startsWith('/meeting') ||
+    location.pathname.startsWith('/join') ||
+    location.pathname.startsWith('/meet-companion') ||
+    location.pathname.startsWith('/google-meet');
+
+  if (isMeetingRoute) return null;
+  return <CopilotSidebar defaultOpen={false} />;
+}
+
 export default function App() {
   const baseApi = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/+$/, "") || "";
   const runtimeUrl = import.meta.env.VITE_COPILOTKIT_RUNTIME_URL || (baseApi ? `${baseApi}/api/copilotkit` : '/api/copilotkit');
@@ -140,7 +152,7 @@ export default function App() {
         </Suspense>
       </ErrorBoundary>
       <Toaster />
-      <CopilotSidebar defaultOpen={false} />
+      <ConditionalCopilotSidebar />
     </CopilotKit>
   );
 }
