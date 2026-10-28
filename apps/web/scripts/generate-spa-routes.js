@@ -20,7 +20,10 @@ fs.writeFileSync(path.join(distDir, '404.html'), html);
 const routes = [
   'agents',
   'agent-studio',
+  'agent',
+  'agent/calls',
   'translate',
+  'translate/page',
   'write',
   'notes',
   'voice',

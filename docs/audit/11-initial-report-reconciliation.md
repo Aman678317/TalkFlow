@@ -55,24 +55,24 @@ contrary evidence) · **UNVERIFIED** (claimed, no independent artifact checked h
 | G-004 | P1 | Staging/release gate | ⚠️ **PARTIAL** | 08-test-plan §4 reports live-probes/status at `feat-vercel-multi-service.vercel.app` and the run response matrix, but there is still no `docker-compose.staging-rehearse.yml` execution artifact or signed rehearsal report — remains to be formalized. |
 | G-005 | P1 | Database lineage | ⚠️ **PARTIAL** | CI migrations job remains green at `17e7e36` (run `40736826564`); the canonical migration directory and separation from the legacy schema are documented. Full rollback drill on Postgres still pending as a live artifact. |
 | G-006 | P1 | Provider configuration & API keys | ⚠️ **PARTIAL** | POST/`v2/translate` and provider-fallback path 308-test suites pass; provider live-key tests (success/cold-start/5xx) are honest-noted as unverified. |
-| G-007 | P1 | Security checklist | ⚠️ **PARTIAL** | 27-point audit delivered concrete fixes (rate-limit 15/min, HSTS/CSP headers in both vercel.json files, `RequireAdmin`, Notes XSS hardening, `/feedback/inquiry` endpoint + test) — **but all of it is UNCOMMITTED**. |
-| G-008 | P1 | Old audit documentation drift | ⚠️ **PARTIAL** | localStorage-era claims are superseded by the current 05-audit / hardening doc; still recommends a single consolidated pass to rewrite `PRODUCTION_AUDIT.md`. |
+| G-007 | P1 | Security checklist | ✅ **CLOSED** | 27-point hardening committed (`f040ca2`) + CI/E2E green; `RequireAdmin` verified **live in browser** (anonymous `/admin/telephony` → `/login`); API-origin security headers verified **live** (`/api/v1/health` returns HSTS/nosniff/X-Frame-Options DENY/Referrer/Permissions/COOP/CORP/CSP from `RequestContextMiddleware`). Residual flag: SPA static responses at the CDN edge showed HSTS only at check time — multi-service router does not apply `vercel.json` header arrays to static routes; edge-node cache (age≈4.6h) also served pre-redeploy content during verification. |
+| G-008 | P1 | Old audit documentation drift | ✅ **CLOSED** | `docs/PRODUCTION_AUDIT.md` re-audited 2026-10-29 with a verified-evidence table: original FAIL verdicts (localStorage tokens, dev bypass, client-trusted social login) confirmed fixed in current code (`api.ts` sessionStorage-only, no dev auto-provision in `auth.py`, real JWKS/issuer/audience verification in `social_auth_service.py`); matrix rows 1/2/12 updated with commit + live-browser evidence. |
 | G-009 | P1 | Auth/config/tenant safety | ✅ **CLOSED (tests)** | `test_security_*` suites pass in CI: 308/308, 60 hardened security tests (E2e via CI). Negative path for real staging still advisable. |
 | G-010 | P1 | CI and exact HEAD | ✅ **CLOSED** | CI runs green on the currently committed `17e7e36` (run `40736826564`, prior runs green too). |
 | G-011 | P1 | MCP duplication | ❌ **OPEN** | `mcp/desi-mcp-server` and `services/mcp` both exist; no single-canonical decision was recorded. |
 | G-012 | P1 | External meeting integration | ⚠️ **PARTIAL** | A new `meet_companion/` file-tree and tests appeared (`apps/web e2e meet companion HUD` suites) — scope remains TalkFlow-native HUD attach, not Teams/Zoom/Meet platform adapters. |
 | G-013 | P2 | PDF/OCR | ❌ **OPEN** | No evidence of a scanned-PDF OCR fallback in the new docs; same limitations noted by the initial report remain. |
-| G-014 | P2 | Writing correction | ⚠️ **PARTIAL** | `writeDiff.test.ts` now has a 13-test token diff span suite; contextual correction remains open. |
+| G-014 | P2 | Writing correction | ⚠️ **PARTIAL (verified live)** | Browser check on `/write` (staging): studio renders (style/tone chips, 50k-char editor, typo hints); "Auto-fix draft" against the correction backend **fails honestly for anonymous users** ("Writing provider unavailable — Missing Authorization header", retry offered, no fabricated diff) — fail-closed honored; signed-in contextual correction still to be exercised. |
 | G-015 | P2 | Translation memory/glossary UX | ❌ **OPEN** | No new UX-parity artifact found. |
 | G-016 | P2 | Language selector UX | ❌ **OPEN** | No new searchable-combobox implementation was found in this session. |
-| G-017 | P2 | URL/page translation | ⚠️ **PARTIAL** | `pageUrl.test.ts` (8 tests) and `selection.test.ts` (7 tests) exist and pass — selection/URL helpers are real; page-level translation may still require a full fetch/render path. |
+| G-017 | P2 | URL/page translation | ⚠️ **PARTIAL → regression fix landed** | `pageUrl.test.ts` (8) + `selection.test.ts` (7) pass. **Browser verification found a real defect:** `/translate/page` returned CDN **404** (`NOT_FOUND`) on deep-link because the SPA-stub generator lacked it — fixed in `apps/web/scripts/generate-spa-routes.js` (added `translate/page`, `agent`, `agent/calls`); page-level translation render path still needs a signed-in live test. |
 | G-018 | P2 | Performance observability | ⚠️ **PARTIAL** | `docs/REALTIME.md` and test plans document stage events; no independent stage trace was captured by this session. |
 | G-019 | P2 | Deployment environment drift | ⚠️ **PARTIAL** | `00-baseline.md` exists (recorded), but a single environment matrix cross-check still requires a formal report. |
 | G-020 | P2 | Load and recovery | ❌ **OPEN** | No new load artifacts since the same slowed numbers found by the initial report. |
 | G-021 | P3 | Product parity polish | ⚠️ **PARTIAL** | Some parity deltas are now present (voice capture suites; `SafeHighlight`); broader items unresolved. |
 | G-022 | P1 | License compliance | ❌ **OPEN** | Hardening report does not close the model-license review step. |
 
-**Summary:** 2 ✅ closed · 11 ⚠️ partial · 9 ❌ open.
+**Summary:** 4 ✅ closed · 9 ⚠️ partial · 9 ❌ open.
 
 ## 4. Assessment of the "100% GO" sign-off (09 / 10 docs)
 
@@ -114,6 +114,28 @@ For non-voice product areas, GO is reasonable with the §5 follow-ups.
 
 ---
 
-*Machine-generated reconciliation, checked against CI and local suites on 2026-10-29. Follow the file
-links for the underlying evidence; statuses above are current as of commit `bb5425d..17e7e36` plus
-the local uncommitted working tree.*
+## 6. Browser verification session log (2026-10-29, staging)
+
+Direct browser walk of `https://feat-vercel-multi-service.vercel.app` (this session):
+
+| Route / check | Result | Evidence |
+| :--- | :--- | :--- |
+| `/` landing | ✅ 200, renders | Screenshot + axial snapshot |
+| `/api/v1/health`, `/api/v1/languages` | ✅ 200 JSON (`uptime_s` fresh instance; language matrix with per-language modality flags) | In-page fetch probe |
+| **Security headers (API origin)** | ✅ 8/8 present (HSTS, nosniff, X-Frame-Options DENY, Referrer-Policy, Permissions-Policy, COOP, CORP, CSP) — served by `RequestContextMiddleware` | Fetch header dump |
+| **Security headers (SPA static)** | ⚠️ **HSTS only** at edge; `vercel.json` header arrays not applied by the multi-service router to static routes; edge cache (age≈4.6h) served pre-redeploy content during part of the check | Fetch header dump (`x-vercel-cache: HIT`, `age=16473`) |
+| `/translate` | ✅ renders; same-origin `/api/v1/*` calls; one transient 15s cold-start hang on `languages`/`glossaries`/`style-profiles` (fresh lambda resolved) | Network list |
+| `/write` | ✅ full studio renders (style/tone chips, 50k editor, typo hints); anonymous correction fails **honestly** (no fabricated diff, retry offered) | Screenshot + in-page probe |
+| `/admin/telephony` (anonymous) | ✅ redirected to `/login` ("Welcome back") — `RequireAdmin` live | URL after navigation |
+| `/translate/page` deep-link | ❌ **404 NOT_FOUND** — real defect found; SPA stub missing → fixed in generator (`translate/page`, `agent`, `agent/calls`) | HTTP status probe |
+| Other SPA routes (`/voice`, `/global-call`, `/meetings`, `/notes`, `/documents`, `/login`) | ✅ 200 | HTTP status probe |
+| Console errors | ✅ none observed on any page | `browser.console` |
+
+Follow-ups opened by this session: verify SPA static headers after a clean redeploy (cache purge),
+exercise signed-in write-correction and page-translation provider path, and re-run the direct-URL
+matrix on the aliased domain.
+
+---
+
+*Machine-generated reconciliation, checked against CI, local suites, and live staging browser
+verification. Statuses current as of `8152028..56bd3c5` plus this session's working tree.*
