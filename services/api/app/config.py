@@ -552,6 +552,15 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def _adjust_serverless_paths(self) -> Settings:
         if _is_serverless():
+            if "sqlite" in self.database_url:
+                cloud_db = (
+                    os.environ.get("POSTGRES_URL")
+                    or os.environ.get("POSTGRES_PRISMA_URL")
+                    or os.environ.get("POSTGRES_URL_NON_POOLING")
+                    or os.environ.get("SUPABASE_DATABASE_URL")
+                )
+                if cloud_db:
+                    self.database_url = cloud_db
             if "./data/" in self.database_url:
                 self.database_url = self.database_url.replace("./data/", "/tmp/")
             if self.local_storage_path.startswith("./data"):
