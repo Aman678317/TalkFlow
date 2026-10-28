@@ -67,12 +67,12 @@ contrary evidence) · **UNVERIFIED** (claimed, no independent artifact checked h
 | G-016 | P2 | Language selector UX | ❌ **OPEN** | No new searchable-combobox implementation was found in this session. |
 | G-017 | P2 | URL/page translation | ⚠️ **PARTIAL → regression fix landed** | `pageUrl.test.ts` (8) + `selection.test.ts` (7) pass. **Browser verification found a real defect:** `/translate/page` returned CDN **404** (`NOT_FOUND`) on deep-link because the SPA-stub generator lacked it — fixed in `apps/web/scripts/generate-spa-routes.js` (added `translate/page`, `agent`, `agent/calls`); page-level translation render path still needs a signed-in live test. |
 | G-018 | P2 | Performance observability | ⚠️ **PARTIAL** | `docs/REALTIME.md` and test plans document stage events; no independent stage trace was captured by this session. |
-| G-019 | P2 | Deployment environment drift | ⚠️ **PARTIAL** | `00-baseline.md` exists (recorded), but a single environment matrix cross-check still requires a formal report. |
+| G-019 | P2 | Deployment environment drift | ✅ **CLOSED** | Matrix documented in [`environment-matrix.md`](environment-matrix.md) (ports, same-origin rule, DB/Redis/health aliases per platform; dev proxy pinned to canonical 8088 by `vite.config.ts:34-38`). Health-alias matrix verified **live** on staging (all 6 → 200, all checks true); compose smoke (same-origin health) green in CI E2E. Residual: Render-specific smoke remains a rehearsal item under G-004. |
 | G-020 | P2 | Load and recovery | ❌ **OPEN** | No new load artifacts since the same slowed numbers found by the initial report. |
 | G-021 | P3 | Product parity polish | ⚠️ **PARTIAL** | Some parity deltas are now present (voice capture suites; `SafeHighlight`); broader items unresolved. |
 | G-022 | P1 | License compliance | ❌ **OPEN** | Hardening report does not close the model-license review step. |
 
-**Summary:** 4 ✅ closed · 9 ⚠️ partial · 9 ❌ open.
+**Summary:** 5 ✅ closed · 8 ⚠️ partial · 9 ❌ open.
 
 ## 4. Assessment of the "100% GO" sign-off (09 / 10 docs)
 
