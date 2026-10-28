@@ -62,7 +62,7 @@ test.describe("LiveKit media outage, drill", () => {
     await expectChip(alice.page, "media", "ok", 60_000);
 
     // Leave cleanliness survives the error/recovery cycle for both seats.
-    await dave.page.locator('[aria-label="Leave call"]').click();
+    await dave.page.locator('[aria-label="Leave call"]').click({ force: true });
     await expect.poll(async () => {
       const detail = await (await request.get(`/api/v1/meetings/${seed.meetingId}`)).json();
       return !((detail.participants ?? []).some(

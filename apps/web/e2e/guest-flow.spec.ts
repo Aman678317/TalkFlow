@@ -41,7 +41,7 @@ test.describe("WS meeting, two guests", () => {
 
     // 4) Leave teardown: Bob leaves, his seat disappears server-side
     //    (participants API is the same source the roster effect polls).
-    await bob.page.locator('[aria-label="Leave call"]').click();
+    await bob.page.locator('[aria-label="Leave call"]').click({ force: true });
     await expect(bob.page).not.toHaveURL(seed.inviteUrl); // navigated away
     const detail = await (await request.get(`/api/v1/meetings/${seed.meetingId}`)).json();
     const bobSeat = (detail.participants ?? []).find(

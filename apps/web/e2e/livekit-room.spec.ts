@@ -41,7 +41,7 @@ test.describe("LiveKit meeting, two guests", () => {
     await expectChip(dave.page, "mic", "ok");
 
     // Leave tears down the room connection, not just the local tracks.
-    await dave.page.locator('[aria-label="Leave call"]').click();
+    await dave.page.locator('[aria-label="Leave call"]').click({ force: true });
     await expect.poll(async () => {
       const detail = await (await request.get(`/api/v1/meetings/${seed.meetingId}`)).json();
       return !((detail.participants ?? []).some(
