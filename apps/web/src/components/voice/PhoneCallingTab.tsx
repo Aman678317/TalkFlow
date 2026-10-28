@@ -6,7 +6,7 @@ import {
   VolumeX, Grid, Globe, ArrowLeftRight, Sparkles, AlertCircle, RefreshCw,
   Clock, DollarSign, Bot, ShieldCheck, CheckCircle2, Copy, History, Headphones,
   Lock, FileText, Download, Search, Info, X, Layers, Activity,
-  Link2, ExternalLink, Zap, Users, Smartphone, Share2,
+  Link2, ExternalLink, Zap, Users, Smartphone, Share2, Settings2,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { toast } from '@/stores/toasts';
@@ -222,6 +222,8 @@ export default function PhoneCallingTab() {
     setup_required: boolean;
   } | null>(null);
   const [showTwilioSetup, setShowTwilioSetup] = useState(false);
+  const [testSidInput, setTestSidInput] = useState('');
+  const [testPhoneInput, setTestPhoneInput] = useState('');
 
   // ── Mobile Phone & Forwarding Settings ─────────────────────────────────────
   const [userMobileNumber, setUserMobileNumber] = useState('+918521027649');
@@ -2032,59 +2034,107 @@ export default function PhoneCallingTab() {
               </div>
             </div>
 
-            {!showTwilioSetup ? (
-              <button
-                onClick={() => setShowTwilioSetup(true)}
-                className="w-full flex items-center justify-center gap-2 rounded-lg bg-iris-600 hover:bg-iris-500 text-white py-2.5 font-bold text-sm transition-all"
+            <div className="flex flex-col sm:flex-row gap-2 pt-1">
+              <a
+                href="/admin/telephony"
+                className="flex-1 flex items-center justify-center gap-1.5 rounded-xl border border-red-200 bg-white hover:bg-red-50 text-red-700 py-2.5 font-bold text-xs transition-all shadow-xs text-center"
               >
-                <Zap className="h-4 w-4" />
-                Setup Real Phone Calling (5 min)
-              </button>
-            ) : (
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <p className="text-xs font-bold text-slate-800">Twilio Setup Guide</p>
-                  <button onClick={() => setShowTwilioSetup(false)} className="text-slate-400 hover:text-slate-600">
-                    <X className="h-4 w-4" />
-                  </button>
-                </div>
-                {[
-                  { n: 1, text: 'Sign up FREE at twilio.com → get $15 credit', link: 'https://www.twilio.com', cta: 'Open Twilio' },
-                  { n: 2, text: 'Copy Account SID + Auth Token from console.twilio.com', link: 'https://console.twilio.com', cta: 'Open Console' },
-                  { n: 3, text: 'Buy a phone number → verify your number for free trial', link: 'https://console.twilio.com/us1/develop/phone-numbers/search', cta: 'Get Number' },
-                  { n: 4, text: 'Add to your .env file:', link: null, cta: null },
-                  { n: 5, text: 'Restart backend: uvicorn app.main:app --reload', link: null, cta: null },
-                ].map((step) => (
-                  <div key={step.n} className="flex items-start gap-2.5 text-xs">
-                    <span className="flex-shrink-0 w-5 h-5 rounded-full bg-iris-100 text-iris-700 flex items-center justify-center font-bold text-[10px]">{step.n}</span>
-                    <div className="flex-1">
-                      <span className="text-slate-700">{step.text}</span>
-                      {step.link && (
-                        <a href={step.link} target="_blank" rel="noreferrer"
-                          className="ml-2 inline-flex items-center gap-0.5 text-iris-600 font-semibold hover:underline">
-                          {step.cta} <ExternalLink className="h-3 w-3" />
-                        </a>
+                <Settings2 className="h-4 w-4" />
+                Configure in Admin Telephony
+              </a>
+              {!showTwilioSetup ? (
+                <button
+                  onClick={() => setShowTwilioSetup(true)}
+                  className="flex-1 flex items-center justify-center gap-1.5 rounded-xl bg-iris-600 hover:bg-iris-500 text-white py-2.5 font-bold text-xs transition-all shadow-xs"
+                >
+                  <Zap className="h-4 w-4" />
+                  Guided Setup & Validator
+                </button>
+              ) : null}
+            </div>
+
+            {showTwilioSetup && (
+              <div className="space-y-3 pt-2 border-t border-red-100">
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-bold text-slate-800">Twilio Setup Guide & Live Format Validator</p>
+                    <button onClick={() => setShowTwilioSetup(false)} className="text-slate-400 hover:text-slate-600">
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+                  {[
+                    { n: 1, text: 'Sign up FREE at twilio.com → get $15 credit', link: 'https://www.twilio.com', cta: 'Open Twilio' },
+                    { n: 2, text: 'Copy Account SID + Auth Token from console.twilio.com', link: 'https://console.twilio.com', cta: 'Open Console' },
+                    { n: 3, text: 'Buy a phone number → verify your number for free trial', link: 'https://console.twilio.com/us1/develop/phone-numbers/search', cta: 'Get Number' },
+                    { n: 4, text: 'Add to your .env or configure in Admin Telephony:', link: null, cta: null },
+                    { n: 5, text: 'Restart backend or configure in /admin/telephony', link: null, cta: null },
+                  ].map((step) => (
+                    <div key={step.n} className="flex items-start gap-2.5 text-xs">
+                      <span className="flex-shrink-0 w-5 h-5 rounded-full bg-iris-100 text-iris-700 flex items-center justify-center font-bold text-[10px]">{step.n}</span>
+                      <div className="flex-1">
+                        <span className="text-slate-700">{step.text}</span>
+                        {step.link && (
+                          <a href={step.link} target="_blank" rel="noreferrer"
+                            className="ml-2 inline-flex items-center gap-0.5 text-iris-600 font-semibold hover:underline">
+                            {step.cta} <ExternalLink className="h-3 w-3" />
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                  <div className="rounded-lg bg-slate-900 text-green-400 font-mono text-[10px] p-2.5 space-y-0.5">
+                    <div>TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</div>
+                    <div>TWILIO_AUTH_TOKEN=your_auth_token_here</div>
+                    <div>TWILIO_PHONE_NUMBER=+1XXXXXXXXXX</div>
+                    <div>TELEPHONY_PROVIDER=twilio</div>
+                  </div>
+
+                  {/* Format Quick Validator */}
+                  <div className="bg-white rounded-lg p-3 border border-red-200 space-y-2">
+                    <p className="text-xs font-semibold text-slate-800">Quick Format Checker:</p>
+                    <div className="space-y-1">
+                      <input
+                        type="text"
+                        value={testSidInput}
+                        onChange={(e) => setTestSidInput(e.target.value)}
+                        placeholder="Paste Account SID (e.g. AC...)"
+                        className="w-full text-xs font-mono px-2 py-1.5 border rounded border-slate-300 focus:outline-none focus:ring-1 focus:ring-iris-500"
+                      />
+                      {testSidInput.length > 0 && (
+                        <p className={`text-[10px] font-semibold ${/^AC[a-f0-9A-F]{32}$/.test(testSidInput.trim()) ? 'text-green-600' : 'text-red-500'}`}>
+                          {/^AC[a-f0-9A-F]{32}$/.test(testSidInput.trim()) ? '✓ Valid Twilio Account SID format' : '✗ Invalid SID format (must start with "AC" followed by 32 hex characters)'}
+                        </p>
+                      )}
+                    </div>
+                    <div className="space-y-1">
+                      <input
+                        type="text"
+                        value={testPhoneInput}
+                        onChange={(e) => setTestPhoneInput(e.target.value)}
+                        placeholder="Paste Outgoing Phone Number (e.g. +14155552671)"
+                        className="w-full text-xs font-mono px-2 py-1.5 border rounded border-slate-300 focus:outline-none focus:ring-1 focus:ring-iris-500"
+                      />
+                      {testPhoneInput.length > 0 && (
+                        <p className={`text-[10px] font-semibold ${/^\+[1-9]\d{1,14}$/.test(testPhoneInput.trim()) ? 'text-green-600' : 'text-red-500'}`}>
+                          {/^\+[1-9]\d{1,14}$/.test(testPhoneInput.trim()) ? '✓ Valid E.164 phone format' : '✗ Invalid phone format (must match E.164 e.g. +14155552671)'}
+                        </p>
                       )}
                     </div>
                   </div>
-                ))}
-                <div className="rounded-lg bg-slate-900 text-green-400 font-mono text-[10px] p-2.5 space-y-0.5">
-                  <div>TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</div>
-                  <div>TWILIO_AUTH_TOKEN=your_auth_token_here</div>
-                  <div>TWILIO_PHONE_NUMBER=+1XXXXXXXXXX</div>
-                  <div>TELEPHONY_PROVIDER=twilio</div>
+
+                  <div className="text-[10px] text-slate-500 bg-slate-50 rounded p-2 border border-slate-200">
+                    💡 <strong>Tip:</strong> You can configure and save live carrier keys directly in{' '}
+                    <a href="/admin/telephony" className="text-iris-600 font-semibold underline">
+                      Admin Telephony Panel
+                    </a>.
+                  </div>
+                  <button
+                    onClick={() => setDialMode('peer')}
+                    className="w-full text-center text-xs text-iris-600 font-semibold hover:underline pt-1"
+                  >
+                    ← Use App Link Call instead (works right now, no setup)
+                  </button>
                 </div>
-                <div className="text-[10px] text-slate-500 bg-slate-50 rounded p-2 border border-slate-200">
-                  💡 <strong>Tip:</strong> For incoming webhooks while developing locally, use{' '}
-                  <code className="bg-slate-200 px-1 rounded">ngrok http 8000</code> and set{' '}
-                  <code className="bg-slate-200 px-1 rounded">TELEPHONY_WEBHOOK_BASE_URL</code> to your ngrok URL.
-                </div>
-                <button
-                  onClick={() => setDialMode('peer')}
-                  className="w-full text-center text-xs text-iris-600 font-semibold hover:underline pt-1"
-                >
-                  ← Use App Link Call instead (works right now, no setup)
-                </button>
               </div>
             )}
           </div>
