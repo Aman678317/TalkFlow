@@ -26,6 +26,8 @@ const routes = [
   'voice',
   'meetings',
   'meeting',
+  'meet-companion',
+  'google-meet',
   'join',
   'documents',
   'dashboard',

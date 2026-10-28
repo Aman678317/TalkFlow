@@ -24,6 +24,7 @@ const Documents = lazy(() => import('./pages/Documents'));
 const Voice = lazy(() => import('./pages/Voice'));
 const Meetings = lazy(() => import('./pages/Meetings'));
 const MeetingRoom = lazy(() => import('./pages/MeetingRoom'));
+const MeetingCompanion = lazy(() => import('./pages/MeetingCompanion'));
 const ChatPage = lazy(() => import('./pages/ChatPage'));
 const History = lazy(() => import('./pages/History'));
 const Glossaries = lazy(() => import('./pages/Glossaries'));
@@ -90,6 +91,8 @@ export default function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
           <Route path="/meeting/:id" element={<MeetingRoom />} />
+          <Route path="/meet-companion" element={<MeetingCompanion />} />
+          <Route path="/google-meet" element={<MeetingCompanion />} />
           {/* Public join page — other person opens this link on their phone (NO login required) */}
           <Route path="/join/:roomId" element={<JoinCall />} />
           <Route path="/join" element={<Navigate to="/meetings" replace />} />

@@ -93,6 +93,7 @@ class UtteranceState:
     seq: int = 0
     in_speech: bool = False
     locked_language: str | None = None
+    last_client_stt_at: float = 0.0
 
 
 class MeetingPipeline:
@@ -648,12 +649,14 @@ class MeetingPipeline:
         audio = audio_bytes if audio_bytes is not None else bytes(u.buffer)
         if audio_bytes is None:
             u.buffer = bytearray()
-        if len(audio) < 1600:  # <50ms — noise blip
+        # Suppress turn if client STT already finalized this speech and remaining audio is residual
+        if (time.time() - getattr(u, "last_client_stt_at", 0.0) < 2.0 and len(audio) < 16000) or len(audio) < 1600:
             u.locked_language = None
             self._broadcast_diag(self._diag(
                 "stt_skipped", utt=str(utterance_id or u.utterance_id),
                 seq=seq or u.seq, speaker=p.participant_id,
-                reason="below_min_audio", audio_bytes=len(audio),
+                reason="client_stt_preempted" if (time.time() - getattr(u, "last_client_stt_at", 0.0) < 2.0) else "below_min_audio",
+                audio_bytes=len(audio),
                 min_bytes=1600))
             return
         cap_start = capture_started if capture_started is not None else u.capture_started
@@ -852,6 +855,8 @@ class MeetingPipeline:
         u.utterance_id = curr_uid
         u.in_speech = False
         u.partial_text = ""
+        u.buffer = bytearray()  # Clear PCM buffer so server VAD does not duplicate this turn
+        u.last_client_stt_at = time.time()
 
         self._broadcast_diag(self._diag(
             "stt_exit", utt=str(curr_uid), seq=curr_seq, speaker=p.participant_id,

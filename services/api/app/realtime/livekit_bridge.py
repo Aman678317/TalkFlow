@@ -164,16 +164,27 @@ def _track_source(room, rtc, target_lang: str):
 def _wav_to_frames(rtc, wav_bytes: bytes, sample_rate: int):
     import numpy as np
     from gt_ai.audio_utils import wav_to_pcm16, resample_pcm16
-    pcm, rate = wav_to_pcm16(wav_bytes)
+    try:
+        pcm, rate = wav_to_pcm16(wav_bytes)
+    except Exception:
+        pcm = wav_bytes
+        rate = sample_rate
     if rate != sample_rate:
-        pcm = resample_pcm16(pcm, rate, sample_rate)
+        try:
+            pcm = resample_pcm16(pcm, rate, sample_rate)
+        except Exception:
+            pass
+    pcm = pcm[:len(pcm) - (len(pcm) % 2)]
+    if not pcm:
+        return []
     arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
     frames = []
     step = sample_rate // 100  # 10ms frames
     for i in range(0, len(arr), step):
         chunk = arr[i:i + step]
-        frame = rtc.AudioFrame(chunk.tobytes(), sample_rate, 1, len(chunk))
-        frames.append(frame)
+        if len(chunk) == step:
+            frame = rtc.AudioFrame(chunk.tobytes(), sample_rate, 1, len(chunk))
+            frames.append(frame)
     return frames
 
 
