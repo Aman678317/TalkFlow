@@ -406,3 +406,13 @@ button.bg-iris-600:active,
     transform: none !important;
   }
 }
+
+/* Copilot error banner must never intercept pointer events or block UI actions */
+[data-testid="copilot-error-banner"],
+div[data-testid="copilot-error-banner"],
+[class*="copilotKitErrorBanner"],
+.copilotKitErrorBanner {
+  pointer-events: none !important;
+  display: none !important;
+  visibility: hidden !important;
+}

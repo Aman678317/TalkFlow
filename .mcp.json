@@ -7,6 +7,11 @@
         "DESI_API_KEY": "${env:DESI_API_KEY}",
         "DESI_API_URL": "${env:DESI_API_URL:-http://127.0.0.1:8088}"
       }
+    },
+    "firebase": {
+      "command": "npx",
+      "args": ["-y", "firebase-tools@latest", "mcp"],
+      "env": {}
     }
   }
 }

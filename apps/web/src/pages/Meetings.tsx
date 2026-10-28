@@ -403,6 +403,18 @@ export default function Meetings() {
             </form>
           </div>
 
+          {/* External Meeting Companion Shortcut */}
+          <div className="flex items-center gap-2 pt-1">
+            <Link
+              to="/meet-companion"
+              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 shadow-2xs transition group"
+            >
+              <Globe className="h-4 w-4 text-dl-blue group-hover:scale-110 transition-transform" />
+              <span>Google Meet & Live Stream Subtitle Companion</span>
+              <span className="text-[10px] bg-blue-50 text-dl-blue px-2 py-0.5 rounded-full font-medium">LIVE BAR</span>
+            </Link>
+          </div>
+
           {/* Trust & Spec Chips */}
           <div className="flex flex-wrap items-center gap-y-2 gap-x-5 pt-1 text-xs text-slate-500">
             <span className="flex items-center gap-1.5">

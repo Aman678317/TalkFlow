@@ -69,3 +69,17 @@ Translated-speech-not-being-heard in a 2-person meeting. Almost always one of:
    `player.enqueueWav` (not `enqueuePcm16`) for the `0x54` tag.
 
 Full operator checklist: `docs/REALTIME_DEPLOY_REQUIREMENTS.md`.
+
+---
+
+## Support & Escalation (Pilot Readiness Baseline — Remediation R9)
+
+- **Primary Support Owner:** Aman Shandilya (@Aman678317 / operations lead)
+- **Primary Support Contact Channel:** GitHub Issues tracker ([Issues](https://github.com/Aman678317/TalkFlow/issues)) labeled `kind:support` or `kind:incident`
+- **Emergency / Security Escalation Channel:** `shandilyaprahald@gmail.com`
+- **Pilot SLA Targets:**
+  - **P0 / Blocker (service unreachable, data loss, security/privacy event):** < 2 hours acknowledgement, immediate containment.
+  - **P1 / Degradation (specific language pair unavailable, realtime audio lag > 35s):** < 8 hours acknowledgement, rollback/disable switch per runbook.
+  - **P2 / General Inquiries & UX feedback:** < 24 hours.
+- **Incident Escalation & Rollback Runbook:** See `docs/RECOVERY_RUNBOOK.md` §3 and `docs/POST-COMPLETION-30-DAY-LAUNCH-ROADMAP.md` §Day 25.
+

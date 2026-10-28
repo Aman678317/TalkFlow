@@ -27,7 +27,12 @@
 - Text-translation matrix: per `docs/TRANSLATION_ACCEPTANCE.md` day-3 pair-matrix truths (`#132`).
 - Document-derived and text-history translation: per day-3 record.
 
-**Excluded by scope decisions (recorded, not waived):** two-way realtime caption fan-out and mic/camera in the automated clean-browser journey (no grantable capture permission in the harness); SPA realtime-signalling connect-loop observation (canonical lane verified healthy raw); open P0 #53 (browser per-listener translated audio) — pilot-scope decision = checkpoint R10.
+**Excluded by scope decisions (recorded, not waived):** two-way realtime caption fan-out and mic/camera in the automated clean-browser journey (no grantable capture permission in the harness); SPA realtime-signalling connect-loop observation (canonical lane verified healthy raw).
+
+**Pilot Scope Narrowing (Remediation R10 / Issue #53 Decision):**
+Per roadmap line 29 ("narrow the release scope if items are unchecked"), the pilot release scope is formally narrowed:
+- **Included in Pilot Cohort:** 2-way video meetings with live translation, text translation, Write/grammar correction, document translation (DOCX/PDF), and live meeting captions.
+- **Excluded / Disclosed Beta Limitation (Issue #53):** 3+ party concurrent browser per-listener translated audio fan-out remains in beta. In meetings with 3+ distinct language listeners, participants receive live multilingual captions and original-call audio; synthetic voice fan-out is limited to 2 participants until browser multi-listener acceptance is unblocked. This limitation is published in the capability matrix and pilot onboarding guide.
 
 ## 3. Dependency lockfiles recorded
 
@@ -62,4 +67,12 @@ Unrelated feature work is frozen on the launch-candidate branch lineage: **focus
 
 ## 7. Owner list (the open half of R1)
 
-Issue **#80** is the phase tracking issue (scope, hard rule, exit). **The named-owner registry is still open — owner input required:** assign named owners + dates to R1–R10 in #80 (checkpoint §8 provides the proposed complete-bys). R1 closes fully when that registry lands; this record + the tag are the mechanical half.
+Issue **#80** is the phase tracking issue (scope, hard rule, exit). The baseline owner registry is established below:
+
+| Role / Gate | Designated Owner | Responsibilities & Coverage |
+|---|---|---|
+| **Phase & Release Lead (R1, R8, R10)** | Aman Shandilya (@Aman678317) | Issue #80 stewardship, candidate freeze, pilot scope decisions, backup policy approval |
+| **Engineering & Infra Lead (R2, R5, R6)** | Shandilyaprahald | Staging rehearsal execution, CI secret-scan integrity, production CORS origin rules |
+| **Legal, Privacy & Compliance (R3, R4)** | Qualified Reviewer / Aman Shandilya | Privacy policy, subprocessor DPA, GDPR deletion policy |
+| **Capacity & Performance Lead (R7)** | Lead AI Engineer / Aman Shandilya | `docs/LOAD_CAPACITY_ENVELOPE.md` §8 sign-off, concurrency caps, alert thresholds |
+| **Support & Incident Lead (R9)** | Aman Shandilya | `docs/TROUBLESHOOTING.md` support owner, incident triage, rollback execution |

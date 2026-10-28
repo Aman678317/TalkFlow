@@ -30,6 +30,6 @@
     "test:all": "npm run test:web && npm run test:sdk",
     "preview": "npm --prefix apps/web run preview",
     "preview:photos": "npm --prefix apps/photo-organizer run preview",
-    "start": "START_ALL.bat"
+    "start": "bash start.sh"
   }
 }

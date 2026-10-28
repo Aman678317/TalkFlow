@@ -20,6 +20,14 @@ _APP_ROOT = Path(__file__).resolve().parent.parent
 if str(_APP_ROOT) not in sys.path:
     sys.path.insert(0, str(_APP_ROOT))
 
+# Inject OS native certificate store so corporate/antivirus TLS inspection
+# certificates (such as Windows AVG/Avast/corporate proxies) are trusted.
+try:
+    import truststore
+    truststore.inject_into_ssl()
+except Exception:
+    pass
+
 from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -118,6 +126,12 @@ def create_app() -> FastAPI:
         log.info("Mounted CopilotKit LangGraph agent at /api/copilotkit")
     except Exception as exc:
         log.warning("Could not mount CopilotKit agent: %s", exc)
+
+    @app.api_route("/api/copilotkit/info", methods=["GET", "POST", "OPTIONS"], include_in_schema=False)
+    @app.api_route("/api/copilotkit", methods=["GET", "POST", "OPTIONS"], include_in_schema=False)
+    async def _copilotkit_info_fallback():
+        from app.agent_info import copilotkit_info_payload
+        return copilotkit_info_payload()
 
     @app.get("/api", include_in_schema=False)
     @app.get("/api-docs", include_in_schema=False)

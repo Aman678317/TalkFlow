@@ -14,6 +14,7 @@ import xml.etree.ElementTree as ET
 
 import httpx
 
+from app.config import settings
 from app.telephony.base import (
     BaseTelephonyProvider,
     CallDirection,
@@ -81,20 +82,12 @@ class TwilioProvider(BaseTelephonyProvider):
             "To": to,
             "From": caller_id,
         }
-        # Twilio cloud servers cannot fetch 'http://localhost' or 'http://127.0.0.1' URLs.
-        # If running locally without a public ngrok webhook URL, supply inline TwiML directly:
-        is_public_url = bool(
-            webhook_url and not any(loc in webhook_url for loc in ["localhost", "127.0.0.1", "0.0.0.0"])
-        )
-        if is_public_url:
-            payload["Url"] = webhook_url
-            payload["StatusCallback"] = f"{webhook_url}/status"
-            payload["StatusCallbackEvent"] = ["initiated", "ringing", "answered", "completed"]
-            payload["StatusCallbackMethod"] = "POST"
-        else:
-            # Inline TwiML instruction directly embedded in Twilio REST call:
-            say_text = "Welcome to GlobalTalk AI. Your real-time translated voice session is now connected."
-            payload["Twiml"] = f'<Response><Say voice="Polly.Aditi">{say_text}</Say><Pause length="60"/></Response>'
+        base_url = (settings.telephony_webhook_base_url or "https://talkflow.antideploy.app").rstrip("/")
+        voice_url = webhook_url or f"{base_url}/api/v1/telephony/twiml/outbound-voice?to={to}&caller_id={caller_id}"
+        payload["Url"] = voice_url
+        payload["StatusCallback"] = f"{base_url}/api/v1/telephony/webhooks/status"
+        payload["StatusCallbackEvent"] = ["initiated", "ringing", "answered", "completed"]
+        payload["StatusCallbackMethod"] = "POST"
 
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
@@ -107,6 +100,11 @@ class TwilioProvider(BaseTelephonyProvider):
                 if res.status_code >= 400:
                     err_msg = data.get("message", f"Twilio HTTP {res.status_code}")
                     code = str(data.get("code", "TWILIO_ERROR"))
+                    if code in ("573002", "21216", "21608") or "trial" in err_msg.lower():
+                        err_msg = (
+                            f"Twilio Trial Restriction: Calling {to} requires adding it as a Verified Caller ID "
+                            f"in Twilio Console (console.twilio.com > Verified Caller IDs) or upgrading your Twilio account."
+                        )
                     log.error("Twilio call failed: %s (code %s)", err_msg, code)
                     return TelephonyCallResult(
                         call_sid=data.get("sid", ""),
@@ -225,7 +223,7 @@ class TwilioProvider(BaseTelephonyProvider):
             ET.SubElement(connect, "Stream", {"url": stream_url})
 
         dial_attrs: dict[str, str] = {
-            "callerId": caller_id or self.default_from_number or "+8521027649",
+            "callerId": caller_id or self.default_from_number or "+17372212163",
             "answerOnBridge": "true",
         }
         if status_callback_url:

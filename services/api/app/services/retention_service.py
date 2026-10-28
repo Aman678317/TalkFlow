@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -26,6 +26,7 @@ def policy_for(org: M.Organization | None) -> dict:
         "transcript_days": settings.retention_transcript_days,
         "document_days": settings.retention_document_days,
         "usage_days": settings.retention_usage_days,
+        "translation_history_days": settings.retention_translation_history_days,
     }
     if org and org.retention_json:
         base.update({k: v for k, v in org.retention_json.items() if v is not None})
@@ -139,6 +140,14 @@ async def sweep(db: AsyncSession) -> dict:
             M.AgentEscalation.resolved_at < cutoff_esc))
         counts["escalations"] = r.rowcount or 0
 
+    # 6) standalone translation history past retention (0 = forever)
+    if getattr(settings, "retention_translation_history_days", 0):
+        cutoff_th = utcnow() - timedelta(days=settings.retention_translation_history_days)
+        r = await db.execute(delete(M.TranslationSegment).where(
+            M.TranslationSegment.segment_id.is_(None),
+            M.TranslationSegment.created_at < cutoff_th))
+        counts["translations"] += r.rowcount or 0
+
     await db.commit()
     log.info("retention sweep: %s", counts)
     return counts
@@ -153,6 +162,13 @@ async def delete_user_data(db: AsyncSession, user_id) -> None:
     user.name = "Deleted User"
     user.status = "deleted"
     user.deleted_at = utcnow()
+    # Revoke sessions and refresh tokens on deletion
+    await db.execute(update(M.RefreshToken).where(
+        M.RefreshToken.user_id == user.id, M.RefreshToken.revoked_at.is_(None))
+        .values(revoked_at=utcnow()))
+    await db.execute(update(M.Session).where(
+        M.Session.user_id == user.id, M.Session.revoked_at.is_(None))
+        .values(revoked_at=utcnow()))
     await db.commit()
 
 

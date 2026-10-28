@@ -54,7 +54,7 @@ class TelephonyWebhookService:
 
         to_param = (payload.get("To") or event.to_number or "").strip()
         from_param = (payload.get("From") or event.from_number or "").strip()
-        caller_id = settings.twilio_phone_number or "+8521027649"
+        caller_id = settings.twilio_phone_number or "+17372212163"
 
         # Case 1: Browser outbound call to an external phone number
         if from_param.startswith("client:") or (to_param and to_param != settings.twilio_phone_number and not to_param.startswith("client:")):
@@ -66,13 +66,20 @@ class TelephonyWebhookService:
                     status_callback_url=status_url,
                 )
 
-        # Case 2: Inbound phone call to Twilio number -> dial browser agent
+        # Case 2: Inbound phone call to Twilio number -> dial browser agent (+ mobile phone)
         if to_param == settings.twilio_phone_number or (to_param and not from_param.startswith("client:")):
-            log.info("Generating inbound TwiML Dial routing %s to client:%s", from_param, settings.twilio_agent_identity)
+            from app.telephony.forwarding_service import ForwardingService
+            fwd = ForwardingService.get_settings()
+            target_mobile = fwd.get("mobile_number") if fwd.get("ring_mobile_on_inbound") else ""
+            if not target_mobile:
+                target_mobile = settings.telephony_human_mobile_number
+
+            log.info("Generating inbound TwiML Dial routing %s to client:%s and mobile:%s",
+                     from_param, settings.twilio_agent_identity, target_mobile)
             if hasattr(provider, "generate_twiml_inbound_response"):
                 return provider.generate_twiml_inbound_response(
                     client_identity=settings.twilio_agent_identity or "human_agent",
-                    mobile_number=settings.telephony_human_mobile_number,
+                    mobile_number=target_mobile,
                     status_callback_url=status_url,
                 )
 

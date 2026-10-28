@@ -90,6 +90,8 @@ export class MicCapture {
   private ctx: AudioContext | null = null;
   private stream: MediaStream | null = null;
   private node: AudioWorkletNode | null = null;
+  private scriptProcessor: ScriptProcessorNode | null = null;
+  private silentGain: GainNode | null = null;
   private isClonedTrack = false;
   private stopped = false;
 
@@ -144,41 +146,107 @@ export class MicCapture {
     onLost?: MicCaptureOptions["onLost"]
   ): Promise<void> {
     this.stream = stream;
-    this.ctx = new AudioContext();
+    const AudioCtxCtor = window.AudioContext || (window as any).webkitAudioContext;
+    this.ctx = new AudioCtxCtor();
     if (this.ctx.state === "suspended") {
       await this.ctx.resume().catch(() => {});
     }
 
-    const blobUrl = URL.createObjectURL(
-      new Blob([WORKLET_CODE], { type: "application/javascript" }),
-    );
-    try {
-      await this.ctx.audioWorklet.addModule(blobUrl);
-    } finally {
-      URL.revokeObjectURL(blobUrl);
+    let workletSuccess = false;
+    if (this.ctx.audioWorklet) {
+      try {
+        const blobUrl = URL.createObjectURL(
+          new Blob([WORKLET_CODE], { type: "application/javascript" }),
+        );
+        await this.ctx.audioWorklet.addModule(blobUrl);
+        setTimeout(() => {
+          try { URL.revokeObjectURL(blobUrl); } catch { }
+        }, 2000);
+
+        // AudioWorkletNode with numberOfOutputs: 0 ensures mic audio is NEVER routed to local speakers (no self-echo)
+        this.node = new AudioWorkletNode(this.ctx, "pcm-capture", {
+          numberOfOutputs: 0,
+          channelCount: 1,
+          processorOptions: {
+            targetSampleRate,
+            frameSize: Math.floor(targetSampleRate * 0.05), // 50ms frames (800 samples at 16kHz)
+          },
+        });
+
+        this.node.port.onmessage = (e: MessageEvent<ArrayBuffer>) => {
+          onFrame(e.data);
+        };
+
+        const source = this.ctx.createMediaStreamSource(this.stream);
+        source.connect(this.node);
+        workletSuccess = true;
+      } catch (workletErr) {
+        console.warn("AudioWorklet unavailable, activating ScriptProcessor fallback:", workletErr);
+      }
     }
 
-    // AudioWorkletNode with numberOfOutputs: 0 ensures mic audio is NEVER routed to local speakers (no self-echo)
-    this.node = new AudioWorkletNode(this.ctx, "pcm-capture", {
-      numberOfOutputs: 0,
-      channelCount: 1,
-      processorOptions: {
-        targetSampleRate,
-        frameSize: Math.floor(targetSampleRate * 0.05), // 50ms frames (800 samples at 16kHz)
-      },
-    });
+    if (!workletSuccess) {
+      // ScriptProcessor fallback for 100% browser compatibility
+      const bufferSize = 4096;
+      const scriptNode = this.ctx.createScriptProcessor(bufferSize, 1, 1);
+      const resampleRatio = this.ctx.sampleRate / targetSampleRate;
+      const frameSize = Math.floor(targetSampleRate * 0.05); // 800 samples
+      let accBuffer = new Float32Array(8192);
+      let accLen = 0;
+      let fraction = 0;
 
-    this.node.port.onmessage = (e: MessageEvent<ArrayBuffer>) => {
-      onFrame(e.data);
-    };
+      scriptNode.onaudioprocess = (e) => {
+        if (this.stopped) return;
+        const channel = e.inputBuffer.getChannelData(0);
+        if (!channel || channel.length === 0) return;
 
-    const source = this.ctx.createMediaStreamSource(this.stream);
-    source.connect(this.node);
+        let pos = fraction;
+        const chLen = channel.length;
+        while (pos < chLen) {
+          const idx0 = Math.floor(pos);
+          const idx1 = Math.min(idx0 + 1, chLen - 1);
+          const frac = pos - idx0;
+          const sample = channel[idx0] * (1 - frac) + channel[idx1] * frac;
+
+          if (accLen >= accBuffer.length) {
+            const next = new Float32Array(accBuffer.length * 2);
+            next.set(accBuffer);
+            accBuffer = next;
+          }
+          accBuffer[accLen++] = sample;
+          pos += resampleRatio;
+
+          if (accLen >= frameSize) {
+            const pcm16 = new Int16Array(frameSize);
+            for (let i = 0; i < frameSize; i++) {
+              const s = Math.max(-1, Math.min(1, accBuffer[i]));
+              pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+            }
+            onFrame(pcm16.buffer);
+
+            const remaining = accLen - frameSize;
+            if (remaining > 0) {
+              accBuffer.copyWithin(0, frameSize, accLen);
+            }
+            accLen = remaining;
+          }
+        }
+        fraction = pos - chLen;
+      };
+
+      const source = this.ctx.createMediaStreamSource(this.stream);
+      source.connect(scriptNode);
+      const silentGain = this.ctx.createGain();
+      silentGain.gain.value = 0;
+      scriptNode.connect(silentGain);
+      silentGain.connect(this.ctx.destination);
+
+      this.scriptProcessor = scriptNode;
+      this.silentGain = silentGain;
+    }
 
     const track = this.stream.getAudioTracks()[0];
     if (track && onLost) {
-      // stop() also fires `ended`, so the guard keeps our own teardown — a
-      // device switch or a mute — from reporting a loss that we caused.
       track.addEventListener("ended", () => {
         if (!this.stopped) onLost("ended");
       });
@@ -191,14 +259,17 @@ export class MicCapture {
   stop() {
     this.stopped = true;
     this.node?.disconnect();
+    this.scriptProcessor?.disconnect();
+    this.silentGain?.disconnect();
     if (this.stream) {
       this.stream.getTracks().forEach((t) => {
-        // If this was a cloned track, stop it; if not cloned, stop it as well
         t.stop();
       });
     }
     this.ctx?.close().catch(() => {});
     this.node = null;
+    this.scriptProcessor = null;
+    this.silentGain = null;
     this.stream = null;
     this.ctx = null;
     this.isClonedTrack = false;
@@ -256,6 +327,7 @@ export class AudioPlayer {
   private playingTurn: string | null = null;
 
   private gainNode: GainNode | null = null;
+  private autoResumeHandler: (() => void) | null = null;
 
   constructor(
     /** Decode/resume failures must reach the UI — a silent player is the bug we are fixing. */
@@ -277,6 +349,19 @@ export class AudioPlayer {
       this.ctx.addEventListener("statechange", () => {
         this.onContextState?.(this.ctx.state);
       });
+    }
+    // Safari iOS AudioContext orientation & visibility auto-resume (ISSUE-201)
+    if (typeof window !== "undefined") {
+      this.autoResumeHandler = () => {
+        if (this.ctx && this.ctx.state === "suspended") {
+          void this.ctx.resume().catch(() => {});
+        }
+      };
+      window.addEventListener("orientationchange", this.autoResumeHandler);
+      window.addEventListener("resize", this.autoResumeHandler);
+      if (typeof document !== "undefined") {
+        document.addEventListener("visibilitychange", this.autoResumeHandler);
+      }
     }
   }
 
@@ -665,6 +750,14 @@ export class AudioPlayer {
   }
 
   dispose() {
+    if (typeof window !== "undefined" && this.autoResumeHandler) {
+      window.removeEventListener("orientationchange", this.autoResumeHandler);
+      window.removeEventListener("resize", this.autoResumeHandler);
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", this.autoResumeHandler);
+      }
+      this.autoResumeHandler = null;
+    }
     void this.stopAll();
     this.deliveredChunks.clear();
     this.current?.stop();

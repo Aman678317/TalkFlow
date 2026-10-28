@@ -240,11 +240,17 @@ the freeze rules, and RECORDED the owner-decision items — none disguised.
 | Consent & user-visible indicators | **PASS** | telephony: recording **disabled by default**, two-party consent mandatory and un-disableable at graph build (`prompt_composer` L1 platform rule) — pinned by call-gate + telephony privacy/abuse suites; disclosure text surfaced in agent prompts. Meetings: **no recording surface exists** (grep clean) — captions/transcripts are the core feature, visible on screen to every participant by design; transcript retention now genuinely enforced (row 1 above) |
 | Hourly sweep wiring | **PASS** | `_retention_loop` task in lifespan (`main.py:283`), sleeps 3600 s between sweeps, exceptions logged and never fatal |
 
-**Owner actions (documented exclusions — code-side day-4 scope is exhausted):**
-privacy notice + data-processing description review by the responsible
-qualified reviewer (the roadmap's own exit criterion); adopt a CI secret-scan
-step; decide the GDPR deletion-endpoint story; decide standalone-translation
-retention policy; pin the `*.vercel.app` CORS allowlist. The day-4 exit
-criterion ("no open critical/high security finding") is met on the code side:
-the one critical-class gap found (retention unenforcement) is fixed and
-pinned; owner items carry no unmanaged code risk into Day 5.
+**Owner actions & sign-off status (Updated 2026-10-27):**
+- **R3 (Legal & Privacy Sign-Off):** CLOSED. Privacy notice, consent indicators, and subprocessor DPA terms reviewed and approved by Aman Shandilya (@Aman678317).
+- **R4 (GDPR Deletion & Standalone Retention):** CLOSED. Implemented `DELETE /api/v1/auth/me` and `DELETE /api/v1/organizations/current` in `services/api`; configured `retention_translation_history_days` sweep; verified with `tests/test_gdpr_deletion_hardened.py`.
+- **R5 (CI Secret Scan):** CLOSED. Pinned gitleaks v8.30.1 job in `.github/workflows/ci.yml`.
+- **R6 (CORS Wildcard):** CLOSED. Production enforces exact origins (`allow_origin_regex=None`).
+
+The Day-4 exit criterion ("no open critical/high security finding; legal/privacy review completed by responsible qualified reviewer") is fully satisfied and closed.
+
+
+
+
+
+
+

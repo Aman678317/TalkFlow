@@ -424,6 +424,8 @@ export default function MeetingRoom() {
   /** Legacy binary TTS frames carry no chunk index — count only when needed. */
   const ttsChunkSeqRef = React.useRef<Map<string, number>>(new Map());
   const namesRef = React.useRef<Map<string, string>>(new Map());
+  /** Metadata mapping for translation segments and TTS chunks to ensure ownership and state tracking */
+  const segmentMetaRef = React.useRef<Map<string, { speakerId?: string; utteranceId?: string; language?: string }>>(new Map());
 
   React.useEffect(() => {
     const self = mediaRoom.peers.find((peer) => peer.self);
@@ -508,7 +510,8 @@ export default function MeetingRoom() {
         const mode = prefsRef.current.audio_mode;
         if (frame.kind === "original") {
           // Original-audio relay: backend sends raw PCM16 mono @ 16 kHz.
-          const lang = utterLangRef.current.get(frame.shortId);
+          // Look up language using both normalized id and raw frame id to guarantee match.
+          const lang = utterLangRef.current.get(normId(frame.shortId)) ?? utterLangRef.current.get(frame.shortId);
           const understoodNatively = lang && lang === prefsRef.current.listening_language;
           const liveKitConnected = mediaRoomStateRef.current === "connected";
           // When WebRTC P2P or LiveKit is connected, the media track already delivers original audio directly.
@@ -536,10 +539,13 @@ export default function MeetingRoom() {
             if (frame.chunkIndex === undefined) {
               ttsChunkSeqRef.current.set(tag, legacyNext + 1);
             }
+            const meta = segmentMetaRef.current.get(tag);
             void player.deliver(wavBytes, tag, {
               source: "binary",
               sequence: 0,
               chunkIndex,
+              speakerId: meta?.speakerId,
+              utteranceId: meta?.utteranceId,
             });
           }
         }
@@ -620,6 +626,14 @@ export default function MeetingRoom() {
     const track = cameraOn || screenOn ? localVideoStream?.getVideoTracks()[0] ?? null : null;
     rtc.setVideoTrack(track);
   }, [cameraOn, screenOn, localVideoStream]);
+
+  // Push the local microphone audio track into the mesh when mic state or track changes.
+  React.useEffect(() => {
+    const rtc = rtcRef.current;
+    if (!rtc) return;
+    const track = micOn ? micRef.current?.mediaStream?.getAudioTracks()[0] ?? null : null;
+    rtc.setAudioTrack(track);
+  }, [micOn]);
 
   // Tell the room about mic/camera state so remote tiles stay accurate.
   React.useEffect(() => {
@@ -847,7 +861,10 @@ export default function MeetingRoom() {
       case "transcript.partial":
       case "transcript.final": {
         const uid = evt.utterance_id as string;
-        if (typeof uid === "string") utterLangRef.current.set(uid.slice(0, 16), evt.language as string);
+        if (typeof uid === "string") {
+          utterLangRef.current.set(normId(uid), evt.language as string);
+          utterLangRef.current.set(uid.slice(0, 16), evt.language as string);
+        }
         if (evt.speaker_id === myParticipantIdRef.current && evt.language) {
           setAutoDetectedLang(evt.language as string);
           if (typeof evt.confidence === "number") {
@@ -859,6 +876,20 @@ export default function MeetingRoom() {
         break;
       }
       case "translation.final": {
+        const tag = normId((evt.segment_id as string) ?? String(evt.utterance_id ?? ""));
+        if (tag) {
+          segmentMetaRef.current.set(tag, {
+            speakerId: (evt.speaker_id as string) ?? undefined,
+            utteranceId: (evt.utterance_id as string) ?? undefined,
+            language: (evt.target_language as string) ?? undefined,
+          });
+          if (evt.speaker_id || evt.utterance_id) {
+            playerRef.current?.noteOwnership(tag, {
+              speakerId: (evt.speaker_id as string) ?? undefined,
+              utteranceId: (evt.utterance_id as string) ?? undefined,
+            });
+          }
+        }
         if (evt.latency_ms) setCurrentLatencyMs(Math.round(evt.latency_ms as number));
         if (translationStatus !== "normal") {
           setTranslationStatus("normal");
@@ -887,6 +918,20 @@ export default function MeetingRoom() {
         break;
       }
       case "tts.chunk": {
+        const tag = normId((evt.segment_id as string) ?? String(evt.utterance_id ?? ""));
+        if (tag) {
+          segmentMetaRef.current.set(tag, {
+            speakerId: (evt.speaker_id as string) ?? undefined,
+            utteranceId: (evt.utterance_id as string) ?? undefined,
+            language: (evt.target_language as string) ?? undefined,
+          });
+          if (evt.speaker_id || evt.utterance_id) {
+            playerRef.current?.noteOwnership(tag, {
+              speakerId: (evt.speaker_id as string) ?? undefined,
+              utteranceId: (evt.utterance_id as string) ?? undefined,
+            });
+          }
+        }
         if (!isSameLanguage(evt.target_language as string, prefsRef.current.listening_language)) break;
         const mode = prefsRef.current.audio_mode;
         if (mode !== "translated" && mode !== "mixed") break;
@@ -894,7 +939,6 @@ export default function MeetingRoom() {
         if (!audio) break;
         // Identity MUST match the binary frame's short id (UUID-hex, dashes
         // stripped, first 16) or the same chunk arrives twice.
-        const tag = normId((evt.segment_id as string) ?? String(evt.utterance_id ?? ""));
         const chunkIndex = Number(evt.chunk_index ?? 0);
         const sequence = Number(evt.sequence ?? 0);
         void playerRef.current?.resumeContext();
@@ -1028,6 +1072,7 @@ export default function MeetingRoom() {
       if (track && mediaRoom.state === "connected") {
         void mediaRoom.unpublishMicrophone(track).catch(() => { });
       }
+      rtcRef.current?.setAudioTrack(null);
       micRef.current?.stop();
       micRef.current = null;
       setMicOn(false);
@@ -1061,6 +1106,9 @@ export default function MeetingRoom() {
         try {
           await mediaRoom.publishMicrophone(track);
         } catch { }
+      }
+      if (track) {
+        rtcRef.current?.setAudioTrack(track);
       }
       setMicOn(true);
       setMicPermissionBlocked(false);
