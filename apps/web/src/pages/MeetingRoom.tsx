@@ -425,7 +425,7 @@ export default function MeetingRoom() {
   const ttsChunkSeqRef = React.useRef<Map<string, number>>(new Map());
   const namesRef = React.useRef<Map<string, string>>(new Map());
   /** Metadata mapping for translation segments and TTS chunks to ensure ownership and state tracking */
-  const segmentMetaRef = React.useRef<Map<string, { speakerId?: string; utteranceId?: string; language?: string }>>(new Map());
+  const segmentMetaRef = React.useRef<Map<string, { speakerId?: string; utteranceId?: string; language?: string; sequence?: number }>>(new Map());
 
   React.useEffect(() => {
     const self = mediaRoom.peers.find((peer) => peer.self);
@@ -530,6 +530,9 @@ export default function MeetingRoom() {
           // so decode it through the WAV path — NOT enqueuePcm16, which treats
           // its input as raw PCM and would play the header as 22ms of garbage.
           if (mode === "translated" || mode === "mixed") {
+            if (frame.language && !isSameLanguage(frame.language, prefsRef.current.listening_language)) {
+              return;
+            }
             const wavBytes = new Uint8Array(frame.pcm);
             const tag = normId(frame.shortId);
             // New clients receive an explicit chunk index. Keep the arrival
@@ -542,7 +545,7 @@ export default function MeetingRoom() {
             const meta = segmentMetaRef.current.get(tag);
             void player.deliver(wavBytes, tag, {
               source: "binary",
-              sequence: 0,
+              sequence: meta?.sequence ?? 0,
               chunkIndex,
               speakerId: meta?.speakerId,
               utteranceId: meta?.utteranceId,
@@ -850,6 +853,10 @@ export default function MeetingRoom() {
         break;
       }
       case "language.detected": {
+        if (evt.speaker_id && evt.language) {
+          utterLangRef.current.set(normId(evt.speaker_id as string), evt.language as string);
+          utterLangRef.current.set((evt.speaker_id as string).slice(0, 16), evt.language as string);
+        }
         if (evt.speaker_id === myParticipantIdRef.current && evt.language) {
           setAutoDetectedLang(evt.language as string);
           if (typeof evt.confidence === "number") {
@@ -865,6 +872,10 @@ export default function MeetingRoom() {
           utterLangRef.current.set(normId(uid), evt.language as string);
           utterLangRef.current.set(uid.slice(0, 16), evt.language as string);
         }
+        if (evt.speaker_id && evt.language) {
+          utterLangRef.current.set(normId(evt.speaker_id as string), evt.language as string);
+          utterLangRef.current.set((evt.speaker_id as string).slice(0, 16), evt.language as string);
+        }
         if (evt.speaker_id === myParticipantIdRef.current && evt.language) {
           setAutoDetectedLang(evt.language as string);
           if (typeof evt.confidence === "number") {
@@ -877,11 +888,13 @@ export default function MeetingRoom() {
       }
       case "translation.final": {
         const tag = normId((evt.segment_id as string) ?? String(evt.utterance_id ?? ""));
+        const seqNum = (evt.sequence as number) ?? (evt.seq as number) ?? undefined;
         if (tag) {
           segmentMetaRef.current.set(tag, {
             speakerId: (evt.speaker_id as string) ?? undefined,
             utteranceId: (evt.utterance_id as string) ?? undefined,
             language: (evt.target_language as string) ?? undefined,
+            sequence: seqNum,
           });
           if (evt.speaker_id || evt.utterance_id) {
             playerRef.current?.noteOwnership(tag, {
@@ -919,11 +932,13 @@ export default function MeetingRoom() {
       }
       case "tts.chunk": {
         const tag = normId((evt.segment_id as string) ?? String(evt.utterance_id ?? ""));
+        const seqNum = (evt.sequence as number) ?? (evt.seq as number) ?? undefined;
         if (tag) {
           segmentMetaRef.current.set(tag, {
             speakerId: (evt.speaker_id as string) ?? undefined,
             utteranceId: (evt.utterance_id as string) ?? undefined,
             language: (evt.target_language as string) ?? undefined,
+            sequence: seqNum,
           });
           if (evt.speaker_id || evt.utterance_id) {
             playerRef.current?.noteOwnership(tag, {

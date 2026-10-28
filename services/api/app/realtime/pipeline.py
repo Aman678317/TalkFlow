@@ -650,7 +650,7 @@ class MeetingPipeline:
         if audio_bytes is None:
             u.buffer = bytearray()
         # Suppress turn if client STT already finalized this speech and remaining audio is residual
-        if (time.time() - getattr(u, "last_client_stt_at", 0.0) < 2.0 and len(audio) < 16000) or len(audio) < 1600:
+        if (time.time() - getattr(u, "last_client_stt_at", 0.0) < 2.0) or len(audio) < 1600:
             u.locked_language = None
             self._broadcast_diag(self._diag(
                 "stt_skipped", utt=str(utterance_id or u.utterance_id),
