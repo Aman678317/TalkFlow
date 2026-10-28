@@ -85,6 +85,23 @@ All tests executed from the baseline commit prior to making audit remediations.
 
 ---
 
-## 4. Audit Baseline Sign-off
+## 4. Live Staging Browser Verification (`https://feat-vercel-multi-service.vercel.app/`)
+
+An automated browser verification was executed against the active deployment across all primary routes:
+
+| Route | Verified Features & Layout | Visual Evidence |
+| :--- | :--- | :--- |
+| **`/dashboard`** | Clean sidebar navigation: duplicate Knowledge Base & Agent Studio removed. Documents, Live Voice, and Global Call displayed as dedicated, distinct items. | `baseline_dashboard.png` |
+| **`/translate`** | Side-by-side & vertical orientation switchers, speed benchmarks, 7 domain intent selectors, model quality selector, and DeepL formality pills. | `baseline_translate.png` |
+| **`/documents`** | Drag & drop dropzone (PDF, DOCX, PPTX, XLSX, HTML, TXT up to 50 MB), language & glossary selectors, active & completed document queue. | `baseline_documents.png` |
+| **`/voice`** | Dedicated Live Voice speech-to-speech studio, green live status indicator, microphone spacebar trigger, and dual-column conversation flow. | `baseline_live_voice.png` |
+| **`/global-call`** | Dedicated international phone dialer, WhatsApp VoIP mode, DTMF touch dialpad, and 4-way itemized metering ledger. | `baseline_global_call.png` |
+| **`/meet-companion`** | DeepL Voice-style overlay companion, conference link bridge (Meet, Zoom, Teams), tab/mic audio capture, auto-scrolling bilingual subtitles, and AI minutes generator. | `baseline_meet_companion.png` |
+
+---
+
+## 5. Audit Baseline Sign-off
 - Repository is clean, builds pass, and all baseline test metrics are recorded.
+- Live deployed staging verified clean, responsive, and functional across all user-facing routes.
 - Fixes and enhancements will be executed strictly on dedicated branches with reviewable diffs and test verification.
+
