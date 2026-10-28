@@ -135,6 +135,16 @@ Follow-ups opened by this session: verify SPA static headers after a clean redep
 exercise signed-in write-correction and page-translation provider path, and re-run the direct-URL
 matrix on the aliased domain.
 
+**Addendum (same session, post-walkthrough):** parameterized deep links **`/meeting/:id` and
+`/join/:roomId` also returned CDN 404** on direct load (invitation/share-link flows) — the root
+catch-all rewrite (`/(.*)` → `web /index.html`, pre-existing) does not fire for these paths on the
+multi-service router, while same-shaped API rewrites (`/api/:path*` → api service) do. Mitigation
+pushed: explicit priority rewrites for `/meeting/:path*`, `/join/:path*`,
+`/auth/callback/:path*` → web service, ahead of the catch-all (`vercel.json`). If the platform
+still 404s self-service rewrites after redeploy, the dashboard-level check is whether the
+production deployment for this project pins an older build (stale edge `age≈4.6h` observed) and
+needs promotion/alias re-pointing — that is a dashboard action, not an in-repo one.
+
 ---
 
 *Machine-generated reconciliation, checked against CI, local suites, and live staging browser
