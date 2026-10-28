@@ -20,6 +20,7 @@ const WritePage = lazy(() => import('./pages/Write'));
 const NotesPage = lazy(() => import('./pages/Notes'));
 const Documents = lazy(() => import('./pages/Documents'));
 const Voice = lazy(() => import('./pages/Voice'));
+const GlobalCall = lazy(() => import('./pages/GlobalCall'));
 const Meetings = lazy(() => import('./pages/Meetings'));
 const MeetingRoom = lazy(() => import('./pages/MeetingRoom'));
 const MeetingCompanion = lazy(() => import('./pages/MeetingCompanion'));
@@ -112,6 +113,7 @@ export default function App() {
             <Route path="/knowledge" element={<Documents />} />
             <Route path="/knowledge-base" element={<Navigate to="/documents" replace />} />
             <Route path="/voice" element={<Voice />} />
+            <Route path="/global-call" element={<GlobalCall />} />
             <Route path="/meetings" element={<Meetings />} />
             <Route path="/meeting" element={<Navigate to="/meetings" replace />} />
             <Route path="/chat" element={<ChatPage />} />
@@ -127,7 +129,7 @@ export default function App() {
             <Route path="/admin" element={<Admin />} />
             <Route path="/admin/telephony" element={<AdminTelephony />} />
             <Route path="/agent/calls" element={<AgentCalls />} />
-            <Route path="/calls" element={<Navigate to="/agent/calls" replace />} />
+            <Route path="/calls" element={<Navigate to="/global-call" replace />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

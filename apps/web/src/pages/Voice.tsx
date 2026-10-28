@@ -1,5 +1,5 @@
 import { useState, useRef, useMemo, useEffect } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams, Link } from "react-router-dom";
 import { useMutation } from "@tanstack/react-query";
 import {
   Mic,
@@ -29,7 +29,6 @@ import { Button, Card, Select } from "@/components/ui";
 import { toast } from "@/stores/toasts";
 import { useAuth } from "@/stores/auth";
 import TranscriptExportModal from "@/components/voice/TranscriptExportModal";
-import PhoneCallingTab from "@/components/voice/PhoneCallingTab";
 
 interface TranscriptItem {
   id: string;
@@ -110,17 +109,15 @@ export default function Voice() {
   const [searchParams] = useSearchParams();
   const user = useAuth((s) => s.user);
 
-  // Tab: "live" (Live Speech Translation reference), "facetoface", "meeting", "phone" (International Call)
-  const [activeTab, setActiveTab] = useState<"live" | "facetoface" | "meeting" | "phone">(
-    searchParams.get("tab") === "phone" || searchParams.get("tab") === "international" ? "phone" : "live"
-  );
+  // Tab: "live" (Live Speech Translation reference), "facetoface", "meeting"
+  const [activeTab, setActiveTab] = useState<"live" | "facetoface" | "meeting">("live");
 
   useEffect(() => {
     const tab = searchParams.get("tab");
     if (tab === "phone" || tab === "international") {
-      setActiveTab("phone");
+      navigate("/global-call", { replace: true });
     }
-  }, [searchParams]);
+  }, [searchParams, navigate]);
 
   // === LIVE TRANSLATION STATE ===
   const [liveSourceLang, setLiveSourceLang] = useState("en");
@@ -1377,7 +1374,7 @@ export default function Voice() {
             </div>
             <div>
               <h1 className="text-xl font-bold tracking-tight text-slate-900 flex items-center gap-2">
-                GlobalTalk Voice
+                Live Voice
                 <span className="rounded-full bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 text-xs font-semibold text-emerald-700 flex items-center gap-1.5">
                   <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" /> Live Speech
                 </span>
@@ -1419,21 +1416,13 @@ export default function Voice() {
             <Users className="h-3.5 w-3.5 text-dl-blue" />
             Face-to-Face Mode
           </button>
-          <button
-            type="button"
-            onClick={() => {
-              stopLiveListening();
-              stopListening();
-              setActiveTab("phone");
-            }}
-            className={`flex items-center gap-2 rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-all ${activeTab === "phone"
-              ? "bg-white text-slate-900 shadow-xs"
-              : "text-slate-600 hover:text-slate-900"
-              }`}
+          <Link
+            to="/global-call"
+            className="flex items-center gap-2 rounded-lg px-3.5 py-1.5 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-white/60 transition-all"
           >
             <Phone className="h-3.5 w-3.5 text-emerald-600" />
-            International Call
-          </button>
+            Global Call
+          </Link>
           <button
             type="button"
             onClick={() => {
@@ -1452,12 +1441,7 @@ export default function Voice() {
         </div>
       </div>
 
-      {/* ======================================================== */}
-      {/* TAB 0: GLOBAL PHONE CALL (PSTN International Calling)    */}
-      {/* ======================================================== */}
-      {activeTab === "phone" && (
-        <PhoneCallingTab />
-      )}
+
 
       {/* ======================================================== */}
       {/* TAB 1: LIVE VOICE (Real-Time Live Translation Canvas) */}

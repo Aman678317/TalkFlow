@@ -18,7 +18,7 @@ const NAV = [
   { to: '/agents', label: 'Agent Studio', icon: Bot },
   { to: '/agent/calls', label: 'Agent Calls', icon: PhoneCall },
   { to: '/voice', label: 'Live Voice', icon: Mic },
-  { to: '/voice?tab=phone', label: 'Global Call', icon: Phone },
+  { to: '/global-call', label: 'Global Call', icon: Phone },
   { to: '/meetings', label: 'Meetings', icon: Video },
   { to: '/chat', label: 'Chat', icon: MessageSquare },
   { to: '/knowledge', label: 'Knowledge Base', icon: BookOpen },

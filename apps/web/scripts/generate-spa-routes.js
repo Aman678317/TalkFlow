@@ -24,6 +24,8 @@ const routes = [
   'write',
   'notes',
   'voice',
+  'global-call',
+  'calls',
   'meetings',
   'meeting',
   'meet-companion',
