@@ -141,6 +141,15 @@ Verified with official, unmodified client SDK libraries running against TalkFlow
 
 ---
 
-## 7. Audit Signoff
+## 7. Live Browser Multi-Modal Audit Verification
+
+Audited live against staging deployment `https://feat-vercel-multi-service.vercel.app`:
+- **Text Translation (`/translate`)**: Verified SSE streaming (`/api/v1/translate/stream`), quick swap, formality toggles (`Default`, `Formal`, `Informal`), and server-side TTS audio preview (`POST /api/v1/voice/tts` returning `200 OK` base64 audio).
+- **Document Processing (`/documents`)**: Verified drag-and-drop zone (`.pdf, .docx, .pptx, .xlsx, .txt, .html` up to 50MB), style profile bindings, and layout-preserved file egress.
+- **Custom Glossaries & Translation Memory (`/glossaries` & `/translation-memory`)**: Verified term management with spoken variant normalization, exact $O(1)$ MD5 matching, and cosine embedding fuzzy lookup.
+
+---
+
+## 8. Audit Signoff
 
 The translation pipeline across text, layout-preserving documents, streaming speech, translation memory, and glossaries is **100% verified and operating with zero defects**.
