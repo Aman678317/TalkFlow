@@ -16,11 +16,11 @@ from app.config import settings
 from app.db import models as M
 from app.db.base import utcnow
 from app.db.session import get_db
-from app.deps import Principal, get_principal, require_org_user
+from app.deps import Principal, get_principal, require_org_user, rl_auth
 from app.errors import AuthorizationError, NotFoundError, ValidationError
 from app.schemas import (
     ApiKeyCreate, ApiKeyCreated, ApiKeyOut, AuditLogOut, BillingEventOut,
-    FeedbackIn, SearchResponse, SubscriptionOut, UsageSummary, WebhookCreate,
+    FeedbackIn, PublicInquiryIn, SearchResponse, SubscriptionOut, UsageSummary, WebhookCreate,
     WebhookOut,
 )
 from app.security import generate_api_key
@@ -325,6 +325,21 @@ async def submit_feedback(body: FeedbackIn,
     db.add(fb)
     await db.commit()
     return {"status": "recorded"}
+
+
+@feedback_router.post("/inquiry", status_code=201, dependencies=[Depends(rl_auth)])
+async def submit_public_inquiry(body: PublicInquiryIn, db: AsyncSession = Depends(get_db)):
+    """Public contact/enquiry form endpoint with rate-limiting and validation."""
+    log.info("Public inquiry received from %s <%s>: %s", body.name, body.email, body.subject)
+    fb = M.Feedback(
+        target_type="inquiry",
+        target_id=uuid.uuid4().hex[:32],
+        comment=f"[{body.subject}] From: {body.name} <{body.email}>\n\n{body.message}",
+        rating=1,
+    )
+    db.add(fb)
+    await db.commit()
+    return {"status": "received", "message": "Thank you for reaching out. Your inquiry has been received."}
 
 
 @flags_router.get("", response_model=dict)

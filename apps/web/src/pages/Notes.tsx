@@ -76,6 +76,22 @@ const TAG_COLORS: Record<string, string> = {
   default: 'bg-slate-100 text-slate-700 border-slate-200',
 };
 
+function SafeHighlight({ htmlString, fallback }: { htmlString?: string | null; fallback?: string | null }) {
+  if (!htmlString) return <>{fallback ?? ''}</>;
+  const parts = htmlString.split(/(<mark>.*?<\/mark>)/gi);
+  return (
+    <>
+      {parts.map((part, i) => {
+        if (part.toLowerCase().startsWith('<mark>') && part.toLowerCase().endsWith('</mark>')) {
+          const content = part.slice(6, -7);
+          return <mark key={i}>{content}</mark>;
+        }
+        return <span key={i}>{part}</span>;
+      })}
+    </>
+  );
+}
+
 export default function NotesPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -529,7 +545,7 @@ export default function NotesPage() {
                     </div>
                     <div className="text-sm text-dl-navy leading-relaxed break-words [&_mark]:bg-amber-200 [&_mark]:text-amber-900 [&_mark]:px-0.5 [&_mark]:rounded">
                       {item.highlight_source ? (
-                        <span dangerouslySetInnerHTML={{ __html: item.highlight_source }} />
+                        <SafeHighlight htmlString={item.highlight_source} fallback={item.source_text} />
                       ) : (
                         item.source_text
                       )}
@@ -561,7 +577,7 @@ export default function NotesPage() {
                     </div>
                     <div className="text-sm text-dl-navy leading-relaxed font-medium break-words [&_mark]:bg-amber-200 [&_mark]:text-amber-900 [&_mark]:px-0.5 [&_mark]:rounded">
                       {item.highlight_target ? (
-                        <span dangerouslySetInnerHTML={{ __html: item.highlight_target }} />
+                        <SafeHighlight htmlString={item.highlight_target} fallback={item.translated_text} />
                       ) : (
                         item.translated_text
                       )}
@@ -645,7 +661,7 @@ export default function NotesPage() {
                   ) : (
                     <div className="mt-1 text-xs text-amber-950 leading-relaxed [&_mark]:bg-amber-300 [&_mark]:px-0.5 [&_mark]:rounded">
                       {item.highlight_note ? (
-                        <span dangerouslySetInnerHTML={{ __html: item.highlight_note }} />
+                        <SafeHighlight htmlString={item.highlight_note} fallback={item.note} />
                       ) : item.note ? (
                         item.note
                       ) : (

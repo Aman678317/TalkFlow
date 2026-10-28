@@ -75,64 +75,84 @@ function RequireAuth({ children }: { children: JSX.Element }) {
   return children;
 }
 
+function RequireAdmin({ children }: { children: JSX.Element }) {
+  const status = useAuth((s) => s.status);
+  const user = useAuth((s) => s.user);
+  const location = useLocation();
+  if (status === 'loading') {
+    return (
+      <div className="flex h-screen items-center justify-center">
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-iris-600 border-t-transparent" />
+      </div>
+    );
+  }
+  if (status !== 'authed') {
+    return <Navigate to="/login" state={{ from: location.pathname }} replace />;
+  }
+  if (!user?.is_platform_admin) {
+    return <Navigate to="/dashboard" replace />;
+  }
+  return children;
+}
+
 export default function App() {
   return (
     <>
       <ErrorBoundary sectionName="AppRoot">
         <Suspense fallback={<RouteFallback />}>
-        <Routes>
-          <Route path="/" element={<RootGate />} />
-          <Route path="/auth/callback/:provider" element={<AuthCallback />} />
-          <Route path="/login" element={<Login />} />
-          <Route path="/signup" element={<Signup />} />
-          <Route path="/meeting/:id" element={<MeetingRoom />} />
-          <Route path="/meet-companion" element={<MeetingCompanion />} />
-          <Route path="/google-meet" element={<MeetingCompanion />} />
-          {/* Public join page — other person opens this link on their phone (NO login required) */}
-          <Route path="/join/:roomId" element={<JoinCall />} />
-          <Route path="/join" element={<Navigate to="/meetings" replace />} />
+          <Routes>
+            <Route path="/" element={<RootGate />} />
+            <Route path="/auth/callback/:provider" element={<AuthCallback />} />
+            <Route path="/login" element={<Login />} />
+            <Route path="/signup" element={<Signup />} />
+            <Route path="/meeting/:id" element={<MeetingRoom />} />
+            <Route path="/meet-companion" element={<MeetingCompanion />} />
+            <Route path="/google-meet" element={<MeetingCompanion />} />
+            {/* Public join page — other person opens this link on their phone (NO login required) */}
+            <Route path="/join/:roomId" element={<JoinCall />} />
+            <Route path="/join" element={<Navigate to="/meetings" replace />} />
 
-          <Route element={<AppShell />}>
-            <Route path="/translate" element={<Translate />} />
-            <Route path="/translate/page" element={<TranslateWebPage />} />
-            <Route path="/write" element={<WritePage />} />
-            <Route path="/notes" element={<NotesPage />} />
-            <Route path="/agents" element={<AgentStudio />} />
-            <Route path="/agent-studio" element={<AgentStudio />} />
-            <Route path="/agent" element={<Navigate to="/agents" replace />} />
-            <Route path="/docs" element={<DocsPage />} />
-            <Route path="/api/docs" element={<DocsPage />} />
-            <Route path="/developer" element={<Navigate to="/docs" replace />} />
-            <Route path="/developers" element={<Navigate to="/docs" replace />} />
-          </Route>
+            <Route element={<AppShell />}>
+              <Route path="/translate" element={<Translate />} />
+              <Route path="/translate/page" element={<TranslateWebPage />} />
+              <Route path="/write" element={<WritePage />} />
+              <Route path="/notes" element={<NotesPage />} />
+              <Route path="/agents" element={<AgentStudio />} />
+              <Route path="/agent-studio" element={<AgentStudio />} />
+              <Route path="/agent" element={<Navigate to="/agents" replace />} />
+              <Route path="/docs" element={<DocsPage />} />
+              <Route path="/api/docs" element={<DocsPage />} />
+              <Route path="/developer" element={<Navigate to="/docs" replace />} />
+              <Route path="/developers" element={<Navigate to="/docs" replace />} />
+            </Route>
 
-          {/* Protected app shell routes: requires user authentication */}
-          <Route element={<RequireAuth><AppShell /></RequireAuth>}>
-            <Route path="/dashboard" element={<Dashboard />} />
-            <Route path="/documents" element={<Documents />} />
-            <Route path="/knowledge" element={<Navigate to="/documents" replace />} />
-            <Route path="/knowledge-base" element={<Navigate to="/documents" replace />} />
-            <Route path="/voice" element={<Voice />} />
-            <Route path="/global-call" element={<GlobalCall />} />
-            <Route path="/meetings" element={<Meetings />} />
-            <Route path="/meeting" element={<Navigate to="/meetings" replace />} />
-            <Route path="/chat" element={<ChatPage />} />
-            <Route path="/history" element={<History />} />
-            <Route path="/glossaries" element={<Glossaries />} />
-            <Route path="/translation-memory" element={<TranslationMemory />} />
-            <Route path="/style-profiles" element={<StyleProfiles />} />
-            <Route path="/api" element={<ApiKeysPage />} />
-            <Route path="/usage" element={<Usage />} />
-            <Route path="/billing" element={<Billing />} />
-            <Route path="/settings" element={<Settings />} />
-            <Route path="/team" element={<Team />} />
-            <Route path="/admin" element={<Admin />} />
-            <Route path="/admin/telephony" element={<AdminTelephony />} />
-            <Route path="/agent/calls" element={<AgentCalls />} />
-            <Route path="/calls" element={<Navigate to="/global-call" replace />} />
-          </Route>
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
+            {/* Protected app shell routes: requires user authentication */}
+            <Route element={<RequireAuth><AppShell /></RequireAuth>}>
+              <Route path="/dashboard" element={<Dashboard />} />
+              <Route path="/documents" element={<Documents />} />
+              <Route path="/knowledge" element={<Navigate to="/documents" replace />} />
+              <Route path="/knowledge-base" element={<Navigate to="/documents" replace />} />
+              <Route path="/voice" element={<Voice />} />
+              <Route path="/global-call" element={<GlobalCall />} />
+              <Route path="/meetings" element={<Meetings />} />
+              <Route path="/meeting" element={<Navigate to="/meetings" replace />} />
+              <Route path="/chat" element={<ChatPage />} />
+              <Route path="/history" element={<History />} />
+              <Route path="/glossaries" element={<Glossaries />} />
+              <Route path="/translation-memory" element={<TranslationMemory />} />
+              <Route path="/style-profiles" element={<StyleProfiles />} />
+              <Route path="/api" element={<ApiKeysPage />} />
+              <Route path="/usage" element={<Usage />} />
+              <Route path="/billing" element={<Billing />} />
+              <Route path="/settings" element={<Settings />} />
+              <Route path="/team" element={<Team />} />
+              <Route path="/admin" element={<RequireAdmin><Admin /></RequireAdmin>} />
+              <Route path="/admin/telephony" element={<RequireAdmin><AdminTelephony /></RequireAdmin>} />
+              <Route path="/agent/calls" element={<AgentCalls />} />
+              <Route path="/calls" element={<Navigate to="/global-call" replace />} />
+            </Route>
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
         </Suspense>
       </ErrorBoundary>
       <Toaster />

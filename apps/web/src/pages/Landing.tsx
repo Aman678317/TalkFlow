@@ -26,6 +26,7 @@ import { Logo } from "../components/Layout";
 import { Reveal } from "../components/Motion";
 import { staggerContainerVariants, staggerItemVariants, springSoft } from "../lib/motion";
 import { useAuth } from "../stores/auth";
+import { api } from "../lib/api";
 
 const LANGS = [
   "English", "हिन्दी (Hindi)", "Español (Spanish)", "Deutsch (German)",
@@ -60,6 +61,32 @@ export default function Landing() {
   const user = useAuth((s) => s.user);
   const reducedMotion = useReducedMotion();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [contactOpen, setContactOpen] = useState(false);
+  const [contactForm, setContactForm] = useState({ name: "", email: "", subject: "General Inquiry", message: "" });
+  const [contactStatus, setContactStatus] = useState<"idle" | "submitting" | "success" | "error">("idle");
+  const [contactError, setContactError] = useState("");
+
+  const handleSubmitContact = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!contactForm.name || !contactForm.email || !contactForm.message) {
+      setContactError("Please fill out all required fields.");
+      return;
+    }
+    setContactStatus("submitting");
+    setContactError("");
+    try {
+      await api("/api/v1/feedback/inquiry", {
+        method: "POST",
+        body: contactForm,
+      });
+      setContactStatus("success");
+      setContactForm({ name: "", email: "", subject: "General Inquiry", message: "" });
+    } catch (err: any) {
+      setContactStatus("error");
+      setContactError(err.message || "Failed to deliver inquiry. Please reach out to support@globaltalk.ai directly.");
+    }
+  };
+
   const [demoMode, setDemoMode] = useState<"voice" | "text">("voice");
 
   return (
@@ -112,6 +139,13 @@ export default function Landing() {
               <Bot className="mr-1.5 h-4 w-4 text-[#5856D6]" />
               Agent Studio
             </Link>
+            <button
+              type="button"
+              onClick={() => setContactOpen(true)}
+              className="inline-flex min-h-[44px] items-center rounded-full px-4 text-neutral-700 transition-colors hover:bg-black/[0.04] hover:text-neutral-950 font-medium"
+            >
+              Contact
+            </button>
 
             <div className="ml-3 flex items-center gap-2 border-l border-black/[0.06] pl-4">
               {user ? (
@@ -829,6 +863,15 @@ export default function Landing() {
                 <li><Link to="/docs" className="text-neutral-600 hover:text-neutral-950">SDKs & Guides</Link></li>
                 <li><Link to="/api/docs" className="text-neutral-600 hover:text-neutral-950">REST & WebSocket API</Link></li>
                 <li>
+                  <button
+                    type="button"
+                    onClick={() => setContactOpen(true)}
+                    className="text-neutral-600 hover:text-neutral-950"
+                  >
+                    Contact & Enquiries
+                  </button>
+                </li>
+                <li>
                   <a
                     href="https://github.com/Aman678317/TalkFlow"
                     target="_blank"
@@ -862,6 +905,128 @@ export default function Landing() {
           </div>
         </div>
       </footer>
+    
+      {/* Contact & Enquiry Modal */}
+      {contactOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="relative w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl border border-black/[0.08]">
+            <div className="flex items-center justify-between border-b border-black/[0.06] pb-4">
+              <div>
+                <h3 className="text-lg font-bold text-neutral-900">Contact Us & Enquiry</h3>
+                <p className="text-xs text-neutral-500 mt-0.5">Reach our team directly. We respond within 2-4 hours.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setContactOpen(false);
+                  setContactStatus("idle");
+                  setContactError("");
+                }}
+                className="rounded-full p-1.5 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700 transition"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="my-4 rounded-xl bg-blue-50/60 p-3 text-xs text-blue-900 border border-blue-100/80">
+              <span className="font-semibold">Direct Email:</span> support@globaltalk.ai · <span className="font-semibold">Hours:</span> Mon–Fri, 9:00 AM – 7:00 PM UTC
+            </div>
+
+            {contactStatus === "success" ? (
+              <div className="py-6 text-center space-y-3">
+                <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
+                  <CheckCircle2 className="h-6 w-6" />
+                </div>
+                <h4 className="font-bold text-neutral-900">Enquiry Delivered!</h4>
+                <p className="text-xs text-neutral-600 max-w-sm mx-auto">
+                  Thank you for contacting us. Your message has reached our team and an engineer will review your request shortly.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setContactOpen(false);
+                    setContactStatus("idle");
+                  }}
+                  className="apple-btn-primary mt-2 min-h-[38px] px-6 text-xs"
+                >
+                  Done
+                </button>
+              </div>
+            ) : (
+              <form onSubmit={handleSubmitContact} className="space-y-3 text-left">
+                {contactError && (
+                  <div className="rounded-lg bg-red-50 p-2.5 text-xs text-red-700 border border-red-200">
+                    {contactError}
+                  </div>
+                )}
+                <div>
+                  <label className="block text-xs font-medium text-neutral-700 mb-1">Your Name *</label>
+                  <input
+                    type="text"
+                    required
+                    value={contactForm.name}
+                    onChange={(e) => setContactForm({ ...contactForm, name: e.target.value })}
+                    placeholder="Jane Doe"
+                    className="w-full rounded-lg border border-black/[0.12] px-3 py-2 text-xs text-neutral-900 placeholder:text-neutral-400 focus:border-[#007AFF] focus:outline-none focus:ring-1 focus:ring-[#007AFF]"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-neutral-700 mb-1">Work Email *</label>
+                  <input
+                    type="email"
+                    required
+                    value={contactForm.email}
+                    onChange={(e) => setContactForm({ ...contactForm, email: e.target.value })}
+                    placeholder="jane@company.com"
+                    className="w-full rounded-lg border border-black/[0.12] px-3 py-2 text-xs text-neutral-900 placeholder:text-neutral-400 focus:border-[#007AFF] focus:outline-none focus:ring-1 focus:ring-[#007AFF]"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-neutral-700 mb-1">Subject</label>
+                  <select
+                    value={contactForm.subject}
+                    onChange={(e) => setContactForm({ ...contactForm, subject: e.target.value })}
+                    className="w-full rounded-lg border border-black/[0.12] px-3 py-2 text-xs text-neutral-900 focus:border-[#007AFF] focus:outline-none focus:ring-1 focus:ring-[#007AFF]"
+                  >
+                    <option value="General Inquiry">General Inquiry</option>
+                    <option value="Enterprise & Sales">Enterprise & Sales</option>
+                    <option value="Technical Support">Technical Support</option>
+                    <option value="Security & Compliance">Security & Compliance</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-neutral-700 mb-1">Message *</label>
+                  <textarea
+                    required
+                    rows={4}
+                    value={contactForm.message}
+                    onChange={(e) => setContactForm({ ...contactForm, message: e.target.value })}
+                    placeholder="How can we help your team?"
+                    className="w-full rounded-lg border border-black/[0.12] px-3 py-2 text-xs text-neutral-900 placeholder:text-neutral-400 focus:border-[#007AFF] focus:outline-none focus:ring-1 focus:ring-[#007AFF]"
+                  />
+                </div>
+                <div className="flex justify-end gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setContactOpen(false)}
+                    className="rounded-lg px-4 py-2 text-xs font-medium text-neutral-600 hover:bg-neutral-100 transition"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={contactStatus === "submitting"}
+                    className="apple-btn-primary min-h-[38px] px-5 text-xs"
+                  >
+                    {contactStatus === "submitting" ? "Sending..." : "Send Enquiry"}
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }

@@ -213,3 +213,22 @@ def test_zero_hardcoded_live_secrets_in_repo():
     assert scanned_count > 50, f"Expected to scan repository files, scanned {scanned_count}"
     assert not findings, f"Found sensitive hardcoded secrets in repository: {findings}"
 
+
+
+def test_public_inquiry_flow(services_app_client):
+    """Public contact/enquiry endpoint accepts valid submissions and validates bad inputs."""
+    res = services_app_client.post("/api/v1/feedback/inquiry", json={
+        "name": "Alex Partner",
+        "email": "alex@example.com",
+        "subject": "Enterprise Integration",
+        "message": "We would like to trial TalkFlow live translation.",
+    })
+    assert res.status_code == 201
+    assert res.json().get("status") == "received"
+
+    bad_res = services_app_client.post("/api/v1/feedback/inquiry", json={
+        "name": "",
+        "email": "not-an-email",
+        "message": "",
+    })
+    assert bad_res.status_code == 422

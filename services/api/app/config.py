@@ -267,9 +267,10 @@ class Settings(BaseSettings):
     # realtime tuning (PDD §11.4)
     # Per-stage provider deadlines (remediation plan §2.3). A stage that blows its
     # deadline fails over / degrades instead of stalling the room's event loop.
-    rt_stt_deadline_ms: float = 3000.0
-    rt_mt_deadline_ms: float = 2500.0
-    rt_tts_ttfb_deadline_ms: float = 2000.0
+    # Default bounds provide realistic headroom for CPU Faster-Whisper and Piper synthesis.
+    rt_stt_deadline_ms: float = 12000.0
+    rt_mt_deadline_ms: float = 6000.0
+    rt_tts_ttfb_deadline_ms: float = 6000.0
     # Bounded local-inference concurrency across STT/MT/TTS in one process.
     rt_inference_concurrency: int = 4
     rt_target_latency_ms: float = 2500.0
@@ -298,7 +299,7 @@ class Settings(BaseSettings):
     # word-by-word editing, after which translation visibly stops working.
     rate_limit_translate_stream: str = "240/minute"
     rate_limit_provider_keys: str = "300/minute"
-    rate_limit_auth: str = "300/minute"
+    rate_limit_auth: str = "15/minute"
     rate_limit_default: str = "300/minute"
     rate_limit_ws_connect: str = "30/minute"
     rate_limit_telephony_call: str = "30/minute"

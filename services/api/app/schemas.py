@@ -798,6 +798,13 @@ class AuditLogOut(ORMModel):
     created_at: datetime
 
 
+class PublicInquiryIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    email: str = Field(min_length=3, max_length=256)
+    subject: str = Field(default="General Inquiry", max_length=200)
+    message: str = Field(min_length=1, max_length=5000)
+
+
 class FeedbackIn(BaseModel):
     target_type: Literal["translation", "segment", "document", "summary", "tts"]
     target_id: str
