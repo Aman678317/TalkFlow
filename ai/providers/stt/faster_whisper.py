@@ -12,6 +12,7 @@ import os
 import threading
 import time
 import wave
+from typing import Any
 
 import numpy as np
 
@@ -62,8 +63,25 @@ def load_model(model_size: str, device: str, compute_type: str):
             # cache (dir present, aux files missing) raises instead of silently
             # completing itself over the network (issue #109, class 2). faster-whisper
             # is pinned ==1.2.1 so the kwarg is always supported.
+            # cpu_threads: CTranslate2 falls back to OMP_NUM_THREADS when the kwarg
+            # is unset — the load drill's OMP_NUM_THREADS=1 (anti-oversubscription
+            # policy) was silently pinning inference to ONE CPU thread,
+            # single-handedly producing the ~11-15 s stt_final_ms p50 in
+            # docs/LOAD_CAPACITY_ENVELOPE.md even at C=1. GT_STT_CPU_THREADS lets
+            # an operator spend more threads per transcription while the pipeline's
+            # own serialization keeps simultaneous meetings from multiplying it.
+            threads_raw = os.environ.get("GT_STT_CPU_THREADS", "").strip()
+            kwargs: dict[str, Any] = {}
+            if threads_raw:
+                try:
+                    threads = max(1, int(threads_raw))
+                    if threads > 1:
+                        kwargs["cpu_threads"] = threads
+                except ValueError:
+                    pass
             _model = WhisperModel(model_size, device=device, compute_type=compute_type,
-                                  local_files_only=not _downloads_allowed())
+                                  local_files_only=not _downloads_allowed(),
+                                  **kwargs)
         return _model
 
 

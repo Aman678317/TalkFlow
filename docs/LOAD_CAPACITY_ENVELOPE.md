@@ -4,6 +4,19 @@
 **Lane:** offline CPU (faster-whisper small STT → Argos MT → Piper TTS), real WebSocket audio path
 **Owner-approval gate:** the caps/thresholds in §8 are the Day-6 plan's *proposed* envelope pending owner sign-off on this PR; every number below is drill output from the artifacts listed in §11.
 
+> **RE-MEASURED ADDENDUM (2026-10-29):** the STT-stage p50 above is dominated by a
+> single-threaded engine default the drill recipe itself set (`OMP_NUM_THREADS=1` →
+> CTranslate2 falls back to 1 inference thread). A controlled same-day A/B with
+> `GT_STT_CPU_THREADS=8` cut the WARM utterance's `stt_final_ms` from 17.09 s to 9.69 s
+> (**1.76×**) and warm `total_e2e_latency_ms` from 18.7 s to 10.8 s at C=1, 4/4 delivered.
+> Cold-start products (Argos/Piper/whisper weight loads) land in utterance-0's stages.
+> Method, per-event tables and raw artifacts:
+> [`docs/audit/stt-latency-profile.md`](audit/stt-latency-profile.md) +
+> `docs/audit/artifacts/2026-10-29-c1-drill/`. C=2/C=4 ramp numbers remain UNRE-MEASURED
+> at the new thread setting; the C>4 envelope still needs the bounded-concurrency check
+> on pilot hardware. The `GT_STT_CPU_THREADS` pilot recipe (4-8 on CPU) is documented in
+> `.env.example`.
+
 ---
 
 ## 1. Honesty boundaries first

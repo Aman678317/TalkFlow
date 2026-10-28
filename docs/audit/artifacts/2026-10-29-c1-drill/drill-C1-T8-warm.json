@@ -1,0 +1,364 @@
+{
+  "drill": "realtime_load_latency_envelope",
+  "lane": "offline CPU",
+  "audio_transport": "WS binary PCM16 (real STT\u2192MT\u2192TTS path)",
+  "stages": [
+    "stt_final_ms",
+    "translation_ms",
+    "tts_first_audio_ms",
+    "delivery_ms",
+    "total_e2e_latency_ms",
+    "wall_ms"
+  ],
+  "cold_start": {
+    "boot_seconds": 5.49,
+    "port": 8288,
+    "server_pid": 5532,
+    "workdir": "C:\\Users\\acer\\AppData\\Local\\Temp\\day6_drill_zwhi15ik",
+    "model_cache_mb": 1358.2
+  },
+  "levels": [
+    {
+      "summary": {
+        "concurrency": 1,
+        "calls": 1,
+        "fanout_targets_total": 2,
+        "wall_seconds": 152.1,
+        "attempts": 8,
+        "latency_events": 8,
+        "provider_failure_deliveries": 0,
+        "latency_timeouts": 0,
+        "provider_error_events": 4,
+        "ws_errors": 0,
+        "stages": {
+          "stt_final_ms": {
+            "p50": 15299.0,
+            "p95": 46518.7,
+            "p99": 46518.7,
+            "mean": 21351.0
+          },
+          "translation_ms": {
+            "p50": 6587.3,
+            "p95": 16272.6,
+            "p99": 16272.6,
+            "mean": 5556.1
+          },
+          "tts_first_audio_ms": {
+            "p50": 3959.4,
+            "p95": 21145.5,
+            "p99": 21145.5,
+            "mean": 6080.0
+          },
+          "delivery_ms": {
+            "p50": 3959.9,
+            "p95": 21146.0,
+            "p99": 21146.0,
+            "mean": 6080.4
+          },
+          "total_e2e_latency_ms": {
+            "p50": 46261.1,
+            "p95": 58788.7,
+            "p99": 58788.7,
+            "mean": 33017.4
+          },
+          "wall_ms": {
+            "p50": 46284.2,
+            "p95": 58841.4,
+            "p99": 58841.4,
+            "mean": 33061.5
+          }
+        },
+        "per_target": [
+          {
+            "target": "hi",
+            "events": 4,
+            "failures": 0,
+            "total_e2e_p50": 46261.1,
+            "total_e2e_p95": 58788.7
+          },
+          {
+            "target": "zh",
+            "events": 4,
+            "failures": 0,
+            "total_e2e_p50": 47240.9,
+            "total_e2e_p95": 57122.8
+          }
+        ],
+        "cpu_ram": {
+          "samples": 143,
+          "server_cpu_pct": {
+            "mean": 108.1,
+            "max": 360.8
+          },
+          "server_rss_mb": {
+            "mean": 931.8,
+            "max": 1384.2
+          },
+          "sys_cpu_pct": {
+            "mean": 91.3,
+            "max": 100.0
+          },
+          "sys_ram_pct": {
+            "mean": 90.5,
+            "max": 97.2
+          }
+        },
+        "cold_vs_warm": {
+          "first_utterance_mean_ms": 46751.0,
+          "later_utterance_mean_ms": 28439.5,
+          "warmup_premium_ms": 18311.5
+        },
+        "failures_detail": [
+          {
+            "call": "L1C1",
+            "source": "en",
+            "target": "mr",
+            "kind": "translation.failed",
+            "recoverable": true,
+            "user_message": "Live translation is temporarily unavailable. Original captions remain available.",
+            "lane": "fail-lane"
+          },
+          {
+            "call": "L1C1",
+            "source": "en",
+            "target": "mr",
+            "kind": "translation.failed",
+            "recoverable": true,
+            "user_message": "Live translation is temporarily unavailable. Original captions remain available.",
+            "lane": "fail-lane"
+          },
+          {
+            "call": "L1C1",
+            "source": "en",
+            "target": "mr",
+            "kind": "translation.failed",
+            "recoverable": true,
+            "user_message": "Live translation is temporarily unavailable. Original captions remain available.",
+            "lane": "fail-lane"
+          },
+          {
+            "call": "L1C1",
+            "source": "en",
+            "target": "mr",
+            "kind": "translation.failed",
+            "recoverable": true,
+            "user_message": "Live translation is temporarily unavailable. Original captions remain available.",
+            "lane": "fail-lane"
+          }
+        ],
+        "ws_errors_detail": [],
+        "metrics_snapshot": {
+          "http_requests_total{route=\"/api/v1/auth/signup\",status=\"201\"}": 1.0,
+          "http_requests_total{route=\"/api/v1/meetings\",status=\"201\"}": 1.0,
+          "http_requests_total{route=\"/health\",status=\"200\"}": 1.0,
+          "translations_total{pair=\"en-hi\",provider=\"argos\"}": 4.0,
+          "translations_total{pair=\"en-zh\",provider=\"argos\"}": 4.0,
+          "realtime_e2e_latency_ms{quantile=\"0.5\",pair=\"en-hi\"}": 46261.14,
+          "realtime_e2e_latency_ms{quantile=\"0.95\",pair=\"en-hi\"}": 58788.726,
+          "realtime_e2e_latency_ms{quantile=\"0.99\",pair=\"en-hi\"}": 58788.726,
+          "realtime_e2e_latency_ms_count{pair=\"en-hi\"}": 4.0,
+          "realtime_e2e_latency_ms_sum{pair=\"en-hi\"}": 132642.949,
+          "realtime_e2e_latency_ms{quantile=\"0.5\",pair=\"en-zh\"}": 47240.894,
+          "realtime_e2e_latency_ms{quantile=\"0.95\",pair=\"en-zh\"}": 57122.789,
+          "realtime_e2e_latency_ms{quantile=\"0.99\",pair=\"en-zh\"}": 57122.789,
+          "realtime_e2e_latency_ms_count{pair=\"en-zh\"}": 4.0,
+          "realtime_e2e_latency_ms_sum{pair=\"en-zh\"}": 131496.215,
+          "stt_latency_ms{quantile=\"0.5\",lang=\"en\",provider=\"faster-whisper\"}": 11660.829,
+          "stt_latency_ms{quantile=\"0.95\",lang=\"en\",provider=\"faster-whisper\"}": 45219.47,
+          "stt_latency_ms{quantile=\"0.99\",lang=\"en\",provider=\"faster-whisper\"}": 45219.47,
+          "stt_latency_ms_count{lang=\"en\",provider=\"faster-whisper\"}": 8.0,
+          "stt_latency_ms_sum{lang=\"en\",provider=\"faster-whisper\"}": 155934.957,
+          "translation_latency_ms{quantile=\"0.5\",pair=\"en-hi\",provider=\"argos\"}": 6941.327,
+          "translation_latency_ms{quantile=\"0.95\",pair=\"en-hi\",provider=\"argos\"}": 9782.253,
+          "translation_latency_ms{quantile=\"0.99\",pair=\"en-hi\",provider=\"argos\"}": 9782.253,
+          "translation_latency_ms_count{pair=\"en-hi\",provider=\"argos\"}": 4.0,
+          "translation_latency_ms_sum{pair=\"en-hi\",provider=\"argos\"}": 19226.229,
+          "translation_latency_ms{quantile=\"0.5\",pair=\"en-zh\",provider=\"argos\"}": 6587.256,
+          "translation_latency_ms{quantile=\"0.95\",pair=\"en-zh\",provider=\"argos\"}": 16272.569,
+          "translation_latency_ms{quantile=\"0.99\",pair=\"en-zh\",provider=\"argos\"}": 16272.569,
+          "translation_latency_ms_count{pair=\"en-zh\",provider=\"argos\"}": 4.0,
+          "translation_latency_ms_sum{pair=\"en-zh\",provider=\"argos\"}": 25222.118,
+          "tts_latency_ms{quantile=\"0.5\",lang=\"hi\",provider=\"piper\"}": 5261.066,
+          "tts_latency_ms{quantile=\"0.95\",lang=\"hi\",provider=\"piper\"}": 21131.078,
+          "tts_latency_ms{quantile=\"0.99\",lang=\"hi\",provider=\"piper\"}": 21131.078,
+          "tts_latency_ms_count{lang=\"hi\",provider=\"piper\"}": 4.0,
+          "tts_latency_ms_sum{lang=\"hi\",provider=\"piper\"}": 27857.252,
+          "tts_latency_ms{quantile=\"0.5\",lang=\"zh\",provider=\"piper\"}": 3824.204,
+          "tts_latency_ms{quantile=\"0.95\",lang=\"zh\",provider=\"piper\"}": 15406.85,
+          "tts_latency_ms{quantile=\"0.99\",lang=\"zh\",provider=\"piper\"}": 15406.85,
+          "tts_latency_ms_count{lang=\"zh\",provider=\"piper\"}": 4.0,
+          "tts_latency_ms_sum{lang=\"zh\",provider=\"piper\"}": 20371.395
+        }
+      },
+      "traces_captured": 8
+    }
+  ],
+  "failure_events": [
+    {
+      "call": "L1C1",
+      "source": "en",
+      "target": "mr",
+      "kind": "translation.failed",
+      "recoverable": true,
+      "user_message": "Live translation is temporarily unavailable. Original captions remain available.",
+      "lane": "fail-lane"
+    },
+    {
+      "call": "L1C1",
+      "source": "en",
+      "target": "mr",
+      "kind": "translation.failed",
+      "recoverable": true,
+      "user_message": "Live translation is temporarily unavailable. Original captions remain available.",
+      "lane": "fail-lane"
+    },
+    {
+      "call": "L1C1",
+      "source": "en",
+      "target": "mr",
+      "kind": "translation.failed",
+      "recoverable": true,
+      "user_message": "Live translation is temporarily unavailable. Original captions remain available.",
+      "lane": "fail-lane"
+    },
+    {
+      "call": "L1C1",
+      "source": "en",
+      "target": "mr",
+      "kind": "translation.failed",
+      "recoverable": true,
+      "user_message": "Live translation is temporarily unavailable. Original captions remain available.",
+      "lane": "fail-lane"
+    }
+  ],
+  "trace_store": [
+    {
+      "call": "L1C1",
+      "source": "en",
+      "target": "hi",
+      "utterance_idx": 0,
+      "wall_ms": 46284.2,
+      "first_utterance_of_call": true,
+      "stt_final_ms": 15299.0,
+      "translation_ms": 9782.3,
+      "tts_first_audio_ms": 21145.5,
+      "delivery_ms": 21146.0,
+      "total_e2e_latency_ms": 46261.1,
+      "level": 1
+    },
+    {
+      "call": "L1C1",
+      "source": "en",
+      "target": "zh",
+      "utterance_idx": 0,
+      "wall_ms": 47259.7,
+      "first_utterance_of_call": true,
+      "stt_final_ms": 15299.0,
+      "translation_ms": 16272.6,
+      "tts_first_audio_ms": 15623.4,
+      "delivery_ms": 15623.8,
+      "total_e2e_latency_ms": 47240.9,
+      "level": 1
+    },
+    {
+      "call": "L1C1",
+      "source": "en",
+      "target": "zh",
+      "utterance_idx": 1,
+      "wall_ms": 57193.3,
+      "first_utterance_of_call": false,
+      "stt_final_ms": 46518.7,
+      "translation_ms": 6587.3,
+      "tts_first_audio_ms": 3959.4,
+      "delivery_ms": 3959.9,
+      "total_e2e_latency_ms": 57122.8,
+      "level": 1
+    },
+    {
+      "call": "L1C1",
+      "source": "en",
+      "target": "hi",
+      "utterance_idx": 1,
+      "wall_ms": 58841.4,
+      "first_utterance_of_call": false,
+      "stt_final_ms": 46518.7,
+      "translation_ms": 6941.3,
+      "tts_first_audio_ms": 5274.7,
+      "delivery_ms": 5275.1,
+      "total_e2e_latency_ms": 58788.7,
+      "level": 1
+    },
+    {
+      "call": "L1C1",
+      "source": "en",
+      "target": "zh",
+      "utterance_idx": 2,
+      "wall_ms": 13066.1,
+      "first_utterance_of_call": false,
+      "stt_final_ms": 10850.6,
+      "translation_ms": 1708.2,
+      "tts_first_audio_ms": 446.0,
+      "delivery_ms": 446.3,
+      "total_e2e_latency_ms": 13019.8,
+      "level": 1
+    },
+    {
+      "call": "L1C1",
+      "source": "en",
+      "target": "hi",
+      "utterance_idx": 2,
+      "wall_ms": 13490.7,
+      "first_utterance_of_call": false,
+      "stt_final_ms": 10850.6,
+      "translation_ms": 1795.7,
+      "tts_first_audio_ms": 782.7,
+      "delivery_ms": 782.9,
+      "total_e2e_latency_ms": 13442.0,
+      "level": 1
+    },
+    {
+      "call": "L1C1",
+      "source": "en",
+      "target": "zh",
+      "utterance_idx": 3,
+      "wall_ms": 14158.4,
+      "first_utterance_of_call": false,
+      "stt_final_ms": 12735.8,
+      "translation_ms": 654.1,
+      "tts_first_audio_ms": 710.7,
+      "delivery_ms": 711.0,
+      "total_e2e_latency_ms": 14112.7,
+      "level": 1
+    },
+    {
+      "call": "L1C1",
+      "source": "en",
+      "target": "hi",
+      "utterance_idx": 3,
+      "wall_ms": 14198.0,
+      "first_utterance_of_call": false,
+      "stt_final_ms": 12735.8,
+      "translation_ms": 706.9,
+      "tts_first_audio_ms": 697.5,
+      "delivery_ms": 697.8,
+      "total_e2e_latency_ms": 14151.1,
+      "level": 1
+    }
+  ],
+  "result": "PASS",
+  "audio_inputs_sec": {
+    "en": [
+      3.27,
+      3.38
+    ],
+    "hi": [
+      3.6,
+      3.7
+    ],
+    "zh": [
+      2.83,
+      4.17
+    ]
+  },
+  "finished_utc": "2026-10-28T20:37:25Z"
+}
