@@ -56,6 +56,20 @@ TalkFlow provides 100% spec compatibility for DeepL v2 and v3 APIs:
 - `GET /v2/languages`: Returns supported source and target language lists.
 - `POST /v2/glossaries` & `GET /v2/glossaries`: Full glossary lifecycle management.
 
+### 2.1 Official DeepL Client SDK Verification (Drop-In Testing)
+The official open-source DeepL client libraries were tested directly against TalkFlow's staging deployment (`https://feat-vercel-multi-service.vercel.app`):
+1. **Official Python SDK (`deepl-python` v1.32.0)**:
+   - `translator.get_usage()`: Correctly queried character (139 / 500,000) and document metrics without schema errors.
+   - `translator.get_source_languages()` & `get_target_languages()`: Discovered 20 supported languages and formality capabilities.
+   - `translator.translate_text("Hello world", target_lang="DE")`: Returned `TextResult("Hallo Welt", detected_source_lang="EN", billed_characters=11, model_type_used="latency_optimized")`.
+   - `translator.translate_text(["Hello world", "Good morning", "Thank you"], target_lang="FR")`: Batch translation returned French translations with correct per-segment billed character accounting.
+   - `translator.translate_document(in_doc, out_doc, target_lang="DE")`: Uploaded `sample_press_release.pdf`, polled `/v2/document/{id}` to status `done`, and downloaded the translated layout-preserved PDF (`1,813` bytes).
+2. **Official Node.js SDK (`deepl-node`)**:
+   - `translator.getUsage()`: Retrieved live usage counters.
+   - `translator.translateText('Hello world', null, 'de')`: Seamless drop-in translation without modification.
+   - `translator.translateDocument(...)`: Uploaded `sample_agreement.docx`, monitored progress, and downloaded `deepl_node_translated_agreement.docx` (`35,601` bytes).
+3. **Evidence Artifacts**: `deepl_sdk_dropin_docs.png` and `deepl_sdk_usage_meters.png`.
+
 ---
 
 ## 3. Intellectual Property & Ethical Boundaries
