@@ -45,6 +45,7 @@ const routes = [
   'settings',
   'team',
   'admin',
+  'admin/telephony',
   'login',
   'signup',
   'docs',

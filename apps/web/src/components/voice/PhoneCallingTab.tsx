@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { Link } from 'react-router-dom';
 import WhatsAppCallModal, { type WhatsAppCallData } from './WhatsAppCallModal';
 import WhatsAppCallLinkModal from './WhatsAppCallLinkModal';
 import {
@@ -2035,13 +2036,13 @@ export default function PhoneCallingTab() {
             </div>
 
             <div className="flex flex-col sm:flex-row gap-2 pt-1">
-              <a
-                href="/admin/telephony"
+              <Link
+                to="/admin/telephony"
                 className="flex-1 flex items-center justify-center gap-1.5 rounded-xl border border-red-200 bg-white hover:bg-red-50 text-red-700 py-2.5 font-bold text-xs transition-all shadow-xs text-center"
               >
                 <Settings2 className="h-4 w-4" />
                 Configure in Admin Telephony
-              </a>
+              </Link>
               {!showTwilioSetup ? (
                 <button
                   onClick={() => setShowTwilioSetup(true)}
@@ -2124,9 +2125,9 @@ export default function PhoneCallingTab() {
 
                   <div className="text-[10px] text-slate-500 bg-slate-50 rounded p-2 border border-slate-200">
                     💡 <strong>Tip:</strong> You can configure and save live carrier keys directly in{' '}
-                    <a href="/admin/telephony" className="text-iris-600 font-semibold underline">
+                    <Link to="/admin/telephony" className="text-iris-600 font-semibold underline">
                       Admin Telephony Panel
-                    </a>.
+                    </Link>.
                   </div>
                   <button
                     onClick={() => setDialMode('peer')}
