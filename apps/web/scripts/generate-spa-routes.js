@@ -32,6 +32,8 @@ const routes = [
   'google-meet',
   'join',
   'documents',
+  'knowledge',
+  'knowledge-base',
   'dashboard',
   'chat',
   'history',
