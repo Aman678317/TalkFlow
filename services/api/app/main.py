@@ -130,11 +130,8 @@ def create_app() -> FastAPI:
     @app.api_route("/api/copilotkit/info", methods=["GET", "POST", "OPTIONS"], include_in_schema=False)
     @app.api_route("/api/copilotkit", methods=["GET", "POST", "OPTIONS"], include_in_schema=False)
     async def _copilotkit_info_fallback():
-        from fastapi.responses import JSONResponse
-        return JSONResponse({
-            "version": "1.0",
-            "agents": [{"name": "globaltalk_agent", "description": "GlobalTalk AI Assistant"}],
-        })
+        from app.agent_info import copilotkit_info_payload
+        return copilotkit_info_payload()
 
     @app.get("/api", include_in_schema=False)
     @app.get("/api-docs", include_in_schema=False)
