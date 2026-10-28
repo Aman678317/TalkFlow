@@ -71,6 +71,13 @@ The document pipeline processes complex binary formats while preserving font met
 - **Storage Resilience**: Large documents are stored in the database (`DatabaseStorage`) to survive serverless lambda recycling.
 - **Continuous Execution**: Status endpoints (`GET /documents/{id}/status`) execute `BackgroundTasks` to keep worker translation moving forward during browser polling intervals.
 
+### 3.2 Live Staging E2E Verification
+- **Verified Files**: Real multi-paragraph DOCX (`sample_agreement.docx`, 35 KB, 535 chars) and PDF (`sample_press_release.pdf`, 2 KB, 343 chars).
+- **Target Language**: `AUTO` → Hindi (`hi`).
+- **Pipeline Progression**: Monitored through `uploaded` → `scanning` (5%) → `parsing` (15%) → `translating` (25%–81%) → `reconstructing` (90%) → `quality_check` (95%) → `ready` (100%).
+- **Egress & Actions**: Verified green "READY" badge, functional "Original" download, and dynamic "Download" button serving `translated_sample_agreement.docx` and `translated_sample_press_release.pdf`.
+- **Evidence Artifacts**: `doc_translation_processing.png`, `doc_translation_ready.png`, `doc_translation_all_completed.png`.
+
 ---
 
 ## 4. Real-time Speech-to-Speech Translation
