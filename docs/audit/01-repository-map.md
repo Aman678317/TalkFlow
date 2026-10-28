@@ -134,3 +134,4 @@ flowchart LR
 - **Vercel Serverless Multi-Service**: Configured via `vercel.json` with path rewrites routing `/api/*`, `/v2/*`, `/v3/*`, `/ws/*` to FastAPI (`services/api`), and `/*` to Vite React SPA (`apps/web`).
 - **Neon Cloud PostgreSQL**: High-performance pooled connection via `asyncpg` with SSL and automatic database migrations via Alembic.
 - **Docker Production Engine**: `infrastructure/docker/Dockerfile.api` and `Dockerfile.web` for containerized high-scale deployments.
+

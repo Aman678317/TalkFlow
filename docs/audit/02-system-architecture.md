@@ -90,3 +90,4 @@ sequenceDiagram
 | **AI Provider Outage** | Primary MT/STT service throws 429/500 errors. | Unified Provider Router with automatic fallback cascade (Local Neural $\rightarrow$ OpenAI $\rightarrow$ Azure $\rightarrow$ Groq). |
 | **Network Interruption (WebRTC)** | ICE disconnect during mobile network switch. | LiveKit automatic ICE restart and P2P mesh reconnection handler with bounded retry windows. |
 | **Cross-Tenant Data Leakage** | Malicious tenant attempts IDOR via path params. | Database queries strictly enforce `tenant_id == current_user.org_id` at the query builder level. |
+

@@ -85,3 +85,4 @@ TalkFlow bridges telecommunication networks (PSTN, SIP, and WhatsApp VoIP) into 
 - **Architecture**: Implemented in `/meet-companion` and `/google-meet`.
 - **Audio Capture**: Captures conference tab audio using Chrome's Screen Capture API with system audio enabled (`chrome.tabCapture` / `navigator.mediaDevices.getDisplayMedia({ audio: true, video: true })`).
 - **Privacy & Zero Retention**: Audio streams are transcoded in volatile memory and discarded immediately following synthesis. Neither incoming conference audio nor generated translations are written to persistent disks unless explicitly requested by the user via `/notes` export.
+

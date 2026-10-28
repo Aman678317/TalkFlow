@@ -88,30 +88,63 @@ async def connect_google_meet(payload: ConnectMeetRequest):
         meeting = res.scalars().first()
 
         if not meeting:
+            # Resolve organization
+            res_org = await db.execute(select(M.Organization))
+            default_org = res_org.scalars().first()
+            if not default_org:
+                default_org = M.Organization(name="Default Organization", slug="default-org")
+                db.add(default_org)
+                await db.commit()
+                await db.refresh(default_org)
+
             meeting = M.Meeting(
+                org_id=default_org.id,
                 title=f"Google Meet ({meet_code})",
                 room_name=f"gmeet-{meet_code}",
                 status="live",
-                enable_captions=True,
-                enable_translation=True,
+                mode="ws",
+                settings_json={
+                    "enable_captions": True,
+                    "enable_translation": True,
+                    "source_language": payload.source_language,
+                    "target_languages": payload.target_languages,
+                },
             )
             db.add(meeting)
             await db.commit()
             await db.refresh(meeting)
 
-        # Create bridge participant
-        participant = M.Participant(
-            meeting_id=meeting.id,
-            display_name=payload.bot_name,
-            speaking_language=payload.source_language,
-            listening_language="en",
-            audio_mode="translated" if payload.enable_audio_interpretation else "original",
-            role="participant",
-            status="joined",
+        # Check or create bridge participant
+        res_part = await db.execute(
+            select(M.Participant).where(
+                M.Participant.meeting_id == meeting.id,
+                M.Participant.guest_key == f"gmeet_bot_{meet_code}"
+            )
         )
-        db.add(participant)
-        await db.commit()
-        await db.refresh(participant)
+        participant = res_part.scalars().first()
+        if not participant:
+            participant = M.Participant(
+                meeting_id=meeting.id,
+                display_name=payload.bot_name,
+                role="ai_agent",
+                status="joined",
+                guest_key=f"gmeet_bot_{meet_code}",
+            )
+            db.add(participant)
+            await db.commit()
+            await db.refresh(participant)
+
+            # Create participant preference
+            pref = M.ParticipantPreference(
+                participant_id=participant.id,
+                meeting_id=meeting.id,
+                speak_lang=payload.source_language,
+                hear_lang=payload.target_languages[0] if payload.target_languages else "en",
+                audio_mode="translated" if payload.enable_audio_interpretation else "original",
+                captions_enabled=True,
+            )
+            db.add(pref)
+            await db.commit()
 
         # Mint session ticket for WebSocket realtime streaming
         ticket = create_session_ticket(

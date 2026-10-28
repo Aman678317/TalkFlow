@@ -63,3 +63,4 @@ TalkFlow maintains an automated test pyramid comprising **1,412 automated test c
   ```
 - **Root Cause**: The application initialized `DatabaseStorage` (because a database was configured), whereas the test patched `LocalStorage.ping`.
 - **Resolution**: Patch the active storage instance via `app.storage.storage().ping` or patch `DatabaseStorage.ping`.
+

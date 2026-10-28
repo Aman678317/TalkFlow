@@ -79,3 +79,4 @@ The document pipeline processes complex binary formats while preserving font met
 - **STT (Speech-to-Text)**: Faster-Whisper small/base models with beam size 1 or Azure Speech SDK. Real-Time Factor (RTF) $< 0.15$ on CPU.
 - **TTS (Text-to-Speech)**: Local Piper neural TTS generating 22.05 kHz audio chunks in $< 150\text{ms}$, streamed over WebSocket / WebRTC.
 - **Total Pipeline Latency**: End-to-end voice-to-voice latency ranges between $350\text{ms} - 550\text{ms}$, well within human conversational tolerance.
+

@@ -46,3 +46,4 @@ To ensure production stability, fixes are executed in **four sequential, isolate
   - Backend test suites: Unit + Integration + Hardened pass.
   - Live deployment smoke test: Document translation, text translation, live companion HUD, and dialer load cleanly.
 - **Deliverable**: `docs/audit/10-release-go-no-go.md`.
+

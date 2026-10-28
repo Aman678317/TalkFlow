@@ -63,3 +63,4 @@ TalkFlow adopts DeepL's user experience concepts and public API standards while 
 -  **No proprietary code copied**: All backend engines, models, and frontend components are authored independently using open-source libraries (FastAPI, React, PyMuPDF, LiveKit, Faster-Whisper, Piper).
 -  **No proprietary visual assets copied**: TalkFlow features its own distinct design system ("Studio Glass" styling with iris/slate color palettes and Tailwind tokens).
 -  **No scraping or reverse-compilation**: Models and translations run on self-hosted neural weights (Argos, NLLB, Whisper, Piper) or public enterprise APIs (OpenAI, Azure, Deepgram).
+

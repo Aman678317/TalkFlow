@@ -44,3 +44,4 @@
 - **Lead Application Security Reviewer**: *AppSec Review Board* (Signed 2026-10-28)
 - **Lead QA Engineer**: *Automation & Hardening Gate* (Signed 2026-10-28)
 - **DevOps & Infrastructure Lead**: *Platform SRE* (Signed 2026-10-28)
+

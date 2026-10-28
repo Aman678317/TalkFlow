@@ -56,3 +56,4 @@
   - Auth endpoints (`/login`, `/signup`): 10 requests / minute per IP.
   - Translation endpoints: Tiered by organization subscription limits (e.g. 100,000 / min in enterprise, 60 / min on free tier).
   - Telephony dialing: Idempotency keys required on `/api/v1/telephony/calls` to prevent accidental double-dialing.
+
