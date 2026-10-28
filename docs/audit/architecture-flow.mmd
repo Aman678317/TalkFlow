@@ -1,0 +1,122 @@
+flowchart TD
+    subgraph Client["Client Tier (Web Browser / Phone)"]
+        UI_Web["React 18 SPA (Vite / Tailwind)"]
+        UI_Comp["Meeting Companion (HUD / Floating Bar)"]
+        UI_Phone["WebRTC / Phone Dialer UI"]
+        Audio_In["Audio Ingestion (Mic / System Tab Audio)"]
+    end
+
+    subgraph Edge["Edge & Ingress Routing (Vercel)"]
+        Vercel_Edge["Vercel Edge Gateway"]
+        Rewrite_Rules{"Path Rewrite Router"}
+        Vercel_Edge --> Rewrite_Rules
+    end
+
+    subgraph Backend["Application Server Tier (FastAPI - services/api)"]
+        MW_CORS["CORS & Security Headers Middleware"]
+        MW_CSRF["CSRF Double-Submit Middleware"]
+        MW_Auth["JWT & Multi-Tenant Context Middleware"]
+        
+        Router_Auth["Auth Router (/api/v1/auth)"]
+        Router_Trans["Translate Router (/api/v1/translate)"]
+        Router_Docs["Documents Router (/api/v1/documents)"]
+        Router_Meet["Meetings Router (/api/v1/meetings)"]
+        Router_Tel["Telephony Router (/api/v1/telephony)"]
+        Router_V2V3["DeepL Parity Router (/v2 & /v3)"]
+        Router_Health["Health & Metrics Probes (/health, /metrics)"]
+        
+        Svc_Trans["Translation Service"]
+        Svc_Docs["Document Translation Pipeline"]
+        Svc_Meet["Meeting & Subtitle Service"]
+        Svc_Tel["Telephony & Asterisk Bridge Service"]
+        Svc_Write["AI Writing & Tone Engine"]
+        Svc_Vault["Provider Secret Vault"]
+    end
+
+    subgraph Data["Persistence & Storage Tier"]
+        DB_Postgres[("Neon Cloud PostgreSQL 16 (pgvector)")]
+        DB_Storage[("Durable Binary Storage (stored_objects)")]
+        Cache_Redis[("Redis / Memory Cache (Rate Limits & Sessions)")]
+    end
+
+    subgraph Realtime["Real-time Media & Signaling"]
+        LiveKit_Server["LiveKit Cloud / Self-hosted WebRTC"]
+        WS_Signaling["WebSocket Audio Gateway (/ws/live)"]
+        Asterisk_ARI["Asterisk PBX / SIP Gateway"]
+    end
+
+    subgraph AI_Providers["AI Provider Intelligence Tier"]
+        subgraph STT["Speech-to-Text"]
+            Whisper_Local["Faster-Whisper (Local)"]
+            Azure_STT["Azure Speech STT"]
+            Deepgram["Deepgram Nova-2"]
+        end
+        subgraph MT["Machine Translation"]
+            Argos_Local["Argos Neural (Offline)"]
+            NLLB_Local["NLLB-200"]
+            OpenAI_MT["OpenAI GPT-4o-mini"]
+            Azure_MT["Azure Translator"]
+        end
+        subgraph TTS["Text-to-Speech"]
+            Piper_Local["Piper TTS (<150ms)"]
+            Azure_TTS["Azure Speech Neural"]
+            ElevenLabs["ElevenLabs Turbo"]
+        end
+        VAD_Engine["Silero VAD / WebRTC VAD"]
+    end
+
+    %% Client to Edge
+    UI_Web -->|HTTP / REST| Vercel_Edge
+    UI_Comp -->|HTTP / REST| Vercel_Edge
+    UI_Phone -->|HTTP / REST| Vercel_Edge
+    Audio_In -->|Audio PCM Frames| LiveKit_Server
+    Audio_In -->|WebSocket Chunks| WS_Signaling
+
+    %% Edge routing
+    Rewrite_Rules -->|/api/*, /v2/*, /v3/*| MW_CORS
+    Rewrite_Rules -->|/* (Static Routes)| UI_Web
+
+    %% Middleware chain
+    MW_CORS --> MW_CSRF
+    MW_CSRF --> MW_Auth
+    
+    MW_Auth --> Router_Auth
+    MW_Auth --> Router_Trans
+    MW_Auth --> Router_Docs
+    MW_Auth --> Router_Meet
+    MW_Auth --> Router_Tel
+    MW_Auth --> Router_V2V3
+    MW_Auth --> Router_Health
+
+    %% Router to Services
+    Router_Trans --> Svc_Trans
+    Router_Docs --> Svc_Docs
+    Router_Meet --> Svc_Meet
+    Router_Tel --> Svc_Tel
+    Router_V2V3 --> Svc_Trans
+    Router_V2V3 --> Svc_Docs
+    Router_V2V3 --> Svc_Write
+
+    %% Services to Persistence
+    Svc_Trans --> DB_Postgres
+    Svc_Docs --> DB_Postgres
+    Svc_Docs --> DB_Storage
+    Svc_Meet --> DB_Postgres
+    Svc_Tel --> DB_Postgres
+    MW_Auth --> Cache_Redis
+
+    %% Services to Realtime & Telephony
+    Svc_Meet --> LiveKit_Server
+    Svc_Tel --> Asterisk_ARI
+    WS_Signaling --> Svc_Meet
+
+    %% Services to AI Providers
+    Svc_Trans --> MT
+    Svc_Docs --> MT
+    Svc_Write --> OpenAI_MT
+    Audio_In --> VAD_Engine
+    VAD_Engine --> STT
+    STT --> Svc_Trans
+    Svc_Trans --> TTS
+    TTS --> LiveKit_Server
+    TTS --> WS_Signaling

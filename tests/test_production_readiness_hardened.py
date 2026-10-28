@@ -69,7 +69,8 @@ def test_readiness_probe_fails_closed_on_dependency_failure(services_app_client)
         assert data["checks"]["queue"] is False
 
     # 4. Storage failure -> 503
-    with patch("app.storage.LocalStorage.ping", new_callable=AsyncMock, return_value=False):
+    from app.storage import storage
+    with patch.object(storage(), "ping", new_callable=AsyncMock, return_value=False):
         resp = services_app_client.get("/ready")
         assert resp.status_code == 503
         data = resp.json()
