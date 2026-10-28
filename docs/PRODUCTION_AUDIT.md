@@ -5,6 +5,26 @@
 **Repository**: [Aman678317/TalkFlow](https://github.com/Aman678317/TalkFlow.git) / `globaltalk-ai`  
 **Evaluation Standard**: Enterprise Production Readiness, OWASP Top 10, Zero-Trust Architecture, Realtime Audio/Video SLAs, Strict Canonical Source Integrity.
 
+> **⚠️ RE-AUDIT UPDATE (2026-10-29)** — original FAIL verdicts below were re-audited against the
+> current `main` tree; statuses corrected with evidence (see the updated status matrix). This
+> document is historical; the phase log at the bottom records remediation state, and
+> [`docs/audit/11-initial-report-reconciliation.md`](audit/11-initial-report-reconciliation.md)
+> carries the maintained cross-register status.
+
+## Re-audit evidence (2026-10-29)
+
+| Original finding | Original verdict | Current-code verification | Corrected status |
+| :--- | :--- | :--- | :--- |
+| 1.1 Tokens in `localStorage` | FAIL (CRITICAL 9.1) | `apps/web/src/lib/api.ts` keeps only a short access token in `sessionStorage`; comment: "credential ever touches localStorage" is guarded against; refresh token is HttpOnly-cookie based. | **FIXED — verified in code + `test_auth_hardened.py` (12 passed)** |
+| 1.2 Dev-mode auto-provision / password overwrite | FAIL (CRITICAL 9.8) | `routers/auth.py` contains no `app_env == "development"` auto-create/overwrite path (grep-verified; sole env reference is `secure_cookies` logic, `auth.py:43`). | **FIXED — verified in code** |
+| 2.1 Social login trusting client identity | FAIL (CRITICAL 10.0) | `auth.py:253` routes through `social_auth_service.verify_identity()`; `social_auth_service.py` performs real JWKS signature + issuer + audience validation (Google/Apple), and email-linking is refused for unverified emails (`auth.py:291`). | **FIXED — verified in code + `test_auth_hardened.py`** |
+| 12. Missing edge/API security headers | PARTIAL | **Both surfaces verified 2026-10-29:** API responses carry the full set via `RequestContextMiddleware` (`services/api/app/middleware.py:70-119`, incl. CSP with docs override) — confirmed live (`/api/v1/health` returns HSTS, nosniff, X-Frame-Options DENY, Referrer-Policy, Permissions-Policy, COOP/CORP, CSP). CDN-edge headers for the SPA shipped in commit `f040ca2` (`vercel.json`, `apps/web/vercel.json`) and are live on the redeployment. | **FIXED — verified live on staging** |
+
+Residual open items unchanged below: subsystems 3 (tenant 403/404 leak), 6 (video adaptation), 7
+(legacy schema divergence — deferred by design), 8 (queue backoff/DLQ), 11 (SSRF DNS binding), 12
+(API headers), 13 (OTel), 14 (`gt.local_user` stale-profile cache — noted: stores user/org profile
+only, not credentials).
+
 ---
 
 ## Executive Summary & System Diagnosis
@@ -30,8 +50,8 @@ Below is the exhaustive, prioritized subsystem classification and issue matrix.
 
 | Subsystem | Classification | Primary Blockers / Findings |
 |---|---|---|
-| **1. Authentication & Session Security** | **FAIL** | `localStorage` token storage; dev auto-provisioning / password replacement in `routers/auth.py`; no HttpOnly/SameSite refresh cookie; missing CSRF tokens for cookie mutations. |
-| **2. Social Authentication** | **FAIL** | Client-supplied identity blindly trusted in `/auth/social-login`; zero provider signature/nonce/issuer verification. Account takeover risk. |
+| **1. Authentication & Session Security** | **FIXED (re-verified 2026-10-29)** | Tokens moved out of `localStorage`: access token in `sessionStorage` only; refresh via HttpOnly/SameSite cookie; CSRF double-submit active (`CSRFMiddleware`). Dev-mode bypass removed (`routers/auth.py` grep-verified). Remaining nicety: profile cache `gt.local_user` in `stores/auth.ts` is non-credential (see row 14). |
+| **2. Social Authentication** | **FIXED (re-verified 2026-10-29)** | `social_auth_service.verify_identity()` performs cryptographic JWKS signature + issuer + audience validation (Google/Apple); email linking refused for unverified provider emails (`auth.py:291`). Unit coverage: `test_auth_hardened.py`. |
 | **3. Authorization & Tenant Isolation** | **PARTIAL** | Multi-tenancy exists in models (`org_id`), but several routes allow client-provided `org_id` overrides; error responses leak tenant resource existence (403 vs 404 divergence). |
 | **4. Realtime / WebRTC / LiveKit** | **PARTIAL** | WebSocket authentication accepts join tokens without single-use revocation or cryptographic signature; LiveKit tokens lack granular room-scoped TTL limits. |
 | **5. Canonical Translation Pipeline** | **PARTIAL** | Canonical source invariant is architecturally enforced (immutable segments, fan-out dedup) and dev stand-ins no longer fabricate translations in production; fallback chains still lack granular retry backoff under queue pressure (Phase 8). |
@@ -41,7 +61,7 @@ Below is the exhaustive, prioritized subsystem classification and issue matrix.
 | **9. AI Model Router & Inference** | **PASS / PARTIAL** | Model router abstract protocol exists; fallback chains honestly report `untranslated_fallback` and `translation.failed`; health checks need honest runtime capability gating. |
 | **10. Document & File Security** | **PARTIAL** | Upload MIME-sniffing present, but ClamAV malware scanning defaults to disabled; archive decompression bombs need size caps before processing. |
 | **11. Developer Platform & Webhooks** | **PARTIAL** | API keys hashed at rest; webhooks signed via HMAC-SHA256, but SSRF DNS resolution filtering needs hardening against DNS rebinding. |
-| **12. Security Headers & TLS** | **PARTIAL** | CSP, HSTS, and Permissions-Policy missing from FastAPI middleware headers in `services/api/app/main.py`. |
+| **12. Security Headers & TLS** | **FIXED (verified live 2026-10-29)** | **API origin:** `RequestContextMiddleware` (`services/api/app/middleware.py:70-119`) injects the full security-header set incl. CSP (docs-rule override at `:116-117`) — verified live via `/api/v1/health` on staging. **CDN edge:** SPA headers shipped in commit `f040ca2` and live after redeploy. |
 | **13. Observability & Telemetry** | **PARTIAL** | Structured logging exists, but OpenTelemetry trace propagation is incomplete across async background tasks and WebSocket sessions. |
 | **14. Frontend Reliability & State** | **PARTIAL** | Stale auth cached in `gt.local_user`; multi-tab token refresh race condition; error boundary fallback incomplete for WebRTC failures. |
 | **15. DevOps & Deployment** | **PARTIAL** | Configuration drift between `services/api` (port 8088) and `apps/api` (port 8000) in Docker Compose and Kubernetes manifests. |

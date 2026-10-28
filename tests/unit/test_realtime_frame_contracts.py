@@ -237,9 +237,18 @@ async def test_partial_transcription_stops_rotating_after_finalize(session):
 
 @pytest.fixture
 def fast_deadlines(monkeypatch):
-    monkeypatch.setattr(settings, "rt_stt_deadline_ms", 60.0)
-    monkeypatch.setattr(settings, "rt_mt_deadline_ms", 60.0)
-    monkeypatch.setattr(settings, "rt_tts_ttfb_deadline_ms", 60.0)
+    # Patch BOTH the module-level import binding and the CURRENT app.config
+    # module attribute. Earlier suites may reload app.config (tests/conftest.py
+    # `app` fixture), forking the singleton: production agents read the deadline
+    # through `from app.config import settings` at call time (translation.py),
+    # so a stale forked binding would otherwise leak the unpatched 6000 ms
+    # default past this fixture and break the contract's 5s outer guard.
+    import app.config
+
+    for carrier in (settings, app.config.settings):
+        monkeypatch.setattr(carrier, "rt_stt_deadline_ms", 60.0)
+        monkeypatch.setattr(carrier, "rt_mt_deadline_ms", 60.0)
+        monkeypatch.setattr(carrier, "rt_tts_ttfb_deadline_ms", 60.0)
 
 
 class HangingStt:
