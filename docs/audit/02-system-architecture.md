@@ -13,9 +13,10 @@ TalkFlow is structured as an enterprise-grade multilingual translation platform 
 ### 1.1 Ingress & Routing Tier
 - **Reverse Proxy & Edge Gateway**: Vercel Serverless Multi-Service Architecture (`vercel.json`).
   - Rewrites routes beginning with `/api/`, `/v2/`, `/v3/`, `/ws/`, `/health`, `/ready`, `/metrics` directly to the canonical FastAPI service (`services/api/app/main:app`).
+  - **DeepL SDK Wire Compatibility Ingress**: Unmodified official client libraries (`deepl-python`, `deepl-node`) route directly through `/v2/*` and `/v3/*` with `Authorization: DeepL-Auth-Key <key>`.
   - Routes beginning with `/connect/` route to the Amazon Connect WebRTC stream application.
   - Fallback route `/(.*)` serves the pre-rendered Vite React SPA (`apps/web/dist/index.html`).
-- **Static Route Stubs**: To prevent Vercel 404s on hard page refreshes or deep links without trailing extensions, `scripts/generate-spa-routes.js` generates 30 dedicated static HTML route files mirroring the React Router configuration.
+- **Static Route Stubs**: To prevent Vercel 404s on hard page refreshes or deep links without trailing extensions, `scripts/generate-spa-routes.js` generates 31 dedicated static HTML route files (including `/admin/telephony`) mirroring the React Router configuration.
 
 ---
 
@@ -80,6 +81,14 @@ sequenceDiagram
 - **VAD & Audio Framing**: 20ms audio frames processed through Silero VAD. Pauses $\ge 300\text{ms}$ trigger immediate sentence closure and translation dispatch.
 - **TTS Synthesis Latency**: Piper TTS provides neural speech synthesis with first-audio latency under 150ms, meeting the 400ms target for human conversational flow.
 
+### 4.2 Google Meet & Third-Party Conference Bridge Architecture
+- **Bridge Ingress**: `POST /api/v1/google-meet/connect` parses conference room URLs (e.g. `https://meet.google.com/itg-pefc-aef`), establishes an active meeting session in the `meetings` table with toggles persisted into `settings_json`, and provisions caller language preferences in `participant_preferences`.
+- **Audio Capture Modes**:
+  1. *Tab Audio Capture*: Ingests remote meeting audio directly from the browser tab via `getDisplayMedia()`.
+  2. *Microphone Capture*: Ingests the local participant's speech via `getUserMedia()`.
+  3. *Dual Capture*: Concurrently mixes remote meeting attendees with local microphone speech for two-way bilingual transcription.
+- **Bilingual Subtitle Fanout**: Subtitles stream live to the floating companion HUD (`/meet-companion`), support SRT/TXT export, and feed directly into the AI Meeting Minutes summarizer.
+
 ---
 
 ## 5. Failure Boundaries & Resilience
@@ -87,6 +96,7 @@ sequenceDiagram
 | Boundary | Potential Failure Mode | Mitigating Architecture |
 | :--- | :--- | :--- |
 | **Serverless Lambda Timeout** | Vercel freezes execution after HTTP response ends. | FastAPI `BackgroundTasks` attached to active status-polling endpoints; persistent state stored in Neon DB (`stored_objects`). |
+| **Connection Pool Exhaustion** | PgBouncer rejects prepared statements during scale spikes. | `statement_cache_size=0` and `prepared_statement_cache_size=0` set on `asyncpg` connect args for Neon poolers. |
 | **AI Provider Outage** | Primary MT/STT service throws 429/500 errors. | Unified Provider Router with automatic fallback cascade (Local Neural $\rightarrow$ OpenAI $\rightarrow$ Azure $\rightarrow$ Groq). |
 | **Network Interruption (WebRTC)** | ICE disconnect during mobile network switch. | LiveKit automatic ICE restart and P2P mesh reconnection handler with bounded retry windows. |
 | **Cross-Tenant Data Leakage** | Malicious tenant attempts IDOR via path params. | Database queries strictly enforce `tenant_id == current_user.org_id` at the query builder level. |

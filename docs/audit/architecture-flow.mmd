@@ -1,8 +1,9 @@
 flowchart TD
-    subgraph Client["Client Tier (Web Browser / Phone)"]
+    subgraph Client["Client Tier (Web Browser / Phone / SDK)"]
         UI_Web["React 18 SPA (Vite / Tailwind)"]
-        UI_Comp["Meeting Companion (HUD / Floating Bar)"]
+        UI_Comp["Meeting Companion (Google Meet Bridge)"]
         UI_Phone["WebRTC / Phone Dialer UI"]
+        Client_DeepL_SDK["Official DeepL SDKs (Python / Node.js)"]
         Audio_In["Audio Ingestion (Mic / System Tab Audio)"]
     end
 
@@ -21,6 +22,7 @@ flowchart TD
         Router_Trans["Translate Router (/api/v1/translate)"]
         Router_Docs["Documents Router (/api/v1/documents)"]
         Router_Meet["Meetings Router (/api/v1/meetings)"]
+        Router_GMeet["Google Meet Router (/api/v1/google-meet)"]
         Router_Tel["Telephony Router (/api/v1/telephony)"]
         Router_V2V3["DeepL Parity Router (/v2 & /v3)"]
         Router_Health["Health & Metrics Probes (/health, /metrics)"]
@@ -69,6 +71,7 @@ flowchart TD
     UI_Web -->|HTTP / REST| Vercel_Edge
     UI_Comp -->|HTTP / REST| Vercel_Edge
     UI_Phone -->|HTTP / REST| Vercel_Edge
+    Client_DeepL_SDK -->|DeepL-Auth-Key /v2/*| Vercel_Edge
     Audio_In -->|Audio PCM Frames| LiveKit_Server
     Audio_In -->|WebSocket Chunks| WS_Signaling
 
@@ -84,6 +87,7 @@ flowchart TD
     MW_Auth --> Router_Trans
     MW_Auth --> Router_Docs
     MW_Auth --> Router_Meet
+    MW_Auth --> Router_GMeet
     MW_Auth --> Router_Tel
     MW_Auth --> Router_V2V3
     MW_Auth --> Router_Health
@@ -92,6 +96,7 @@ flowchart TD
     Router_Trans --> Svc_Trans
     Router_Docs --> Svc_Docs
     Router_Meet --> Svc_Meet
+    Router_GMeet --> Svc_Meet
     Router_Tel --> Svc_Tel
     Router_V2V3 --> Svc_Trans
     Router_V2V3 --> Svc_Docs
