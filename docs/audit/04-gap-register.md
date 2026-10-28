@@ -117,4 +117,18 @@
   - Created associated `ParticipantPreference` records for user configuration.
   - Added automated unit test suite in `tests/unit/test_google_meet_bridge.py` verifying error-free bridge creation.
 
+---
+
+## 3. Live Staging Verification & Evidence
+
+All resolved gaps were verified through automated end-to-end tests and interactive browser inspection on the staging environment (`https://feat-vercel-multi-service.vercel.app`):
+
+| Gap ID | Description | Live Verification Path | Verified Result | Evidence Artifact |
+| :--- | :--- | :--- | :--- | :--- |
+| **GAP-03** | Sidebar Navigation Clutter | `/dashboard` | Single unified navigation tree; duplicate knowledge base and agent studio entries removed; clean route transitions. | `gap_03_clean_sidebar.png` |
+| **GAP-05** | Split Voice vs. Global Call | `/voice` & `/global-call` | Distinct routes: `/voice` dedicated to dual-speaker live conversation; `/global-call` dedicated to international PSTN dialer with cost metering. | `gap_05_global_call_separated.png` |
+| **GAP-08** | Telephony Setup Guidance | `/global-call` & `/admin/telephony` | Carrier unconfigured banner guides user with direct CTA link to `/admin/telephony`; admin panel provides carrier checklist and diagnostics. | `gap_08_admin_telephony_guidance.png` |
+| **GAP-09** | Google Meet Bridge Error | `/meet-companion?meet_code=itg-pefc-aef` | Room pre-fill functions properly; bridge settings stored in `settings_json` without `enable_captions` runtime error; live subtitle stream ready. | `gap_09_meet_companion_ready.png` |
+
+
 
