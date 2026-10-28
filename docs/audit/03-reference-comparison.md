@@ -56,7 +56,7 @@ TalkFlow provides 100% spec compatibility for DeepL v2 and v3 APIs:
 - `GET /v2/languages`: Returns supported source and target language lists.
 - `POST /v2/glossaries` & `GET /v2/glossaries`: Full glossary lifecycle management.
 
-### 2.1 Official DeepL Client SDK Verification (Drop-In Testing)
+### 2.4 Official DeepL Client SDK Verification (Drop-In Testing)
 The official open-source DeepL client libraries were tested directly against TalkFlow's staging deployment (`https://feat-vercel-multi-service.vercel.app`):
 1. **Official Python SDK (`deepl-python` v1.32.0)**:
    - `translator.get_usage()`: Correctly queried character (139 / 500,000) and document metrics without schema errors.
@@ -69,6 +69,18 @@ The official open-source DeepL client libraries were tested directly against Tal
    - `translator.translateText('Hello world', null, 'de')`: Seamless drop-in translation without modification.
    - `translator.translateDocument(...)`: Uploaded `sample_agreement.docx`, monitored progress, and downloaded `deepl_node_translated_agreement.docx` (`35,601` bytes).
 3. **Evidence Artifacts**: `deepl_sdk_dropin_docs.png` and `deepl_sdk_usage_meters.png`.
+
+### 2.5 Antigravity Customizations: Custom MCP Tools & Agent Workflows
+TalkFlow extends beyond standard web and REST endpoints by implementing native agent customizations adhering to the Antigravity Customization Architecture:
+1. **`desi-mcp-server` Model Context Protocol Integration**:
+   - Implemented in `mcp/desi-mcp-server` over `stdio` JSON-RPC transport.
+   - Exposes tools to coding assistants and LLMs: `translate-text`, `translate-document`, `rephrase-text`, `translate-desi`, `transliterate-desi`, and `get-desi-languages`.
+   - Bridges AI agents with live TalkFlow endpoints for autonomous translation tasks.
+2. **Progressive Disclosure Skills (`.agents/skills/`)**:
+   - Includes multi-step developer skills (`subagent-driven-development`, `test-driven-development`, `systematic-debugging`, `security-review`) with YAML frontmatter.
+   - Only skill metadata is injected into the initial context window; full operational playbooks load on-demand when activated.
+3. **Project Rule Architecture (`AGENTS.md`)**:
+   - Establishes persistent guidelines for clean-room implementation, zero proprietary asset duplication, tenant isolation, and secret management.
 
 ---
 
