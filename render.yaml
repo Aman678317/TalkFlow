@@ -57,4 +57,9 @@ services:
       - key: METRICS_ENABLED
         value: "false"
 
-databases: []
+  # Managed Redis cache/queue used by the API service above.
+  - type: redis
+    name: globaltalk-cache
+    region: oregon
+    plan: free
+    maxmemoryPolicy: allkeys-lru
