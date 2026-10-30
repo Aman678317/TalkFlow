@@ -34,10 +34,12 @@ services:
         sync: false
       - key: JWT_SECRET
         generateValue: true
-      # Production validator requires REDIS_URL (distributed cache + queue);
-      # satisfied by the Redis instance declared below (same region).
+      # Reference the managed Render Redis URL using supported Blueprint syntax.
       - key: REDIS_URL
-        value: redis://default:${Redis.globaltalk-cache.password}@${Redis.globaltalk-cache.host}:${Redis.globaltalk-cache.port}
+        fromService:
+          type: redis
+          name: globaltalk-cache
+          property: connectionString
       - key: CORS_ORIGINS
         value: https://globaltalk-ai.vercel.app,https://feat-vercel-multi-service.vercel.app,http://localhost:5173
       - key: TRANSLATION_PROVIDER
@@ -50,8 +52,12 @@ services:
         value: auto
       - key: CACHE_BACKEND
         value: auto
+      # Production config requires METRICS_TOKEN whenever metrics are enabled.
+      # Keep the endpoint disabled until a token is deliberately configured.
+      - key: METRICS_ENABLED
+        value: "false"
 
-databases:
+  # Managed Redis cache/queue used by the API service above.
   - type: redis
     name: globaltalk-cache
     region: oregon
