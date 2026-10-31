@@ -10,7 +10,7 @@ import base64
 import logging
 from pathlib import Path
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import httpx
 
 from modules.video_studio.models import StudioProject, StudioSegment

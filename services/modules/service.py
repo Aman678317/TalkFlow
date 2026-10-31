@@ -1,6 +1,7 @@
 """FastAPI APIRouter exposing endpoints for TalkFlow Advanced Product Expansion (Modules A - K)."""
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 import time
 from typing import Any, Dict, List, Optional

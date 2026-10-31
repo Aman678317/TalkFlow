@@ -70,7 +70,7 @@ async def get_pipeline_dashboard():
 @app.get("/api/v1/sample-audio/big")
 async def get_sample_big_audio():
     """Serve sample 10-second human speech WAV for end-to-end demonstrations."""
-    from fastapi import HTTPException, Response
+    from fastapi import HTTPException
     fixture_path = Path(__file__).resolve().parent.parent.parent / "audio-intelligence-agent" / "tests" / "fixtures" / "en_example.wav"
     if not fixture_path.exists():
         raise HTTPException(status_code=404, detail="Sample audio fixture not found")
@@ -82,7 +82,7 @@ async def get_sample_big_audio():
 @app.get("/api/v1/sample-audio/5min")
 async def get_sample_5min_audio():
     """Serve complete 5-minute (300-second) natural Hindi speech WAV for full-length validation."""
-    from fastapi import HTTPException, Response
+    from fastapi import HTTPException
     fixture_path = Path(__file__).resolve().parent.parent.parent / "storage" / "hindi_5min_speech.wav"
     if not fixture_path.exists():
         raise HTTPException(status_code=404, detail="5-minute audio fixture not found")

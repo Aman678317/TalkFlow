@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from typing import List, Tuple
+from typing import Any, List, Set, Tuple
 from app.core.exceptions import DetectionError
 from app.core.logging import get_logger
 from app.language.codes import normalize_language_code

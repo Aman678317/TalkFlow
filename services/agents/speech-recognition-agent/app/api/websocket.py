@@ -1,6 +1,7 @@
 """WebSocket endpoint for real-time streaming speech recognition."""
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid

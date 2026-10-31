@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 from app.models.schemas import TranslationRequestSchema
 from app.monitoring.evaluation import compute_bleu, compute_chrf, evaluate_sample_preservation
 from app.translation.engine import translation_engine

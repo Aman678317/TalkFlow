@@ -208,10 +208,13 @@ class EdgeTTSProvider(BaseTTSProvider):
                 synthetic=True,
             )
         except Exception as edge_err:
+            last_edge_err_msg = str(edge_err)
             logger.warning(
                 "Edge TTS failed, attempting gTTS fallback",
-                extra={"voice": chosen_voice, "error": str(edge_err)},
+                extra={"voice": chosen_voice, "error": last_edge_err_msg},
             )
+        else:
+            last_edge_err_msg = "Unknown Edge TTS error"
 
         # Attempt 2: gTTS Neural fallback
         try:
@@ -240,9 +243,9 @@ class EdgeTTSProvider(BaseTTSProvider):
         except Exception as gtts_err:
             logger.error(
                 "Both Edge TTS and gTTS failed",
-                extra={"edge_err": str(edge_err), "gtts_err": str(gtts_err)},
+                extra={"edge_err": last_edge_err_msg, "gtts_err": str(gtts_err)},
             )
-            raise RuntimeError(f"Multilingual Neural TTS failed: {edge_err} | {gtts_err}")
+            raise RuntimeError(f"Multilingual Neural TTS failed: {last_edge_err_msg} | {gtts_err}")
 
     async def synthesize_stream(
         self,

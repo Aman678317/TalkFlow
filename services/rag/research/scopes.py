@@ -1,7 +1,7 @@
 """Defined research responsibilities and topic scopes for all seven TalkFlow agents."""
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Any, Dict, List
 from rag.models import AgentScope
 
 

@@ -1,6 +1,7 @@
 """Real-time audio streaming WebSocket endpoint."""
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Optional
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect

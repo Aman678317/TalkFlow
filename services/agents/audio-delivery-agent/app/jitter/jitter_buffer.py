@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.jitter.chunk_buffer import UtteranceChunkBuffer

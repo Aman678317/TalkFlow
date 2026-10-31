@@ -8,7 +8,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from modules.quality_confidence.models import SegmentQualityAudit, UncertainSpan
 
 logger = logging.getLogger("talkflow.modules.quality_confidence")

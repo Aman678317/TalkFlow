@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from app.core.config import settings
 from app.core.exceptions import UnsupportedLanguagePairError
 from app.providers.base import BaseProvider, Intent, TranslationRequest, TranslationResult

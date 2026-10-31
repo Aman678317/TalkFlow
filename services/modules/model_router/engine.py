@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from modules.model_router.models import (
     ModelProfile,
     ModelSelectionResult,
