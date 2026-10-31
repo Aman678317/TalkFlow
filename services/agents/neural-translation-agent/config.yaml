@@ -1,0 +1,82 @@
+agent:
+  name: "neural_translation_agent"
+  version: "1.0.0"
+  environment: "development"
+  debug: true
+
+api:
+  host: "127.0.0.1"
+  port: 8004
+  cors_origins: ["*"]
+
+translation:
+  primary_provider: "argos"        # argos | marian | nllb_ct2 | madlad400 | neural_online | local_qwen
+  default_model: "argos-default"
+  device: "cpu"
+  compute_type: "int8"
+  beam_size: 2
+  max_input_length: 50000
+  max_output_length: 50000
+  translation_timeout_sec: 10.0
+  partial_enabled: true
+  partial_interval_ms: 400
+  min_prefix_chars: 20
+  stable_prefix_length: 32
+  max_concurrent_jobs: 16
+  dedup_ttl_seconds: 300
+
+models:
+  argos:
+    packages_dir: "model_cache/argos"
+    auto_download: false
+  marian:
+    cache_dir: "model_cache/hf"
+    auto_download: false
+  nllb:
+    model_dir: "model_cache/nllb-200-600m-ct2-int8"
+    tokenizer_file: "model_cache/nllb-200-600m-ct2-int8/sentencepiece.bpe.model"
+    license_warning_accepted: false # CC BY-NC 4.0 research only
+  madlad400:
+    model_id: "google/madlad400-3b-mt"
+    cache_dir: "model_cache/hf"
+  online:
+    deepl_api_key: ""
+    azure_translator_key: ""
+    azure_region: "global"
+
+routing:
+  default_intent: "quality_optimized" # latency_optimized | quality_optimized | cost_optimized | private_only
+  allow_pivot_translation: false      # default zero-pivot
+  pivot_language: "en"
+  strict_privacy: true
+
+glossary:
+  enabled: true
+  case_sensitive: false
+  enforce_target_terms: true
+  protect_source_terms: true
+
+translation_memory:
+  enabled: true
+  exact_match_threshold: 1.0
+  fuzzy_match_threshold: 0.85
+  semantic_match_threshold: 0.88
+  approved_only: true
+  writeback_enabled: false
+
+style:
+  default_formality: "neutral"       # formal | informal | neutral
+  default_domain: "general"
+
+llm_agent:
+  enabled: true
+  base_url: "http://localhost:11434/v1"
+  model: "qwen3.5:4b"
+  api_key: "ollama"
+  timeout_sec: 10.0
+
+integration:
+  agent03_url: "http://127.0.0.1:8003"
+  agent05_url: "http://127.0.0.1:8005"
+  talkflow_api_url: "http://127.0.0.1:8000"
+

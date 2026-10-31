@@ -1,0 +1,27 @@
+version: "3.8"
+
+services:
+  translation-quality-agent:
+    build: .
+    container_name: talkflow-agent-05-qa
+    ports:
+      - "8005:8005"
+    environment:
+      - QA_SERVICE_PORT=8005
+      - AGENT_ENV=production
+      - REFERENCE_FREE_EVALUATOR=semantic_multilingual
+      - RETRY_BUDGET=2
+      - QUALITY_THRESHOLD=0.75
+      - WARNING_THRESHOLD=0.60
+      - AGENT06_HOST=http://talkflow-agent-06-tts:8006
+      - AGENT04_HOST=http://talkflow-agent-04-mt:8004
+      - AGENT_BRAIN_ENABLED=true
+      - OLLAMA_HOST=http://host.docker.internal:11434
+      - OLLAMA_MODEL=qwen3.5:4b
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8005/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+

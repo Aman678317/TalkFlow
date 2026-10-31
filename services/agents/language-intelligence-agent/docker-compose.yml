@@ -1,0 +1,15 @@
+version: "3.8"
+
+services:
+  language-intelligence-agent:
+    build: .
+    container_name: talkflow-language-intelligence-agent
+    ports:
+      - "8003:8003"
+    environment:
+      - AGENT_PORT=8003
+      - AGENT_HOST=0.0.0.0
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434/v1
+    volumes:
+      - ./models:/app/models
+    restart: unless-stopped

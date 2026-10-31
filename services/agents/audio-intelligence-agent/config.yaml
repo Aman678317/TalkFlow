@@ -1,0 +1,70 @@
+agent:
+  name: "audio_intelligence_agent"
+  version: "1.0.0"
+  description: "TalkFlow Audio Intelligence Agent (Agent 01) for real-time speech preprocessing, VAD, denoising, and segmentation"
+
+audio:
+  sample_rate: 16000
+  channels: 1
+  frame_duration_ms: 50
+  encoding: "pcm_s16le"
+  max_frame_size_bytes: 8192
+  retention_policy: "ephemeral" # ephemeral | memory_only | debug_disk
+  temp_storage_dir: "temp_audio"
+
+noise_suppression:
+  enabled: true
+  provider: "spectral" # spectral | noisereduce | passthrough
+  spectral_subtraction_factor: 1.5
+  spectral_flooring: 0.05
+  stationary_noise_estimation_frames: 10
+
+vad:
+  provider: "silero" # silero | webrtc | energy
+  sensitivity: 2 # For webrtc: 0 (least aggressive) to 3 (most aggressive)
+  speech_threshold: 0.35 # Silero/Energy speech probability threshold
+  silence_threshold: 0.20 # Probability below which is treated as silence
+  min_speech_duration_ms: 200
+  min_silence_duration_ms: 400
+  max_utterance_duration_ms: 15000
+  partial_processing_interval_ms: 1200
+  phrase_commit_interval_ms: 4000
+  hangover_duration_ms: 500
+
+quality:
+  snr_warning_threshold_db: 10.0
+  clipping_warning_ratio: 0.01 # 1% of samples clipped
+  silence_warning_ratio: 0.95
+  min_confidence_good: 0.75
+  min_confidence_fair: 0.50
+
+streaming:
+  queue_capacity: 100
+  max_concurrent_sessions: 64
+  backpressure_drop_stale_partials: true
+  session_timeout_seconds: 300
+
+llm_agent:
+  enabled: true
+  provider: "ollama" # ollama | openai | disabled
+  model: "qwen3.5:4b"
+  base_url: "http://localhost:11434/v1"
+  temperature: 0.2
+  timeout_seconds: 10
+
+api:
+  host: "0.0.0.0"
+  port: 8001
+  debug: false
+  cors_origins: ["*"]
+
+monitoring:
+  prometheus_metrics_enabled: true
+  metrics_path: "/metrics"
+  log_level: "INFO"
+  structured_logging: false
+
+integration:
+  talkflow_api_url: "http://127.0.0.1:8002"
+  talkflow_shared_secret: "talkflow-insecure-dev-secret"
+

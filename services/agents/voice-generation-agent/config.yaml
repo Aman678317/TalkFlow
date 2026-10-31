@@ -1,0 +1,72 @@
+agent:
+  name: "voice_generation_agent"
+  version: "1.0.0"
+  description: "TalkFlow Voice Generation Agent (Agent 06) for multilingual, low-latency text-to-speech synthesis"
+
+api:
+  host: "0.0.0.0"
+  port: 8006
+  cors_origins: ["*"]
+
+tts:
+  default_provider: "edge_tts"  # edge_tts with automatic gTTS and dev_tone fallback
+  default_language: "hi"
+  default_locale: "hi-IN"
+  default_voice: "hi-IN-MadhurNeural"
+  default_style: "natural"
+  sample_rate: 24000
+  channels: 1
+  encoding: "pcm_s16le"
+  output_format: "wav"
+  streaming_enabled: true
+  ttfb_deadline_ms: 2000
+  request_timeout_ms: 15000
+  max_concurrent_synthesis: 4
+  queue_max_size: 100
+  preload_models: false
+  allow_model_downloads: false
+  device: "cpu"
+
+voice_map:
+  hi: "hi-IN-MadhurNeural"
+  mr: "mr-IN-AarohiNeural"
+  bn: "bn-IN-TanishaaNeural"
+  gu: "gu-IN-NiranjanNeural"
+  ta: "ta-IN-PallaviNeural"
+  te: "te-IN-MohanNeural"
+  kn: "kn-IN-GaganNeural"
+  ml: "ml-IN-SobhanaNeural"
+  pa: "pa-IN-OjasNeural"
+  ur: "ur-PK-AsadNeural"
+  en: "en-US-JennyNeural"
+  es: "es-ES-ElviraNeural"
+  fr: "fr-FR-DeniseNeural"
+  de: "de-DE-KatjaNeural"
+  ja: "ja-JP-NanamiNeural"
+  zh: "zh-CN-XiaoxiaoNeural"
+  ar: "ar-SA-HamedNeural"
+  pt: "pt-BR-FranciscaNeural"
+  it: "it-IT-ElsaNeural"
+  ko: "ko-KR-SunHiNeural"
+  ru: "ru-RU-SvetlanaNeural"
+
+privacy:
+  private_only: false
+  offline_only: false
+  external_providers_enabled: true
+  require_explicit_consent: true
+  voice_cloning_enabled: false
+
+integration:
+  agent05_url: "http://127.0.0.1:8005"
+  agent07_url: "http://127.0.0.1:8007"
+  talkflow_api_url: "http://127.0.0.1:8000"
+  shared_secret: "talkflow_mt_secret_token_dev"
+
+llm_agent:
+  enabled: true
+  provider: "ollama"
+  model: "qwen3.5:4b"
+  base_url: "http://localhost:11434/v1"
+  temperature: 0.2
+  timeout_seconds: 10

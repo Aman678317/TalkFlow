@@ -1,0 +1,33 @@
+[
+  {
+    "id": "hi_en_001",
+    "source_text": "हम अपने नए एआई उत्पाद का परीक्षण कर रहे हैं।",
+    "target_text": "We are testing our new AI product.",
+    "reference_text": "We are testing our new AI product.",
+    "source_lang": "hi",
+    "target_lang": "en",
+    "expected_decision": "ACCEPT",
+    "scenario": "general_statement"
+  },
+  {
+    "id": "hi_en_002",
+    "source_text": "कृपया सर्वर को पुनरारंभ न करें।",
+    "target_text": "Please restart the server now.",
+    "reference_text": "Please do not restart the server.",
+    "source_lang": "hi",
+    "target_lang": "en",
+    "expected_decision": "RETRY_WITH_ALTERNATE_PROVIDER",
+    "scenario": "negation_reversal_hi_en"
+  },
+  {
+    "id": "hi_en_003",
+    "source_text": "बैठक 4:30 बजे समाप्त होगी।",
+    "target_text": "The meeting will conclude at 4:30.",
+    "reference_text": "The meeting will end at 4:30 PM.",
+    "source_lang": "hi",
+    "target_lang": "en",
+    "expected_decision": "ACCEPT",
+    "scenario": "time_preservation"
+  }
+]
+

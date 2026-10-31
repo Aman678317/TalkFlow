@@ -1,0 +1,62 @@
+agent:
+  name: "audio_delivery_agent"
+  version: "1.0.0"
+  description: "TalkFlow Audio Synchronization & Delivery Agent (Agent 07) for real-time multilingual speech coordination and fan-out"
+
+api:
+  host: "0.0.0.0"
+  port: 8007
+  debug: false
+  cors_origins: ["*"]
+
+delivery:
+  transport: "websocket" # websocket | livekit | hybrid
+  livekit_enabled: false
+  livekit_url: "ws://127.0.0.1:7880"
+  livekit_api_key: "devkey"
+  livekit_api_secret: "secret"
+  audio_sample_rate: 24000
+  channels: 1
+  audio_format: "pcm_s16le"
+  synthetic_marker_required: true
+
+sync:
+  reorder_window_ms: 150
+  max_jitter_buffer_ms: 400
+  stale_utterance_timeout_ms: 8000
+  drop_late_chunks: true
+  enable_adaptive_scheduling: true
+  clock_skew_tolerance_ms: 500
+
+routing:
+  default_mode: "translated" # original | translated | both | muted
+  enable_translation_fanout: true
+  ducking_enabled: true
+  ducking_attenuation_db: -12.0
+  ducking_attack_ms: 50
+  ducking_release_ms: 200
+
+queue:
+  max_queue_size: 500
+  worker_concurrency: 4
+  queue_timeout_ms: 5000
+
+privacy:
+  private_only: false
+  offline_only: false
+  log_audio_payloads: false
+  temp_retention_seconds: 30
+
+llm_agent:
+  enabled: true
+  provider: "ollama"
+  model: "qwen3.5:4b"
+  base_url: "http://localhost:11434"
+  temperature: 0.2
+  timeout_seconds: 10
+
+integration:
+  agent06_url: "http://127.0.0.1:8006"
+  talkflow_api_url: "http://127.0.0.1:8000"
+  shared_secret: "talkflow_mt_secret_token_dev"
+

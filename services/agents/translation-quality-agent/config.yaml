@@ -1,0 +1,60 @@
+agent:
+  name: "translation_quality_agent"
+  version: "1.0.0"
+  environment: "development"
+  debug: true
+
+api:
+  host: "127.0.0.1"
+  port: 8005
+  cors_origins: ["*"]
+
+evaluation:
+  realtime_qa_enabled: true
+  final_qa_enabled: true
+  max_input_length: 5000
+  timeout_seconds: 5.0
+  max_concurrent_evaluations: 16
+  reference_free_evaluator: "semantic_multilingual"
+  reference_based_evaluator: "sacrebleu"
+
+deterministic_checks:
+  empty_check: true
+  number_check: true
+  currency_check: true
+  dates_check: true
+  times_check: true
+  urls_emails_check: true
+  protected_spans_check: true
+  glossary_check: true
+  script_check: true
+  negation_check: true
+  duplication_check: true
+  max_length_ratio: 3.5
+  min_length_ratio: 0.15
+
+scoring_weights:
+  semantic_accuracy: 0.35
+  completeness: 0.20
+  data_integrity: 0.25
+  terminology: 0.10
+  fluency: 0.10
+
+thresholds:
+  quality_threshold: 0.70
+  warning_threshold: 0.55
+  retry_budget: 2
+
+llm_agent:
+  enabled: true
+  provider: "ollama"
+  model: "qwen3.5:4b"
+  base_url: "http://localhost:11434/v1"
+  api_key: "ollama"
+  timeout_seconds: 15
+
+integration:
+  agent04_url: "http://127.0.0.1:8004"
+  agent06_url: "http://127.0.0.1:8006"
+  shared_secret: "talkflow_mt_secret_token_dev"
+

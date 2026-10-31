@@ -1,0 +1,22 @@
+version: "3.8"
+
+services:
+  neural-translation-agent:
+    build: .
+    container_name: talkflow-agent-04-translation
+    ports:
+      - "8004:8004"
+    volumes:
+      - ./model_cache:/app/model_cache
+      - ./config.yaml:/app/config.yaml
+    environment:
+      - API_HOST=0.0.0.0
+      - API_PORT=8004
+      - TRANSLATION_PRIMARY_PROVIDER=argos
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+

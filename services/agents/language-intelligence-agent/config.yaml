@@ -1,0 +1,61 @@
+agent:
+  name: "language_intelligence_agent"
+  version: "1.0.0"
+  environment: "development"
+  debug: true
+
+api:
+  host: "127.0.0.1"
+  port: 8003
+  cors_origins: ["*"]
+
+detection:
+  primary_text_provider: "fasttext"
+  fallback_text_provider: "langdetect"
+  min_text_length: 2
+  confidence_threshold: 0.45
+  short_text_threshold: 12
+  top_candidates_count: 5
+  fasttext_model_path: "models/lid.176.ftz"
+
+code_switch:
+  enabled: true
+  min_span_length_chars: 3
+  min_tokens_for_switch: 1
+  span_confidence_threshold: 0.60
+  hinglish_latin_detection: true
+
+evidence_fusion:
+  weights:
+    text_lid: 0.40
+    stt_hint: 0.25
+    audio_lid: 0.15
+    script_evidence: 0.10
+    speaker_history: 0.10
+  agreement_boost: 0.15
+  disagreement_penalty: 0.20
+  hysteresis_margin: 0.15
+
+sessions:
+  max_concurrent_sessions: 64
+  speaker_history_window: 10
+  session_timeout_seconds: 300
+  language_stability_count: 3
+
+llm_agent:
+  enabled: true
+  provider: "ollama"
+  model: "qwen3.5:4b"
+  base_url: "http://localhost:11434/v1"
+  api_key: "ollama"
+  timeout_seconds: 15
+
+integration:
+  agent02_url: "http://127.0.0.1:8002"
+  agent04_url: "http://127.0.0.1:8004"
+  talkflow_shared_secret: "talkflow-insecure-dev-secret"
+
+monitoring:
+  log_level: "INFO"
+  structured_logging: true
+  metrics_enabled: true

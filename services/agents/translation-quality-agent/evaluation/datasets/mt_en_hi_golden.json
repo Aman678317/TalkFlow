@@ -1,0 +1,52 @@
+[
+  {
+    "id": "en_hi_001",
+    "source_text": "Good morning and welcome to today's meeting.",
+    "target_text": "सुप्रभात और आज की बैठक में आपका स्वागत है।",
+    "reference_text": "सुप्रभात और आज की बैठक में आपका स्वागत है।",
+    "source_lang": "en",
+    "target_lang": "hi",
+    "expected_decision": "ACCEPT",
+    "scenario": "polite_greeting"
+  },
+  {
+    "id": "en_hi_002",
+    "source_text": "The project budget is 1,500,000 USD.",
+    "target_text": "परियोजना का बजट 1500000 USD है।",
+    "reference_text": "परियोजना का बजट 1,500,000 USD है।",
+    "source_lang": "en",
+    "target_lang": "hi",
+    "expected_decision": "ACCEPT",
+    "scenario": "number_format_preservation"
+  },
+  {
+    "id": "en_hi_003",
+    "source_text": "The project budget is $1,500,000.",
+    "target_text": "परियोजना का बजट ₹1,500,000 है।",
+    "reference_text": "परियोजना का बजट $1,500,000 है।",
+    "source_lang": "en",
+    "target_lang": "hi",
+    "expected_decision": "RETRY_WITH_ALTERNATE_PROVIDER",
+    "scenario": "currency_corruption_dollar_to_rupee"
+  },
+  {
+    "id": "en_hi_004",
+    "source_text": "Do not delete the production database records.",
+    "target_text": "उत्पादन डेटाबेस रिकॉर्ड हटाएं।",
+    "reference_text": "उत्पादन डेटाबेस रिकॉर्ड न हटाएं।",
+    "source_lang": "en",
+    "target_lang": "hi",
+    "expected_decision": "RETRY_WITH_ALTERNATE_PROVIDER",
+    "scenario": "critical_negation_reversal"
+  },
+  {
+    "id": "en_hi_005",
+    "source_text": "Please check the status at https://status.talkflow.io",
+    "target_text": "कृपया स्थिति https://status.talkflow.io पर जांचें",
+    "reference_text": "कृपया स्थिति https://status.talkflow.io पर देखें",
+    "source_lang": "en",
+    "target_lang": "hi",
+    "expected_decision": "ACCEPT",
+    "scenario": "url_preservation"
+  }
+]

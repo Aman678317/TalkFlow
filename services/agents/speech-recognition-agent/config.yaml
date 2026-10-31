@@ -1,0 +1,70 @@
+agent:
+  name: "speech_recognition_agent"
+  version: "1.0.0"
+  environment: "development"
+  debug: true
+
+api:
+  host: "127.0.0.1"
+  port: 8002
+  cors_origins: ["*"]
+
+audio:
+  canonical_sample_rate: 16000
+  channels: 1
+  encoding: "pcm_s16le"
+  frame_duration_ms: 50
+  max_audio_duration_seconds: 1800.0  # 30 minutes for file uploads
+  max_file_size_bytes: 104857600       # 100 MB max upload size
+
+stt:
+  primary_provider: "faster-whisper"
+  model_size: "base"
+  device: "cpu"
+  compute_type: "int8"
+  cpu_threads: 4
+  beam_size: 1
+  task: "transcribe"
+  language_hint: null  # auto-detect by default
+  word_timestamps: true
+  condition_on_previous_text: false
+  vad_filter: false    # Agent 01 already did VAD
+  
+streaming:
+  partial_enabled: true
+  partial_interval_ms: 500
+  min_audio_duration_ms: 200
+  max_audio_duration_ms: 30000
+  stale_partial_drop: true
+
+anti_hallucination:
+  enabled: true
+  min_confidence: 0.25
+  no_speech_threshold: 0.60
+  max_repetition_count: 3
+  suppress_silence_loops: true
+
+concurrency:
+  max_concurrent_sessions: 50
+  max_concurrent_inferences: 4
+  queue_capacity: 100
+  worker_threads: 4
+
+llm_agent:
+  enabled: true
+  provider: "ollama"
+  model: "qwen3.5:4b"
+  base_url: "http://localhost:11434/v1"
+  api_key: "ollama"
+  timeout_seconds: 15
+
+monitoring:
+  log_level: "INFO"
+  structured_logging: true
+  metrics_enabled: true
+
+integration:
+  language_agent_url: "http://127.0.0.1:8003"
+  forward_to_agent03: true
+
+

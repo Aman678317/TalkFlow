@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  speech-recognition-agent:
+    build: .
+    container_name: talkflow-speech-recognition-agent
+    ports:
+      - "8002:8002"
+    environment:
+      - ENVIRONMENT=production
+      - API_HOST=0.0.0.0
+      - API_PORT=8002
+      - STT_PROVIDER=faster-whisper
+      - STT_MODEL_SIZE=base
+      - STT_DEVICE=cpu
+      - STT_COMPUTE_TYPE=int8
+      - GT_STT_CPU_THREADS=4
+      - GT_ALLOW_MODEL_DOWNLOAD=1
+      - OLLAMA_ENABLED=true
+      - OLLAMA_BASE_URL=http://ollama:11434/v1
+      - OLLAMA_MODEL=qwen3.5:4b
+    volumes:
+      - ./models:/app/models
+    restart: unless-stopped
+    depends_on:
+      - ollama
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: talkflow-ollama-brain
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+
+volumes:
+  ollama_data:
+
