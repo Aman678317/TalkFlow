@@ -40,6 +40,17 @@ AGENT_ENDPOINTS = {
 }
 
 
+class _PooledClientContext:
+    def __init__(self, orch: 'TalkFlowOrchestrator'):
+        self._orch = orch
+
+    async def __aenter__(self) -> httpx.AsyncClient:
+        return await self._orch.get_client()
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        pass  # Keep pooled connections alive for next request
+
+
 class TalkFlowOrchestrator:
     """Central deterministic orchestrator for the 7 TalkFlow agents."""
 
@@ -49,16 +60,30 @@ class TalkFlowOrchestrator:
         max_concurrent_languages: int = 4,
         http_timeout: float = 60.0
     ):
-        self.storage_dir = output_storage_dir or Path("I:/vioces agent/storage/orchestrator")
+        base_dir = Path(__file__).resolve().parent.parent.parent
+        self.storage_dir = output_storage_dir or (base_dir / "data" / "storage" / "orchestrator")
         self.storage_dir.mkdir(parents=True, exist_ok=True)
         self.semaphore = asyncio.Semaphore(max_concurrent_languages)
         self.http_timeout = http_timeout
         self.manifest_store: Dict[str, RecordingManifest] = {}
+        self._client: Optional[httpx.AsyncClient] = None
+
+    async def get_client(self) -> httpx.AsyncClient:
+        """Returns shared keep-alive pooled AsyncClient for fast inter-agent handoffs."""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(self.http_timeout, connect=5.0),
+                limits=httpx.Limits(max_keepalive_connections=30, max_connections=100, keepalive_expiry=60.0)
+            )
+        return self._client
+
+    def client_context(self) -> _PooledClientContext:
+        return _PooledClientContext(self)
 
     async def check_all_agents_health(self) -> Dict[str, bool]:
         """Verify live responsiveness of all 7 agent daemons."""
         status = {}
-        async with httpx.AsyncClient(timeout=3.0) as client:
+        async with self.client_context() as client:
             for stage, base_url in AGENT_ENDPOINTS.items():
                 try:
                     res = await client.get(f"{base_url}/health")
@@ -86,7 +111,7 @@ class TalkFlowOrchestrator:
             if on_step_callback:
                 on_step_callback(step_name, payload)
 
-        async with httpx.AsyncClient(timeout=self.http_timeout) as client:
+        async with self.client_context() as client:
             # -----------------------------------------------------------------
             # STAGE 1: Agent 01 - Audio Intelligence
             # -----------------------------------------------------------------

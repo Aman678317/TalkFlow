@@ -15,6 +15,9 @@ dist/
 .vite/
 *.egg-info/
 .pytest_cache/
+.ruff_cache/
+*.zip
+*.log
 .coverage
 coverage/
 .mimosa/

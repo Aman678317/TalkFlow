@@ -34,7 +34,8 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 # Add project root to path
-ROOT_DIR = Path(__file__).resolve().parent.parent
+ROOT_DIR = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(ROOT_DIR / "services"))
 sys.path.insert(0, str(ROOT_DIR))
 
 import numpy as np

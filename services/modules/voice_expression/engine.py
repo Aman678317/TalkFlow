@@ -68,6 +68,10 @@ class VoiceExpressionEngine:
         self._profiles: Dict[Tuple[str, str], SpeakerProsodyProfile] = {}
         # tenant_id -> List[PronunciationRule]
         self._pronunciations: Dict[str, List[PronunciationRule]] = {}
+        # In-memory synthesis audio cache for sub-millisecond repeated responses
+        self._audio_cache: Dict[str, bytes] = {}
+        self._audio_cache_order: List[str] = []
+        self._max_cache_size: int = 500
         # Simple synthesis artifact cache: deduplication_key -> (audio_base64, duration_ms, timestamp)
         self._synthesis_cache: Dict[str, Tuple[str, float, float]] = {}
         # Auditable security database for biometric events (Rule 6)
@@ -940,6 +944,10 @@ class VoiceExpressionEngine:
         """Internal generator utilizing Edge TTS with automatic offline neural wave fallback."""
         rate_str = f"{'+' if rate_multiplier >= 1.0 else ''}{int((rate_multiplier - 1.0) * 100)}%"
         pitch_str = f"{'+' if pitch_offset >= 0 else ''}{int(pitch_offset)}Hz"
+        cache_key = hashlib.md5(f"{text}_{voice_id}_{rate_str}_{pitch_str}_{ssml_markup or ''}".encode()).hexdigest()
+
+        if cache_key in self._audio_cache:
+            return self._audio_cache[cache_key]
 
         try:
             import edge_tts
@@ -951,6 +959,11 @@ class VoiceExpressionEngine:
                     audio_accum.write(chunk["data"])
             res = audio_accum.getvalue()
             if len(res) > 200:
+                if len(self._audio_cache_order) >= self._max_cache_size:
+                    oldest = self._audio_cache_order.pop(0)
+                    self._audio_cache.pop(oldest, None)
+                self._audio_cache[cache_key] = res
+                self._audio_cache_order.append(cache_key)
                 return res
         except Exception as e:
             logger.warning(f"Edge TTS synthesis fallback triggered: {e}")
