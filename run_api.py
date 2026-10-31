@@ -5,19 +5,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 API_DIR = ROOT / "services" / "api"
 AI_DIR = ROOT / "ai"
+SERVICES_DIR = ROOT / "services"
 
 # Ensure data directory exists so SQLite doesn't fail
 (ROOT / "data").mkdir(parents=True, exist_ok=True)
 (API_DIR / "data").mkdir(parents=True, exist_ok=True)
 
 # Add directories to Python module search path.
-#
-# ORDER MATTERS: the LAST insert lands at sys.path[0], and the CANONICAL
-# provider tree must win. `ai/gt_ai` is the legacy lane's copy of the same
-# package and it has drifted (8 files differ, 3 exist only in the canonical
-# tree — see docs/ARCHITECTURE_OWNERSHIP.md §8). With `ai` inserted last,
-# the dev server imported the stale mirror: no AirLLM adapter, no cache-first
-# Silero gate, no echo guard.
+sys.path.insert(0, str(SERVICES_DIR))
 sys.path.insert(0, str(AI_DIR))
 sys.path.insert(0, str(API_DIR))
 

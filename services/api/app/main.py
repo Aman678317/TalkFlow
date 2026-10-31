@@ -121,6 +121,13 @@ def create_app() -> FastAPI:
     app.include_router(ws_router)
 
     try:
+        from modules.service import router as enterprise_router
+        app.include_router(enterprise_router)
+        log.info("Mounted Enterprise Product Expansion router at /api/v1")
+    except Exception as exc:
+        log.warning("Could not mount Enterprise router: %s", exc)
+
+    try:
         from app.agent import mount_copilotkit_agent
         mount_copilotkit_agent(app, path="/api/copilotkit")
         log.info("Mounted CopilotKit LangGraph agent at /api/copilotkit")
